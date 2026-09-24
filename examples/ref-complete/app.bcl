@@ -1,0 +1,705 @@
+name "ref-complete"
+version "1"
+environment env("APP_ENV", "development")
+
+secret "session_key" {
+  env "COMPLETE_SESSION_SECRET"
+  value "local-only-ref-complete-session-secret-change-me"
+  required true
+}
+
+resource "db" {
+  kind "database.sql"
+  description "SQLite persistence for orders and durable process state"
+  config {
+    driver "sqlite"
+    dsn env("COMPLETE_DATABASE_URL", "file:.data/ref-complete.db?cache=shared&mode=rwc")
+    max_open_connections 8
+    max_idle_connections 2
+    ping true
+    migrations [
+      "CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, amount INTEGER NOT NULL, note TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'placed', created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+      "CREATE INDEX IF NOT EXISTS orders_customer_idx ON orders(customer_id, created_at DESC)",
+      "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, actor_id TEXT NOT NULL, target_id TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+    ]
+  }
+}
+
+resource "cache" {
+  kind "cache.memory"
+  description "Scoped cache, idempotency records and coordination state"
+  config { max_entries 10000 gc_interval 1m }
+}
+
+resource "limits" {
+  kind "ratelimit.store"
+  description "Per-principal request limits"
+  config { cache "cache" prefix "complete:rate:" }
+}
+
+resource "locks" {
+  kind "lock.store"
+  description "Lease-based locks for process steps"
+  config { cache "cache" prefix "complete:lock:" ttl 30s }
+}
+
+resource "sessions" {
+  kind "session.memory"
+  description "Local signed session for the walkthrough"
+  config {
+    secret env.required("COMPLETE_SESSION_SECRET")
+    cookie "complete_sid"
+    max_age 1h
+    secure false
+  }
+}
+
+resource "session_auth" {
+  kind "auth.session"
+  config { session "sessions" roles_claim "roles" }
+}
+
+resource "identity" {
+  kind "auth.chain"
+  config { authenticators [session_auth] }
+}
+
+resource "rbac" {
+  kind "authz.rbac"
+  config {
+    superuser_roles [admin]
+    default_roles [customer]
+  }
+}
+
+resource "policy_engine" {
+  kind "rules.engine"
+  config {
+    environment "development"
+    default_tenant "default"
+    strict_validation true
+    request_timeout 5s
+  }
+}
+
+resource "jobs" {
+  kind "queue.file"
+  description "Durable local queue for notifications and process wakeups"
+  config {
+    dir env("COMPLETE_QUEUE_DIR", ".data/ref-complete/queue")
+    workers 2
+    max_attempts 5
+    poll_interval 100ms
+    backoff 250ms
+  }
+}
+
+resource "outbox" {
+  kind "outbox.memory"
+  description "Effect journal for durable order notifications"
+  config { max_messages 1000 }
+}
+
+resource "runs" {
+  kind "store.sql"
+  description "Durable process rows, steps, timers, tasks and leases"
+  config { database "db" table_prefix "complete_process" }
+}
+
+shape "SessionInput" {
+  kind object
+  additional_properties false
+  prop "user" { kind string required true min_length 1 max_length 80 }
+  prop "roles" { kind array items "string" required true }
+}
+
+shape "OrderInput" {
+  kind object
+  additional_properties false
+  prop "id" { kind string required true min_length 3 max_length 80 }
+  prop "amount" { kind int required true min 0 }
+  prop "note" { kind string max_length 500 }
+}
+
+shape "Ticket" {
+  kind object
+  additional_properties false
+  prop "subject" { kind string required true min_length 3 max_length 80 }
+  prop "amount" { kind int required true min 0 }
+}
+
+shape "Decision" {
+  kind object
+  additional_properties false
+  prop "action" { kind string required true enum [approve, reject] }
+  prop "note" { kind string max_length 200 }
+}
+
+role "customer" {
+  permissions [order:create, order:read, task:read]
+}
+
+role "approver" {
+  inherits [customer]
+  permissions [order:create, order:read, task:read, task:decide]
+}
+
+role "admin" {
+  inherits [approver]
+  permissions ["*"]
+}
+
+intent "session.open" {
+  description "Create a local session for the walkthrough"
+  response "response"
+  input_schema "SessionInput"
+  node "user" {
+    family session
+    uses "session.set"
+    resource "sessions"
+    kind effect
+    requires [input]
+    provides [stored_user]
+    config { key "user_id" value_fact "input.user" }
+  }
+  node "roles" {
+    family session
+    uses "session.set"
+    resource "sessions"
+    kind effect
+    requires [input]
+    provides [stored_roles]
+    config { key "roles" value_fact "input.roles" }
+  }
+  node "response" {
+    family response
+    uses "collect"
+    requires [stored_user, stored_roles]
+    provides [response]
+  }
+}
+
+intent "session.who" {
+  description "Return the verified session identity"
+  response "response"
+  node "user" {
+    family auth
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+  node "all" {
+    family session
+    uses "session.all"
+    resource "sessions"
+    kind read
+    requires [user_id]
+    provides [values]
+  }
+  node "response" {
+    family response
+    uses "collect"
+    requires [values]
+    provides [response]
+    config { unwrap true }
+  }
+}
+
+intent "flow.route" {
+  description "Demonstrate a compiled branch over a typed input"
+  response "response"
+  input_schema "Ticket"
+  node "branch" {
+    family branch
+    uses "flow.branch"
+    requires [input]
+    provides [decision]
+    config {
+      cases [
+        { name "large" condition "input.amount > 100" intent "flow.large" }
+        { name "small" condition "input.amount <= 100" intent "flow.small" }
+      ]
+    }
+  }
+  node "response" {
+    family response
+    uses "collect"
+    requires [decision]
+    provides [response]
+    config { unwrap true }
+  }
+}
+
+intent "flow.small" {
+  response "response"
+  node "response" {
+    family transform
+    uses "expression"
+    provides [response]
+    config { expression "'small'" }
+  }
+}
+
+intent "flow.large" {
+  response "response"
+  node "response" {
+    family transform
+    uses "expression"
+    provides [response]
+    config { expression "'large'" }
+  }
+}
+
+intent "cache.read" {
+  description "Cache-aside read with a replay-safe route guard"
+  response "response"
+  idempotent true
+  node "key" {
+    family transform
+    uses "expression"
+    requires [input]
+    provides [cache_key]
+    config { expression "input.key" }
+  }
+  node "cached" {
+    family cache
+    uses "cache.get"
+    resource "cache"
+    kind read
+    requires [cache_key]
+    provides [cached]
+    config { key_fact "cache_key" prefix "complete:read:" }
+  }
+  node "store" {
+    family cache
+    uses "cache.set"
+    resource "cache"
+    kind effect
+    requires [cache_key, cached]
+    provides [stored]
+    config { key_fact "cache_key" value_fact "cache_key" prefix "complete:read:" ttl 1m }
+  }
+  node "response" {
+    family response
+    uses "collect"
+    requires [cached, stored]
+    provides [response]
+  }
+}
+
+intent "guarded.create" {
+  description "Demonstrate deny-dominant authorization"
+  response "response"
+  authz { permissions [order:create] }
+  node "response" {
+    family transform
+    uses "expression"
+    provides [response]
+    config { expression "'created'" }
+  }
+}
+
+intent "order.create" {
+  description "Persist an order, publish a durable notification and start its process"
+  response "response"
+  input_schema "OrderInput"
+  idempotent true
+  timeout 10s
+  max_db_queries 1
+  max_effects 3
+
+  node "user" {
+    family auth
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+  node "authorize" {
+    uses "decision.authz"
+    resource "rbac"
+    kind decision
+    requires [user_id]
+    provides [authz]
+    config { permissions [order:create] }
+  }
+  node "validate" {
+    uses "validate.schema"
+    requires [input]
+    provides [validated]
+    config { source_fact "input" shape "OrderInput" }
+  }
+  node "insert" {
+    family database
+    uses "database.exec"
+    resource "db"
+    kind effect
+    requires [input, user_id, validated]
+    provides [stored]
+    config {
+      statement "INSERT INTO orders (id,customer_id,amount,note) VALUES (?,?,?,COALESCE(?, ''))"
+      args [input.id, user_id, input.amount, input.note]
+      require_affected true
+    }
+  }
+  node "outbox" {
+    family outbox
+    uses "queue.outbox_publish"
+    resource "outbox"
+    kind effect
+    requires [input, stored]
+    provides [notification]
+    config { topic "order.created" payload_fact "input" }
+  }
+  node "process_input" {
+    family transform
+    uses "data.transform"
+    requires [input, user_id]
+    provides [process_input]
+    config {
+      source_fact "input"
+      data {
+        set { customer_id "{{ user_id }}" }
+      }
+    }
+  }
+  node "process" {
+    family process
+    uses "process.start"
+    kind effect
+    requires [process_input, stored]
+    provides [run]
+    config {
+      process "order.fulfil"
+      input_fact "process_input"
+      idempotency_fact "process_input.id"
+      correlation_fact "process_input.id"
+      wait false
+    }
+  }
+  node "response" {
+    family response
+    uses "collect"
+    requires [stored, notification, run]
+    provides [response]
+  }
+}
+
+intent "order.list" {
+  description "List the caller's orders"
+  response "response"
+  node "user" {
+    family auth
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+  node "orders" {
+    family database
+    uses "database.query"
+    resource "db"
+    kind read
+    requires [user_id]
+    provides [orders]
+    config {
+      statement "SELECT id,customer_id,amount,note,status,created_at FROM orders WHERE customer_id=? ORDER BY created_at DESC LIMIT 50"
+      args [user_id]
+    }
+  }
+  node "response" {
+    family response
+    uses "collect"
+    requires [orders]
+    provides [response]
+  }
+}
+
+intent "order.persist" {
+  description "Process step that returns the persisted order input"
+  response "response"
+  node "response" {
+    family response
+    uses "collect"
+    requires [input]
+    provides [response]
+    config { unwrap true }
+  }
+}
+
+intent "order.finish" {
+  response "response"
+  node "response" {
+    family transform
+    uses "expression"
+    requires [input]
+    provides [response]
+    config { expression "'finished'" }
+  }
+}
+
+intent "order.reject" {
+  response "response"
+  node "response" {
+    family transform
+    uses "expression"
+    requires [input]
+    provides [response]
+    config { expression "'rejected'" }
+  }
+}
+
+intent "order.notify" {
+  description "Durable notification worker"
+  response "response"
+  node "publish" {
+    family outbox
+    uses "queue.outbox_publish"
+    resource "outbox"
+    kind effect
+    requires [input]
+    provides [published]
+    config { topic "order.notification" payload_fact "input" }
+  }
+  node "response" {
+    family response
+    uses "collect"
+    requires [published]
+    provides [response]
+  }
+}
+
+intent "task.list" {
+  description "List tasks visible to the caller"
+  response "response"
+  node "user" {
+    family auth
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+  node "tasks" {
+    family human_task
+    uses "task.list"
+    kind read
+    requires [user_id]
+    provides [tasks]
+    config { scope "mine" }
+  }
+  node "response" {
+    family response
+    uses "collect"
+    requires [tasks]
+    provides [response]
+  }
+}
+
+intent "task.decide" {
+  description "Claim and complete a human approval task"
+  response "response"
+  authz { permissions [task:decide] }
+  node "user" {
+    family auth
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+  node "task_id" {
+    family transform
+    uses "request.param"
+    provides [task_id]
+    config { name "id" }
+  }
+  node "decide" {
+    family approval
+    uses "task.complete"
+    kind effect
+    requires [task_id, input, user_id]
+    provides [task]
+    config { task_id_fact "task_id" action_fact "input.action" payload_fact "input" }
+  }
+  node "response" {
+    family response
+    uses "collect"
+    requires [task]
+    provides [response]
+    config { unwrap true }
+  }
+}
+
+intent "run.status" {
+  description "Read a durable process run"
+  response "response"
+  node "run_id" {
+    family transform
+    uses "request.param"
+    provides [run_id]
+    config { name "id" }
+  }
+  node "status" {
+    family process
+    uses "process.status"
+    kind read
+    requires [run_id]
+    provides [status]
+    config { run_id_fact "run_id" include_steps true }
+  }
+  node "response" {
+    family response
+    uses "collect"
+    requires [status]
+    provides [response]
+    config { unwrap true }
+  }
+}
+
+process "order.fulfil" {
+  description "Durable approval and completion for an order"
+  store "runs"
+  queue "jobs"
+  start "record"
+  version 1
+  migration_policy pin
+  idempotency "id"
+  max_steps 20
+  max_visits 10
+  retention 24h
+
+  step "record" {
+    intent "order.persist"
+    family action
+  }
+  step "approve" {
+    family approval
+    task {
+      title "Approve order {{ run.input.id }}"
+      instructions "Review the order amount before completing it."
+      role "approver"
+      actions [approve, reject]
+      form_schema "Decision"
+      due 1h
+      forbid_principals ["run.input.customer_id"]
+    }
+  }
+  step "finish" {
+    intent "order.finish"
+    family action
+    terminal true
+  }
+  step "reject" {
+    intent "order.reject"
+    family action
+    terminal true
+  }
+  edge "small" {
+    kind branch
+    from "record"
+    to "finish"
+    condition "result.amount <= 1000"
+  }
+  edge "large" {
+    kind branch
+    from "record"
+    to "approve"
+    condition "result.amount > 1000"
+  }
+  edge "approved" {
+    kind branch
+    from "approve"
+    to "finish"
+    condition "result.action == 'approve'"
+  }
+  edge "rejected" {
+    kind branch
+    from "approve"
+    to "reject"
+    condition "result.action == 'reject'"
+  }
+}
+
+worker "order-notifications" {
+  queue "jobs"
+  job_type "order.notification"
+  intent "order.notify"
+  max_attempts 5
+}
+
+route "session.open" {
+  method POST
+  path "/session"
+  intent "session.open"
+  session "sessions"
+  cache_control "no-store"
+}
+route "session.who" {
+  method GET
+  path "/session"
+  intent "session.who"
+  session "sessions"
+  cache_control "no-store"
+}
+route "flow.route" {
+  method POST
+  path "/flow/route"
+  intent "flow.route"
+}
+route "flow.stream" {
+  method POST
+  path "/flow/stream"
+  intent "flow.route"
+  mode "stream"
+}
+route "cache.read" {
+  method POST
+  path "/cache"
+  intent "cache.read"
+  idempotency { header "Idempotency-Key" ttl 1m store "cache" required true }
+}
+route "guarded" {
+  method POST
+  path "/guarded"
+  intent "guarded.create"
+  session "sessions"
+  authz { permissions [order:create] }
+}
+route "orders.create" {
+  method POST
+  path "/orders"
+  intent "order.create"
+  session "sessions"
+  status 201
+  cache_control "no-store"
+  authz { permissions [order:create] }
+  idempotency { header "Idempotency-Key" ttl 1h store "cache" required true }
+}
+route "orders.list" {
+  method GET
+  path "/orders"
+  intent "order.list"
+  session "sessions"
+  cache_control "no-store"
+  authz { permissions [order:read] }
+}
+route "tasks.list" {
+  method GET
+  path "/tasks"
+  intent "task.list"
+  session "sessions"
+  authz { permissions [task:read] }
+}
+route "tasks.decide" {
+  method POST
+  path "/tasks/:id/decide"
+  intent "task.decide"
+  session "sessions"
+  authz { permissions [task:decide] }
+}
+route "runs.status" {
+  method GET
+  path "/runs/:id"
+  intent "run.status"
+  session "sessions"
+}
