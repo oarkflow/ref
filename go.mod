@@ -22,7 +22,10 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/oarkflow/authz v0.0.6 // indirect
 	github.com/oarkflow/convert v0.0.6 // indirect
+	github.com/oarkflow/interpreter v0.0.12 // indirect
 	github.com/oarkflow/rules v0.0.5 // indirect
+	github.com/oarkflow/spl v0.0.8 // indirect
+	github.com/oarkflow/template v0.0.3 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect

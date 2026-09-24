@@ -51,12 +51,16 @@ func registerAuthActions(r *Registry) {
 
 	mustAction(r, "auth.password_hash", passwordHashAction, ActionInfo{
 		Family:   "auth",
-		Summary:  "Hash a password with bcrypt, enforcing a minimum length",
-		Provides: "The bcrypt hash",
+		Summary:  "Hash a password with argon2id or bcrypt, enforcing a minimum length",
+		Provides: "The password hash",
 		Kind:     "pure",
 		Config: []ConfigField{
 			{Name: "value_fact", Type: "fact", Required: true},
-			{Name: "cost", Type: "int", Default: "12"},
+			{Name: "algorithm", Type: "string", Default: "argon2id", Summary: "Hashing algorithm: argon2id (recommended) or bcrypt"},
+			{Name: "cost", Type: "int", Default: "12", Summary: "bcrypt cost (if algorithm is bcrypt)"},
+			{Name: "memory", Type: "int", Default: "65536", Summary: "argon2id memory in KiB (if algorithm is argon2id)"},
+			{Name: "iterations", Type: "int", Default: "3", Summary: "argon2id time iterations"},
+			{Name: "parallelism", Type: "int", Default: "4", Summary: "argon2id parallelism threads"},
 			{Name: "min_length", Type: "int", Default: "12"},
 		},
 	})
@@ -212,13 +216,18 @@ var passwordHashAction = ActionFactoryFunc(func(_ BuildContext, spec NodeSpec) (
 	if err != nil {
 		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
 	}
+	algo := configString(spec.Config, "algorithm", "argon2id")
 	cost, err := configInt(spec.Config, "cost", 12)
 	if err != nil {
 		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
 	}
-	if cost < bcrypt.MinCost || cost > bcrypt.MaxCost {
+	if algo == "bcrypt" && (cost < bcrypt.MinCost || cost > bcrypt.MaxCost) {
 		return nil, fmt.Errorf("node %q: bcrypt cost must be between %d and %d", spec.Name, bcrypt.MinCost, bcrypt.MaxCost)
 	}
+	mem, _ := configInt(spec.Config, "memory", 65536)
+	iters, _ := configInt(spec.Config, "iterations", 3)
+	threads, _ := configInt(spec.Config, "parallelism", 4)
+
 	minLength, err := configInt(spec.Config, "min_length", 12)
 	if err != nil {
 		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
@@ -239,21 +248,36 @@ var passwordHashAction = ActionFactoryFunc(func(_ BuildContext, spec NodeSpec) (
 				Message:  fmt.Sprintf("the password must contain at least %d characters", minLength),
 			}
 		}
-		if len(password) > 72 {
-			// bcrypt silently truncates at 72 bytes. A user who set a 90-character
-			// passphrase would be able to log in with the first 72, which is not
-			// what they were promised — so it is refused rather than truncated.
+		if algo == "bcrypt" && len(password) > 72 {
 			return ActionResult{}, intent.Failure{
 				Code:     "INVALID_INPUT",
 				Category: intent.CategoryInvalidInput,
-				Message:  "the password must be at most 72 characters",
+				Message:  "the password must be at most 72 characters for bcrypt",
 			}
 		}
-		hash, err := bcrypt.GenerateFromPassword([]byte(password), cost)
-		if err != nil {
-			return ActionResult{}, err
+
+		var hash string
+		if algo == "bcrypt" {
+			h, err := bcrypt.GenerateFromPassword([]byte(password), cost)
+			if err != nil {
+				return ActionResult{}, err
+			}
+			hash = string(h)
+		} else {
+			p := Argon2idParams{
+				Memory:      uint32(mem),
+				Iterations:  uint32(iters),
+				Parallelism: uint8(threads),
+				SaltLength:  16,
+				KeyLength:   32,
+			}
+			h, err := HashPasswordArgon2id(password, p)
+			if err != nil {
+				return ActionResult{}, err
+			}
+			hash = h
 		}
-		return singleOutput(spec, string(hash)), nil
+		return singleOutput(spec, hash), nil
 	}), nil
 })
 
@@ -270,10 +294,11 @@ var passwordVerifyAction = ActionFactoryFunc(func(_ BuildContext, spec NodeSpec)
 		password, passwordErr := factString(ctx.Inputs, passwordFact)
 		hash, hashErr := factString(ctx.Inputs, hashFact)
 		if passwordErr != nil || hashErr != nil {
-			_ = bcrypt.CompareHashAndPassword(dummyBcryptHash, []byte(password))
+			_, _ = VerifyPassword(password, dummyArgon2idHash)
 			return ActionResult{}, errInvalidCredentials
 		}
-		if bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
+		match, err := VerifyPassword(password, hash)
+		if err != nil || !match {
 			return ActionResult{}, errInvalidCredentials
 		}
 		return acknowledgement(spec, true), nil
@@ -327,10 +352,11 @@ var loginAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) (Act
 		// a real account. Timing is the enumeration channel here.
 		hash, _ := record[cfg.passwordField].(string)
 		if record == nil || passwordErr != nil || hash == "" {
-			_ = bcrypt.CompareHashAndPassword(dummyBcryptHash, []byte(password))
+			_, _ = VerifyPassword(password, dummyArgon2idHash)
 			return ActionResult{}, errInvalidCredentials
 		}
-		if bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
+		match, err := VerifyPassword(password, hash)
+		if err != nil || !match {
 			return ActionResult{}, errInvalidCredentials
 		}
 		if cfg.disabledField != "" && Truthy(record[cfg.disabledField]) {

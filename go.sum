@@ -35,8 +35,14 @@ github.com/oarkflow/convert v0.0.6 h1:uHTcyGe8D0Uo21E4xmaXPdhdEvVc1fYWC0Lqcj3N+f
 github.com/oarkflow/convert v0.0.6/go.mod h1:2uCH13m+EopoRto8cwDTFbW9MCOBVYvFDr13wG4ckoo=
 github.com/oarkflow/fh v0.0.26 h1:TiQapqZ4M1rRpPRFBfeW32BlqKVhmecYom4g370sWjw=
 github.com/oarkflow/fh v0.0.26/go.mod h1:gVLhX9LRuSqopvrjlbixvtBoco0OWk6J/9jV1Tul2DE=
+github.com/oarkflow/interpreter v0.0.12 h1:iPCGp2/RDbdQRv+Q5yW8JaCEvXkmcmZkw3UiD7dcRps=
+github.com/oarkflow/interpreter v0.0.12/go.mod h1:sCqr8DQOh7zIjAmim7WtVygk79nxmpT0l0b8F5ZUmfI=
 github.com/oarkflow/rules v0.0.5 h1:sV2U25+qcqkkUAfuiiCgr3qy1jRCZnHz/cWpUyX2Lk0=
 github.com/oarkflow/rules v0.0.5/go.mod h1:nnWDFPRb14EHf/3g8CF8z/X27x0k8WaJCBb3tiOz8kI=
+github.com/oarkflow/spl v0.0.8 h1:iaaN+CkVnouJ49HFNDNp3GXsRsqfL/aycy/aOLtjMic=
+github.com/oarkflow/spl v0.0.8/go.mod h1:af4auQeIB36unk6aDHf0txCvj2TCb2xRmly7faIsqg8=
+github.com/oarkflow/template v0.0.3 h1:LTyf6HHwqy5OFJH6N4ECXAbK3Htu6QKcxJuB++2LitM=
+github.com/oarkflow/template v0.0.3/go.mod h1:/I+SVVGwFMIPnChSJtdBft1Ufx/s99njvwVXfaMfOaM=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=

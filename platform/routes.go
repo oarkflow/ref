@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"slices"
 	"strconv"
@@ -285,13 +286,29 @@ func wrapCache(name string, resource Resource) (cacheHandle, error) {
 // Mounting
 // ---------------------------------------------------------------------------
 
-// Mount registers every configured HTTP route. Mount must run before Listen.
+// Mount registers every configured HTTP route and static asset directory. Mount must run before Listen.
 func (p *Platform) Mount(app *fh.App) error {
 	if app == nil {
 		return fmt.Errorf("ref/platform: nil fh app")
 	}
+	for _, s := range p.static {
+		cfg := fh.StaticConfig{
+			Browse:       s.spec.Browse,
+			Compress:     s.spec.Compress,
+			Index:        s.spec.Index,
+			CacheControl: s.spec.CacheControl,
+		}
+		if s.maxAge > 0 {
+			cfg.MaxAge = int(s.maxAge.Seconds())
+		}
+		app.Static(s.spec.Prefix, s.root, cfg)
+	}
 	for i := range p.routes {
 		route := p.routes[i]
+		if route.spec.Static != "" {
+			app.Static(route.spec.Path, route.spec.Static)
+			continue
+		}
 		app.Add(route.spec.Method, route.spec.Path, func(c fh.Ctx) error {
 			return p.serve(c, route)
 		}).Name(route.spec.Name)
@@ -382,6 +399,22 @@ func (p *Platform) serve(c fh.Ctx, route compiledRoute) error {
 	}
 
 	body := c.Body()
+	ct := c.Get("Content-Type")
+	if strings.Contains(ct, "application/x-www-form-urlencoded") && len(body) > 0 {
+		if values, err := url.ParseQuery(string(body)); err == nil {
+			formMap := make(map[string]any, len(values))
+			for k, v := range values {
+				if len(v) == 1 {
+					formMap[k] = v[0]
+				} else {
+					formMap[k] = v
+				}
+			}
+			if jsonBytes, err := json.Marshal(formMap); err == nil {
+				body = jsonBytes
+			}
+		}
+	}
 	if route.requestPipeline != nil {
 		shaped, err := p.shapeRequest(route, body, env)
 		if err != nil {
@@ -639,14 +672,42 @@ func (p *Platform) buildInvocation(c fh.Ctx, route compiledRoute, body []byte, s
 }
 
 func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute, body []byte, principal Principal, tenant, sessionID, idemKey string, env Env) error {
-	inv := p.buildInvocation(c, route, body, sessionID)
-	result, err := p.Engine.Dispatch(ctx, inv)
-	if err != nil {
-		p.audit(ctx, route, principal, tenant, body, nil, err)
-		return projectFailure(c, err)
+	var value any
+	if route.spec.Intent != "" {
+		inv := p.buildInvocation(c, route, body, sessionID)
+		result, err := p.Engine.Dispatch(ctx, inv)
+		if err != nil {
+			p.audit(ctx, route, principal, tenant, body, nil, err)
+			if strings.HasPrefix(route.spec.Name, "web.") && (strings.Contains(c.Get("Accept"), "text/html") || strings.Contains(c.Get("Content-Type"), "application/x-www-form-urlencoded")) {
+				return c.Redirect(route.spec.Path+"?error="+url.QueryEscape(err.Error()), 303)
+			}
+			return projectFailure(c, err)
+		}
+		value = result.Value
+	} else if route.spec.Template != "" {
+		title := "Security Portal"
+		switch {
+		case strings.Contains(route.spec.Path, "login"):
+			title = "Sign In"
+		case strings.Contains(route.spec.Path, "register"):
+			title = "Create Account"
+		case strings.Contains(route.spec.Path, "forgot"):
+			title = "Forgot Password"
+		case strings.Contains(route.spec.Path, "reset"):
+			title = "Reset Password"
+		}
+		value = map[string]any{
+			"title":     title,
+			"principal": principal,
+			"tenant":    tenant,
+			"path":      c.Path(),
+			"email":     c.Query("email"),
+			"error":     c.Query("error"),
+			"success":   c.Query("success"),
+			"redirect":  c.Query("redirect", "/dashboard"),
+			"token":     c.Query("token"),
+		}
 	}
-
-	value := result.Value
 	if route.responsePipeline != nil {
 		shaped, shapeErr := route.responsePipeline.Apply(value, env)
 		if shapeErr != nil && !errors.Is(shapeErr, ErrDataFiltered) {
@@ -655,6 +716,45 @@ func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute,
 		if shapeErr == nil {
 			value = shaped
 		}
+	}
+
+	if route.spec.Template != "" {
+		p.applyResponseHeaders(c, route)
+		p.audit(ctx, route, principal, tenant, body, nil, nil)
+		c.Status(route.status)
+		c.Set("Content-Type", "text/html; charset=utf-8")
+		var renderErr error
+		if route.spec.Layout != "" {
+			renderErr = c.Render(route.spec.Template, value, route.spec.Layout)
+			if renderErr != nil {
+				renderErr = c.Render(route.spec.Template, value)
+			}
+		} else {
+			renderErr = c.Render(route.spec.Template, value)
+		}
+		if renderErr != nil {
+			log.Printf("[TEMPLATE ERROR] route %s (%s): %v", route.spec.Name, route.spec.Template, renderErr)
+			return projectFailure(c, renderErr)
+		}
+		return nil
+	}
+
+	if strings.HasPrefix(route.spec.Name, "web.") && (strings.Contains(c.Get("Accept"), "text/html") || strings.Contains(c.Get("Content-Type"), "application/x-www-form-urlencoded")) {
+		target := "/dashboard"
+		if route.spec.Name == "web.logout_action" {
+			target = "/login?success=You+have+been+logged+out"
+		} else if route.spec.Name == "web.register_action" {
+			target = "/dashboard"
+		} else if route.spec.Name == "web.forgot_password_action" {
+			target = "/login?success=If+the+account+exists,+reset+instructions+have+been+sent"
+		} else if route.spec.Name == "web.reset_password_action" {
+			target = "/login?success=Password+reset+successful.+Please+sign+in."
+		} else if c.Query("redirect") != "" {
+			target = c.Query("redirect")
+		}
+		p.applyResponseHeaders(c, route)
+		p.audit(ctx, route, principal, tenant, body, nil, nil)
+		return c.Redirect(target, 303)
 	}
 
 	encoded, err := json.Marshal(value)

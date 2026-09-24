@@ -1,0 +1,42 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div style="margin-bottom: 2rem;">
+    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
+      <span class="badge badge-manager">Manager Access</span>
+      <span class="badge" style="background: rgba(59, 130, 246, 0.15); color: #93C5FD;">Route: /dashboard/manager</span>
+    </div>
+    <h1 style="font-size: 1.85rem; font-weight: 800; letter-spacing: -0.02em;">
+      Operations &amp; Reporting
+    </h1>
+    <p style="color: var(--text-muted); font-size: 0.95rem;">
+      Accessible by users with <code>manager</code>, <code>admin</code>, or <code>super_admin</code> roles.
+    </p>
+  </div>
+
+  <div class="glass-card">
+    <h3 style="font-size: 1.2rem; font-weight: 700; margin-bottom: 1rem;">Operational Audits &amp; Reports</h3>
+    <div class="table-container">
+      <table class="custom-table">
+        <thead>
+          <tr>
+            <th>Report ID</th>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Last Checked</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for(r in reports) {
+            <tr>
+              <td class="font-mono" style="color: #A5B4FC;">${r.id}</td>
+              <td style="font-weight: 600;">${r.name}</td>
+              <td><span class="badge badge-user">${r.status}</span></td>
+              <td style="color: var(--text-muted);">${r.updated}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+}

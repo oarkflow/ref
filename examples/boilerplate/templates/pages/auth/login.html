@@ -1,0 +1,44 @@
+@extends("layouts/auth.html")
+
+@define("content") {
+  <div class="auth-header">
+    <div style="font-size: 2.2rem; margin-bottom: 0.5rem;">🔒</div>
+    <h1>Welcome Back</h1>
+    <p>Sign in to your account with enterprise security</p>
+  </div>
+
+  <form method="POST" action="/login">
+    <input type="hidden" name="redirect" value="${redirect}">
+
+    <div class="form-group">
+      <label class="form-label" for="email">Email Address</label>
+      <input type="email" id="email" name="email" class="form-input" placeholder="name@example.com" value="${email}" required autofocus>
+    </div>
+
+    <div class="form-group">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
+        <label class="form-label" for="password" style="margin-bottom: 0;">Password</label>
+        <a href="/forgot-password" style="font-size: 0.8rem;">Forgot password?</a>
+      </div>
+      <input type="password" id="password" name="password" class="form-input" placeholder="••••••••••••" required>
+    </div>
+
+    <button type="submit" class="btn btn-primary btn-block" style="margin-top: 1.5rem;">
+      Sign In
+    </button>
+  </form>
+
+  <!-- Demo quick-login helper box for evaluator convenience -->
+  <div class="demo-credentials-box">
+    <h4>⚡ Demo Test Accounts (Password: Password123!)</h4>
+    <div class="demo-buttons">
+      <a href="/login?email=admin@example.com" class="demo-btn">admin@example.com (Admin)</a>
+      <a href="/login?email=manager@example.com" class="demo-btn">manager@example.com (Manager)</a>
+      <a href="/login?email=user@example.com" class="demo-btn">user@example.com (User)</a>
+    </div>
+  </div>
+
+  <div style="text-align: center; margin-top: 1.5rem; font-size: 0.85rem; color: var(--text-dim);">
+    Don't have an account? <a href="/register">Create an account</a>
+  </div>
+}

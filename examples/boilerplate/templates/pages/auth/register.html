@@ -1,0 +1,47 @@
+@extends("layouts/auth.html")
+
+@define("content") {
+  <div class="auth-header">
+    <div style="font-size: 2.2rem; margin-bottom: 0.5rem;">✨</div>
+    <h1>Create Account</h1>
+    <p>Register with robust Argon2id password security</p>
+  </div>
+
+  <form method="POST" action="/register">
+    <div class="form-group">
+      <label class="form-label" for="name">Full Name</label>
+      <input type="text" id="name" name="name" class="form-input" placeholder="Alex Taylor" value="${name}" required autofocus>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label" for="email">Email Address</label>
+      <input type="email" id="email" name="email" class="form-input" placeholder="alex@example.com" value="${email}" required>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label" for="password">Password</label>
+      <input type="password" id="password" name="password" class="form-input" placeholder="At least 8 chars (letters + numbers)" required>
+      <div id="strength-bar" style="height: 4px; border-radius: 2px; margin-top: 6px; background: rgba(255,255,255,0.1); overflow: hidden;">
+        <div id="strength-fill" style="height: 100%; width: 0%; transition: all 0.3s ease;"></div>
+      </div>
+      <div id="strength-text" style="font-size: 0.75rem; color: var(--text-dim); margin-top: 4px;">Min 8 chars, letters and numbers</div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label" for="role">Assign Initial Role (Demo Selector)</label>
+      <select id="role" name="role" class="form-select">
+        <option value="user" selected>Standard User (Dashboard &amp; Profile)</option>
+        <option value="manager">Manager (Reports &amp; Operations)</option>
+        <option value="admin">Administrator (Full RBAC Governance)</option>
+      </select>
+    </div>
+
+    <button type="submit" class="btn btn-primary btn-block" style="margin-top: 1.5rem;">
+      Register &amp; Hash with Argon2id
+    </button>
+  </form>
+
+  <div style="text-align: center; margin-top: 1.5rem; font-size: 0.85rem; color: var(--text-dim);">
+    Already have an account? <a href="/login">Sign in</a>
+  </div>
+}

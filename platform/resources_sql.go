@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -103,6 +105,21 @@ func openDatabase(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, 
 	dsn, err := requiredString(spec.Config, "dsn")
 	if err != nil {
 		return nil, nil, err
+	}
+	if dialectOf(driver) == "sqlite" {
+		filePath := dsn
+		if strings.HasPrefix(filePath, "file:") {
+			filePath = strings.TrimPrefix(filePath, "file:")
+		}
+		if idx := strings.Index(filePath, "?"); idx != -1 {
+			filePath = filePath[:idx]
+		}
+		if filePath != "" && filePath != ":memory:" && !strings.HasPrefix(filePath, ":memory:") {
+			dir := filepath.Dir(filePath)
+			if dir != "" && dir != "." {
+				_ = os.MkdirAll(dir, 0755)
+			}
+		}
 	}
 	db, err := sql.Open(driver, dsn)
 	if err != nil {

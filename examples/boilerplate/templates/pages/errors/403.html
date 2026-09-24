@@ -1,0 +1,51 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div style="max-width: 600px; margin: 4rem auto; text-align: center;">
+    <div style="font-size: 3.5rem; margin-bottom: 1rem;">🚫</div>
+    <h1 style="font-size: 2.2rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 0.75rem;">
+      403 — Access Denied
+    </h1>
+    <p style="color: var(--text-muted); font-size: 1rem; margin-bottom: 1.5rem;">
+      ${message}
+    </p>
+
+    <div class="glass-card" style="text-align: left; margin-bottom: 2rem;">
+      <h4 style="font-size: 0.85rem; text-transform: uppercase; color: #FDA4AF; margin-bottom: 0.75rem; letter-spacing: 0.05em;">
+        RBAC Enforcement Details
+      </h4>
+
+      @if(requiredRoles) {
+        <div style="margin-bottom: 0.75rem;">
+          <span style="font-size: 0.82rem; color: var(--text-muted); display: block; margin-bottom: 0.3rem;">Required Roles:</span>
+          <div>
+            @for(r in requiredRoles) {
+              <span class="badge badge-${r}">${r}</span>
+            }
+          </div>
+        </div>
+      }
+
+      @if(requiredPermission) {
+        <div style="margin-bottom: 0.75rem;">
+          <span style="font-size: 0.82rem; color: var(--text-muted); display: block; margin-bottom: 0.3rem;">Required Permission:</span>
+          <span class="badge-perm">${requiredPermission}</span>
+        </div>
+      }
+
+      <div>
+        <span style="font-size: 0.82rem; color: var(--text-muted); display: block; margin-bottom: 0.3rem;">Your Active Roles:</span>
+        <div>
+          @for(r in userRoles) {
+            <span class="badge badge-${r}">${r}</span>
+          }
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; gap: 1rem; justify-content: center;">
+      <a href="/dashboard" class="btn btn-primary">Return to Dashboard</a>
+      <a href="/login" class="btn btn-secondary">Switch Account</a>
+    </div>
+  </div>
+}

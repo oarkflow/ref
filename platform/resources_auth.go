@@ -262,10 +262,12 @@ func openBasicAuth(_ context.Context, spec ResourceSpec) (Resource, io.Closer, e
 		}
 		hash := configString(block, "password_hash", "")
 		if hash == "" {
-			return nil, nil, fmt.Errorf("resource %q: user %q needs a bcrypt password_hash — plain passwords are not accepted in configuration", spec.Name, name)
+			return nil, nil, fmt.Errorf("resource %q: user %q needs a password_hash (argon2id or bcrypt) — plain passwords are not accepted in configuration", spec.Name, name)
 		}
-		if _, err := bcrypt.Cost([]byte(hash)); err != nil {
-			return nil, nil, fmt.Errorf("resource %q: user %q password_hash is not a bcrypt hash: %w", spec.Name, name, err)
+		if !strings.HasPrefix(hash, "$argon2id$") {
+			if _, err := bcrypt.Cost([]byte(hash)); err != nil {
+				return nil, nil, fmt.Errorf("resource %q: user %q password_hash is not a valid argon2id or bcrypt hash: %w", spec.Name, name, err)
+			}
 		}
 		auth.users[name] = basicUser{
 			hash: []byte(hash),
@@ -292,12 +294,12 @@ func (a *basicAuth) Authenticate(_ context.Context, creds Credentials) (Principa
 	}
 	user, found := a.users[creds.Username]
 	if !found {
-		// Hash anyway against a dummy cost so an unknown username takes about as
-		// long as a known one. Without this, response timing enumerates users.
-		_ = bcrypt.CompareHashAndPassword(dummyBcryptHash, []byte(creds.Password))
+		// Constant-time check against dummy hash so an unknown username takes about as long as a known one
+		_, _ = VerifyPassword(creds.Password, dummyArgon2idHash)
 		return Principal{}, errUnauthenticated
 	}
-	if err := bcrypt.CompareHashAndPassword(user.hash, []byte(creds.Password)); err != nil {
+	match, err := VerifyPassword(creds.Password, string(user.hash))
+	if err != nil || !match {
 		return Principal{}, errUnauthenticated
 	}
 	return user.principal, nil

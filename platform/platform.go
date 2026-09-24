@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -117,10 +119,18 @@ type Platform struct {
 	// advance handler, so two processes sharing a queue register it once.
 	advanceRegistered map[string]bool
 
+	static []compiledStatic
+
 	background context.CancelFunc
 	wg         sync.WaitGroup
 	closeOnce  sync.Once
 	closeErr   error
+}
+
+type compiledStatic struct {
+	spec   StaticSpec
+	root   string
+	maxAge time.Duration
 }
 
 type sessionContextKey struct{}
@@ -144,6 +154,43 @@ func LoadFile(ctx context.Context, path string, opts LoadOptions) (*Platform, er
 		return nil, err
 	}
 	return Compile(ctx, src, filepath.Dir(path), opts)
+}
+
+// LoadDir parses, validates and compiles all .bcl files in a directory into a single generation.
+func LoadDir(ctx context.Context, dir string, opts LoadOptions) (*Platform, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("ref/platform: read BCL dir %q: %w", dir, err)
+	}
+	var files []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".bcl") {
+			files = append(files, filepath.Join(dir, entry.Name()))
+		}
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("ref/platform: no .bcl files found in %q", dir)
+	}
+	sort.Strings(files)
+	return LoadFiles(ctx, files, opts)
+}
+
+// LoadFiles parses, validates and compiles multiple BCL application files into a single generation.
+func LoadFiles(ctx context.Context, paths []string, opts LoadOptions) (*Platform, error) {
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("ref/platform: no BCL files provided")
+	}
+	var buf bytes.Buffer
+	baseDir := filepath.Dir(paths[0])
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return nil, fmt.Errorf("ref/platform: read BCL file %q: %w", p, err)
+		}
+		buf.Write(data)
+		buf.WriteString("\n")
+	}
+	return Compile(ctx, buf.Bytes(), baseDir, opts)
 }
 
 // Compile builds an immutable REF generation from BCL source.
@@ -235,6 +282,9 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 		return nil, fmt.Errorf("ref/platform: %w", err)
 	}
 	if err := p.compileRoutes(doc); err != nil {
+		return nil, err
+	}
+	if err := p.compileStatic(doc, baseDir); err != nil {
 		return nil, err
 	}
 	if err := p.startWorkers(doc); err != nil {
@@ -998,6 +1048,9 @@ func validateDocument(doc Document, registry *Registry) error {
 	if err := validateRouteSpecs(doc, resources, intents, processes); err != nil {
 		return err
 	}
+	if err := validateStaticSpecs(doc); err != nil {
+		return err
+	}
 	if err := validateWorkerSpecs(doc, resources, intents, processes); err != nil {
 		return err
 	}
@@ -1026,8 +1079,8 @@ func validateRouteSpecs(doc Document, resources, intents, processes map[string]b
 		if route.Name == "" || method == "" || route.Path == "" {
 			return fmt.Errorf("ref/platform: every route needs a name, a method and a path")
 		}
-		if route.Intent == "" && route.Process == "" {
-			return fmt.Errorf("ref/platform: route %q needs an intent or a process", route.Name)
+		if route.Intent == "" && route.Process == "" && route.Template == "" && route.Static == "" {
+			return fmt.Errorf("ref/platform: route %q needs an intent, a process, a template, or static", route.Name)
 		}
 		if route.Intent != "" && route.Process != "" {
 			return fmt.Errorf("ref/platform: route %q names both an intent and a process; pick one", route.Name)
@@ -1099,6 +1152,62 @@ func validateRouteSpecs(doc Document, resources, intents, processes map[string]b
 			return fmt.Errorf("ref/platform: duplicate route %s", key)
 		}
 		keys[key] = true
+	}
+	return nil
+}
+
+func validateStaticSpecs(doc Document) error {
+	names := map[string]bool{}
+	for _, item := range doc.Static {
+		if item.Name != "" {
+			if names[item.Name] {
+				return fmt.Errorf("ref/platform: duplicate static %q", item.Name)
+			}
+			names[item.Name] = true
+		}
+		if item.Prefix == "" {
+			return fmt.Errorf("ref/platform: static %q needs a prefix", item.Name)
+		}
+		if item.Root == "" {
+			return fmt.Errorf("ref/platform: static %q needs a root directory", item.Name)
+		}
+	}
+	return nil
+}
+
+// compileStatic resolves static asset directory mounts.
+func (p *Platform) compileStatic(doc Document, baseDir string) error {
+	for _, spec := range doc.Static {
+		what := "static " + spec.Name
+		root := spec.Root
+		if !filepath.IsAbs(root) {
+			candidates := []string{
+				root,
+				filepath.Join(baseDir, root),
+				filepath.Join(baseDir, "..", root),
+				filepath.Join(".", root),
+			}
+			found := false
+			for _, c := range candidates {
+				if fi, err := os.Stat(c); err == nil && fi.IsDir() {
+					root = c
+					found = true
+					break
+				}
+			}
+			if !found {
+				root = filepath.Join(baseDir, spec.Root)
+			}
+		}
+		maxAge, err := durationField(what, "max_age", spec.MaxAge, 0)
+		if err != nil {
+			return err
+		}
+		p.static = append(p.static, compiledStatic{
+			spec:   spec,
+			root:   root,
+			maxAge: maxAge,
+		})
 	}
 	return nil
 }

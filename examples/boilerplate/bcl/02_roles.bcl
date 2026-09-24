@@ -1,0 +1,44 @@
+# ===========================================================================
+# Enterprise RBAC Roles & Hierarchy Matrix
+# ===========================================================================
+
+role "super_admin" {
+  description "Unrestricted root administrator"
+  permissions ["*"]
+}
+
+role "admin" {
+  description "System governance, user administration, and security audit"
+  permissions [
+    "admin:dashboard",
+    "users:*",
+    "roles:manage",
+    "audit:read"
+  ]
+  inherits ["manager"]
+}
+
+role "manager" {
+  description "Operations, metrics and reporting"
+  permissions [
+    "reports:read",
+    "reports:write",
+    "users:read"
+  ]
+  inherits ["user"]
+}
+
+role "user" {
+  description "Standard authenticated platform member"
+  permissions [
+    "dashboard:view",
+    "profile:view",
+    "profile:update"
+  ]
+  inherits ["guest"]
+}
+
+role "guest" {
+  description "Public unauthenticated visitor"
+  permissions []
+}

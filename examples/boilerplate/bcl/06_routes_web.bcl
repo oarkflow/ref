@@ -1,0 +1,175 @@
+# ===========================================================================
+# Web HTML Routes (Declarative Mapping to SPL Templates)
+# ===========================================================================
+
+# Authentication Views
+route "web.index" {
+  method GET
+  path "/"
+  template "pages/auth/login"
+  layout "layouts/auth"
+  allow_anonymous true
+}
+
+route "web.login_page" {
+  method GET
+  path "/login"
+  template "pages/auth/login"
+  layout "layouts/auth"
+  allow_anonymous true
+}
+
+route "web.login_action" {
+  method POST
+  path "/login"
+  intent "auth.login"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web.register_page" {
+  method GET
+  path "/register"
+  template "pages/auth/register"
+  layout "layouts/auth"
+  allow_anonymous true
+}
+
+route "web.register_action" {
+  method POST
+  path "/register"
+  intent "auth.register"
+  session "sessions"
+  status 201
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web.forgot_password_page" {
+  method GET
+  path "/forgot-password"
+  template "pages/auth/forgot_password"
+  layout "layouts/auth"
+  allow_anonymous true
+}
+
+route "web.forgot_password_action" {
+  method POST
+  path "/forgot-password"
+  intent "auth.forgot_password"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web.reset_password_page" {
+  method GET
+  path "/reset-password"
+  template "pages/auth/reset_password"
+  layout "layouts/auth"
+  allow_anonymous true
+}
+
+route "web.reset_password_action" {
+  method POST
+  path "/reset-password"
+  intent "auth.reset_password"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web.logout_action" {
+  method POST
+  path "/logout"
+  intent "auth.logout"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+}
+
+# Protected Dashboard Views (Role-Based & Route-Based Authorization)
+route "web.dashboard" {
+  method GET
+  path "/dashboard"
+  intent "dashboard.index"
+  template "pages/dashboard/index"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    roles ["user", "manager", "admin", "super_admin"]
+    authorizer "authorization"
+  }
+}
+
+route "web.admin" {
+  method GET
+  path "/dashboard/admin"
+  intent "dashboard.admin"
+  template "pages/dashboard/admin"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    roles ["admin", "super_admin"]
+    authorizer "authorization"
+  }
+}
+
+route "web.admin_role" {
+  method POST
+  path "/dashboard/admin/role"
+  intent "dashboard.admin_update_role"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+  authz {
+    roles ["admin", "super_admin"]
+    authorizer "authorization"
+  }
+}
+
+route "web.manager" {
+  method GET
+  path "/dashboard/manager"
+  intent "dashboard.manager"
+  template "pages/dashboard/manager"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    roles ["manager", "admin", "super_admin"]
+    authorizer "authorization"
+  }
+}
+
+route "web.profile" {
+  method GET
+  path "/profile"
+  intent "dashboard.profile"
+  template "pages/dashboard/profile"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    roles ["user", "manager", "admin", "super_admin"]
+    authorizer "authorization"
+  }
+}
+
+route "web.change_password" {
+  method POST
+  path "/profile/password"
+  intent "auth.change_password"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+  authz {
+    roles ["user", "manager", "admin", "super_admin"]
+    authorizer "authorization"
+  }
+}

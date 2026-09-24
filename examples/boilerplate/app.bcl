@@ -1,0 +1,309 @@
+name "ref-auth-boilerplate"
+environment env("APP_ENV", "development")
+
+# ===========================================================================
+# Roles & RBAC Matrix
+# ===========================================================================
+
+role "super_admin" {
+  description "Unrestricted root administrator"
+  permissions ["*"]
+}
+
+role "admin" {
+  description "System governance and user administration"
+  permissions ["admin:dashboard", "users:*", "roles:manage", "audit:read"]
+  inherits ["manager"]
+}
+
+role "manager" {
+  description "Operations, reports and content management"
+  permissions ["reports:read", "reports:write", "users:read"]
+  inherits ["user"]
+}
+
+role "user" {
+  description "Standard authenticated member"
+  permissions ["dashboard:view", "profile:view", "profile:update"]
+}
+
+# ===========================================================================
+# Platform Resources
+# ===========================================================================
+
+resource "database" {
+  kind "database.sql"
+  config {
+    driver "sqlite"
+    dsn env("DATABASE_URL", "file:.data/boilerplate.db?cache=shared&mode=rwc")
+    max_open_connections 10
+    max_idle_connections 2
+    migrations [
+      "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT NOT NULL, password_hash TEXT NOT NULL, roles TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);",
+      "CREATE TABLE IF NOT EXISTS password_resets (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TIMESTAMPTZ NOT NULL, used_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);",
+      "CREATE INDEX IF NOT EXISTS idx_resets_user ON password_resets(user_id);"
+    ]
+  }
+}
+
+resource "sessions" {
+  kind "session.file"
+  config {
+    dir env("SESSION_DIR", ".data/sessions")
+    secret env("SESSION_SECRET", "super-secure-secret-key-32-bytes-long!")
+    cookie "ref_boilerplate_sid"
+    max_age 24h
+    secure false
+  }
+}
+
+resource "session_auth" {
+  kind "auth.session"
+  description "Resolves caller identity from the signed session cookie"
+  config {
+    session "sessions"
+    roles_claim "roles"
+  }
+}
+
+resource "authorization" {
+  kind "authz.rbac"
+  description "Role-based authorization with inheritance"
+  config {
+    superuser_roles ["super_admin"]
+    default_roles ["user"]
+  }
+}
+
+# ===========================================================================
+# Intents: Authentication with Argon2id
+# ===========================================================================
+
+intent "auth.register" {
+  description "Register a new user account with Argon2id password hashing"
+  response "response"
+  timeout 5s
+
+  node "validate" {
+    uses "validate.required"
+    requires [input]
+    provides [validated]
+    config { fields [input.email, input.name, input.password] }
+  }
+
+  node "hash-password" {
+    uses "auth.password_hash"
+    requires [input, validated]
+    provides [password_hash]
+    config {
+      value_fact "input.password"
+      algorithm "argon2id"
+      memory 65536
+      iterations 3
+      parallelism 4
+      min_length 8
+    }
+  }
+
+  node "insert-user" {
+    family database
+    uses "database.query"
+    resource "database"
+    kind effect
+    requires [input, password_hash]
+    provides [users]
+    config {
+      statement "INSERT INTO users (id, email, name, password_hash, roles, status) VALUES (LOWER($1), LOWER($1), $2, $3, 'user', 'active') RETURNING id, email, name, roles, status, created_at"
+      args [input.email, input.name, password_hash]
+    }
+  }
+
+  node "login" {
+    family auth
+    uses "auth.login"
+    resource "sessions"
+    kind pure
+    requires [input, users]
+    provides [principal]
+    config {
+      user_fact "users"
+      password_fact "input.password"
+      roles_field "roles"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [principal]
+    provides [response]
+  }
+}
+
+intent "auth.login" {
+  description "Verify credentials with Argon2id and create session"
+  response "response"
+  timeout 5s
+
+  node "validate" {
+    uses "validate.required"
+    requires [input]
+    provides [validated]
+    config { fields [input.email, input.password] }
+  }
+
+  node "find-user" {
+    uses "database.query"
+    resource "database"
+    kind read
+    speculation pre_auth_safe
+    requires [input, validated]
+    provides [users]
+    config {
+      statement "SELECT id, email, name, password_hash, roles, status FROM users WHERE email = LOWER($1) LIMIT 1"
+      args [input.email]
+    }
+  }
+
+  node "login" {
+    uses "auth.login"
+    resource "sessions"
+    kind pure
+    requires [input, users]
+    provides [principal]
+    config {
+      user_fact "users"
+      password_fact "input.password"
+      roles_field "roles"
+      disabled_field "status != 'active'"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [principal]
+    provides [response]
+  }
+}
+
+intent "auth.logout" {
+  description "Destroy session and clear cookie"
+  response "response"
+
+  node "require-user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "logout" {
+    uses "auth.logout"
+    resource "sessions"
+    kind effect
+    requires [user_id]
+    provides [logged_out]
+  }
+
+  node "response" {
+    uses "collect"
+    requires [logged_out]
+    provides [response]
+  }
+}
+
+intent "dashboard.get" {
+  description "Fetch dashboard overview for authenticated user"
+  response "response"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "load-profile" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [profile_rows]
+    config {
+      statement "SELECT id, email, name, roles, status, created_at FROM users WHERE id = $1 LIMIT 1"
+      args [user_id]
+    }
+  }
+
+  node "profile" {
+    uses "data.first"
+    requires [profile_rows]
+    provides [user]
+    config { source_fact "profile_rows" }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [user]
+    provides [response]
+  }
+}
+
+# ===========================================================================
+# HTTP Routes (Declarative Mapping)
+# ===========================================================================
+
+# Authentication APIs
+route "api.auth.register" {
+  method POST
+  path "/api/v1/auth/register"
+  intent "auth.register"
+  session "sessions"
+  status 201
+  cache_control "no-store"
+}
+
+route "api.auth.login" {
+  method POST
+  path "/api/v1/auth/login"
+  intent "auth.login"
+  session "sessions"
+  cache_control "no-store"
+}
+
+route "api.auth.logout" {
+  method POST
+  path "/api/v1/auth/logout"
+  intent "auth.logout"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+}
+
+# Web Dashboard (SPL Template Rendering)
+route "web.dashboard" {
+  method GET
+  path "/dashboard"
+  intent "dashboard.get"
+  template "pages/dashboard/index"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  authz {
+    roles ["user"]
+    authorizer "authorization"
+  }
+}
+
+route "web.admin" {
+  method GET
+  path "/dashboard/admin"
+  intent "dashboard.get"
+  template "pages/dashboard/admin"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  authz {
+    roles ["admin"]
+    authorizer "authorization"
+  }
+}

@@ -1,0 +1,73 @@
+# ===========================================================================
+# REST API Endpoints (JSON Responses)
+# ===========================================================================
+
+route "api.auth.register" {
+  method POST
+  path "/api/v1/auth/register"
+  intent "auth.register"
+  session "sessions"
+  status 201
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "api.auth.login" {
+  method POST
+  path "/api/v1/auth/login"
+  intent "auth.login"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "api.auth.logout" {
+  method POST
+  path "/api/v1/auth/logout"
+  intent "auth.logout"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+}
+
+route "api.auth.forgot_password" {
+  method POST
+  path "/api/v1/auth/forgot-password"
+  intent "auth.forgot_password"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "api.auth.reset_password" {
+  method POST
+  path "/api/v1/auth/reset-password"
+  intent "auth.reset_password"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "api.me" {
+  method GET
+  path "/api/v1/me"
+  intent "dashboard.profile"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    roles ["user"]
+    authorizer "authorization"
+  }
+}
+
+route "api.admin.users" {
+  method GET
+  path "/api/v1/admin/users"
+  intent "dashboard.admin"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    roles ["admin", "super_admin"]
+    authorizer "authorization"
+  }
+}

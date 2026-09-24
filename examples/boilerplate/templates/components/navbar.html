@@ -1,0 +1,28 @@
+<header class="navbar">
+  <div class="nav-container">
+    <a href="/dashboard" class="brand">
+      <span class="brand-badge">⚡ REF</span>
+      <span>Auth Boilerplate</span>
+      <span class="brand-tag">Argon2id + RBAC</span>
+    </a>
+
+    <nav class="nav-links">
+      @if(user) {
+        <a href="/dashboard" class="nav-item">Dashboard</a>
+        @if(isAdmin) {
+          <a href="/dashboard/admin" class="nav-item" style="color: #C084FC;">Admin Portal</a>
+        }
+        @if(isManager) {
+          <a href="/dashboard/manager" class="nav-item" style="color: #60A5FA;">Operations</a>
+        }
+        <a href="/profile" class="nav-item">Profile</a>
+        <form method="POST" action="/logout" style="display: inline; margin-left: 0.5rem;">
+          <button type="submit" class="btn btn-secondary btn-sm">Sign Out</button>
+        </form>
+      } @else {
+        <a href="/login" class="nav-item">Sign In</a>
+        <a href="/register" class="btn btn-primary btn-sm">Register</a>
+      }
+    </nav>
+  </div>
+</header>

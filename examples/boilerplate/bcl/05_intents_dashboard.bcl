@@ -1,0 +1,218 @@
+# ===========================================================================
+# Dashboard & Governance Intents
+# ===========================================================================
+
+intent "dashboard.index" {
+  description "Fetch dashboard overview for authenticated user"
+  response "response"
+
+  node "user-id" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "load-profile" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [profile_rows]
+    config {
+      statement "SELECT id, email, name, roles, status, created_at FROM users WHERE id = $1 LIMIT 1"
+      args [user_id]
+    }
+  }
+
+  node "profile" {
+    uses "data.first"
+    requires [profile_rows]
+    provides [user]
+    config { source_fact "profile_rows" }
+  }
+
+  node "user-count" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user]
+    provides [count_rows]
+    config {
+      statement "SELECT COUNT(*) as count FROM users"
+    }
+  }
+
+  node "payload" {
+    uses "collect"
+    requires [user, count_rows]
+    provides [dashboard_data]
+  }
+
+  node "response" {
+    uses "collect"
+    requires [dashboard_data]
+    provides [response]
+  }
+}
+
+intent "dashboard.admin" {
+  description "Fetch user management table and system roles for admin portal"
+  response "response"
+
+  node "user-id" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "load-admin" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [admin_rows]
+    config {
+      statement "SELECT id, email, name, roles FROM users WHERE id = $1 LIMIT 1"
+      args [user_id]
+    }
+  }
+
+  node "admin-user" {
+    uses "data.first"
+    requires [admin_rows]
+    provides [user]
+    config { source_fact "admin_rows" }
+  }
+
+  node "load-all-users" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user]
+    provides [users]
+    config {
+      statement "SELECT id, email, name, roles, status, created_at FROM users ORDER BY created_at DESC LIMIT 50"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [user, users]
+    provides [response]
+  }
+}
+
+intent "dashboard.admin_update_role" {
+  description "Update a user's role from admin portal"
+  response "response"
+
+  node "user-id" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [admin_id]
+  }
+
+  node "validate" {
+    uses "validate.required"
+    requires [input]
+    provides [validated]
+    config { fields [input.user_id, input.role] }
+  }
+
+  node "update-role" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [admin_id, input, validated]
+    provides [role_updated]
+    config {
+      statement "UPDATE users SET roles = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"
+      args [input.role, input.user_id]
+      require_affected true
+      not_found_message "user not found"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [role_updated]
+    provides [response]
+  }
+}
+
+intent "dashboard.manager" {
+  description "Fetch operational reports for manager view"
+  response "response"
+
+  node "user-id" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "load-user" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [user_rows]
+    config {
+      statement "SELECT id, email, name, roles FROM users WHERE id = $1 LIMIT 1"
+      args [user_id]
+    }
+  }
+
+  node "user" {
+    uses "data.first"
+    requires [user_rows]
+    provides [user]
+    config { source_fact "user_rows" }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [user]
+    provides [response]
+  }
+}
+
+intent "dashboard.profile" {
+  description "Fetch user profile information"
+  response "response"
+
+  node "user-id" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "load-profile" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [profile_rows]
+    config {
+      statement "SELECT id, email, name, roles, status, created_at FROM users WHERE id = $1 LIMIT 1"
+      args [user_id]
+    }
+  }
+
+  node "profile" {
+    uses "data.first"
+    requires [profile_rows]
+    provides [user]
+    config { source_fact "profile_rows" }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [user]
+    provides [response]
+  }
+}

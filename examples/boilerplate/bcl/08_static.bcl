@@ -1,0 +1,12 @@
+# ===========================================================================
+# Static Assets Configuration
+# Declarative static asset serving via BCL
+# ===========================================================================
+
+static "assets" {
+  prefix "/static"
+  root "static"
+  compress true
+  max_age 24h
+  cache_control "public, max-age=86400"
+}

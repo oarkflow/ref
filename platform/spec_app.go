@@ -27,6 +27,7 @@ type Document struct {
 	Processes []ProcessSpec `bcl:"process,block"`
 
 	Routes    []RouteSpec    `bcl:"route,block"`
+	Static    []StaticSpec   `bcl:"static,block"`
 	Workers   []WorkerSpec   `bcl:"worker,block"`
 	Schedules []ScheduleSpec `bcl:"schedule,block"`
 	Triggers  []TriggerSpec  `bcl:"trigger,block"`
@@ -235,4 +236,16 @@ type TriggerSpec struct {
 	// "order.id", so the event reaches the one run waiting for it.
 	CorrelationPath string `bcl:"correlation_path"`
 	Disabled        bool   `bcl:"disabled"`
+}
+
+// StaticSpec configures static file directory serving over HTTP.
+type StaticSpec struct {
+	Name         string   `bcl:",id"`
+	Prefix       string   `bcl:"prefix"`
+	Root         string   `bcl:"root"`
+	Browse       bool     `bcl:"browse"`
+	Compress     bool     `bcl:"compress"`
+	MaxAge       Duration `bcl:"max_age"`
+	CacheControl string   `bcl:"cache_control"`
+	Index        string   `bcl:"index"`
 }

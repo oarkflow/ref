@@ -1,0 +1,2 @@
+name "ref-auth-boilerplate"
+environment env("APP_ENV", "development")

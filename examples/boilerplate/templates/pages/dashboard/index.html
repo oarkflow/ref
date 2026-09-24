@@ -1,0 +1,103 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div style="margin-bottom: 2rem;">
+    <h1 style="font-size: 1.85rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 0.5rem;">
+      Hello, ${user.Name} 👋
+    </h1>
+    <p style="color: var(--text-muted); font-size: 0.95rem;">
+      Welcome to your secure identity &amp; RBAC governance console.
+    </p>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin-bottom: 2rem;">
+    <!-- Identity Card -->
+    <div class="glass-card">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.25rem;">
+        <div>
+          <span style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.05em;">Security Identity</span>
+          <h3 style="font-size: 1.2rem; font-weight: 700; margin-top: 0.2rem;">${user.Name}</h3>
+        </div>
+        <span class="badge badge-user">Active</span>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 0.75rem; font-size: 0.88rem;">
+        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.5rem;">
+          <span style="color: var(--text-muted);">Email</span>
+          <span class="font-mono">${user.Email}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.5rem;">
+          <span style="color: var(--text-muted);">User ID</span>
+          <span class="font-mono" style="color: #A5B4FC;">${user.ID}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.5rem;">
+          <span style="color: var(--text-muted);">Password Algorithm</span>
+          <span class="badge" style="background: rgba(99, 102, 241, 0.2); color: #C7D2FE;">Argon2id (RFC 9106)</span>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span style="color: var(--text-muted);">Assigned Roles</span>
+          <div>
+            @for(r in user.Roles) {
+              <span class="badge badge-${r}">${r}</span>
+            }
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quick Navigation Card -->
+    <div class="glass-card">
+      <span style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.05em;">Governance Shortcuts</span>
+      <h3 style="font-size: 1.2rem; font-weight: 700; margin-top: 0.2rem; margin-bottom: 1.25rem;">Role-Protected Hubs</h3>
+
+      <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+        @if(isAdmin) {
+          <a href="/dashboard/admin" class="btn btn-secondary" style="justify-content: flex-start; border-color: rgba(139, 92, 246, 0.4);">
+            <span style="font-size: 1.1rem;">👑</span>
+            <div style="text-align: left;">
+              <div style="font-size: 0.85rem; font-weight: 600; color: #C084FC;">Admin Portal (Full Access)</div>
+              <div style="font-size: 0.75rem; color: var(--text-dim);">Manage users, inspect security audit, reassign roles</div>
+            </div>
+          </a>
+        }
+
+        @if(isManager) {
+          <a href="/dashboard/manager" class="btn btn-secondary" style="justify-content: flex-start; border-color: rgba(59, 130, 246, 0.4);">
+            <span style="font-size: 1.1rem;">📊</span>
+            <div style="text-align: left;">
+              <div style="font-size: 0.85rem; font-weight: 600; color: #60A5FA;">Operations &amp; Reports</div>
+              <div style="font-size: 0.75rem; color: var(--text-dim);">Operational metrics and audit summaries</div>
+            </div>
+          </a>
+        }
+
+        <a href="/profile" class="btn btn-secondary" style="justify-content: flex-start;">
+          <span style="font-size: 1.1rem;">⚙️</span>
+          <div style="text-align: left;">
+            <div style="font-size: 0.85rem; font-weight: 600;">Profile &amp; Credentials</div>
+            <div style="font-size: 0.75rem; color: var(--text-dim);">Update password with Argon2id hasher</div>
+          </div>
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- RBAC Effective Permissions Breakdown -->
+  <div class="glass-card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+      <div>
+        <h3 style="font-size: 1.1rem; font-weight: 700;">Effective RBAC Permissions</h3>
+        <p style="font-size: 0.82rem; color: var(--text-muted);">
+          Computed in real time by <code>github.com/oarkflow/authz</code> across all assigned and inherited roles.
+        </p>
+      </div>
+      <span class="badge" style="background: rgba(255, 255, 255, 0.08);">${len(permissions)} Grants</span>
+    </div>
+
+    <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+      @for(p in permissions) {
+        <span class="badge-perm">${p}</span>
+      }
+    </div>
+  </div>
+}

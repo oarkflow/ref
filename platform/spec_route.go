@@ -36,6 +36,9 @@ type RouteSpec struct {
 	Status       int               `bcl:"status"`
 	Headers      map[string]string `bcl:"headers"`
 	CacheControl string            `bcl:"cache_control"`
+	Template     string            `bcl:"template"`
+	Layout       string            `bcl:"layout"`
+	Static       string            `bcl:"static"`
 
 	Description string              `bcl:"description"`
 	Tags        []string            `bcl:"tags"`

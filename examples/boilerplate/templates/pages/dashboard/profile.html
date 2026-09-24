@@ -1,0 +1,67 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div style="margin-bottom: 2rem;">
+    <h1 style="font-size: 1.85rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 0.5rem;">
+      Profile &amp; Security Settings
+    </h1>
+    <p style="color: var(--text-muted); font-size: 0.95rem;">
+      Update your credentials and review active security policies.
+    </p>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem;">
+    <!-- Profile Info -->
+    <div class="glass-card">
+      <h3 style="font-size: 1.2rem; font-weight: 700; margin-bottom: 1.25rem;">Account Information</h3>
+      
+      <div class="form-group">
+        <label class="form-label">Full Name</label>
+        <input type="text" class="form-input" value="${user.Name}" disabled style="opacity: 0.8;">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Email Address</label>
+        <input type="email" class="form-input" value="${user.Email}" disabled style="opacity: 0.8;">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Active Roles</label>
+        <div>
+          @for(r in user.Roles) {
+            <span class="badge badge-${r}">${r}</span>
+          }
+        </div>
+      </div>
+    </div>
+
+    <!-- Change Password Form -->
+    <div class="glass-card">
+      <h3 style="font-size: 1.2rem; font-weight: 700; margin-bottom: 0.5rem;">Update Password</h3>
+      <p style="font-size: 0.82rem; color: var(--text-dim); margin-bottom: 1.25rem;">
+        Hashed with Argon2id using OWASP memory (64 MiB) &amp; iteration cost settings.
+      </p>
+
+      <form method="POST" action="/profile/password">
+        <div class="form-group">
+          <label class="form-label" for="current_password">Current Password</label>
+          <input type="password" id="current_password" name="current_password" class="form-input" placeholder="••••••••••••" required>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="new_password">New Password</label>
+          <input type="password" id="new_password" name="new_password" class="form-input" placeholder="Min 8 chars, letters and digits" required>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="confirm_password">Confirm New Password</label>
+          <input type="password" id="confirm_password" name="confirm_password" class="form-input" placeholder="Repeat new password" required>
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-block">
+          Update Password (Argon2id)
+        </button>
+      </form>
+    </div>
+  </div>
+}
