@@ -32,6 +32,7 @@ func registerBuiltins(r *Registry) {
 	registerObservabilityActions(r)
 	registerFlowActions(r)
 	registerProcessActions(r)
+	registerRulesActions(r)
 }
 
 // registerCoreActions installs the handful of primitives every application uses

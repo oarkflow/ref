@@ -1,6 +1,26 @@
 name "todo-no-code"
 environment env("APP_ENV", "development")
 
+# ---- Roles ---------------------------------------------------------------
+
+role "admin" {
+  description "Full access to all resources"
+  permissions ["todo:*"]
+}
+
+role "user" {
+  description "Standard user - owns their todos"
+  permissions ["todo:read", "todo:create", "todo:update", "todo:delete"]
+}
+
+role "viewer" {
+  description "Read-only access"
+  permissions ["todo:read"]
+  inherits ["user"]
+}
+
+# ---- Resources ------------------------------------------------------------
+
 resource "database" {
   kind "database.sql"
   config {
@@ -12,7 +32,7 @@ resource "database" {
     connection_max_idle_time 5m
     ping true
     migrations [
-      "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+      "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT NOT NULL, password_hash TEXT NOT NULL, roles TEXT NOT NULL DEFAULT 'user', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
       "CREATE TABLE IF NOT EXISTS password_resets (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
       "CREATE INDEX IF NOT EXISTS password_resets_user_idx ON password_resets(user_id)",
       "CREATE TABLE IF NOT EXISTS todos (id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL CHECK (char_length(title) BETWEEN 1 AND 200), description TEXT NOT NULL DEFAULT '', completed BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
@@ -37,6 +57,12 @@ resource "sessions" {
   }
 }
 
+resource "session_auth" {
+  kind "auth.session"
+  description "Resolves the caller from the signed session cookie"
+  config { session "sessions" roles_claim "roles" }
+}
+
 resource "jobs" {
   kind "queue.file"
   config { dir env("TODO_QUEUE_DIR", ".data/todo/queue") workers 2 max_attempts 5 poll_interval 100ms backoff 1s }
@@ -48,15 +74,75 @@ resource "notifications" {
     timeout 10s
     max_response_bytes 1048576
     allowed_hosts env("TODO_NOTIFICATION_HOST", "127.0.0.1")
-    # The SSRF guard refuses loopback and RFC1918 destinations unless this says
-    # otherwise. Set it true only while the receiver is a local mock; in a real
-    # deployment the notification service is not on this machine.
     allow_private_networks env("TODO_NOTIFICATION_ALLOW_PRIVATE", "false")
     headers { Authorization env("TODO_NOTIFICATION_AUTH", "") }
   }
 }
 
-# Authentication -------------------------------------------------------
+# ---- Authorization Engine (oarkflow/authz) ---------------------------------
+
+resource "authorization" {
+  kind "authz.rbac"
+  description "Role-based authorization with inheritance"
+  config {
+    superuser_roles ["admin"]
+    default_roles ["user"]
+  }
+}
+
+# ---- Rules Engine (oarkflow/rules) ----------------------------------------
+
+resource "policy_engine" {
+  kind "rules.engine"
+  config {
+    environment "development"
+    default_tenant "default"
+    strict_validation true
+    request_timeout 5s
+  }
+}
+
+# ---- Publish business rules at startup ------------------------------------
+
+intent "rules.publish_todo_policy" {
+  response "response"
+  timeout 10s
+  node "publish" {
+    uses "rules.publish"
+    resource "policy_engine"
+    kind effect
+    requires [input]
+    provides [published]
+    config {
+      name "todo-policy"
+      version "1"
+      source <<BCL
+        decision_table "todo.creation_policy" {
+          default allow
+          hit_policy first
+          row "title-empty" {
+            priority 100
+            when { input.title == nil }
+            then { outcome { decision deny reason "title is required" } }
+          }
+          row "title-too-short" {
+            priority 90
+            when { all { input.title != nil len(input.title) < 3 } }
+            then { outcome { decision deny reason "title must be at least 3 characters" } }
+          }
+          row "title-too-long" {
+            priority 80
+            when { all { input.title != nil len(input.title) > 200 } }
+            then { outcome { decision deny reason "title must not exceed 200 characters" } }
+          }
+        }
+BCL
+    }
+  }
+  node "response" { uses "collect" requires [published] provides [response] }
+}
+
+# ---- Authentication -------------------------------------------------------
 
 intent "auth.register" {
   description "Register a user and start a signed session"
@@ -73,7 +159,7 @@ intent "auth.register" {
     requires [input, password_hash]
     provides [users]
     config {
-      statement "INSERT INTO users (id,email,name,password_hash) VALUES (LOWER($1),LOWER($1),$2,$3) RETURNING id,email,name,password_hash,created_at"
+      statement "INSERT INTO users (id,email,name,password_hash,roles) VALUES (LOWER($1),LOWER($1),$2,$3,'user') RETURNING id,email,name,password_hash,roles,created_at"
       args [input.email, input.name, password_hash]
     }
   }
@@ -84,7 +170,7 @@ intent "auth.register" {
     kind pure
     requires [input, users]
     provides [principal]
-    config { user_fact "users" password_fact "input.password" }
+    config { user_fact "users" password_fact "input.password" roles_field "roles" }
   }
   node "response" {
     family response
@@ -102,11 +188,11 @@ intent "auth.login" {
   node "validate" { uses "validate.required" requires [input] provides [validated] config { fields [input.email, input.password] } }
   node "find-user" {
     uses "database.query" resource "database" kind read speculation pre_auth_safe requires [input, validated] provides [users]
-    config { statement "SELECT id,email,name,password_hash,created_at FROM users WHERE email=LOWER($1) LIMIT 1" args [input.email] }
+    config { statement "SELECT id,email,name,password_hash,roles,created_at FROM users WHERE email=LOWER($1) LIMIT 1" args [input.email] }
   }
   node "login" {
     uses "auth.login" resource "sessions" kind pure requires [input, users] provides [principal]
-    config { user_fact "users" password_fact "input.password" }
+    config { user_fact "users" password_fact "input.password" roles_field "roles" }
   }
   node "response" { uses "collect" requires [principal] provides [response] }
 }
@@ -188,7 +274,7 @@ intent "auth.reset_password" {
   node "response" { uses "collect" requires [password_reset] provides [response] }
 }
 
-# Password-reset notification worker ----------------------------------
+# ---- Password-reset notification worker -----------------------------------
 
 intent "notification.password_reset" {
   response "response"
@@ -208,13 +294,14 @@ intent "notification.password_reset" {
 
 worker "password-reset-delivery" { queue "jobs" job_type "password-reset.delivery" intent "notification.password_reset" }
 
-# TODO CRUD with cache-aside reads and write invalidation --------------
+# ---- TODO CRUD with RBAC + Rules + Cache-aside ----------------------------
 
 intent "todos.list" {
   response "response"
   timeout 3s
   max_db_queries 1
   node "user" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+
   node "todos" {
     uses "database.cached_query" resource "database" kind read requires [user_id] provides [todos]
     config {
@@ -231,6 +318,7 @@ intent "todos.get" {
   timeout 3s
   max_db_queries 1
   node "user" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+
   node "todo-id" { uses "request.param" provides [todo_id] config { name "id" } }
   node "cache-key" { uses "expression" requires [user_id, todo_id] provides [todo_cache_key] config { expression "user_id + ':' + todo_id" } }
   node "rows" {
@@ -250,7 +338,18 @@ intent "todos.create" {
   timeout 3s
   max_db_queries 1
   node "user" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+
   node "validate" { uses "validate.required" requires [input] provides [validated] config { fields [input.title] } }
+  node "policy-check" {
+    uses "rules.evaluate"
+    resource "policy_engine"
+    kind decision
+    requires [input]
+    provides [policy_decision]
+    config {
+      decision "todo.creation_policy"
+    }
+  }
   node "insert" {
     uses "database.query" resource "database" kind effect requires [user_id, input, validated] provides [todo_rows]
     config {
@@ -268,6 +367,7 @@ intent "todos.update" {
   timeout 3s
   max_db_queries 1
   node "user" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+
   node "todo-id" { uses "request.param" provides [todo_id] config { name "id" } }
   node "validate" { uses "validate.required" requires [input] provides [validated] config { fields [input.title] } }
   node "cache-key" { uses "expression" requires [user_id, todo_id] provides [todo_cache_key] config { expression "user_id + ':' + todo_id" } }
@@ -289,6 +389,7 @@ intent "todos.delete" {
   timeout 3s
   max_db_queries 1
   node "user" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+
   node "todo-id" { uses "request.param" provides [todo_id] config { name "id" } }
   node "cache-key" { uses "expression" requires [user_id, todo_id] provides [todo_cache_key] config { expression "user_id + ':' + todo_id" } }
   node "delete" {
@@ -300,16 +401,41 @@ intent "todos.delete" {
   node "response" { uses "collect" requires [deleted, list_invalidated, item_invalidated] provides [response] }
 }
 
-# HTTP API --------------------------------------------------------------
+# ---- HTTP API -------------------------------------------------------------
 
 route "auth.register" { method POST path "/auth/register" intent "auth.register" session "sessions" status 201 cache_control "no-store" }
 route "auth.login" { method POST path "/auth/login" intent "auth.login" session "sessions" cache_control "no-store" }
-route "auth.logout" { method POST path "/auth/logout" intent "auth.logout" session "sessions" cache_control "no-store" }
-route "auth.change-password" { method POST path "/auth/change-password" intent "auth.change_password" session "sessions" cache_control "no-store" }
+route "auth.logout" { method POST path "/auth/logout" intent "auth.logout" session "sessions" auth "session_auth" cache_control "no-store" }
+route "auth.change-password" { method POST path "/auth/change-password" intent "auth.change_password" session "sessions" auth "session_auth" cache_control "no-store" }
 route "auth.forgot-password" { method POST path "/auth/forgot-password" intent "auth.forgot_password" cache_control "no-store" }
 route "auth.reset-password" { method POST path "/auth/reset-password" intent "auth.reset_password" cache_control "no-store" }
-route "todos.list" { method GET path "/todos" intent "todos.list" session "sessions" cache_control "private, no-store" }
-route "todos.get" { method GET path "/todos/:id" intent "todos.get" session "sessions" cache_control "private, no-store" }
-route "todos.create" { method POST path "/todos" intent "todos.create" session "sessions" status 201 cache_control "no-store" }
-route "todos.update" { method PUT path "/todos/:id" intent "todos.update" session "sessions" cache_control "no-store" }
-route "todos.delete" { method DELETE path "/todos/:id" intent "todos.delete" session "sessions" cache_control "no-store" }
+
+route "todos.list" {
+  method GET path "/todos" intent "todos.list" session "sessions" auth "session_auth"
+  cache_control "private, no-store"
+  authz { roles ["user"] authorizer "authorization" }
+}
+
+route "todos.get" {
+  method GET path "/todos/:id" intent "todos.get" session "sessions" auth "session_auth"
+  cache_control "private, no-store"
+  authz { roles ["user"] authorizer "authorization" }
+}
+
+route "todos.create" {
+  method POST path "/todos" intent "todos.create" session "sessions" auth "session_auth"
+  status 201 cache_control "no-store"
+  authz { roles ["user"] authorizer "authorization" }
+}
+
+route "todos.update" {
+  method PUT path "/todos/:id" intent "todos.update" session "sessions" auth "session_auth"
+  cache_control "no-store"
+  authz { roles ["user"] authorizer "authorization" }
+}
+
+route "todos.delete" {
+  method DELETE path "/todos/:id" intent "todos.delete" session "sessions" auth "session_auth"
+  cache_control "no-store"
+  authz { roles ["user"] authorizer "authorization" }
+}

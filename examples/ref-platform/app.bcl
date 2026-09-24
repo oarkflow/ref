@@ -143,8 +143,26 @@ resource "identity" {
 
 resource "rbac" {
   kind "authz.rbac"
-  description "Role-based permissions, resolved from the role blocks below"
-  config { superuser_roles [admin] }
+  description "Role-based authorization with inheritance"
+  config {
+    superuser_roles ["admin"]
+    default_roles ["customer"]
+  }
+}
+
+####################################################################
+# Rules Engine — business-logic policy for order fraud/pricing
+####################################################################
+
+resource "policy_engine" {
+  kind "rules.engine"
+  description "Business rules for order fraud detection and pricing validation"
+  config {
+    environment "development"
+    default_tenant "default"
+    strict_validation true
+    request_timeout 5s
+  }
 }
 
 resource "payments" {
@@ -231,6 +249,48 @@ role "customer" { permissions [order:create, order:read:own] }
 role "agent"    { inherits [customer] permissions [order:read, order:list] }
 role "approver" { inherits [agent]    permissions [order:approve] }
 role "admin"    { inherits [approver] permissions [order:cancel, catalogue:write, process:read] }
+
+####################################################################
+# Publish business rules at startup
+####################################################################
+
+intent "rules.publish_order_policy" {
+  response "response"
+  timeout 10s
+  node "publish" {
+    uses "rules.publish"
+    resource "policy_engine"
+    kind effect
+    requires [input]
+    provides [published]
+    config {
+      name "order-policy"
+      version "1"
+      source <<BCL
+        decision_table "order.placement_policy" {
+          default allow
+          hit_policy first
+          row "items-empty" {
+            priority 100
+            when { input.items == nil }
+            then { outcome { decision deny reason "order must contain at least one item" } }
+          }
+          row "too-many-items" {
+            priority 90
+            when { all { input.items != nil len(input.items) > 50 } }
+            then { outcome { decision deny reason "order cannot exceed 50 line items" } }
+          }
+          row "invalid-currency" {
+            priority 80
+            when { all { input.currency != nil input.currency != "GBP" input.currency != "EUR" input.currency != "USD" } }
+            then { outcome { decision deny reason "unsupported currency" } }
+          }
+        }
+BCL
+    }
+  }
+  node "response" { uses "collect" requires [published] provides [response] }
+}
 
 ####################################################################
 # Identity
@@ -409,7 +469,7 @@ intent "catalogue.upsert" {
   description "Create or update a product and invalidate the catalogue cache"
   response "response"
   timeout 5s
-  authz { permissions [catalogue:write] }
+  authz { permissions [catalogue:write] authorizer "rbac" }
 
   node "product" {
     family database
@@ -450,9 +510,21 @@ intent "order.place" {
   input_schema "OrderRequest"
   timeout 10s
   max_db_queries 3
-  authz { permissions [order:create] }
+  authz { permissions [order:create] authorizer "rbac" }
 
   node "user" { family auth uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+
+  node "policy-check" {
+    uses "rules.evaluate"
+    resource "policy_engine"
+    kind decision
+    requires [input]
+    provides [policy_decision]
+    config {
+      decision "order.placement_policy"
+      definition "order-policy"
+    }
+  }
 
   node "skus" {
     family transform
@@ -876,7 +948,7 @@ intent "task.list" {
 intent "task.decide" {
   description "Record an approval decision and let the run continue"
   response "response"
-  authz { permissions [order:approve] }
+  authz { permissions [order:approve] authorizer "rbac" }
 
   node "user"    { family auth uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
   node "task_id" { family transform uses "request.param" provides [task_id] config { name "id" } }
@@ -898,7 +970,7 @@ intent "task.decide" {
 intent "order.runs" {
   description "The fulfilment runs an operator can see"
   response "response"
-  authz { permissions [process:read] }
+  authz { permissions [process:read] authorizer "rbac" }
   node "runs" {
     family process
     uses "process.list"
@@ -1199,7 +1271,7 @@ route "catalogue.upsert" {
   intent "catalogue.upsert"
   auth "identity"
   session "sessions"
-  authz { permissions [catalogue:write] }
+  authz { permissions [catalogue:write] authorizer "rbac" }
   cache_control "no-store"
   route_audit { action "catalogue.upsert" include_request true }
 }
@@ -1214,7 +1286,7 @@ route "order.place" {
   cache_control "no-store"
   max_body_bytes 65536
   timeout 15s
-  authz { permissions [order:create] }
+  authz { permissions [order:create] authorizer "rbac" }
   rate_limit { limiter "limits" limit 30 window 1m }
   route_audit { action "order.place" include_request true redact [items] }
 }
@@ -1252,7 +1324,7 @@ route "tasks.decide" {
   intent "task.decide"
   auth "identity"
   session "sessions"
-  authz { permissions [order:approve] }
+  authz { permissions [order:approve] authorizer "rbac" }
   cache_control "no-store"
   route_audit { action "order.approval" include_request true }
 }
@@ -1263,6 +1335,6 @@ route "ops.runs" {
   intent "order.runs"
   auth "identity"
   session "sessions"
-  authz { permissions [process:read] }
+  authz { permissions [process:read] authorizer "rbac" }
   cache_control "no-store"
 }

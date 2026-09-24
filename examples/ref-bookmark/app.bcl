@@ -12,6 +12,8 @@
 #   6. Two-phase effects   — DB write + analytics webhook in one transaction
 #   7. Process engine      — durable link-health-check saga
 #   8. Observer bridge     — delivery errors are observable
+#   9. Enterprise authz    — oarkflow/authz engine with ABAC policies
+#  10. Business rules      — oarkflow/rules engine for URL validation
 #
 # The Go host (main.go) is intentionally empty: load, mount, serve.
 # There is no handler, no SQL, no middleware — only configuration.
@@ -141,6 +143,85 @@ resource "runs" {
 }
 
 ####################################################################
+# Authorization Engine (oarkflow/authz)
+#
+# Enterprise-grade RBAC + ABAC with deny-dominant evaluation.
+# Policies are priority-ordered; a single deny blocks all writes.
+####################################################################
+
+resource "authorization" {
+  kind "authz.rbac"
+  description "Role-based authorization with inheritance"
+  config {
+    superuser_roles ["admin"]
+    default_roles ["user"]
+  }
+}
+
+resource "policy_engine" {
+  kind "rules.engine"
+  description "Business rules for bookmark validation and quality enforcement"
+  config {
+    environment "development"
+    default_tenant "default"
+    strict_validation true
+    request_timeout 5s
+  }
+}
+
+####################################################################
+# Publish business rules at startup
+####################################################################
+
+intent "rules.publish_bookmark_policy" {
+  response "response"
+  timeout 10s
+  node "publish" {
+    uses "rules.publish"
+    resource "policy_engine"
+    kind effect
+    requires [input]
+    provides [published]
+    config {
+      name "bookmark-policy"
+      version "1"
+      source <<BCL
+        decision_table "bookmark.creation_policy" {
+          default allow
+          hit_policy first
+          row "url-empty" {
+            priority 100
+            when { input.url == nil }
+            then { outcome { decision deny reason "url is required" } }
+          }
+          row "title-empty" {
+            priority 95
+            when { input.title == nil }
+            then { outcome { decision deny reason "title is required" } }
+          }
+          row "url-too-long" {
+            priority 80
+            when { all { input.url != nil len(input.url) > 2048 } }
+            then { outcome { decision deny reason "url must not exceed 2048 characters" } }
+          }
+          row "title-too-long" {
+            priority 70
+            when { all { input.title != nil len(input.title) > 200 } }
+            then { outcome { decision deny reason "title must not exceed 200 characters" } }
+          }
+          row "too-many-tags" {
+            priority 60
+            when { all { input.tags != nil len(input.tags) > 10 } }
+            then { outcome { decision deny reason "a bookmark may have at most 10 tags" } }
+          }
+        }
+BCL
+    }
+  }
+  node "response" { uses "collect" requires [published] provides [response] }
+}
+
+####################################################################
 # Shapes — validated schemas enforced identically on every route,
 # every intent, and every human-task form.
 ####################################################################
@@ -211,7 +292,7 @@ intent "auth.register" {
     requires [input, password_hash]
     provides [user_row]
     config {
-      statement "INSERT INTO users (id,email,name,password_hash) VALUES (LOWER($1),LOWER($1),$2,$3) RETURNING id,email,name,roles"
+      statement "INSERT INTO users (id,email,name,password_hash,roles) VALUES (LOWER($1),LOWER($1),$2,$3,'user') RETURNING id,email,name,roles"
       args [input.email, input.name, password_hash]
     }
   }
@@ -282,6 +363,8 @@ intent "auth.login" {
 #   bookmark.create:
 #     - PreAuthSafe: input decode (no auth needed to validate shape)
 #     - Auth gate:   requires authenticated principal
+#     - Authz gate:  enterprise RBAC + ABAC ownership check
+#     - Rules gate:  business-logic URL/title validation
 #     - Rate limit:  30 creates per minute per user
 #     - Circuit breaker: guards the URL metadata fetch
 #     - Two-phase effects: DB insert + analytics webhook in one tx
@@ -289,6 +372,7 @@ intent "auth.login" {
 #   bookmark.list:
 #     - Cache-aside: bookmark queries cached in memory
 #     - PostPolicySafe: requires policy pass before reading
+#     - Authz gate:  permission check via authz engine
 #
 #   bookmark.resolve:
 #     - Pure redirect: atomic click counter increment
@@ -310,6 +394,32 @@ intent "bookmark.create" {
     resource "identity"
     kind decision
     provides [principal]
+  }
+
+  # ---- Authorization gate (enterprise RBAC + ABAC) ----
+  node "authorize" {
+    uses "decision.authz"
+    resource "authorization"
+    kind decision
+    requires [principal]
+    provides [auth_decision]
+    config {
+      permissions ["bookmark:create"]
+      message "you do not have permission to create bookmarks"
+    }
+  }
+
+  # ---- Business rules gate (URL/title validation) ----
+  node "policy-check" {
+    uses "rules.evaluate"
+    resource "policy_engine"
+    kind decision
+    requires [input]
+    provides [policy_decision]
+    config {
+      decision "bookmark.creation_policy"
+      definition "bookmark-policy"
+    }
   }
 
   # ---- Write + outbox (two-phase) ----
@@ -364,6 +474,19 @@ intent "bookmark.list" {
     provides [principal]
   }
 
+  # ---- Authorization gate ----
+  node "authorize" {
+    uses "decision.authz"
+    resource "authorization"
+    kind decision
+    requires [principal]
+    provides [auth_decision]
+    config {
+      permissions ["bookmark:read:own"]
+      message "you do not have permission to list bookmarks"
+    }
+  }
+
   node "query" {
     family database
     uses "database.cached_query"
@@ -402,6 +525,18 @@ intent "bookmark.get" {
     resource "identity"
     kind decision
     provides [principal]
+  }
+
+  node "authorize" {
+    uses "decision.authz"
+    resource "authorization"
+    kind decision
+    requires [principal]
+    provides [auth_decision]
+    config {
+      permissions ["bookmark:read:own"]
+      message "you do not have permission to view this bookmark"
+    }
   }
 
   node "path-id" {
@@ -446,6 +581,18 @@ intent "bookmark.update" {
     resource "identity"
     kind decision
     provides [principal]
+  }
+
+  node "authorize" {
+    uses "decision.authz"
+    resource "authorization"
+    kind decision
+    requires [principal]
+    provides [auth_decision]
+    config {
+      permissions ["bookmark:update:own"]
+      message "you do not have permission to update this bookmark"
+    }
   }
 
   node "path-id" {
@@ -498,6 +645,18 @@ intent "bookmark.delete" {
     resource "identity"
     kind decision
     provides [principal]
+  }
+
+  node "authorize" {
+    uses "decision.authz"
+    resource "authorization"
+    kind decision
+    requires [principal]
+    provides [auth_decision]
+    config {
+      permissions ["bookmark:delete:own"]
+      message "you do not have permission to delete this bookmark"
+    }
   }
 
   node "path-id" {
@@ -599,6 +758,18 @@ intent "bookmark.search" {
     resource "identity"
     kind decision
     provides [principal]
+  }
+
+  node "authorize" {
+    uses "decision.authz"
+    resource "authorization"
+    kind decision
+    requires [principal]
+    provides [auth_decision]
+    config {
+      permissions ["bookmark:read:own"]
+      message "you do not have permission to search bookmarks"
+    }
   }
 
   node "query-text" {
@@ -944,6 +1115,11 @@ route "create_bookmark" {
   timeout 10s
   max_body_bytes 8192
 
+  authz {
+    authorizer "authorization"
+    permissions ["bookmark:create"]
+  }
+
   rate_limit {
     limiter "limits"
     limit 30
@@ -968,6 +1144,11 @@ route "list_bookmarks" {
   auth "identity"
   timeout 5s
 
+  authz {
+    authorizer "authorization"
+    permissions ["bookmark:read:own"]
+  }
+
   cache_control "private, max-age=30"
 
   cors {
@@ -986,6 +1167,11 @@ route "get_bookmark" {
   auth "identity"
   timeout 5s
 
+  authz {
+    authorizer "authorization"
+    permissions ["bookmark:read:own"]
+  }
+
   cache_control "private, max-age=60"
 }
 
@@ -997,6 +1183,11 @@ route "update_bookmark" {
   auth "identity"
   timeout 5s
   max_body_bytes 4096
+
+  authz {
+    authorizer "authorization"
+    permissions ["bookmark:update:own"]
+  }
 }
 
 route "delete_bookmark" {
@@ -1006,6 +1197,11 @@ route "delete_bookmark" {
   mode sync
   auth "identity"
   timeout 5s
+
+  authz {
+    authorizer "authorization"
+    permissions ["bookmark:delete:own"]
+  }
 }
 
 route "resolve_link" {
@@ -1024,6 +1220,11 @@ route "search_bookmarks" {
   mode sync
   auth "identity"
   timeout 5s
+
+  authz {
+    authorizer "authorization"
+    permissions ["bookmark:read:own"]
+  }
 }
 
 route "health" {
