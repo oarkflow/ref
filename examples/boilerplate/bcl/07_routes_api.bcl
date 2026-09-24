@@ -1,5 +1,11 @@
 # ===========================================================================
 # REST API Endpoints (JSON Responses)
+#
+# Production REST APIs declaring:
+# - Parameter extraction & validation schemas
+# - Rate limiting & idempotency
+# - Role-based authorization gates
+# - Structured audit trails
 # ===========================================================================
 
 route "api.auth.register" {
@@ -10,6 +16,15 @@ route "api.auth.register" {
   status 201
   allow_anonymous true
   cache_control "no-store"
+  rate_limit {
+    limiter "limits"
+    limit 10
+    window 1h
+  }
+  route_audit {
+    action "api.auth.register"
+    redact ["password"]
+  }
 }
 
 route "api.auth.login" {
@@ -19,6 +34,15 @@ route "api.auth.login" {
   session "sessions"
   allow_anonymous true
   cache_control "no-store"
+  rate_limit {
+    limiter "limits"
+    limit 20
+    window 15m
+  }
+  route_audit {
+    action "api.auth.login"
+    redact ["password"]
+  }
 }
 
 route "api.auth.logout" {
@@ -36,6 +60,11 @@ route "api.auth.forgot_password" {
   intent "auth.forgot_password"
   allow_anonymous true
   cache_control "no-store"
+  rate_limit {
+    limiter "limits"
+    limit 5
+    window 15m
+  }
 }
 
 route "api.auth.reset_password" {
@@ -44,6 +73,15 @@ route "api.auth.reset_password" {
   intent "auth.reset_password"
   allow_anonymous true
   cache_control "no-store"
+  rate_limit {
+    limiter "limits"
+    limit 5
+    window 15m
+  }
+  route_audit {
+    action "api.auth.reset_password"
+    redact ["new_password"]
+  }
 }
 
 route "api.me" {
@@ -54,7 +92,7 @@ route "api.me" {
   auth "session_auth"
   cache_control "private, no-store"
   authz {
-    roles ["user"]
+    roles ["user", "manager", "admin", "super_admin"]
     authorizer "authorization"
   }
 }
@@ -63,6 +101,22 @@ route "api.admin.users" {
   method GET
   path "/api/v1/admin/users"
   intent "dashboard.admin"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    roles ["admin", "super_admin"]
+    authorizer "authorization"
+  }
+  route_audit {
+    action "api.admin.users.list"
+  }
+}
+
+route "api.admin.audit" {
+  method GET
+  path "/api/v1/admin/audit"
+  intent "dashboard.audit_log"
   session "sessions"
   auth "session_auth"
   cache_control "private, no-store"

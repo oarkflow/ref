@@ -1,22 +1,59 @@
 # ===========================================================================
 # Authentication Intents (Argon2id + Session Management)
+#
+# Every intent is a directed acyclic graph of nodes. The platform compiles
+# each intent into an execution plan where nodes with satisfied dependencies
+# run concurrently. The critical path determines latency — not the sum of
+# every step.
+#
+# Node kinds: pure (no side effects), read (database reads), effect (writes),
+# decision (can deny the request). Speculation levels control which nodes may
+# run before identity is confirmed.
 # ===========================================================================
 
+# --- Registration -----------------------------------------------------------
 intent "auth.register" {
   description "Register a new user account with Argon2id password hashing"
   response "response"
   timeout 5s
 
   node "validate" {
-    uses "validate.required"
+    uses "validate.schema"
     requires [input]
     provides [validated]
-    config { fields [input.email, input.name, input.password] }
+    config {
+      source_fact "input"
+      shape "user"
+    }
+  }
+
+  node "check-duplicate" {
+    uses "database.query"
+    resource "database"
+    kind read
+    speculation pre_auth_safe
+    requires [input, validated]
+    provides [existing_users]
+    config {
+      statement "SELECT id FROM users WHERE email = LOWER($1) LIMIT 1"
+      args [input.email]
+    }
+  }
+
+  node "guard-duplicate" {
+    uses "decision.expression"
+    kind decision
+    requires [existing_users]
+    provides [not_duplicate]
+    config {
+      expression "len(existing_users) == 0"
+      message "An account with this email already exists"
+    }
   }
 
   node "hash-password" {
     uses "auth.password_hash"
-    requires [input, validated]
+    requires [input, not_duplicate]
     provides [password_hash]
     config {
       value_fact "input.password"
@@ -36,8 +73,20 @@ intent "auth.register" {
     requires [input, password_hash]
     provides [users]
     config {
-      statement "INSERT INTO users (id, email, name, password_hash, roles, status) VALUES (LOWER($1), LOWER($1), $2, $3, 'user', 'active') RETURNING id, email, name, password_hash, roles, status, created_at"
+      statement "INSERT INTO users (id, email, name, password_hash, roles, status) VALUES (LOWER($1), LOWER($1), $2, $3, 'user', 'active') RETURNING id, email, name, roles, status, created_at"
       args [input.email, input.name, password_hash]
+    }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [input]
+    provides [audit_logged]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, detail) VALUES ('user.registered', $1, $2)"
+      args [input.email, input.email]
     }
   }
 
@@ -57,21 +106,25 @@ intent "auth.register" {
 
   node "response" {
     uses "collect"
-    requires [principal]
+    requires [principal, audit_logged]
     provides [response]
   }
 }
 
+# --- Login ------------------------------------------------------------------
 intent "auth.login" {
   description "Verify credentials with Argon2id and create session"
   response "response"
   timeout 5s
 
   node "validate" {
-    uses "validate.required"
+    uses "validate.schema"
     requires [input]
     provides [validated]
-    config { fields [input.email, input.password] }
+    config {
+      source_fact "input"
+      shape "login_input"
+    }
   }
 
   node "find-user" {
@@ -97,6 +150,19 @@ intent "auth.login" {
       user_fact "users"
       password_fact "input.password"
       roles_field "roles"
+      disabled_field "status != 'active'"
+    }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [principal]
+    provides [audit_logged]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, detail, ip_address) VALUES ('auth.login', $1, 'Login successful', $2)"
+      args [principal.id, input.ip]
     }
   }
 
@@ -107,6 +173,7 @@ intent "auth.login" {
   }
 }
 
+# --- Logout -----------------------------------------------------------------
 intent "auth.logout" {
   description "Destroy session and clear cookie"
   response "response"
@@ -126,6 +193,18 @@ intent "auth.logout" {
     provides [logged_out]
   }
 
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [user_id, logged_out]
+    provides [audit_logged]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id) VALUES ('auth.logout', $1)"
+      args [user_id]
+    }
+  }
+
   node "response" {
     uses "collect"
     requires [logged_out]
@@ -133,6 +212,7 @@ intent "auth.logout" {
   }
 }
 
+# --- Forgot Password --------------------------------------------------------
 intent "auth.forgot_password" {
   description "Create single-use password reset token"
   response "response"
@@ -171,16 +251,20 @@ intent "auth.forgot_password" {
   }
 }
 
+# --- Reset Password ---------------------------------------------------------
 intent "auth.reset_password" {
   description "Consume reset token and update password with Argon2id"
   response "response"
   timeout 5s
 
   node "validate" {
-    uses "validate.required"
+    uses "validate.schema"
     requires [input]
     provides [validated]
-    config { fields [input.token, input.new_password] }
+    config {
+      source_fact "input"
+      shape "password_reset_input"
+    }
   }
 
   node "token-hash" {
@@ -237,6 +321,7 @@ intent "auth.reset_password" {
   }
 }
 
+# --- Change Password (Authenticated) ----------------------------------------
 intent "auth.change_password" {
   description "Verify current password and update to new Argon2id hash"
   response "response"
@@ -250,10 +335,13 @@ intent "auth.change_password" {
   }
 
   node "validate" {
-    uses "validate.required"
+    uses "validate.schema"
     requires [input]
     provides [validated]
-    config { fields [input.current_password, input.new_password] }
+    config {
+      source_fact "input"
+      shape "change_password_input"
+    }
   }
 
   node "load-user" {
@@ -302,6 +390,18 @@ intent "auth.change_password" {
     config {
       statement "UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"
       args [new_password_hash, user_id]
+    }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [user_id, password_updated]
+    provides [audit_logged]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id) VALUES ('auth.password_changed', $1)"
+      args [user_id]
     }
   }
 

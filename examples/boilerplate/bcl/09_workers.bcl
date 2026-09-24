@@ -1,0 +1,25 @@
+# ===========================================================================
+# Background Queue Workers
+#
+# Workers consume asynchronous tasks from durable queues (queue.sql).
+# They automatically deserialize payloads, execute the designated intent,
+# manage exponential retry backoffs, and route dead-letters.
+# ===========================================================================
+
+worker "audit_indexer" {
+  description "Background worker that indexes audit events for fast querying"
+  queue "jobs"
+  job_type "audit.index"
+  intent "dashboard.audit_log"
+  max_attempts 3
+  timeout 30s
+}
+
+worker "user_notifications" {
+  description "Background notification dispatcher for welcome emails and password alerts"
+  queue "jobs"
+  job_type "user.notify"
+  intent "auth.forgot_password"
+  max_attempts 5
+  timeout 15s
+}

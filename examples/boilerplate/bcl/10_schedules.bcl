@@ -1,0 +1,24 @@
+# ===========================================================================
+# Scheduled Jobs & Cron Triggers
+#
+# Recurring maintenance, cleanup, and synchronization tasks running on
+# cron or interval schedules. Enqueued automatically to the jobs queue.
+# ===========================================================================
+
+schedule "cleanup_expired_resets" {
+  description "Purge expired password reset tokens and stale sessions nightly"
+  cron "0 3 * * *"
+  timezone "UTC"
+  queue "jobs"
+  intent "auth.forgot_password"
+  jitter 5m
+}
+
+schedule "audit_log_rotation" {
+  description "Archive audit log records weekly"
+  cron "0 1 * * 0"
+  timezone "UTC"
+  queue "jobs"
+  intent "dashboard.audit_log"
+  jitter 10m
+}

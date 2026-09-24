@@ -103,13 +103,18 @@ The table below explains how files, packages, and declarative specifications map
 | :--- | :--- | :--- | :--- |
 | **`cmd/server/main.go`** | Entry Point | `platform.LoadDir`, `web.NewSPLRenderer`, `app.Mount` | Pure bootstrapper; zero Go routes; loads BCL files and starts server. |
 | **`bcl/01_app.bcl`** | Application Metadata | `platform.Compile` | Defines app name, version (`v1.0.0`), and environment defaults. |
-| **`bcl/02_roles.bcl`** | RBAC Role Hierarchy | `platform.compileRoles`, `oarkflow/authz` | Defines roles (`super_admin > admin > manager > user > guest`) and permissions. |
-| **`bcl/03_resources.bcl`** | Infrastructure Specs | `platform.Resources` | Declares database (`sqlite`), file session store, session auth, and RBAC authorizer. |
-| **`bcl/04_intents_auth.bcl`** | Auth DAG Workflows | `platform.compileIntents` | Declares `auth.register`, `auth.login`, `auth.logout`, `auth.forgot_password`, etc. |
-| **`bcl/05_intents_dashboard.bcl`** | Dashboard DAGs | `platform.compileIntents` | Declares `dashboard.index`, `dashboard.admin`, `dashboard.admin_update_role`, etc. |
-| **`bcl/06_routes_web.bcl`** | Web Route Handlers | `platform.Mount(fh.App)` | Maps web URLs (`/login`, `/register`, `/dashboard`, etc.) to templates and intents. |
-| **`bcl/07_routes_api.bcl`** | REST API Endpoints | `platform.Mount(fh.App)` | Exposes JSON endpoints under `/api/v1/auth/*`. |
+| **`bcl/01b_secrets.bcl`** | Secrets Resolution | `platform.resolveSecrets` | Resolves required/optional secrets (`database_url`, `session_secret`, `jwt_secret`, etc.) from environment. |
+| **`bcl/02_roles.bcl`** | RBAC Role Hierarchy | `platform.compileRoles`, `oarkflow/authz` | Defines roles (`super_admin > admin > manager > user > guest`) and permissions matrix. |
+| **`bcl/02b_shapes.bcl`** | Data Contracts & Shapes | `platform.compileSchemas` | Reusable validation shapes (`user`, `login_input`, `password_reset_input`, `role_update_input`, `pagination`). |
+| **`bcl/03_resources.bcl`** | Infrastructure Specs | `platform.Resources` | Declares database (`sqlite`), cache (`cache.sql`), sessions (`session.file`), locks, rate limits, queue (`queue.sql`), storage (`storage.fs`), rules. |
+| **`bcl/04_intents_auth.bcl`** | Auth DAG Workflows | `platform.compileIntents` | Declares `auth.register`, `auth.login`, `auth.logout`, `auth.forgot_password`, `auth.reset_password`, `auth.change_password`. |
+| **`bcl/05_intents_dashboard.bcl`** | Dashboard DAGs | `platform.compileIntents` | Declares `dashboard.index`, `dashboard.admin`, `dashboard.admin_update_role`, `dashboard.manager`, `dashboard.profile`, `dashboard.users_list`, `dashboard.audit_log`. |
+| **`bcl/06_routes_web.bcl`** | Web Route Handlers | `platform.Mount(fh.App)` | Maps web URLs to templates, intents, rate limits, and audit logs. |
+| **`bcl/07_routes_api.bcl`** | REST API Endpoints | `platform.Mount(fh.App)` | Exposes JSON endpoints under `/api/v1/*` with rate limits, authz, and audit. |
 | **`bcl/08_static.bcl`** | Static Asset Serving | `platform.compileStatic` | Mounts directory `static/` to URL prefix `/static` with caching headers. |
+| **`bcl/09_workers.bcl`** | Queue Background Workers | `platform.compileWorkers` | Declares workers consuming background jobs from `queue.sql`. |
+| **`bcl/10_schedules.bcl`** | Recurring Cron Jobs | `platform.compileSchedules` | Declares cron schedules for nightly token cleanup and audit log rotation. |
+| **`bcl/11_triggers.bcl`** | Webhook & Event Triggers | `platform.compileTriggers` | Inbound HMAC-verified webhook triggers with replay protection. |
 | **`platform/argon2id.go`** | Argon2id Hasher | `actions_auth.go` (`auth.password_hash`, `auth.login`) | RFC 9106 cryptographic implementation with constant-time dummy verify. |
 | **`platform/routes.go`** | FastHTTP Adapter | `p.Mount(app)` | Translates HTTP requests, handles session cookies, executes DAGs, and triggers SSR. |
 | **`internal/web/renderer.go`** | SPL Template Adapter | `fh.WithTemplateEngine` | Implements `fh.TemplateEngine` for SPL and loads layouts/components. |

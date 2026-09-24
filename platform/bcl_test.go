@@ -186,7 +186,7 @@ func TestDurationFieldsParse(t *testing.T) {
 // interesting fields actually arrive — which is the half that was broken before.
 func TestExampleDocumentsBind(t *testing.T) {
 	root := exampleRoot(t)
-	for _, name := range []string{"ref-platform", "ref-platform-todo", "ref-platform-complete", "ref-bookmark"} {
+	for _, name := range []string{"ref-platform", "ref-platform-todo", "ref-platform-complete", "ref-bookmark", "boilerplate"} {
 		path := filepath.Join(root, name, "app.bcl")
 		t.Run(name, func(t *testing.T) {
 			source, err := os.ReadFile(path)
@@ -478,7 +478,7 @@ func TestExamplesValidateAgainstTheRegistry(t *testing.T) {
 	registry := NewRegistry()
 	actions := registry.ActionNames()
 
-	for _, name := range []string{"ref-platform", "ref-platform-todo"} {
+	for _, name := range []string{"ref-platform", "ref-platform-todo", "boilerplate"} {
 		path := filepath.Join(exampleRoot(t), name, "app.bcl")
 		t.Run(name, func(t *testing.T) {
 			source, err := os.ReadFile(path)

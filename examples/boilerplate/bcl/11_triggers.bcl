@@ -1,0 +1,18 @@
+# ===========================================================================
+# Event & Webhook Triggers
+#
+# Webhook triggers verify cryptographic HMAC signatures, prevent replay attacks,
+# and extract correlation parameters before dispatching intents.
+# ===========================================================================
+
+trigger "external_audit_webhook" {
+  description "Inbound webhook for external compliance monitoring services"
+  kind webhook
+  path "/webhooks/audit"
+  secret "webhook_api_key"
+  signature_header "X-Signature-256"
+  timestamp_header "X-Timestamp"
+  tolerance 5m
+  correlation_path "event_id"
+  intent "dashboard.audit_log"
+}

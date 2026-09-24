@@ -1,0 +1,150 @@
+# ===========================================================================
+# Reusable Structural Contracts (Shapes)
+#
+# A shape is a reusable validation schema. validate.schema nodes, CRUD
+# resources, human-task forms, and route bodies all reference the same shape
+# name, so the structure is validated identically at every boundary.
+#
+# The block is "shape" because BCL reserves "schema" for its own schema
+# support. Properties are "prop" because BCL reserves "field".
+# ===========================================================================
+
+shape "user" {
+  kind object
+  description "A user account in the system"
+
+  prop "email" {
+    kind string
+    required true
+    format email
+    description "User's email address — used as the login identifier"
+  }
+
+  prop "name" {
+    kind string
+    required true
+    min_length 1
+    max_length 255
+    description "Display name"
+  }
+
+  prop "password" {
+    kind string
+    required true
+    min_length 8
+    max_length 128
+    sensitive true
+    description "Plaintext password — hashed with Argon2id before storage"
+  }
+
+  prop "roles" {
+    kind array
+    items "string"
+    description "Assigned role names"
+    default ["user"]
+  }
+
+  prop "status" {
+    kind string
+    enum ["active", "suspended", "pending"]
+    default "active"
+  }
+}
+
+shape "login_input" {
+  kind object
+  description "Credentials for user login"
+
+  prop "email" {
+    kind string
+    required true
+    format email
+  }
+
+  prop "password" {
+    kind string
+    required true
+    sensitive true
+  }
+}
+
+shape "password_reset_input" {
+  kind object
+  description "Token and new password for password reset"
+
+  prop "token" {
+    kind string
+    required true
+    sensitive true
+  }
+
+  prop "new_password" {
+    kind string
+    required true
+    min_length 8
+    sensitive true
+  }
+}
+
+shape "change_password_input" {
+  kind object
+  description "Current and new password for authenticated password change"
+
+  prop "current_password" {
+    kind string
+    required true
+    sensitive true
+  }
+
+  prop "new_password" {
+    kind string
+    required true
+    min_length 8
+    sensitive true
+  }
+}
+
+shape "role_update_input" {
+  kind object
+  description "Admin role assignment payload"
+
+  prop "user_id" {
+    kind string
+    required true
+  }
+
+  prop "role" {
+    kind string
+    required true
+    enum ["guest", "user", "manager", "admin", "super_admin"]
+  }
+}
+
+shape "pagination" {
+  kind object
+  description "Standard pagination parameters"
+
+  prop "page" {
+    kind int
+    min 1
+    default 1
+  }
+
+  prop "per_page" {
+    kind int
+    min 1
+    max 100
+    default 20
+  }
+
+  prop "sort_by" {
+    kind string
+    default "created_at"
+  }
+
+  prop "sort_order" {
+    kind string
+    enum ["asc", "desc"]
+    default "desc"
+  }
+}

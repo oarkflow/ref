@@ -1,28 +1,53 @@
 # ===========================================================================
 # Platform Infrastructure Resources
+#
+# A resource is opened once per immutable generation and shared by every node
+# that names it. Connection pools, caches, and queue consumers live for the
+# generation's lifetime — never per-request.
+#
+# Resource dependencies are inferred from well-known config keys (database,
+# cache, queue, session).
 # ===========================================================================
 
+# --- Primary Database (SQL) ------------------------------------------------
 resource "database" {
   kind "database.sql"
+  description "Primary SQL database — schema migrations run at boot"
   config {
     driver "sqlite"
     dsn env("DATABASE_URL", "file:.data/boilerplate.db?cache=shared&mode=rwc")
     max_open_connections 10
     max_idle_connections 2
+    connection_max_lifetime 30m
     migrations [
       "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT NOT NULL, password_hash TEXT NOT NULL, roles TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);",
       "CREATE TABLE IF NOT EXISTS password_resets (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TIMESTAMPTZ NOT NULL, used_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);",
       "CREATE INDEX IF NOT EXISTS idx_resets_user ON password_resets(user_id);",
+      "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, actor_id TEXT, target_id TEXT, detail TEXT, ip_address TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);",
+      "CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_id);",
+      "CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);",
       "INSERT OR IGNORE INTO users (id, email, name, password_hash, roles, status) VALUES ('usr_admin_01', 'admin@example.com', 'Alice Admin', '$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg', 'admin', 'active');",
       "INSERT OR IGNORE INTO users (id, email, name, password_hash, roles, status) VALUES ('usr_manager_01', 'manager@example.com', 'Bob Manager', '$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg', 'manager', 'active');",
-      "INSERT OR IGNORE INTO users (id, email, name, password_hash, roles, status) VALUES ('usr_user_01', 'user@example.com', 'Charlie User', '$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg', 'user', 'active');",
-      "UPDATE users SET password_hash = '$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg' WHERE email IN ('admin@example.com', 'manager@example.com', 'user@example.com');"
+      "INSERT OR IGNORE INTO users (id, email, name, password_hash, roles, status) VALUES ('usr_user_01', 'user@example.com', 'Charlie User', '$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg', 'user', 'active');"
     ]
   }
 }
 
+# --- Cache (SQL-backed, supports prefix invalidation) ----------------------
+resource "cache" {
+  kind "cache.sql"
+  description "SQL-backed cache with prefix invalidation support"
+  config {
+    database "database"
+    table "boilerplate_cache"
+    gc_interval 5m
+  }
+}
+
+# --- Session Store (File-backed) -------------------------------------------
 resource "sessions" {
   kind "session.file"
+  description "Signed session cookies backed by local file storage"
   config {
     dir env("SESSION_DIR", ".data/sessions")
     secret env("SESSION_SECRET", "super-secure-argon2id-boilerplate-secret-32-bytes")
@@ -32,6 +57,7 @@ resource "sessions" {
   }
 }
 
+# --- Authentication Provider -----------------------------------------------
 resource "session_auth" {
   kind "auth.session"
   description "Resolves caller identity from the signed session cookie"
@@ -41,18 +67,63 @@ resource "session_auth" {
   }
 }
 
+# --- Authorization Engine --------------------------------------------------
 resource "authorization" {
   kind "authz.rbac"
-  description "Role-based authorization engine with inheritance"
+  description "Role-based authorization engine with transitive inheritance"
   config {
     superuser_roles ["super_admin"]
     default_roles ["user"]
   }
 }
 
+# --- Coordination: Distributed Locks (SQL-backed) --------------------------
+resource "locks" {
+  kind "lock.store"
+  description "Distributed advisory locks for coordination primitives"
+  config {
+    cache "cache"
+    prefix "lock:"
+    ttl 30s
+  }
+}
+
+# --- Coordination: Rate Limiting (SQL-backed) ------------------------------
+resource "limits" {
+  kind "ratelimit.store"
+  description "Token-bucket rate limiter backed by SQL"
+  config {
+    cache "cache"
+    prefix "rate:"
+  }
+}
+
+# --- Durable Queue (SQL-backed) --------------------------------------------
+resource "jobs" {
+  kind "queue.sql"
+  description "Durable job queue for background work and scheduled tasks"
+  config {
+    database "database"
+    table "boilerplate_jobs"
+    workers 2
+    poll_interval 500ms
+  }
+}
+
+# --- Object Storage (Local Filesystem) ------------------------------------
+resource "uploads" {
+  kind "storage.fs"
+  description "Local filesystem object storage for uploads"
+  config {
+    dir env("UPLOAD_DIR", ".data/uploads")
+    max_object_bytes 10485760
+  }
+}
+
+# --- Business Rules Engine ------------------------------------------------
 resource "policy_engine" {
   kind "rules.engine"
-  description "Compiled business logic policy decision engine via oarkflow/rules"
+  description "Compiled business logic policy decision engine"
   config {
     environment "development"
     default_tenant "default"

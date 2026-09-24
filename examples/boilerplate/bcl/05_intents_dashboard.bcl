@@ -1,7 +1,11 @@
 # ===========================================================================
 # Dashboard & Governance Intents
+#
+# These intents drive the dashboard views and admin operations. Each intent
+# fetches data from the database and composes it for the template.
 # ===========================================================================
 
+# --- User Dashboard ---------------------------------------------------------
 intent "dashboard.index" {
   description "Fetch dashboard overview for authenticated user"
   response "response"
@@ -56,6 +60,7 @@ intent "dashboard.index" {
   }
 }
 
+# --- Admin Portal -----------------------------------------------------------
 intent "dashboard.admin" {
   description "Fetch user management table and system roles for admin portal"
   response "response"
@@ -97,16 +102,30 @@ intent "dashboard.admin" {
     }
   }
 
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [user_id, users]
+    provides [audit_logged]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, detail) VALUES ('admin.dashboard.viewed', $1, 'Admin portal accessed')"
+      args [user_id]
+    }
+  }
+
   node "response" {
     uses "collect"
-    requires [user, users]
+    requires [user, users, audit_logged]
     provides [response]
   }
 }
 
+# --- Admin Role Update (with Policy Guard) ----------------------------------
 intent "dashboard.admin_update_role" {
-  description "Update a user's role from admin portal"
+  description "Update a user's role from admin portal with privilege escalation guard"
   response "response"
+  timeout 5s
 
   node "user-id" {
     uses "auth.require_session"
@@ -116,17 +135,31 @@ intent "dashboard.admin_update_role" {
   }
 
   node "validate" {
-    uses "validate.required"
+    uses "validate.schema"
     requires [input]
     provides [validated]
-    config { fields [input.user_id, input.role] }
+    config {
+      source_fact "input"
+      shape "role_update_input"
+    }
+  }
+
+  node "guard-role-elevation" {
+    uses "decision.expression"
+    kind decision
+    requires [input, validated]
+    provides [policy_checked]
+    config {
+      expression "input.role != 'super_admin' && (input.user_id != 'admin@example.com' || input.role == 'admin')"
+      message "Unauthorized privilege escalation: only super_admin can assign super_admin and primary admin cannot be demoted"
+    }
   }
 
   node "update-role" {
     uses "database.exec"
     resource "database"
     kind effect
-    requires [admin_id, input, validated]
+    requires [admin_id, input, validated, policy_checked]
     provides [role_updated]
     config {
       statement "UPDATE users SET roles = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"
@@ -136,13 +169,26 @@ intent "dashboard.admin_update_role" {
     }
   }
 
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [admin_id, input, role_updated]
+    provides [audit_logged]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, target_id, detail) VALUES ('admin.role.updated', $1, $2, $3)"
+      args [admin_id, input.user_id, input.role]
+    }
+  }
+
   node "response" {
     uses "collect"
-    requires [role_updated]
+    requires [role_updated, audit_logged]
     provides [response]
   }
 }
 
+# --- Manager View -----------------------------------------------------------
 intent "dashboard.manager" {
   description "Fetch operational reports for manager view"
   response "response"
@@ -173,13 +219,25 @@ intent "dashboard.manager" {
     config { source_fact "user_rows" }
   }
 
+  node "recent-audit" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user]
+    provides [audit_events]
+    config {
+      statement "SELECT action, actor_id, target_id, detail, created_at FROM audit_log ORDER BY created_at DESC LIMIT 20"
+    }
+  }
+
   node "response" {
     uses "collect"
-    requires [user]
+    requires [user, audit_events]
     provides [response]
   }
 }
 
+# --- User Profile -----------------------------------------------------------
 intent "dashboard.profile" {
   description "Fetch user profile information"
   response "response"
@@ -213,6 +271,79 @@ intent "dashboard.profile" {
   node "response" {
     uses "collect"
     requires [user]
+    provides [response]
+  }
+}
+
+# --- CRUD: List Users with Pagination --------------------------------------
+intent "dashboard.users_list" {
+  description "Paginated user listing with search"
+  response "response"
+
+  node "user-id" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "list-users" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id, input]
+    provides [users]
+    config {
+      statement "SELECT id, email, name, roles, status, created_at FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+      args [input.per_page, input.offset]
+    }
+  }
+
+  node "total" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [count_rows]
+    config {
+      statement "SELECT COUNT(*) as total FROM users"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [users, count_rows]
+    provides [response]
+  }
+}
+
+# --- Audit Log Viewer -------------------------------------------------------
+intent "dashboard.audit_log" {
+  description "View recent audit log entries"
+  response "response"
+
+  node "user-id" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "load-audit" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id, input]
+    provides [audit_entries]
+    config {
+      statement "SELECT id, action, actor_id, target_id, detail, ip_address, created_at FROM audit_log ORDER BY created_at DESC LIMIT $1"
+      args [input.limit]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [audit_entries]
     provides [response]
   }
 }

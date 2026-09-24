@@ -1,9 +1,18 @@
 # ===========================================================================
 # Enterprise RBAC Roles & Hierarchy Matrix
+#
+# Roles form an inheritance DAG. The platform's authz.rbac resource resolves
+# the transitive closure once at load time, so a permission check at request
+# time is a map lookup — never a graph walk. Cycles are rejected at compile
+# time.
+#
+# Permissions ending in ":*" grant the whole namespace (e.g. "users:*"
+# implies users:read, users:write, users:delete). The wildcard "*" grants
+# everything — only super_admin should carry it.
 # ===========================================================================
 
 role "super_admin" {
-  description "Unrestricted root administrator"
+  description "Unrestricted root administrator — bypasses all authorization checks"
   permissions ["*"]
 }
 
@@ -13,17 +22,22 @@ role "admin" {
     "admin:dashboard",
     "users:*",
     "roles:manage",
-    "audit:read"
+    "audit:read",
+    "settings:read",
+    "settings:write"
   ]
   inherits ["manager"]
 }
 
 role "manager" {
-  description "Operations, metrics and reporting"
+  description "Operations, metrics, reporting, and team oversight"
   permissions [
     "reports:read",
     "reports:write",
-    "users:read"
+    "reports:export",
+    "users:read",
+    "teams:read",
+    "teams:write"
   ]
   inherits ["user"]
 }
@@ -33,12 +47,13 @@ role "user" {
   permissions [
     "dashboard:view",
     "profile:view",
-    "profile:update"
+    "profile:update",
+    "notifications:read"
   ]
   inherits ["guest"]
 }
 
 role "guest" {
-  description "Public unauthenticated visitor"
+  description "Public unauthenticated visitor — can only access public resources"
   permissions []
 }

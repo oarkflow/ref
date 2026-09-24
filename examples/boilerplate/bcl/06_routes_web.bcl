@@ -1,8 +1,14 @@
 # ===========================================================================
 # Web HTML Routes (Declarative Mapping to SPL Templates)
+#
+# Route-level declarations:
+# - auth & session binding
+# - role & permission authorization gates (fails closed)
+# - rate limiting with token buckets
+# - route audit logging with field redactions
 # ===========================================================================
 
-# Authentication Views
+# --- Public Authentication Views -------------------------------------------
 route "web.index" {
   method GET
   path "/"
@@ -26,6 +32,16 @@ route "web.login_action" {
   session "sessions"
   allow_anonymous true
   cache_control "no-store"
+  rate_limit {
+    limiter "limits"
+    limit 10
+    window 1m
+    message "Too many login attempts. Please wait a minute."
+  }
+  route_audit {
+    action "auth.login.web"
+    redact ["password"]
+  }
 }
 
 route "web.register_page" {
@@ -44,6 +60,16 @@ route "web.register_action" {
   status 201
   allow_anonymous true
   cache_control "no-store"
+  rate_limit {
+    limiter "limits"
+    limit 5
+    window 1h
+    message "Registration rate limit reached."
+  }
+  route_audit {
+    action "auth.register.web"
+    redact ["password"]
+  }
 }
 
 route "web.forgot_password_page" {
@@ -60,6 +86,11 @@ route "web.forgot_password_action" {
   intent "auth.forgot_password"
   allow_anonymous true
   cache_control "no-store"
+  rate_limit {
+    limiter "limits"
+    limit 5
+    window 15m
+  }
 }
 
 route "web.reset_password_page" {
@@ -76,6 +107,15 @@ route "web.reset_password_action" {
   intent "auth.reset_password"
   allow_anonymous true
   cache_control "no-store"
+  rate_limit {
+    limiter "limits"
+    limit 5
+    window 15m
+  }
+  route_audit {
+    action "auth.reset_password.web"
+    redact ["new_password"]
+  }
 }
 
 route "web.logout_action" {
@@ -87,7 +127,7 @@ route "web.logout_action" {
   cache_control "no-store"
 }
 
-# Protected Dashboard Views (Role-Based & Route-Based Authorization)
+# --- Protected Views (Role & Permission Gates) -----------------------------
 route "web.dashboard" {
   method GET
   path "/dashboard"
@@ -116,6 +156,9 @@ route "web.admin" {
     roles ["admin", "super_admin"]
     authorizer "authorization"
   }
+  route_audit {
+    action "admin.portal.access"
+  }
 }
 
 route "web.admin_role" {
@@ -128,6 +171,10 @@ route "web.admin_role" {
   authz {
     roles ["admin", "super_admin"]
     authorizer "authorization"
+  }
+  route_audit {
+    action "admin.role.update"
+    include_request true
   }
 }
 
@@ -171,5 +218,14 @@ route "web.change_password" {
   authz {
     roles ["user", "manager", "admin", "super_admin"]
     authorizer "authorization"
+  }
+  rate_limit {
+    limiter "limits"
+    limit 5
+    window 15m
+  }
+  route_audit {
+    action "auth.change_password.web"
+    redact ["current_password", "new_password"]
   }
 }

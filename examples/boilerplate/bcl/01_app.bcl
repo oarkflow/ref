@@ -1,2 +1,11 @@
+# ===========================================================================
+# Application Identity & Environment
+#
+# This single key-value layer names the deployment and resolves the runtime
+# environment from the host. Every other file in this directory is loaded
+# automatically by platform.LoadDir and merged into one Document.
+# ===========================================================================
+
 name "ref-auth-boilerplate"
 environment env("APP_ENV", "development")
+version env("APP_VERSION", "1.0.0")
