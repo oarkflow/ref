@@ -7,7 +7,7 @@ import (
 
 	"github.com/oarkflow/authz"
 	authzStores "github.com/oarkflow/authz/pkg/stores"
-	"github.com/oarkflow/ref/boilerplate/internal/domain"
+	"github.com/oarkflow/ref/examples/boilerplate/internal/domain"
 )
 
 // Standard system permissions.

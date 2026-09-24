@@ -114,6 +114,8 @@ The table below explains how files, packages, and declarative specifications map
 | **`platform/routes.go`** | FastHTTP Adapter | `p.Mount(app)` | Translates HTTP requests, handles session cookies, executes DAGs, and triggers SSR. |
 | **`internal/web/renderer.go`** | SPL Template Adapter | `fh.WithTemplateEngine` | Implements `fh.TemplateEngine` for SPL and loads layouts/components. |
 | **`internal/rbac/rbac.go`** | Enterprise RBAC | `oarkflow/authz` | Provides hierarchical role checks, wildcard permission matching (`users:*`). |
+| **`internal/telemetry/logger.go`** | Structured Logger & Audit | `cmd/server/main.go`, `internal/security` | Zero-allocation JSON/console structured logging & compliance audits via `github.com/oarkflow/zlog`. |
+| **`internal/security/guard.go`** | Anomaly Detection Guard | `cmd/server/main.go` | Real-time anomaly detection, brute force limits & business rule guards via `github.com/oarkflow/tcpguard`. |
 | **`templates/layouts/*.html`** | Base HTML Shells | `templates/pages/**/*.html` | Master layout providing navbar, alerts, footer, and styling links. |
 | **`static/css/app.css`** | Glassmorphic Styling | Loaded by `layouts/base.html` | Modern responsive dark mode design system. |
 | **`static/js/app.js`** | Client Script | Loaded by `layouts/base.html` | Password strength meter, interactive role dropdowns, copy tokens. |

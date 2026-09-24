@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/oarkflow/fh"
-	"github.com/oarkflow/ref/boilerplate/internal/domain"
+	"github.com/oarkflow/ref/examples/boilerplate/internal/domain"
 )
 
 // Handler serves HTTP endpoints for authentication (Web + REST API).

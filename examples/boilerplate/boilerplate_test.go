@@ -10,11 +10,14 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/oarkflow/fh"
-	"github.com/oarkflow/ref/boilerplate/internal/auth"
-	"github.com/oarkflow/ref/boilerplate/internal/domain"
-	"github.com/oarkflow/ref/boilerplate/internal/rbac"
-	"github.com/oarkflow/ref/boilerplate/internal/web"
+	"github.com/oarkflow/ref/examples/boilerplate/internal/auth"
+	"github.com/oarkflow/ref/examples/boilerplate/internal/domain"
+	"github.com/oarkflow/ref/examples/boilerplate/internal/rbac"
+	"github.com/oarkflow/ref/examples/boilerplate/internal/security"
+	"github.com/oarkflow/ref/examples/boilerplate/internal/telemetry"
+	"github.com/oarkflow/ref/examples/boilerplate/internal/web"
 	"github.com/oarkflow/ref/platform"
+	"github.com/oarkflow/zlog"
 )
 
 // ===========================================================================
@@ -486,4 +489,73 @@ func TestBCLLoadDirAndMount(t *testing.T) {
 		}
 	}
 }
+
+// ===========================================================================
+// 6. Structured Logging & Security Auditing (github.com/oarkflow/zlog)
+// ===========================================================================
+
+func TestZLogStructuredAuditing(t *testing.T) {
+	logger := telemetry.InitLogger("development", "boilerplate-audit-test")
+	if logger == nil {
+		t.Fatal("expected zlog.Logger to be initialized")
+	}
+
+	audit := telemetry.NewAuditLogger(logger)
+	if audit == nil {
+		t.Fatal("expected AuditLogger to be created")
+	}
+
+	// Test recording various compliance & forensic audit events
+	audit.LogAuthSuccess("admin@example.com", "admin", "192.168.1.100")
+	audit.LogAuthFailure("intruder@example.com", "invalid_password", "10.0.0.99")
+	audit.LogRoleChange("admin@example.com", "user@example.com", "user", "manager", "192.168.1.100")
+	audit.LogAnomaly("credential_stuffing_attempt", "high", "Rapid repeated logins detected", "10.0.0.99")
+
+	// Verify direct zlog attribute logging
+	logger.Info("Audit subsystem verified",
+		zlog.String("module", "telemetry"),
+		zlog.String("status", "operational"),
+	)
+}
+
+// ===========================================================================
+// 7. Business & Threat Anomaly Detection (github.com/oarkflow/tcpguard)
+// ===========================================================================
+
+func TestTCPGuardBusinessAnomalyDetection(t *testing.T) {
+	logger := telemetry.InitLogger("development", "boilerplate-guard-test")
+	guard, err := security.NewAnomalyGuard(logger, security.Config{
+		EnforceMode: true,
+	})
+	if err != nil {
+		t.Fatalf("NewAnomalyGuard failed: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// 1. Business Anomaly: Privilege escalation prevention
+	allowed, reason := guard.EvaluateBusinessAction(ctx, "role_update", "admin", "super_admin", "user_02")
+	if allowed {
+		t.Fatal("expected privilege escalation to super_admin by regular admin to be denied")
+	}
+	if !strings.Contains(reason, "Only super_admin") {
+		t.Fatalf("expected reason to mention super_admin, got %q", reason)
+	}
+
+	// 2. Business Anomaly: Protection of primary system administrator
+	allowedDemote, reasonDemote := guard.EvaluateBusinessAction(ctx, "role_update", "admin", "user", "admin@example.com")
+	if allowedDemote {
+		t.Fatal("expected demotion of primary admin account to be denied")
+	}
+	if !strings.Contains(reasonDemote, "Primary system administrator cannot be demoted") {
+		t.Fatalf("expected reason to protect primary admin, got %q", reasonDemote)
+	}
+
+	// 3. Legitimate operation allowed
+	allowedManager, _ := guard.EvaluateBusinessAction(ctx, "role_update", "admin", "manager", "user_02")
+	if !allowedManager {
+		t.Fatal("expected legitimate admin role promotion to manager to be allowed")
+	}
+}
+
 

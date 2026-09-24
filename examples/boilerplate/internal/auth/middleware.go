@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"github.com/oarkflow/fh"
-	"github.com/oarkflow/ref/boilerplate/internal/domain"
-	"github.com/oarkflow/ref/boilerplate/internal/rbac"
+	"github.com/oarkflow/ref/examples/boilerplate/internal/domain"
+	"github.com/oarkflow/ref/examples/boilerplate/internal/rbac"
 )
 
 const SessionCookieName = "ref_boilerplate_sid"

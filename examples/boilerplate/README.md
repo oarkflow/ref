@@ -25,11 +25,17 @@ A production-grade, high-performance web and API platform built with the **REF P
 5. **Dual Web & REST API Protocol Support**:
    - Web browser forms (`application/x-www-form-urlencoded`) are automatically translated into structured JSON inputs for REF intents, with HTTP 303 browser redirects and session cookie handling.
    - REST API clients (`application/json`) receive structured JSON responses and semantic HTTP status codes.
+6. **High-Performance Structured Logging & Auditing (`github.com/oarkflow/zlog`)**:
+   - Zero-allocation, high-throughput structured JSON/console logging with attributes.
+   - Built-in audit logger capturing authentication successes/failures, administrative role mutations, and forensic traces.
+7. **Real-Time Anomaly Detection & Threat Mitigation (`github.com/oarkflow/tcpguard`)**:
+   - Intercepts requests to detect business and transport anomalies: brute-force velocity, credential stuffing, suspicious headers, and sensitive endpoint abuse.
+   - Business anomaly rules: blocks unauthorized self-promotion to `super_admin` and prevents unauthorized primary admin account demotion.
 
 ---
 
 > [!TIP]
-> 📘 **Looking for the deep dive?** See [ARCHITECTURE.md](file:///Users/sujit/Sites/ref/boilerplate/ARCHITECTURE.md) for the complete end-to-end guide detailing how all components connect, the 5-phase request pipeline, DAG mechanics, and concrete execution walkthroughs for registration, login, and RBAC governance.
+> 📘 **Looking for the deep dive?** See [ARCHITECTURE.md](file:///Users/sujit/Sites/ref/examples/boilerplate/ARCHITECTURE.md) for the complete end-to-end guide detailing how all components connect, the 5-phase request pipeline, DAG mechanics, and concrete execution walkthroughs for registration, login, and RBAC governance.
 
 ---
 
@@ -41,7 +47,7 @@ boilerplate/
 ├── bcl/                            # 100% Declarative Application Configuration
 │   ├── 01_app.bcl                  # Application identity, version, environment
 │   ├── 02_roles.bcl                # RBAC roles, hierarchy, and permissions
-│   ├── 03_resources.bcl            # Database, file sessions, session auth, authorizer
+│   ├── 03_resources.bcl            # Database, file sessions, session auth, authorizer, rules.engine
 │   ├── 04_intents_auth.bcl         # Register, login, logout, forgot/reset password
 │   ├── 05_intents_dashboard.bcl    # Dashboard overview, admin governance, reports, profile
 │   ├── 06_routes_web.bcl           # HTML Web routes mapped to SPL templates
@@ -49,7 +55,7 @@ boilerplate/
 │   └── 08_static.bcl               # Declarative static asset serving (/static)
 ├── cmd/
 │   └── server/
-│       └── main.go                 # Generic server entry point (Loads BCL & boots app)
+│       └── main.go                 # Server entry point (BCL loader + zlog + tcpguard)
 ├── internal/
 │   ├── auth/                       # Native Go auth domain service, hasher, & repository
 │   │   ├── argon2id.go             # RFC 9106 Argon2id hasher with timing attack protection
@@ -61,6 +67,12 @@ boilerplate/
 │   │   └── models.go               # Domain entities (User, Session, PasswordResetToken, Principal)
 │   ├── rbac/
 │   │   └── rbac.go                 # Enterprise RBAC authorizer backed by oarkflow/authz
+│   ├── security/
+│   │   ├── guard.go                # TCPGuard anomaly detection & business rule guards
+│   │   └── guard_test.go           # Anomaly detection & privilege escalation tests
+│   ├── telemetry/
+│   │   ├── logger.go               # Structured logging & audit logger via oarkflow/zlog
+│   │   └── logger_test.go          # Telemetry and logging tests
 │   └── web/
 │       ├── handlers.go             # Dashboard, admin portal, manager, and profile views
 │       └── renderer.go             # SPL template engine adapter with default Globals

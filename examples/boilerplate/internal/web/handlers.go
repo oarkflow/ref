@@ -5,9 +5,9 @@ import (
 	"strings"
 
 	"github.com/oarkflow/fh"
-	"github.com/oarkflow/ref/boilerplate/internal/auth"
-	"github.com/oarkflow/ref/boilerplate/internal/domain"
-	"github.com/oarkflow/ref/boilerplate/internal/rbac"
+	"github.com/oarkflow/ref/examples/boilerplate/internal/auth"
+	"github.com/oarkflow/ref/examples/boilerplate/internal/domain"
+	"github.com/oarkflow/ref/examples/boilerplate/internal/rbac"
 )
 
 func formValue(c fh.Ctx, key string) string {

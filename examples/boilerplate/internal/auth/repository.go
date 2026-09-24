@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/oarkflow/ref/boilerplate/internal/domain"
+	"github.com/oarkflow/ref/examples/boilerplate/internal/domain"
 )
 
 var (
