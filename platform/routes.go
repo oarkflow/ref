@@ -2,6 +2,7 @@ package platform
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/oarkflow/ref/invocation"
 	"github.com/oarkflow/ref/platform/spi"
 	"github.com/oarkflow/ref/process"
+	"github.com/oarkflow/ref/runtime"
 )
 
 // The HTTP layer.
@@ -50,7 +52,7 @@ type compiledRoute struct {
 	authz     *authzGate
 	limiter   spi.RateLimiter
 	limitKey  *Expression
-	idemStore cacheHandle
+	idemStore spi.IdempotencyStore
 	idemScope *Expression
 	queue     spi.JobQueue
 	engine    *process.Engine
@@ -86,6 +88,32 @@ func withRequestIdentity(ctx context.Context, principal Principal, tenant string
 func requestIdentityFrom(ctx context.Context) (requestIdentity, bool) {
 	identity, ok := ctx.Value(requestIdentityKey{}).(requestIdentity)
 	return identity, ok
+}
+
+const identityHeader = "ref_identity"
+
+func identityHeaders(principal Principal, tenant string) (map[string]string, error) {
+	snapshot := identitySnapshot(principal, tenant)
+	if snapshot == nil {
+		return map[string]string{}, nil
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{identityHeader: string(encoded)}, nil
+}
+
+func principalFromHeaders(headers map[string]string) (Principal, string, error) {
+	if raw := headers[identityHeader]; raw != "" {
+		var snapshot process.IdentitySnapshot
+		if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+			return Principal{}, "", err
+		}
+		return principalFromIdentity(&snapshot, snapshot.TenantID), snapshot.TenantID, nil
+	}
+	principal := Principal{ID: headers["principal_id"], TenantID: headers["tenant_id"]}
+	return principal, principal.TenantID, nil
 }
 
 // compileRoutes resolves every route's resources and pipelines.
@@ -177,6 +205,9 @@ func (p *Platform) compileRoutes(doc Document) error {
 			}
 		}
 		if spec.Idempotency != nil {
+			if spec.Intent != "" && !p.intentIdempotent[spec.Intent] {
+				return fmt.Errorf("ref/platform: %s: intent %q is not declared idempotent", what, spec.Intent)
+			}
 			store, err := p.resolveIdempotencyStore(spec.Idempotency.Store)
 			if err != nil {
 				return fmt.Errorf("ref/platform: %s: %w", what, err)
@@ -241,30 +272,44 @@ func (p *Platform) resolveLimiter(name string) (spi.RateLimiter, error) {
 }
 
 // resolveIdempotencyStore finds the named cache, or the application's only one.
-func (p *Platform) resolveIdempotencyStore(name string) (cacheHandle, error) {
+func (p *Platform) resolveIdempotencyStore(name string) (spi.IdempotencyStore, error) {
 	if name != "" {
 		resource, ok := p.resources[name]
 		if !ok {
-			return cacheHandle{}, fmt.Errorf("idempotency store %q is not declared", name)
+			return nil, fmt.Errorf("idempotency store %q is not declared", name)
 		}
-		return wrapCache(name, resource)
+		return idempotencyStoreForResource(name, resource)
 	}
 	var (
-		found cacheHandle
+		found spi.IdempotencyStore
 		count int
 	)
 	for candidate, resource := range p.resources {
-		handle, err := wrapCache(candidate, resource)
+		store, err := idempotencyStoreForResource(candidate, resource)
 		if err != nil {
 			continue
 		}
-		found = handle
+		found = store
 		count++
 	}
 	if count != 1 {
-		return cacheHandle{}, errors.New("an idempotency guard needs a cache resource; name one with idempotency.store")
+		return nil, errors.New("an idempotency guard needs an atomic cache resource; name one with idempotency.store")
 	}
 	return found, nil
+}
+
+func idempotencyStoreForResource(name string, resource Resource) (spi.IdempotencyStore, error) {
+	if store, ok := resource.(spi.IdempotencyStore); ok {
+		return store, nil
+	}
+	handle, err := wrapCache(name, resource)
+	if err != nil {
+		return nil, err
+	}
+	if handle.mutator == nil {
+		return nil, fmt.Errorf("resource %q does not provide atomic idempotency claims", name)
+	}
+	return newAtomicCacheIdempotencyStore(handle, handle.mutator), nil
 }
 
 func wrapCache(name string, resource Resource) (cacheHandle, error) {
@@ -279,6 +324,7 @@ func wrapCache(name string, resource Resource) (cacheHandle, error) {
 		return cacheHandle{}, fmt.Errorf("resource %q is not a cache", name)
 	}
 	handle.prefixed, _ = resource.(spi.CachePrefix)
+	handle.mutator, _ = resource.(cacheAtomicMutator)
 	return handle, nil
 }
 
@@ -386,16 +432,22 @@ func (p *Platform) serve(c fh.Ctx, route compiledRoute) error {
 
 	// An idempotency guard both short-circuits a replay and records the response, so
 	// its key is computed once here and reused after dispatch.
-	idemKey := ""
+	var idemLease *idempotencyLease
+	idemCompleted := false
 	if route.spec.Idempotency != nil {
-		key, replayed, err := p.checkIdempotency(ctx, c, route, env)
+		lease, replayed, err := p.checkIdempotency(ctx, c, route, env)
 		switch {
 		case err != nil:
 			return projectFailure(c, err)
 		case replayed:
 			return nil
 		}
-		idemKey = key
+		idemLease = lease
+		defer func() {
+			if idemLease != nil && !idemCompleted {
+				p.releaseIdempotency(route, idemLease)
+			}
+		}()
 	}
 
 	body := c.Body()
@@ -425,13 +477,13 @@ func (p *Platform) serve(c fh.Ctx, route compiledRoute) error {
 
 	switch {
 	case route.mode == "async":
-		return p.serveAsync(c, route, body, principal, tenant, sessionID)
+		return p.serveAsync(ctx, c, route, body, principal, tenant, sessionID, idemLease, &idemCompleted)
 	case route.spec.Process != "":
-		return p.serveProcess(ctx, c, route, body, principal, tenant, idemKey)
+		return p.serveProcess(ctx, c, route, body, principal, tenant, idemLease, &idemCompleted)
 	case route.mode == "stream":
-		return p.serveStream(ctx, c, route, body, principal, tenant, sessionID)
+		return p.serveStream(ctx, c, route, body, principal, tenant, sessionID, idemLease, &idemCompleted)
 	default:
-		return p.serveSync(ctx, c, route, body, principal, tenant, sessionID, idemKey, env)
+		return p.serveSync(ctx, c, route, body, principal, tenant, sessionID, idemLease, &idemCompleted, env)
 	}
 }
 
@@ -551,14 +603,13 @@ func (p *Platform) enforceRateLimit(ctx context.Context, c fh.Ctx, route compile
 	return nil
 }
 
-// idempotencyResponse is what a guarded route stores for a replay.
-type idempotencyResponse struct {
-	Status int             `json:"status"`
-	Body   json.RawMessage `json:"body"`
+type idempotencyLease struct {
+	key         string
+	fingerprint string
+	owner       string
 }
 
-// checkIdempotency short-circuits a replay, returning the key to record under.
-func (p *Platform) checkIdempotency(ctx context.Context, c fh.Ctx, route compiledRoute, env Env) (string, bool, error) {
+func (p *Platform) checkIdempotency(ctx context.Context, c fh.Ctx, route compiledRoute, env Env) (*idempotencyLease, bool, error) {
 	spec := route.spec.Idempotency
 	header := spec.Header
 	if header == "" {
@@ -567,64 +618,58 @@ func (p *Platform) checkIdempotency(ctx context.Context, c fh.Ctx, route compile
 	presented := c.Get(header)
 	if presented == "" {
 		if spec.Required {
-			return "", false, invalidInput("this request needs an %s header", header)
+			return nil, false, invalidInput("this request needs an %s header", header)
 		}
-		return "", false, nil
+		return nil, false, nil
 	}
 	if len(presented) > 200 {
-		return "", false, invalidInput("the %s header is too long", header)
+		return nil, false, invalidInput("the %s header is too long", header)
 	}
-
-	// The scope is mixed into the key so two tenants cannot collide on the same
-	// client-chosen value.
 	scope := ""
 	if route.idemScope != nil {
 		resolved, err := route.idemScope.String(env)
 		if err != nil {
-			return "", false, unavailable("the idempotency scope could not be evaluated")
+			return nil, false, unavailable("the idempotency scope could not be evaluated")
 		}
 		scope = resolved
 	}
 	key := "idem:" + route.spec.Name + ":" + scope + ":" + presented
-
-	raw, found, err := route.idemStore.get(ctx, key)
+	fingerprintHash := sha256.New()
+	_, _ = fingerprintHash.Write([]byte(route.spec.Method + "\x00" + route.spec.Path + "\x00" + scope + "\x00"))
+	_, _ = fingerprintHash.Write(c.Body())
+	fingerprint := fmt.Sprintf("%x", fingerprintHash.Sum(nil))
+	lease := &idempotencyLease{key: key, fingerprint: fingerprint, owner: newPrefixedID("idem")}
+	claim, err := route.idemStore.Claim(ctx, key, fingerprint, lease.owner, route.idemTTL)
 	if err != nil {
-		// "I cannot tell whether this already ran" must not become "run it again"
-		// for a guarded mutation.
-		return "", false, unavailable("the idempotency store is unavailable, so this request cannot be safely processed")
+		return nil, false, unavailable("the idempotency store is unavailable, so this request cannot be safely processed")
 	}
-	if found && len(raw) > 0 {
-		var stored idempotencyResponse
-		if json.Unmarshal(raw, &stored) == nil && stored.Status > 0 {
-			c.Set("Idempotent-Replay", "true")
-			return key, true, c.Status(stored.Status).Send(stored.Body)
-		}
-		// A record we cannot read means the original is still in flight or the entry
-		// is corrupt. Reporting a conflict is safer than running the mutation again.
-		return key, true, projectFailure(c, conflict("a request with this idempotency key is already being processed"))
+	switch claim.State {
+	case spi.IdempotencyAcquired:
+		return lease, false, nil
+	case spi.IdempotencyReplay:
+		c.Set("Idempotent-Replay", "true")
+		return nil, true, c.Status(claim.Response.Status).Send(claim.Response.Body)
+	case spi.IdempotencyConflict:
+		return nil, false, conflict("this idempotency key was already used with a different request")
+	default:
+		return nil, false, conflict("a request with this idempotency key is already being processed")
 	}
-
-	// Claim the key before doing the work, so a concurrent duplicate sees the claim.
-	claim, _ := json.Marshal(idempotencyResponse{})
-	if err := route.idemStore.set(ctx, key, claim, route.idemTTL); err != nil {
-		return "", false, unavailable("the idempotency key could not be claimed")
-	}
-	return key, false, nil
 }
 
-// recordIdempotency stores a successful response for replay.
-func (p *Platform) recordIdempotency(ctx context.Context, route compiledRoute, key string, status int, body []byte) {
-	if key == "" {
+func (p *Platform) completeIdempotency(ctx context.Context, route compiledRoute, lease *idempotencyLease, status int, body []byte) error {
+	if lease == nil {
+		return nil
+	}
+	return route.idemStore.Complete(ctx, lease.key, lease.fingerprint, lease.owner, spi.IdempotencyResponse{Status: status, Body: append([]byte(nil), body...)}, route.idemTTL)
+}
+
+func (p *Platform) releaseIdempotency(route compiledRoute, lease *idempotencyLease) {
+	if lease == nil {
 		return
 	}
-	encoded, err := json.Marshal(idempotencyResponse{Status: status, Body: body})
-	if err != nil {
-		return
-	}
-	// A failure here means a future replay re-runs the work. That is a worse outcome
-	// than a duplicate record, but a better one than failing a request that already
-	// succeeded.
-	_ = route.idemStore.set(ctx, key, encoded, route.idemTTL)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = route.idemStore.Release(ctx, lease.key, lease.owner)
 }
 
 // shapeRequest applies the route's request pipeline to the raw body.
@@ -655,11 +700,12 @@ func (p *Platform) shapeRequest(route compiledRoute, body []byte, env Env) ([]by
 // *hint* — the raw credentials — and the identity the route already resolved
 // travels in the request context instead, which is where actionContext reads it
 // from. Passing both would give a node two sources for one answer.
-func (p *Platform) buildInvocation(c fh.Ctx, route compiledRoute, body []byte, sessionID string) *invocation.Invocation {
+func (p *Platform) buildInvocation(c fh.Ctx, route compiledRoute, body []byte, sessionID string, principal Principal, tenant string) *invocation.Invocation {
 	return &invocation.Invocation{
-		ID:     invocation.ID(orRequestID(c.Get("X-Request-ID"))),
-		Intent: invocation.IntentID(route.spec.Intent),
-		Input:  invocation.NewInput(body, orDefault(c.Get("Content-Type"), "application/json")),
+		ID:       invocation.ID(orRequestID(c.Get("X-Request-ID"))),
+		Intent:   invocation.IntentID(route.spec.Intent),
+		Identity: verifiedFromPrincipal(principal, tenant),
+		Input:    invocation.NewInput(body, orDefault(c.Get("Content-Type"), "application/json")),
 		Principal: invocation.NewPrincipalHint(
 			extractBearer(c.Get("Authorization")), c.Get("X-API-Key"), nil, sessionID),
 		Metadata: invocation.NewHTTPMeta(
@@ -671,10 +717,10 @@ func (p *Platform) buildInvocation(c fh.Ctx, route compiledRoute, body []byte, s
 	}
 }
 
-func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute, body []byte, principal Principal, tenant, sessionID, idemKey string, env Env) error {
+func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute, body []byte, principal Principal, tenant, sessionID string, idemLease *idempotencyLease, idemCompleted *bool, env Env) error {
 	var value any
 	if route.spec.Intent != "" {
-		inv := p.buildInvocation(c, route, body, sessionID)
+		inv := p.buildInvocation(c, route, body, sessionID, principal, tenant)
 		result, err := p.Engine.Dispatch(ctx, inv)
 		if err != nil {
 			p.audit(ctx, route, principal, tenant, body, nil, err)
@@ -683,6 +729,7 @@ func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute,
 			}
 			return projectFailure(c, err)
 		}
+		defer runtime.ReleaseDispatchResult(result)
 		value = result.Value
 	} else if route.spec.Template != "" {
 		title := "Security Portal"
@@ -710,12 +757,13 @@ func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute,
 	}
 	if route.responsePipeline != nil {
 		shaped, shapeErr := route.responsePipeline.Apply(value, env)
-		if shapeErr != nil && !errors.Is(shapeErr, ErrDataFiltered) {
+		if errors.Is(shapeErr, ErrDataFiltered) {
+			return projectFailure(c, permissionDenied("the response was rejected by this route's filter"))
+		}
+		if shapeErr != nil {
 			return projectFailure(c, shapeErr)
 		}
-		if shapeErr == nil {
-			value = shaped
-		}
+		value = shaped
 	}
 
 	if route.spec.Template != "" {
@@ -736,6 +784,10 @@ func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute,
 			log.Printf("[TEMPLATE ERROR] route %s (%s): %v", route.spec.Name, route.spec.Template, renderErr)
 			return projectFailure(c, renderErr)
 		}
+		if err := p.completeIdempotency(ctx, route, idemLease, route.status, c.ResponseBody()); err != nil {
+			return projectFailure(c, unavailable("the response could not be committed for idempotent replay"))
+		}
+		*idemCompleted = true
 		return nil
 	}
 
@@ -754,7 +806,14 @@ func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute,
 		}
 		p.applyResponseHeaders(c, route)
 		p.audit(ctx, route, principal, tenant, body, nil, nil)
-		return c.Redirect(target, 303)
+		if err := c.Redirect(target, 303); err != nil {
+			return err
+		}
+		if err := p.completeIdempotency(ctx, route, idemLease, 303, c.ResponseBody()); err != nil {
+			return projectFailure(c, unavailable("the redirect could not be committed for idempotent replay"))
+		}
+		*idemCompleted = true
+		return nil
 	}
 
 	encoded, err := json.Marshal(value)
@@ -762,32 +821,41 @@ func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute,
 		return projectFailure(c, fmt.Errorf("the response could not be serialised: %w", err))
 	}
 	p.applyResponseHeaders(c, route)
-	p.recordIdempotency(ctx, route, idemKey, route.status, encoded)
+	if err := p.completeIdempotency(ctx, route, idemLease, route.status, encoded); err != nil {
+		return projectFailure(c, unavailable("the response could not be committed for idempotent replay"))
+	}
+	*idemCompleted = true
 	p.audit(ctx, route, principal, tenant, body, encoded, nil)
 	return c.Status(route.status).Send(encoded)
 }
 
-func (p *Platform) serveAsync(c fh.Ctx, route compiledRoute, body []byte, principal Principal, tenant, sessionID string) error {
+func (p *Platform) serveAsync(ctx context.Context, c fh.Ctx, route compiledRoute, body []byte, principal Principal, tenant, sessionID string, idemLease *idempotencyLease, idemCompleted *bool) error {
 	jobType := "platform.intent." + route.spec.Intent
 	if route.spec.Process != "" {
 		jobType = "platform.process." + route.spec.Process
 	}
-	headers := map[string]string{
-		"bearer_token": extractBearer(c.Get("Authorization")),
-		"api_key":      c.Get("X-API-Key"),
-		"session_id":   sessionID,
-		"principal_id": principal.ID,
-		"tenant_id":    tenant,
+	headers, err := identityHeaders(principal, tenant)
+	if err != nil {
+		return projectFailure(c, unavailable("the verified identity could not be queued"))
 	}
 	jobID, err := route.queue.Enqueue(jobType, json.RawMessage(body), headers)
 	if err != nil {
 		return projectFailure(c, unavailable("the request could not be queued"))
 	}
 	p.applyResponseHeaders(c, route)
-	return c.Status(202).JSON(map[string]any{"job_id": jobID, "status": "queued"})
+	response := map[string]any{"job_id": jobID, "status": "queued"}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		return projectFailure(c, err)
+	}
+	if err := p.completeIdempotency(ctx, route, idemLease, 202, encoded); err != nil {
+		return projectFailure(c, unavailable("the queued response could not be committed for idempotent replay"))
+	}
+	*idemCompleted = true
+	return c.Status(202).Send(encoded)
 }
 
-func (p *Platform) serveProcess(ctx context.Context, c fh.Ctx, route compiledRoute, body []byte, principal Principal, tenant, idemKey string) error {
+func (p *Platform) serveProcess(ctx context.Context, c fh.Ctx, route compiledRoute, body []byte, principal Principal, tenant string, idemLease *idempotencyLease, idemCompleted *bool) error {
 	var input any
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &input); err != nil {
@@ -798,6 +866,7 @@ func (p *Platform) serveProcess(ctx context.Context, c fh.Ctx, route compiledRou
 	options := process.StartOptions{
 		TenantID:      tenant,
 		PrincipalID:   principal.ID,
+		Identity:      identitySnapshot(principal, tenant),
 		CorrelationID: c.Get("X-Correlation-ID"),
 	}
 	// The process's own idempotency path deduplicates run creation, which is what
@@ -819,9 +888,15 @@ func (p *Platform) serveProcess(ctx context.Context, c fh.Ctx, route compiledRou
 		return projectFailure(c, processFailure(err))
 	}
 	payload := runView(run)
-	encoded, _ := json.Marshal(payload)
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return projectFailure(c, err)
+	}
 	p.applyResponseHeaders(c, route)
-	p.recordIdempotency(ctx, route, idemKey, route.status, encoded)
+	if err := p.completeIdempotency(ctx, route, idemLease, route.status, encoded); err != nil {
+		return projectFailure(c, unavailable("the process response could not be committed for idempotent replay"))
+	}
+	*idemCompleted = true
 	p.audit(ctx, route, principal, tenant, body, encoded, nil)
 	return c.Status(route.status).Send(encoded)
 }
@@ -833,12 +908,13 @@ func (p *Platform) serveProcess(ctx context.Context, c fh.Ctx, route compiledRou
 // incrementally, which is a larger change than this route mode. What this gives
 // you is an SSE-shaped endpoint for a client that wants one, which is honest about
 // producing one event.
-func (p *Platform) serveStream(ctx context.Context, c fh.Ctx, route compiledRoute, body []byte, principal Principal, tenant, sessionID string) error {
-	inv := p.buildInvocation(c, route, body, sessionID)
+func (p *Platform) serveStream(ctx context.Context, c fh.Ctx, route compiledRoute, body []byte, principal Principal, tenant, sessionID string, idemLease *idempotencyLease, idemCompleted *bool) error {
+	inv := p.buildInvocation(c, route, body, sessionID, principal, tenant)
 	result, err := p.Engine.Dispatch(ctx, inv)
 	if err != nil {
 		return projectFailure(c, err)
 	}
+	defer runtime.ReleaseDispatchResult(result)
 	encoded, err := json.Marshal(result.Value)
 	if err != nil {
 		return projectFailure(c, err)
@@ -846,7 +922,12 @@ func (p *Platform) serveStream(ctx context.Context, c fh.Ctx, route compiledRout
 	c.Set("Content-Type", "text/event-stream")
 	c.Set("Cache-Control", "no-cache")
 	c.Set("Connection", "keep-alive")
-	return c.Status(200).SendString("event: result\ndata: " + string(encoded) + "\n\n")
+	event := "event: result\ndata: " + string(encoded) + "\n\n"
+	if err := p.completeIdempotency(ctx, route, idemLease, 200, []byte(event)); err != nil {
+		return projectFailure(c, unavailable("the stream response could not be committed for idempotent replay"))
+	}
+	*idemCompleted = true
+	return c.Status(200).SendString(event)
 }
 
 func (p *Platform) applyResponseHeaders(c fh.Ctx, route compiledRoute) {

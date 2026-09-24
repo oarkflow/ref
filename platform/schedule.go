@@ -90,7 +90,7 @@ func (p *Platform) compileSchedules(doc Document) error {
 		if consumer, ok := p.resources[spec.Queue].(workerQueue); ok {
 			schedule := spec
 			consumer.Register(compiled.jobType, func(ctx context.Context, job *fh.QueueJob) error {
-				return p.runScheduled(ctx, schedule, job.Payload)
+				return p.runScheduled(ctx, schedule, job)
 			})
 		}
 		p.schedules = append(p.schedules, compiled)
@@ -99,7 +99,12 @@ func (p *Platform) compileSchedules(doc Document) error {
 }
 
 // runScheduled executes one occurrence.
-func (p *Platform) runScheduled(ctx context.Context, spec ScheduleSpec, payload []byte) error {
+func (p *Platform) runScheduled(ctx context.Context, spec ScheduleSpec, job *fh.QueueJob) error {
+	payload := job.Payload
+	occurrence := job.Headers["occurrence"]
+	if occurrence == "" {
+		occurrence = job.ID
+	}
 	input := any(spec.Payload)
 	if len(payload) > 0 {
 		var decoded any
@@ -113,8 +118,10 @@ func (p *Platform) runScheduled(ctx context.Context, spec ScheduleSpec, payload 
 			return fmt.Errorf("ref/platform: schedule %q names unknown process %q", spec.Name, spec.Process)
 		}
 		_, err := engine.Start(ctx, spec.Process, input, process.StartOptions{
-			TenantID: spec.TenantID,
-			Detached: true,
+			TenantID:       spec.TenantID,
+			IdempotencyKey: "schedule:" + spec.Name + ":" + occurrence,
+			CorrelationID:  occurrence,
+			Detached:       true,
 		})
 		return err
 	}

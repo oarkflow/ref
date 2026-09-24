@@ -34,6 +34,7 @@ type NodeContext struct {
 	effects []any
 	hasSC   bool
 	scOut   ExecutionOutcome
+	trace   *Trace
 }
 
 var nodeContextPool = sync.Pool{
@@ -66,6 +67,7 @@ func AcquireNodeContext(
 	nc.maxDefID = maxDefID
 	nc.effects = nc.effects[:0]
 	nc.hasSC = false
+	nc.trace = nil
 	return nc
 }
 
@@ -86,6 +88,7 @@ func ReleaseNodeContext(nc *NodeContext) {
 	nc.scOut.Value = nil
 	nc.scOut.Meta = nil
 	nc.scOut.Effects = nil
+	nc.trace = nil
 	nodeContextPool.Put(nc)
 }
 
@@ -141,6 +144,20 @@ func FromContext(ctx context.Context) *NodeContext {
 	return nil
 }
 
+func (nc *NodeContext) SetTrace(trace *Trace) {
+	if nc != nil {
+		nc.trace = trace
+	}
+}
+
+// Trace returns the execution trace associated with this node, if enabled.
+func (nc *NodeContext) Trace() *Trace {
+	if nc == nil {
+		return nil
+	}
+	return nc.trace
+}
+
 // Invocation returns the transport-neutral input (immutable).
 func (nc *NodeContext) Invocation() *invocation.Invocation { return nc.invocation }
 
@@ -164,6 +181,9 @@ func (nc *NodeContext) RecordEffect(fx any) {
 	nc.mu.Lock()
 	defer nc.mu.Unlock()
 	nc.effects = append(nc.effects, fx)
+	if nc.trace != nil {
+		nc.trace.RecordEffect(nc.nodeID, fx)
+	}
 }
 
 // Effects returns all effects recorded in this node context.
@@ -212,7 +232,11 @@ func PublishFact[T any](nc *NodeContext, slot fact.PlanSlot, value T) {
 	if nc == nil {
 		return
 	}
-	fact.Put(nc.Facts(), slot, value)
+	if nc.Facts().ProvenanceEnabled() {
+		fact.PutWithProducer(nc.Facts(), slot, value, uint32(nc.nodeID))
+	} else {
+		fact.Put(nc.Facts(), slot, value)
+	}
 }
 
 // RequireFact retrieves a typed fact. Returns error if missing.
@@ -235,7 +259,10 @@ func (nc *NodeContext) SlotOf(id fact.DefinitionID) (fact.PlanSlot, bool) {
 	}
 	// Fast path: flat slice O(1) lookup
 	if nc.defSlots != nil && uint32(id) <= nc.maxDefID && uint32(id) > 0 {
-		return nc.defSlots[id], true
+		slot := nc.defSlots[id]
+		if slot != fact.NoSlot {
+			return slot, true
+		}
 	}
 	// Fallback: map lookup
 	if nc.defToSlot == nil {
@@ -254,7 +281,11 @@ func Publish[T any](nc *NodeContext, key fact.Key[T], value T) bool {
 	if !ok {
 		return false
 	}
-	fact.Put(nc.Facts(), slot, value)
+	if nc.Facts().ProvenanceEnabled() {
+		fact.PutWithProducer(nc.Facts(), slot, value, uint32(nc.nodeID))
+	} else {
+		fact.Put(nc.Facts(), slot, value)
+	}
 	return true
 }
 

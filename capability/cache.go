@@ -15,9 +15,6 @@ func NewCacheCapability(name string, lookup CacheLookupFunc, opts ...Option) Reg
 		name = "capability.cache"
 	}
 	reg := NewRegistration(name, graph.PureNode, opts...)
-	if reg.Speculation == graph.NoSpeculation {
-		reg.Speculation = graph.PreAuthSafe
-	}
 
 	reg.Run = func(nc *execution.NodeContext) error {
 		if lookup == nil {

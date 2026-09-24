@@ -14,6 +14,8 @@ type DefinitionID uint32
 // to the same DefinitionID.
 type PlanSlot uint32
 
+const NoSlot PlanSlot = ^PlanSlot(0)
+
 // Key is a typed fact key. T is the value type stored.
 // Keys are created at package-init time.
 type Key[T any] struct {

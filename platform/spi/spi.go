@@ -56,6 +56,31 @@ type CacheContext interface {
 	DeleteContext(ctx context.Context, key string) error
 }
 
+type IdempotencyState uint8
+
+const (
+	IdempotencyAcquired IdempotencyState = iota
+	IdempotencyReplay
+	IdempotencyInProgress
+	IdempotencyConflict
+)
+
+type IdempotencyResponse struct {
+	Status int
+	Body   []byte
+}
+
+type IdempotencyClaim struct {
+	State    IdempotencyState
+	Response IdempotencyResponse
+}
+
+type IdempotencyStore interface {
+	Claim(ctx context.Context, key, fingerprint, owner string, ttl time.Duration) (IdempotencyClaim, error)
+	Complete(ctx context.Context, key, fingerprint, owner string, response IdempotencyResponse, ttl time.Duration) error
+	Release(ctx context.Context, key, owner string) error
+}
+
 // CachePrefix enables the cache.invalidate_prefix action. It reports how many
 // entries it removed. Providers that cannot enumerate keys must not implement
 // it; BCL referencing invalidate_prefix against such a provider fails to

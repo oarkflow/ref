@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -18,7 +19,10 @@ type LoaderConfig struct {
 
 	// Wait is how long to collect keys before dispatching a batch.
 	// Zero means dispatch immediately when the first caller arrives (no windowing).
-	Wait time.Duration
+	Wait            time.Duration
+	CacheTTL        time.Duration
+	MaxCacheEntries int
+	BatchTimeout    time.Duration
 }
 
 // Loader batches and deduplicates data fetches within a single invocation.
@@ -39,9 +43,10 @@ type Loader[K comparable, V any] struct {
 }
 
 type loaderResult[V any] struct {
-	value V
-	err   error
-	ready chan struct{} // closed when result is available
+	value     V
+	err       error
+	ready     chan struct{}
+	expiresAt time.Time
 }
 
 type loaderBatch[K comparable, V any] struct {
@@ -54,6 +59,12 @@ type loaderBatch[K comparable, V any] struct {
 
 // NewLoader creates a new DataLoader with the given batch function and config.
 func NewLoader[K comparable, V any](batchFn BatchFunc[K, V], cfg LoaderConfig) *Loader[K, V] {
+	if cfg.CacheTTL <= 0 {
+		cfg.CacheTTL = time.Second
+	}
+	if cfg.MaxCacheEntries <= 0 {
+		cfg.MaxCacheEntries = 4096
+	}
 	return &Loader[K, V]{
 		batchFn: batchFn,
 		cfg:     cfg,
@@ -65,7 +76,11 @@ func NewLoader[K comparable, V any](batchFn BatchFunc[K, V], cfg LoaderConfig) *
 // wait window, all keys are batched into a single batchFn call.
 // Results are cached for the lifetime of the Loader (i.e. one invocation).
 func (l *Loader[K, V]) Load(ctx context.Context, key K) (V, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	l.mu.Lock()
+	l.cleanupLocked(time.Now())
 
 	// Check invocation-scoped cache
 	if res, ok := l.cache[key]; ok {
@@ -79,16 +94,18 @@ func (l *Loader[K, V]) Load(ctx context.Context, key K) (V, error) {
 		}
 	}
 
-	// Create result slot and add to pending batch
-	res := &loaderResult[V]{ready: make(chan struct{})}
+	if l.cfg.MaxCacheEntries > 0 && len(l.cache) >= l.cfg.MaxCacheEntries {
+		l.removeOneLocked()
+	}
+	res := &loaderResult[V]{ready: make(chan struct{}), expiresAt: time.Now().Add(l.cfg.CacheTTL)}
 	l.cache[key] = res
 
 	batch := l.getOrCreateBatch(key, res)
-	shouldDispatch := l.shouldDispatch(batch)
+	shouldDispatch := l.shouldDispatch(ctx, batch)
 	l.mu.Unlock()
 
 	if shouldDispatch {
-		l.dispatch(batch)
+		l.dispatch(ctx, batch)
 	}
 
 	select {
@@ -129,7 +146,7 @@ func (l *Loader[K, V]) Prime(key K, value V) {
 		return // don't overwrite
 	}
 
-	res := &loaderResult[V]{value: value, ready: make(chan struct{})}
+	res := &loaderResult[V]{value: value, ready: make(chan struct{}), expiresAt: time.Now().Add(l.cfg.CacheTTL)}
 	close(res.ready)
 	l.cache[key] = res
 }
@@ -146,6 +163,21 @@ func (l *Loader[K, V]) ClearAll() {
 	l.mu.Lock()
 	l.cache = make(map[K]*loaderResult[V])
 	l.mu.Unlock()
+}
+
+func (l *Loader[K, V]) cleanupLocked(now time.Time) {
+	for key, result := range l.cache {
+		if !result.expiresAt.IsZero() && now.After(result.expiresAt) {
+			delete(l.cache, key)
+		}
+	}
+}
+
+func (l *Loader[K, V]) removeOneLocked() {
+	for key := range l.cache {
+		delete(l.cache, key)
+		return
+	}
 }
 
 func (l *Loader[K, V]) getOrCreateBatch(key K, res *loaderResult[V]) *loaderBatch[K, V] {
@@ -168,7 +200,7 @@ func (l *Loader[K, V]) getOrCreateBatch(key K, res *loaderResult[V]) *loaderBatc
 	return batch
 }
 
-func (l *Loader[K, V]) shouldDispatch(batch *loaderBatch[K, V]) bool {
+func (l *Loader[K, V]) shouldDispatch(ctx context.Context, batch *loaderBatch[K, V]) bool {
 	// No wait configured: dispatch immediately on first key
 	if l.cfg.Wait <= 0 {
 		return true
@@ -192,7 +224,7 @@ func (l *Loader[K, V]) shouldDispatch(batch *loaderBatch[K, V]) bool {
 				l.pending = nil
 				l.mu.Unlock()
 				if b != nil {
-					l.dispatch(b)
+					l.dispatch(ctx, b)
 				}
 			case <-batch.done:
 				// Already dispatched by shouldDispatch (MaxBatch hit)
@@ -203,7 +235,7 @@ func (l *Loader[K, V]) shouldDispatch(batch *loaderBatch[K, V]) bool {
 	return false
 }
 
-func (l *Loader[K, V]) dispatch(batch *loaderBatch[K, V]) {
+func (l *Loader[K, V]) dispatch(ctx context.Context, batch *loaderBatch[K, V]) {
 	batch.once.Do(func() {
 		l.mu.Lock()
 		if l.pending == batch {
@@ -213,24 +245,31 @@ func (l *Loader[K, V]) dispatch(batch *loaderBatch[K, V]) {
 
 		var values map[K]V
 		var batchErr error
-
-		if l.batchFn != nil {
-			values, batchErr = l.batchFn(context.Background(), batch.keys)
-		}
-
-		for key, res := range batch.results {
-			if batchErr != nil {
-				res.err = batchErr
-			} else if values != nil {
-				val, ok := values[key]
-				if ok {
-					res.value = val
-				}
-				// If not found in values, res.value stays as zero value
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				batchErr = fmt.Errorf("ref: source batch panic: %v", recovered)
 			}
-			close(res.ready)
-		}
+			for key, res := range batch.results {
+				if batchErr != nil {
+					res.err = batchErr
+				} else if value, ok := values[key]; ok {
+					res.value = value
+				}
+				close(res.ready)
+			}
+			close(batch.done)
+		}()
 
-		close(batch.done)
+		if l.batchFn == nil {
+			batchErr = fmt.Errorf("ref: source batch function is nil")
+			return
+		}
+		batchCtx := context.WithoutCancel(ctx)
+		if l.cfg.BatchTimeout > 0 {
+			var cancel context.CancelFunc
+			batchCtx, cancel = context.WithTimeout(batchCtx, l.cfg.BatchTimeout)
+			defer cancel()
+		}
+		values, batchErr = l.batchFn(batchCtx, batch.keys)
 	})
 }

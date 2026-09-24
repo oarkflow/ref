@@ -33,6 +33,7 @@ type Principal = spi.Principal
 // Cache is the portable cache contract. fh's kv.Store satisfies it, as can
 // Redis, PostgreSQL, DynamoDB or a remote cache adapter.
 type Cache = spi.Cache
+type IdempotencyStore = spi.IdempotencyStore
 
 // JobQueue is the portable publication surface used by queue.publish.
 type JobQueue = spi.JobQueue

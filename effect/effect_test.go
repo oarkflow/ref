@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/oarkflow/ref/effect"
 )
@@ -21,6 +22,15 @@ func (m *mockEffect) Kind() effect.EffectKind { return m.kind }
 func (m *mockEffect) Commit(ctx context.Context) error {
 	m.committed.Store(true)
 	return m.err
+}
+
+type encodedMockEffect struct {
+	mockEffect
+	payload []byte
+}
+
+func (m *encodedMockEffect) EncodeEffect() ([]byte, string, bool, error) {
+	return append([]byte(nil), m.payload...), "stable-key", true, nil
 }
 
 type mockCompensatingEffect struct {
@@ -118,4 +128,97 @@ func TestEffectErrorMessage(t *testing.T) {
 	if e2.Error() != `ref: effect durable_commit "send-email": timeout` {
 		t.Errorf("unexpected error message: %s", e2.Error())
 	}
+}
+
+func TestEffectPlanRejectsMismatchedGroup(t *testing.T) {
+	plan := effect.EffectPlan{LocalTx: []effect.Effect{&mockEffect{name: "webhook", kind: effect.DurableDelivery}}}
+	if err := plan.Validate(); err == nil {
+		t.Fatal("expected mismatched effect group error")
+	}
+}
+
+func TestMemoryEffectStoreReclaimsExpiredDeliveryLease(t *testing.T) {
+	store := effect.NewMemoryEffectStore()
+	txID, err := store.Begin(context.Background(), "exec-lease")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Record(context.Background(), txID, effect.EffectRecord{Name: "webhook", Kind: effect.DurableDelivery}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Commit(context.Background(), txID); err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.ClaimDeliveries(context.Background(), "owner-a", 1, time.Millisecond)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first claim failed: %+v err=%v", first, err)
+	}
+	time.Sleep(3 * time.Millisecond)
+	second, err := store.ClaimDeliveries(context.Background(), "owner-b", 1, time.Second)
+	if err != nil || len(second) != 1 {
+		t.Fatalf("expired lease was not reclaimed: %+v err=%v", second, err)
+	}
+	if second[0].ClaimToken == first[0].ClaimToken {
+		t.Fatal("expected a new claim token")
+	}
+}
+
+func TestRunnerDeliversDurableEffect(t *testing.T) {
+	store := effect.NewMemoryEffectStore()
+	delivered := make(chan struct{}, 1)
+	runner := effect.NewRunner(store, effect.WithEffectResolver("webhook", func(record effect.EffectRecord) (effect.Effect, error) {
+		return &callbackEffect{done: delivered}, nil
+	}))
+	defer runner.Close()
+
+	plan := effect.EffectPlan{Durable: []effect.Effect{&mockEffect{name: "webhook", kind: effect.DurableDelivery}}}
+	if err := runner.Run(context.Background(), "exec-delivery", plan); err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	select {
+	case <-delivered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for durable delivery")
+	}
+}
+
+func TestRunnerRecoversUnscheduledTransaction(t *testing.T) {
+	store := effect.NewMemoryEffectStore()
+	txID, err := store.Begin(context.Background(), "exec-recovery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Record(context.Background(), txID, effect.EffectRecord{Name: "webhook", Kind: effect.DurableDelivery}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Commit(context.Background(), txID); err != nil {
+		t.Fatal(err)
+	}
+	delivered := make(chan struct{}, 1)
+	runner := effect.NewRunner(store, effect.WithEffectResolver("webhook", func(effect.EffectRecord) (effect.Effect, error) {
+		return &callbackEffect{done: delivered}, nil
+	}))
+	defer runner.Close()
+	if err := runner.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-delivered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for recovered delivery")
+	}
+}
+
+type callbackEffect struct {
+	done chan<- struct{}
+}
+
+func (e *callbackEffect) Name() string            { return "webhook" }
+func (e *callbackEffect) Kind() effect.EffectKind { return effect.DurableDelivery }
+func (e *callbackEffect) Commit(context.Context) error {
+	select {
+	case e.done <- struct{}{}:
+	default:
+	}
+	return nil
 }

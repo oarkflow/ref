@@ -112,6 +112,16 @@ func (s *SQLEffectStore) Tx(executionID string) (*sql.Tx, bool) {
 	return entry.tx, true
 }
 
+func (s *SQLEffectStore) Transaction(ctx context.Context, txID string) (any, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.byTxID[txID]
+	if !ok {
+		return nil, fmt.Errorf("ref-app: effect transaction %q is not open", txID)
+	}
+	return entry.tx, nil
+}
+
 // Record notes a durable effect. The row is written in Commit, inside the
 // transaction, so the journal cannot disagree with the domain rows.
 func (s *SQLEffectStore) Record(_ context.Context, txID string, record effect.EffectRecord) error {
@@ -138,11 +148,7 @@ func (s *SQLEffectStore) Commit(ctx context.Context, txID string) error {
 		return fmt.Errorf("ref-app: effect transaction %q is not open", txID)
 	}
 
-	names := make([]string, 0, len(entry.records))
-	for _, record := range entry.records {
-		names = append(names, record.Name+":"+record.Kind.String())
-	}
-	encoded, err := json.Marshal(names)
+	encoded, err := json.Marshal(entry.records)
 	if err != nil {
 		_ = entry.tx.Rollback()
 		return err
@@ -157,6 +163,20 @@ func (s *SQLEffectStore) Commit(ctx context.Context, txID string) error {
 		return err
 	}
 	return entry.tx.Commit()
+}
+
+func (s *SQLEffectStore) Abort(ctx context.Context, txID string) error {
+	s.mu.Lock()
+	entry, ok := s.byTxID[txID]
+	if ok {
+		delete(s.byTxID, txID)
+		delete(s.byExecution, entry.executionID)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("ref-app: effect transaction %q is not open", txID)
+	}
+	return entry.tx.Rollback()
 }
 
 // ScheduleDelivery marks the journal row scheduled and wakes the delivery worker.
@@ -198,11 +218,23 @@ func (s *SQLEffectStore) Recover(ctx context.Context) ([]effect.PendingTransacti
 		if err := rows.Scan(&txID, &executionID, &encoded); err != nil {
 			return nil, err
 		}
-		var names []string
-		_ = json.Unmarshal(encoded, &names)
-		records := make([]effect.EffectRecord, 0, len(names))
-		for _, name := range names {
-			records = append(records, effect.EffectRecord{Name: name, Kind: effect.DurableDelivery})
+		var records []effect.EffectRecord
+		if err := json.Unmarshal(encoded, &records); err != nil {
+			var names []string
+			if legacyErr := json.Unmarshal(encoded, &names); legacyErr != nil {
+				return nil, err
+			}
+			records = make([]effect.EffectRecord, 0, len(names))
+			for _, name := range names {
+				records = append(records, effect.EffectRecord{Name: name, Kind: effect.DurableDelivery})
+			}
+		}
+		for i := range records {
+			records[i].TxID = txID
+			records[i].ExecutionID = executionID
+			if records[i].Kind == 0 {
+				records[i].Kind = effect.DurableDelivery
+			}
 		}
 		pending = append(pending, effect.PendingTransaction{TxID: txID, ExecutionID: executionID, Effects: records})
 	}

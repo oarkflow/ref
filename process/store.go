@@ -28,6 +28,8 @@ var ErrRevisionConflict = errors.New("ref/process: the run was modified concurre
 
 // ErrRunNotFound reports an unknown run id.
 var ErrRunNotFound = errors.New("ref/process: run not found")
+var ErrClaimLost = errors.New("ref/process: durable claim was lost or expired")
+var ErrNoSubscribers = errors.New("ref/process: event has no subscribers")
 
 // ErrTaskNotFound reports an unknown task id.
 var ErrTaskNotFound = errors.New("ref/process: task not found")
@@ -40,11 +42,12 @@ type Store interface {
 
 	// CreateRun inserts a new run. It must fail if the id already exists.
 	CreateRun(ctx context.Context, run *Run) error
+	CreateRunOrGet(ctx context.Context, run *Run) (*Run, bool, error)
 	// GetRun loads a run, returning ErrRunNotFound when it does not exist.
 	GetRun(ctx context.Context, id string) (*Run, error)
 	// FindRunByIdempotency finds an existing run for a process and key, so a
 	// repeated start returns the original run rather than creating a second.
-	FindRunByIdempotency(ctx context.Context, process, key string) (*Run, error)
+	FindRunByIdempotency(ctx context.Context, tenant, process, key string) (*Run, error)
 	// SaveRun writes a run, asserting its revision. On success the run's Revision
 	// is bumped in place, so a caller can save repeatedly within one pass.
 	SaveRun(ctx context.Context, run *Run) error
@@ -64,9 +67,9 @@ type Store interface {
 
 	// AddTimer schedules a wake-up.
 	AddTimer(ctx context.Context, timer *Timer) error
-	// DueTimers claims timers that are due, removing them from further claims.
-	// It must be atomic so two replicas do not both fire the same timer.
-	DueTimers(ctx context.Context, now time.Time, limit int) ([]*Timer, error)
+	ClaimDueTimers(ctx context.Context, now time.Time, limit int, lease time.Duration) ([]*Timer, error)
+	AckTimer(ctx context.Context, id, token string) error
+	ReleaseTimer(ctx context.Context, id, token string, retryAt time.Time, cause error) error
 	// DeleteTimer removes one timer.
 	DeleteTimer(ctx context.Context, id string) error
 	// DeleteRunTimers removes every timer for a run, which is how a resumed run
@@ -77,9 +80,11 @@ type Store interface {
 
 	// Subscribe records a parked run's interest in an event.
 	Subscribe(ctx context.Context, subscription *Subscription) error
-	// MatchSubscriptions finds subscriptions an event satisfies. An event with a
-	// correlation matches subscriptions with that correlation or with none.
-	MatchSubscriptions(ctx context.Context, event, correlation string) ([]*Subscription, error)
+	ClaimSubscriptions(ctx context.Context, event, correlation string, payload []byte, now time.Time, limit int, lease time.Duration) ([]*Subscription, error)
+	ClaimSubscription(ctx context.Context, id string, payload []byte, now time.Time, lease time.Duration) (*Subscription, error)
+	ClaimExpiredSubscriptions(ctx context.Context, now time.Time, limit int, lease time.Duration) ([]*Subscription, error)
+	AckSubscription(ctx context.Context, id, token string) error
+	ReleaseSubscription(ctx context.Context, id, token string, cause error) error
 	// DeleteSubscription removes one subscription.
 	DeleteSubscription(ctx context.Context, id string) error
 	// DeleteRunSubscriptions removes every subscription for a run.
@@ -89,6 +94,7 @@ type Store interface {
 
 	// SaveJoin upserts a join's accumulated state.
 	SaveJoin(ctx context.Context, join *Join) error
+	SaveJoinAndRun(ctx context.Context, join *Join, run *Run) error
 	// GetJoin loads a join, returning nil when it does not exist yet.
 	GetJoin(ctx context.Context, runID, edge string) (*Join, error)
 

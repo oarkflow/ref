@@ -2,7 +2,11 @@ package effect
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"time"
 )
 
 // Effect is an externally observable mutation.
@@ -10,6 +14,18 @@ type Effect interface {
 	Name() string
 	Kind() EffectKind
 	Commit(context.Context) error
+}
+
+type EffectEncoder interface {
+	EncodeEffect() (payload []byte, idempotencyKey string, idempotent bool, err error)
+}
+
+type TransactionalEffect interface {
+	CommitTransaction(context.Context, any) error
+}
+
+type TransactionProvider interface {
+	Transaction(context.Context, string) (any, error)
 }
 
 // EffectKind classifies effects for commit and delivery strategy.
@@ -67,6 +83,29 @@ func (ep EffectPlan) All() []Effect {
 	return res
 }
 
+func (ep EffectPlan) Validate() error {
+	groups := []struct {
+		effects []Effect
+		kind    EffectKind
+		name    string
+	}{
+		{ep.LocalTx, LocalTransactional, "local"},
+		{ep.Durable, DurableDelivery, "durable"},
+		{ep.FireAndForget, FireAndForget, "fire-and-forget"},
+	}
+	for _, group := range groups {
+		for _, e := range group.effects {
+			if e == nil {
+				return errors.New("ref: effect plan contains nil effect")
+			}
+			if e.Kind() != group.kind {
+				return fmt.Errorf("ref: %s effect %q has kind %s", group.name, e.Name(), e.Kind())
+			}
+		}
+	}
+	return nil
+}
+
 // IsEmpty reports whether the plan contains zero effects.
 func (ep EffectPlan) IsEmpty() bool {
 	return len(ep.LocalTx) == 0 && len(ep.Durable) == 0 && len(ep.FireAndForget) == 0
@@ -74,10 +113,18 @@ func (ep EffectPlan) IsEmpty() bool {
 
 // EffectRecord is the durable representation of an effect in a store.
 type EffectRecord struct {
-	Name       string
-	Kind       EffectKind
-	Payload    []byte
-	Idempotent bool
+	ID             string
+	TxID           string
+	ExecutionID    string
+	Name           string
+	Kind           EffectKind
+	Payload        []byte
+	IdempotencyKey string
+	Idempotent     bool
+	Attempts       int
+	NextAttempt    time.Time
+	LastError      string
+	State          string
 }
 
 // PendingTransaction represents an incomplete transaction found during recovery.
@@ -85,6 +132,23 @@ type PendingTransaction struct {
 	TxID        string
 	ExecutionID string
 	Effects     []EffectRecord
+}
+
+type EffectDelivery struct {
+	Record     EffectRecord
+	ClaimToken string
+	LeaseUntil time.Time
+}
+
+type AbortableEffectStore interface {
+	Abort(ctx context.Context, txID string) error
+}
+
+type DeliveryStore interface {
+	ClaimDeliveries(ctx context.Context, owner string, limit int, lease time.Duration) ([]EffectDelivery, error)
+	AckDelivery(ctx context.Context, id, claimToken string) error
+	RetryDelivery(ctx context.Context, id, claimToken string, nextAttempt time.Time, cause error) error
+	DeadLetterDelivery(ctx context.Context, id, claimToken, reason string) error
 }
 
 // EffectError captures a non-fatal error during effect delivery scheduling
@@ -122,10 +186,6 @@ type EffectErrorFunc func(err EffectError)
 // Non-fatal errors (delivery scheduling, best-effort commit) are reported via onErr
 // when non-nil, instead of being silently discarded.
 func CommitPlan(ctx context.Context, store EffectStore, executionID string, effects []Effect, onErr ...EffectErrorFunc) error {
-	txID, err := beginEffectTransaction(ctx, store, executionID)
-	if err != nil {
-		return err
-	}
 	var reportErr EffectErrorFunc
 	if len(onErr) > 0 {
 		reportErr = onErr[0]
@@ -133,6 +193,9 @@ func CommitPlan(ctx context.Context, store EffectStore, executionID string, effe
 	var localBuf, durableBuf, fireBuf [8]Effect
 	local, durable, fire := localBuf[:0], durableBuf[:0], fireBuf[:0]
 	for _, e := range effects {
+		if e == nil {
+			return errors.New("ref: effect plan contains nil effect")
+		}
 		switch e.Kind() {
 		case LocalTransactional:
 			local = append(local, e)
@@ -140,14 +203,34 @@ func CommitPlan(ctx context.Context, store EffectStore, executionID string, effe
 			durable = append(durable, e)
 		case FireAndForget:
 			fire = append(fire, e)
+		default:
+			return fmt.Errorf("ref: unsupported effect kind %d", e.Kind())
 		}
 	}
-	return commitEffectGroups(ctx, store, txID, local, durable, fire, reportErr)
+	txID, err := beginEffectTransaction(ctx, store, executionID)
+	if err != nil {
+		return err
+	}
+	return commitEffectGroups(ctx, store, txID, local, durable, fire, reportErr, true)
 }
 
 // CommitEffectPlan commits effects already grouped by delivery semantics. It
 // avoids flattening the plan and re-classifying each effect at runtime.
 func CommitEffectPlan(ctx context.Context, store EffectStore, executionID string, plan EffectPlan, onErr ...EffectErrorFunc) error {
+	return CommitEffectPlanWithMode(ctx, store, executionID, plan, true, onErr...)
+}
+
+func CommitEffectPlanWithMode(ctx context.Context, store EffectStore, executionID string, plan EffectPlan, deliverDurable bool, onErr ...EffectErrorFunc) error {
+	if err := plan.Validate(); err != nil {
+		return err
+	}
+	for _, group := range [][]Effect{plan.LocalTx, plan.Durable, plan.FireAndForget} {
+		for _, e := range group {
+			if e == nil {
+				return errors.New("ref: effect plan contains nil effect")
+			}
+		}
+	}
 	txID, err := beginEffectTransaction(ctx, store, executionID)
 	if err != nil {
 		return err
@@ -156,7 +239,7 @@ func CommitEffectPlan(ctx context.Context, store EffectStore, executionID string
 	if len(onErr) > 0 {
 		reportErr = onErr[0]
 	}
-	return commitEffectGroups(ctx, store, txID, plan.LocalTx, plan.Durable, plan.FireAndForget, reportErr)
+	return commitEffectGroups(ctx, store, txID, plan.LocalTx, plan.Durable, plan.FireAndForget, reportErr, deliverDurable)
 }
 
 func beginEffectTransaction(ctx context.Context, store EffectStore, executionID string) (string, error) {
@@ -167,50 +250,99 @@ func beginEffectTransaction(ctx context.Context, store EffectStore, executionID 
 	if err != nil {
 		return "", fmt.Errorf("ref: effect store begin error: %w", err)
 	}
+	if txID == "" {
+		return "", errors.New("ref: effect store returned an empty transaction id")
+	}
 	return txID, nil
 }
 
-func commitEffectGroups(ctx context.Context, store EffectStore, txID string, local, durable, fire []Effect, reportErr EffectErrorFunc) error {
+func recordDurableEffect(ctx context.Context, store EffectStore, txID string, e Effect, index int) error {
+	record := EffectRecord{
+		Name:  e.Name(),
+		Kind:  DurableDelivery,
+		State: "pending",
+	}
+	if encoder, ok := e.(EffectEncoder); ok {
+		payload, key, idempotent, err := encoder.EncodeEffect()
+		if err != nil {
+			return fmt.Errorf("ref: failed to encode durable effect %q: %w", e.Name(), err)
+		}
+		record.Payload = append([]byte(nil), payload...)
+		record.IdempotencyKey = key
+		record.Idempotent = idempotent
+	}
+	if record.IdempotencyKey == "" && record.Idempotent {
+		digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%s:%d", txID, e.Name(), index)))
+		record.IdempotencyKey = hex.EncodeToString(digest[:])
+	}
+	return store.Record(ctx, txID, record)
+}
+
+func compensate(committed []CompensatingEffect) error {
+	var errs []error
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for i := len(committed) - 1; i >= 0; i-- {
+		if err := committed[i].Compensate(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", committed[i].Name(), err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func abortTransaction(ctx context.Context, store EffectStore, txID string) {
+	if abortable, ok := store.(AbortableEffectStore); ok {
+		abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		_ = abortable.Abort(abortCtx, txID)
+		cancel()
+	}
+}
+
+func commitLocalEffect(ctx context.Context, store EffectStore, txID string, e Effect) error {
+	if transactional, ok := e.(TransactionalEffect); ok {
+		provider, ok := store.(TransactionProvider)
+		if !ok {
+			return errors.New("transactional effect requires a transaction provider")
+		}
+		tx, err := provider.Transaction(ctx, txID)
+		if err != nil {
+			return err
+		}
+		return transactional.CommitTransaction(ctx, tx)
+	}
+	return e.Commit(ctx)
+}
+
+func commitEffectGroups(ctx context.Context, store EffectStore, txID string, local, durable, fire []Effect, reportErr EffectErrorFunc, deliverDurable bool) error {
 	if store != nil && txID != "" {
-		for _, e := range durable {
-			if err := store.Record(ctx, txID, EffectRecord{Name: e.Name(), Kind: DurableDelivery}); err != nil {
-				return fmt.Errorf("ref: failed to record durable effect %q: %w", e.Name(), err)
+		for i, e := range durable {
+			if err := recordDurableEffect(ctx, store, txID, e, i); err != nil {
+				abortTransaction(ctx, store, txID)
+				return err
 			}
 		}
 	}
 
-	var committed [8]CompensatingEffect
-	committedCount := 0
-	var overflow []CompensatingEffect
+	var committed []CompensatingEffect
 	for _, e := range local {
-		if err := e.Commit(ctx); err != nil {
-			for i := committedCount - 1; i >= 0; i-- {
-				if i < len(committed) {
-					_ = committed[i].Compensate(ctx)
-				} else {
-					_ = overflow[i-len(committed)].Compensate(ctx)
-				}
+		if err := commitLocalEffect(ctx, store, txID, e); err != nil {
+			compensateErr := compensate(committed)
+			abortTransaction(ctx, store, txID)
+			if compensateErr != nil {
+				return errors.Join(fmt.Errorf("ref: local transactional effect %q failed: %w", e.Name(), err), compensateErr)
 			}
 			return fmt.Errorf("ref: local transactional effect %q failed: %w", e.Name(), err)
 		}
 		if ce, ok := e.(CompensatingEffect); ok {
-			if committedCount < len(committed) {
-				committed[committedCount] = ce
-			} else {
-				overflow = append(overflow, ce)
-			}
-			committedCount++
+			committed = append(committed, ce)
 		}
 	}
 
 	if store != nil && txID != "" {
 		if err := store.Commit(ctx, txID); err != nil {
-			for i := committedCount - 1; i >= 0; i-- {
-				if i < len(committed) {
-					_ = committed[i].Compensate(ctx)
-				} else {
-					_ = overflow[i-len(committed)].Compensate(ctx)
-				}
+			compensateErr := compensate(committed)
+			if compensateErr != nil {
+				return errors.Join(fmt.Errorf("ref: effect store commit error: %w", err), compensateErr)
 			}
 			return fmt.Errorf("ref: effect store commit error: %w", err)
 		}
@@ -219,9 +351,11 @@ func commitEffectGroups(ctx context.Context, store EffectStore, txID string, loc
 		}
 	}
 
-	for _, e := range durable {
-		if err := e.Commit(ctx); err != nil && reportErr != nil {
-			reportErr(EffectError{Phase: "durable_commit", Name: e.Name(), Err: err})
+	if deliverDurable {
+		for _, e := range durable {
+			if err := e.Commit(ctx); err != nil && reportErr != nil {
+				reportErr(EffectError{Phase: "durable_commit", Name: e.Name(), Err: err})
+			}
 		}
 	}
 	for _, e := range fire {

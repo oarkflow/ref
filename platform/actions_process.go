@@ -583,7 +583,11 @@ var taskClaimAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) 
 		if ctx.Principal.ID == "" {
 			return ActionResult{}, errUnauthenticated
 		}
-		claimed, err := call.engine.ClaimTask(ctx.Context, task.ID, ctx.Principal.ID)
+		skills := append([]string(nil), ctx.Principal.Scopes...)
+		skills = append(skills, stringSlice(ctx.Principal.Claims["skills"])...)
+		claimed, err := call.engine.ClaimTaskAs(ctx.Context, task.ID, process.TaskActor{
+			ID: ctx.Principal.ID, Roles: ctx.Principal.Roles, Skills: skills,
+		})
 		if err != nil {
 			return ActionResult{}, conflict("%v", err)
 		}
@@ -646,6 +650,15 @@ var taskCompleteAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpe
 			payload = validated
 		}
 
+		if task.ClaimedBy == "" {
+			skills := append([]string(nil), ctx.Principal.Scopes...)
+			skills = append(skills, stringSlice(ctx.Principal.Claims["skills"])...)
+			if _, err := call.engine.ClaimTaskAs(ctx.Context, task.ID, process.TaskActor{
+				ID: ctx.Principal.ID, Roles: ctx.Principal.Roles, Skills: skills,
+			}); err != nil {
+				return ActionResult{}, taskFailure(err)
+			}
+		}
 		completed, err := call.engine.CompleteTask(ctx.Context, task.ID, ctx.Principal.ID, chosen, payload)
 		if err != nil {
 			return ActionResult{}, taskFailure(err)

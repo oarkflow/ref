@@ -22,7 +22,11 @@
 package process
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"maps"
+	"slices"
 	"time"
 )
 
@@ -76,6 +80,35 @@ const (
 	StepCompensated StepStatus = "compensated"
 )
 
+type IdentitySnapshot struct {
+	ID       string         `json:"id"`
+	TenantID string         `json:"tenant_id,omitempty"`
+	Username string         `json:"username,omitempty"`
+	Email    string         `json:"email,omitempty"`
+	Roles    []string       `json:"roles,omitempty"`
+	Scopes   []string       `json:"scopes,omitempty"`
+	Claims   map[string]any `json:"claims,omitempty"`
+}
+
+func runIdempotencyDigest(run *Run) string {
+	if run == nil || run.IdempotencyKey == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(run.TenantID + "\x00" + run.Process + "\x00" + run.IdempotencyKey))
+	return hex.EncodeToString(sum[:])
+}
+
+func cloneIdentity(identity *IdentitySnapshot) *IdentitySnapshot {
+	if identity == nil {
+		return nil
+	}
+	clone := *identity
+	clone.Roles = slices.Clone(identity.Roles)
+	clone.Scopes = slices.Clone(identity.Scopes)
+	clone.Claims = maps.Clone(identity.Claims)
+	return &clone
+}
+
 // Run is one execution of a process definition.
 //
 // Revision is the optimistic-concurrency guard. Every write asserts the revision
@@ -100,12 +133,16 @@ type Run struct {
 	// thing an operator looking at a failed run wants to know.
 	FailedStep string `json:"failed_step,omitempty"`
 
-	TenantID       string `json:"tenant_id,omitempty"`
-	PrincipalID    string `json:"principal_id,omitempty"`
-	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	TenantID          string            `json:"tenant_id,omitempty"`
+	PrincipalID       string            `json:"principal_id,omitempty"`
+	Identity          *IdentitySnapshot `json:"identity,omitempty"`
+	IdempotencyKey    string            `json:"idempotency_key,omitempty"`
+	IdempotencyDigest string            `json:"-"`
 	// CorrelationID ties a run to whatever started it, for tracing across
 	// systems.
-	CorrelationID string `json:"correlation_id,omitempty"`
+	CorrelationID  string `json:"correlation_id,omitempty"`
+	ParentRunID    string `json:"parent_run_id,omitempty"`
+	ParentNotified bool   `json:"parent_notified,omitempty"`
 
 	// Frames is the cursor: the work this run still has to do. An empty cursor
 	// on an active run means the run has finished its graph.
@@ -145,6 +182,7 @@ type WaitState struct {
 	// Reason is "timer", "event", "manual", "task", "rate_limit" or "child".
 	Reason string     `json:"reason"`
 	Step   string     `json:"step,omitempty"`
+	Key    string     `json:"key,omitempty"`
 	Edge   string     `json:"edge,omitempty"`
 	Event  string     `json:"event,omitempty"`
 	TaskID string     `json:"task_id,omitempty"`
@@ -219,8 +257,12 @@ type Timer struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 	// OnFire names the step to go to when this timer fires, for a timeout edge's
 	// on_timeout target.
-	OnFire    string    `json:"on_fire,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	OnFire       string     `json:"on_fire,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	ClaimToken   string     `json:"claim_token,omitempty"`
+	ClaimedUntil *time.Time `json:"claimed_until,omitempty"`
+	Attempts     int        `json:"attempts,omitempty"`
+	LastError    string     `json:"last_error,omitempty"`
 }
 
 // Subscription is a parked run's interest in an external event.
@@ -229,14 +271,22 @@ type Timer struct {
 // "payment.settled" with correlation "order-4821" wakes the one run waiting for
 // that order, not every run waiting for a settlement.
 type Subscription struct {
-	ID          string     `json:"id"`
-	RunID       string     `json:"run_id"`
-	Event       string     `json:"event"`
-	Correlation string     `json:"correlation,omitempty"`
-	Step        string     `json:"step,omitempty"`
-	Edge        string     `json:"edge,omitempty"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID                 string          `json:"id"`
+	RunID              string          `json:"run_id"`
+	Event              string          `json:"event"`
+	Correlation        string          `json:"correlation,omitempty"`
+	Step               string          `json:"step,omitempty"`
+	Key                string          `json:"key,omitempty"`
+	Edge               string          `json:"edge,omitempty"`
+	ExpiresAt          *time.Time      `json:"expires_at,omitempty"`
+	CreatedAt          time.Time       `json:"created_at"`
+	ClaimToken         string          `json:"claim_token,omitempty"`
+	ClaimedUntil       *time.Time      `json:"claimed_until,omitempty"`
+	Attempts           int             `json:"attempts,omitempty"`
+	LastError          string          `json:"last_error,omitempty"`
+	PendingEvent       string          `json:"pending_event,omitempty"`
+	PendingCorrelation string          `json:"pending_correlation,omitempty"`
+	PendingPayload     json.RawMessage `json:"pending_payload,omitempty"`
 }
 
 // Join accumulates the results of a fan-in, join or quorum edge.
@@ -316,6 +366,7 @@ type Task struct {
 	RunID   string     `json:"run_id"`
 	Process string     `json:"process"`
 	Step    string     `json:"step"`
+	Key     string     `json:"key,omitempty"`
 	Status  TaskStatus `json:"status"`
 
 	Title        string `json:"title,omitempty"`
@@ -396,6 +447,8 @@ type TaskFilter struct {
 	Queue    string
 	TenantID string
 	RunID    string
+	Step     string
+	Key      string
 	// Overdue selects tasks past their due time.
 	Overdue bool
 	Limit   int

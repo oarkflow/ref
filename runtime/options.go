@@ -12,7 +12,21 @@ type Option func(*Engine)
 // WithEffectStore configures a custom durable EffectStore.
 func WithEffectStore(store effect.EffectStore) Option {
 	return func(e *Engine) {
-		e.effectRunner = effect.NewRunner(store)
+		e.effectStore = store
+	}
+}
+
+func WithEffectResolver(name string, resolver effect.EffectResolver) Option {
+	return func(e *Engine) {
+		if name != "" && resolver != nil {
+			e.effectResolvers[name] = resolver
+		}
+	}
+}
+
+func WithEffectErrorHandler(fn effect.EffectErrorFunc) Option {
+	return func(e *Engine) {
+		e.effectErrorHandler = fn
 	}
 }
 

@@ -32,12 +32,12 @@ func (e *Engine) openTask(ctx context.Context, run *Run, step *Step, frame Frame
 	// An existing open task for this step means the run was already parked here and
 	// something re-advanced it. Creating a second task would show the same approval
 	// twice.
-	existing, err := e.store.ListTasks(ctx, TaskFilter{RunID: run.ID, Limit: 100})
+	existing, err := e.store.ListTasks(ctx, TaskFilter{RunID: run.ID, Step: step.Name, Key: frame.StateKey(), Limit: 1})
 	if err != nil {
 		return nil, nil, err
 	}
 	for _, task := range existing {
-		if task.Step == step.Name && task.Open() {
+		if task.Step == step.Name && task.Key == frame.StateKey() && task.Open() {
 			return &WaitState{
 				Reason: "task", Step: step.Name, TaskID: task.ID, Until: task.DueAt,
 				Detail: "waiting for somebody to complete this task",
@@ -52,6 +52,7 @@ func (e *Engine) openTask(ctx context.Context, run *Run, step *Step, frame Frame
 		RunID:      run.ID,
 		Process:    run.Process,
 		Step:       step.Name,
+		Key:        frame.StateKey(),
 		Status:     TaskOpen,
 		Role:       definition.Role,
 		Queue:      definition.Queue,
@@ -67,27 +68,33 @@ func (e *Engine) openTask(ctx context.Context, run *Run, step *Step, frame Frame
 		task.Data = encoded
 	}
 	if definition.Title != nil {
-		if title, err := definition.Title.Render(scope); err == nil {
-			task.Title = title
+		title, err := definition.Title.Render(scope)
+		if err != nil {
+			return nil, nil, err
 		}
+		task.Title = title
 	}
 	if task.Title == "" {
 		task.Title = step.Name
 	}
 	if definition.Instructions != nil {
-		if instructions, err := definition.Instructions.Render(scope); err == nil {
-			task.Instructions = instructions
+		instructions, err := definition.Instructions.Render(scope)
+		if err != nil {
+			return nil, nil, err
 		}
+		task.Instructions = instructions
 	}
 	if definition.Assignee != nil {
-		if assignee, err := definition.Assignee.Render(scope); err == nil {
-			task.Assignee = assignee
+		assignee, err := definition.Assignee.Render(scope)
+		if err != nil {
+			return nil, nil, err
 		}
+		task.Assignee = assignee
 	}
 	for _, forbidden := range definition.ForbidPrincipals {
 		value, err := forbidden.Value(scope)
 		if err != nil {
-			continue
+			return nil, nil, err
 		}
 		if text := fmt.Sprint(value); text != "" {
 			task.ForbidPrincipals = append(task.ForbidPrincipals, text)
@@ -180,6 +187,12 @@ type RouteRequest struct {
 	Strategy string
 }
 
+type TaskActor struct {
+	ID     string
+	Roles  []string
+	Skills []string
+}
+
 // SetRouter installs a task router.
 func (e *Engine) SetRouter(router Router) { e.router = router }
 
@@ -189,9 +202,14 @@ func (e *Engine) SetRouter(router Router) { e.router = router }
 // same task produce one success and one "somebody else got there first", rather
 // than two people both believing they own it.
 func (e *Engine) ClaimTask(ctx context.Context, taskID, principal string) (*Task, error) {
-	if principal == "" {
+	return e.ClaimTaskAs(ctx, taskID, TaskActor{ID: principal})
+}
+
+func (e *Engine) ClaimTaskAs(ctx context.Context, taskID string, actor TaskActor) (*Task, error) {
+	if actor.ID == "" {
 		return nil, errors.New("ref/process: claiming a task needs a principal")
 	}
+	principal := actor.ID
 	task, err := e.store.GetTask(ctx, taskID)
 	if err != nil {
 		return nil, err
@@ -199,8 +217,33 @@ func (e *Engine) ClaimTask(ctx context.Context, taskID, principal string) (*Task
 	if !task.Open() {
 		return nil, fmt.Errorf("ref/process: task %s is %s and cannot be claimed", taskID, task.Status)
 	}
+	if task.Role != "" && !slices.Contains(actor.Roles, task.Role) {
+		return nil, fmt.Errorf("ref/process: role %q is required to claim task %s", task.Role, taskID)
+	}
+	for _, skill := range task.Skills {
+		if !slices.Contains(actor.Skills, skill) {
+			return nil, fmt.Errorf("ref/process: skill %q is required to claim task %s", skill, taskID)
+		}
+	}
 	if slices.Contains(task.ForbidPrincipals, principal) {
 		return nil, fmt.Errorf("ref/process: you cannot act on this task")
+	}
+	if task.Assignee == "" {
+		run, err := e.store.GetRun(ctx, task.RunID)
+		if err != nil {
+			return nil, err
+		}
+		definition, ok := e.Definition(run.Process)
+		if !ok {
+			return nil, fmt.Errorf("ref/process: process %q is not registered", run.Process)
+		}
+		step, ok := definition.Steps[task.Step]
+		if !ok || step.Task == nil {
+			return nil, fmt.Errorf("ref/process: task step %q is not registered", task.Step)
+		}
+		if principal == run.PrincipalID && !step.Task.AllowSelfAssign {
+			return nil, fmt.Errorf("ref/process: task %s cannot be self-assigned", taskID)
+		}
 	}
 	if task.Assignee != "" && task.Assignee != principal {
 		return nil, fmt.Errorf("ref/process: task %s is assigned to somebody else", taskID)
@@ -291,6 +334,9 @@ func (e *Engine) CompleteTask(ctx context.Context, taskID, principal, action str
 	if slices.Contains(task.ForbidPrincipals, principal) {
 		return nil, fmt.Errorf("ref/process: you cannot act on this task")
 	}
+	if task.ClaimedBy == "" {
+		return nil, fmt.Errorf("ref/process: task %s must be claimed before completion", taskID)
+	}
 	if task.Assignee != "" && task.Assignee != principal && task.ClaimedBy != principal {
 		return nil, fmt.Errorf("ref/process: task %s is assigned to somebody else", taskID)
 	}
@@ -331,9 +377,11 @@ func (e *Engine) CompleteTask(ctx context.Context, taskID, principal, action str
 	task.CompletedBy = principal
 	task.CompletedAt = &now
 	task.Action = action
-	if encoded, err := json.Marshal(result); err == nil {
-		task.Result = encoded
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
 	}
+	task.Result = encoded
 	if err := e.store.SaveTask(ctx, task); err != nil {
 		if errors.Is(err, ErrRevisionConflict) {
 			return nil, fmt.Errorf("ref/process: task %s changed while you were completing it; reload and try again", taskID)
@@ -343,13 +391,27 @@ func (e *Engine) CompleteTask(ctx context.Context, taskID, principal, action str
 
 	// Record the completion as the step's own result, so a later edge reading
 	// results.<step> sees the decision.
-	if state, err := e.stepStateByKey(ctx, task.RunID, task.Step); err == nil && state != nil {
-		sequence, _ := e.store.NextStepSequence(ctx, task.RunID)
-		state.Status = StepCompleted
-		state.Sequence = sequence
-		state.FinishedAt = &now
-		state.Result = task.Result
-		_ = e.store.SaveStep(ctx, state)
+	stateKey := task.Key
+	if stateKey == "" {
+		stateKey = task.Step
+	}
+	state, err := e.stepStateByKey(ctx, task.RunID, stateKey)
+	if err != nil {
+		return task, err
+	}
+	if state == nil {
+		return task, fmt.Errorf("ref/process: task %s has no persisted step state", taskID)
+	}
+	sequence, err := e.store.NextStepSequence(ctx, task.RunID)
+	if err != nil {
+		return task, err
+	}
+	state.Status = StepCompleted
+	state.Sequence = sequence
+	state.FinishedAt = &now
+	state.Result = task.Result
+	if err := e.store.SaveStep(ctx, state); err != nil {
+		return task, err
 	}
 
 	// The run continues from the task step's own outgoing edges. That is the one
@@ -367,7 +429,11 @@ func (e *Engine) CompleteTask(ctx context.Context, taskID, principal, action str
 // finished outside an ordinary execution, and both must resolve edges rather than
 // re-run the step — re-running a task step would open a second task.
 func (e *Engine) resumeAfterTask(ctx context.Context, task *Task, result map[string]any) error {
-	return e.continueFromStep(ctx, task.RunID, task.Step, result, nil)
+	stateKey := task.Key
+	if stateKey == "" {
+		stateKey = task.Step
+	}
+	return e.continueFromStep(ctx, task.RunID, task.Step, stateKey, result, nil)
 }
 
 // taskStep resolves the definition and task configuration behind a task row.

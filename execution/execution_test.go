@@ -348,3 +348,84 @@ func TestSchedulerPanicRecovery(t *testing.T) {
 		t.Errorf("expected StateFailed, got %v", outcome.State)
 	}
 }
+
+func TestSparseDefinitionIDDoesNotAliasSlotZero(t *testing.T) {
+	mapped := fact.NewKey[string]("mapped")
+	unmapped := fact.NewKey[string]("unmapped")
+	defToSlot := map[fact.DefinitionID]fact.PlanSlot{mapped.DefinitionID(): 0}
+	defSlots := make([]fact.PlanSlot, int(unmapped.DefinitionID())+1)
+	for i := range defSlots {
+		defSlots[i] = fact.NoSlot
+	}
+	defSlots[mapped.DefinitionID()] = 0
+	store := fact.NewStore(1)
+	nc := execution.NewNodeContext(context.Background(), &invocation.Invocation{}, store, nil, nil, 0, defToSlot, defSlots, uint32(len(defSlots)-1))
+	fact.Put(store, 0, "value")
+	if _, err := execution.Require(nc, mapped); err != nil {
+		t.Fatalf("mapped fact missing: %v", err)
+	}
+	if _, err := execution.Require(nc, unmapped); !errors.Is(err, execution.ErrFactMissing) {
+		t.Fatalf("unmapped fact aliased slot zero: %v", err)
+	}
+}
+
+func TestPreCanceledExecutionDoesNotRunSingleNode(t *testing.T) {
+	node := &graph.Node{ID: 0, Name: "work", Kind: graph.PureNode}
+	g, err := graph.Build([]*graph.Node{node}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := graph.Compile(g, "canceled", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ran := false
+	outcome, err := execution.NewScheduler().Execute(ctx, &invocation.Invocation{Intent: "canceled"}, plan, []execution.NodeExecutor{func(*execution.NodeContext) error {
+		ran = true
+		return nil
+	}}, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if outcome.State != execution.StateCanceled {
+		t.Fatalf("expected StateCanceled, got %v", outcome.State)
+	}
+	if ran {
+		t.Fatal("pre-canceled execution ran its node")
+	}
+}
+
+func TestParentCancellationInterruptsSynchronousNode(t *testing.T) {
+	node := &graph.Node{ID: 0, Name: "wait", Kind: graph.PureNode}
+	g, err := graph.Build([]*graph.Node{node}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := graph.Compile(g, "canceled-running", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, execErr := execution.NewScheduler().Execute(ctx, &invocation.Invocation{Intent: "canceled-running"}, plan, []execution.NodeExecutor{func(nc *execution.NodeContext) error {
+			close(started)
+			<-nc.Done()
+			return nc.Err()
+		}}, nil)
+		result <- execErr
+	}()
+	<-started
+	cancel()
+	select {
+	case execErr := <-result:
+		if !errors.Is(execErr, context.Canceled) {
+			t.Fatalf("expected context cancellation, got %v", execErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("synchronous node ignored parent cancellation")
+	}
+}

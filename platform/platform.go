@@ -106,9 +106,7 @@ type Platform struct {
 	// name to the engine that runs it.
 	engines   map[string]*process.Engine
 	processes map[string]*process.Engine
-	// stepAuthz holds the gates declared on process steps, enforced by the step
-	// runner rather than at compile time.
-	stepAuthz map[string]*AuthzSpec
+	stepAuthz map[string]compiledStepAuthz
 
 	replicaID string
 
@@ -125,6 +123,11 @@ type Platform struct {
 	wg         sync.WaitGroup
 	closeOnce  sync.Once
 	closeErr   error
+}
+
+type compiledStepAuthz struct {
+	gate *authzGate
+	spec *AuthzSpec
 }
 
 type compiledStatic struct {
@@ -222,7 +225,7 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 		secrets:           map[string]string{},
 		engines:           map[string]*process.Engine{},
 		processes:         map[string]*process.Engine{},
-		stepAuthz:         map[string]*AuthzSpec{},
+		stepAuthz:         map[string]compiledStepAuthz{},
 		intentIdempotent:  map[string]bool{},
 		advanceRegistered: map[string]bool{},
 		replicaID:         opts.ReplicaID,
@@ -917,6 +920,12 @@ func (p *Platform) actionContext(nc *execution.NodeContext, inputs, config map[s
 	}
 	if identity, ok := requestIdentityFrom(nc.Context); ok {
 		ctx.Principal, ctx.TenantID = identity.principal, identity.tenant
+	} else if identity := nc.Invocation().VerifiedIdentity(); identity != nil {
+		ctx.Principal = Principal{
+			ID: identity.PrincipalID(), TenantID: identity.Tenant(), Roles: identity.Roles(),
+			Scopes: identity.Scopes(), Claims: identity.Claims(),
+		}
+		ctx.TenantID = identity.Tenant()
 	} else if identity, ok := processIdentityFrom(nc.Context); ok {
 		ctx.Principal = Principal{ID: identity.principal, TenantID: identity.tenant}
 		ctx.TenantID = identity.tenant
@@ -1451,16 +1460,25 @@ func (p *Platform) startWorkers(doc Document) error {
 		if p.advanceRegistered[spec.Queue] {
 			continue
 		}
-		engine := p.processes[spec.Name]
 		queue.Register(processAdvanceJobType, func(ctx context.Context, job *fh.QueueJob) error {
 			var payload struct {
 				RunID string `json:"run_id"`
+				Store string `json:"store"`
 			}
 			if err := json.Unmarshal(job.Payload, &payload); err != nil {
 				return fmt.Errorf("ref/platform: advance job has an unreadable payload: %w", err)
 			}
 			if payload.RunID == "" {
 				return fmt.Errorf("ref/platform: advance job has no run_id")
+			}
+			engine, ok := p.engines[payload.Store]
+			if !ok && payload.Store == "" && len(p.engines) == 1 {
+				for _, only := range p.engines {
+					engine, ok = only, true
+				}
+			}
+			if !ok {
+				return fmt.Errorf("ref/platform: advance job names unknown process store %q", payload.Store)
 			}
 			return engine.Advance(ctx, payload.RunID)
 		})
@@ -1505,31 +1523,41 @@ func (p *Platform) runWorkerJob(ctx context.Context, worker WorkerSpec, job *fh.
 				return fmt.Errorf("ref/platform: worker %q received an unreadable payload: %w", worker.Name, err)
 			}
 		}
-		_, err := engine.Start(ctx, worker.Process, input, process.StartOptions{
-			// The job id is the idempotency key, so a queue redelivery resumes the
-			// original run instead of starting a duplicate.
+		principal, tenant, err := principalFromHeaders(job.Headers)
+		if err != nil {
+			return fmt.Errorf("worker %q received an invalid identity snapshot: %w", worker.Name, err)
+		}
+		_, err = engine.Start(ctx, worker.Process, input, process.StartOptions{
 			IdempotencyKey: job.ID,
-			TenantID:       job.Headers["tenant_id"],
-			PrincipalID:    job.Headers["principal_id"],
+			TenantID:       tenant,
+			PrincipalID:    principal.ID,
+			Identity:       identitySnapshot(principal, tenant),
 			Detached:       true,
 		})
 		return err
 	}
 
+	if job.Attempts > 1 && !p.intentIdempotent[worker.Intent] {
+		return fmt.Errorf("worker %q cannot redeliver non-idempotent intent %q", worker.Name, worker.Intent)
+	}
+	principal, tenant, err := principalFromHeaders(job.Headers)
+	if err != nil {
+		return fmt.Errorf("worker %q received an invalid identity snapshot: %w", worker.Name, err)
+	}
 	inv := &invocation.Invocation{
-		ID:     invocation.ID(job.ID),
-		Intent: invocation.IntentID(worker.Intent),
-		Input:  invocation.NewInput(job.Payload, "application/json"),
-		Principal: invocation.NewPrincipalHint(
-			job.Headers["bearer_token"], job.Headers["api_key"], nil, job.Headers["session_id"]),
+		ID:        invocation.ID(job.ID),
+		Intent:    invocation.IntentID(worker.Intent),
+		Input:     invocation.NewInput(job.Payload, "application/json"),
+		Identity:  verifiedFromPrincipal(principal, tenant),
 		Metadata:  invocation.NewQueueMeta(worker.JobType, 0, job.ID, job.Headers),
 		Transport: invocation.Transport{Protocol: "queue"},
 		Received:  time.Now(),
 	}
-	// A job carries the identity of whoever published it, so a tenant-scoped query
-	// inside the intent sees the same tenant the request did.
-	ctx = withProcessIdentity(ctx, job.Headers["principal_id"], job.Headers["tenant_id"])
-	_, err := p.Engine.Dispatch(ctx, inv)
+	ctx = withRequestIdentity(ctx, principal, tenant)
+	result, err := p.Engine.Dispatch(ctx, inv)
+	if result != nil {
+		defer runtime.ReleaseDispatchResult(result)
+	}
 	return err
 }
 

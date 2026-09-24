@@ -118,8 +118,12 @@ func (s *sqlStore) Migrate(ctx context.Context) error {
 			failed_step      %s,
 			tenant_id        %s,
 			principal_id     %s,
+			identity_snapshot TEXT,
 			idempotency_key  %s,
+			idempotency_digest TEXT,
 			correlation_id   %s,
+			parent_run_id     %s,
+			parent_notified   INTEGER NOT NULL DEFAULT 0,
 			frames           TEXT,
 			visits           TEXT,
 			step_count       INTEGER NOT NULL DEFAULT 0,
@@ -134,10 +138,10 @@ func (s *sqlStore) Migrate(ctx context.Context) error {
 			sla_target_at    %s NULL,
 			sla_breach_at    %s NULL,
 			sla_breached     INTEGER NOT NULL DEFAULT 0
-		)`, s.runs, text, text, text, text, text, text, text, text, stamp, stamp, stamp, stamp, stamp, stamp, stamp),
+		)`, s.runs, text, text, text, text, text, text, text, text, text, stamp, stamp, stamp, stamp, stamp, stamp, stamp),
 
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_status_idx ON %s (process, status, updated_at)`, s.runs, s.runs),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_idem_idx ON %s (process, idempotency_key)`, s.runs, s.runs),
+		fmt.Sprintf(`CREATE UNIQUE INDEX IF NOT EXISTS %s_idem_idx ON %s (idempotency_digest)`, s.runs, s.runs),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_tenant_idx ON %s (tenant_id, status)`, s.runs, s.runs),
 
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
@@ -164,24 +168,36 @@ func (s *sqlStore) Migrate(ctx context.Context) error {
 			kind       %s NOT NULL,
 			step       %s,
 			edge       %s,
-			on_fire    %s,
-			payload    TEXT,
-			created_at %s NOT NULL
-		)`, s.timers, text, text, stamp, text, text, text, text, stamp),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_due_idx ON %s (fire_at)`, s.timers, s.timers),
+			on_fire       %s,
+			payload       TEXT,
+			claim_token   TEXT,
+			claimed_until %s NULL,
+			attempts      INTEGER NOT NULL DEFAULT 0,
+			last_error    TEXT,
+			created_at    %s NOT NULL
+		)`, s.timers, text, text, stamp, text, text, text, text, stamp, stamp),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_due_idx ON %s (fire_at, claimed_until)`, s.timers, s.timers),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_run_idx ON %s (run_id, kind)`, s.timers, s.timers),
 
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-			id          %s NOT NULL PRIMARY KEY,
-			run_id      %s NOT NULL,
-			event       %s NOT NULL,
-			correlation %s,
-			step        %s,
-			edge        %s,
-			expires_at  %s NULL,
-			created_at  %s NOT NULL
-		)`, s.subs, text, text, text, text, text, text, stamp, stamp),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_match_idx ON %s (event, correlation)`, s.subs, s.subs),
+			id                %s NOT NULL PRIMARY KEY,
+			run_id            %s NOT NULL,
+			event             %s NOT NULL,
+			correlation       %s,
+			step              %s,
+			subscription_key  TEXT,
+			edge              %s,
+			expires_at        %s NULL,
+			claim_token       TEXT,
+			claimed_until     %s NULL,
+			attempts          INTEGER NOT NULL DEFAULT 0,
+			last_error        TEXT,
+			pending_event     TEXT,
+			pending_correlation TEXT,
+			pending_payload   TEXT,
+			created_at        %s NOT NULL
+		)`, s.subs, text, text, text, text, text, text, stamp, stamp, stamp),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_match_idx ON %s (event, correlation, claimed_until)`, s.subs, s.subs),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_run_idx ON %s (run_id)`, s.subs, s.subs),
 
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
@@ -206,6 +222,7 @@ func (s *sqlStore) Migrate(ctx context.Context) error {
 			run_id            %s NOT NULL,
 			process           %s NOT NULL,
 			step              %s NOT NULL,
+			task_key          TEXT,
 			status            %s NOT NULL,
 			title             TEXT,
 			instructions      TEXT,
@@ -253,17 +270,110 @@ func (s *sqlStore) Migrate(ctx context.Context) error {
 
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
-			// MySQL before 8.0.29 has no CREATE INDEX IF NOT EXISTS, and every
-			// restart after the first would fail on an index that already exists.
-			// A genuinely missing index surfaces as a slow query, not as silent
-			// data loss, so skipping is the right trade.
-			if strings.Contains(statement, "CREATE INDEX") {
+			message := strings.ToLower(err.Error())
+			if strings.Contains(statement, "CREATE INDEX") && (strings.Contains(message, "already exists") || strings.Contains(message, "duplicate key name")) {
 				continue
 			}
 			return fmt.Errorf("ref/process: migrate: %w", err)
 		}
 	}
+	if err := s.ensureRunTextColumn(ctx, "identity_snapshot"); err != nil {
+		return err
+	}
+	if err := s.ensureRunTextColumn(ctx, "idempotency_digest"); err != nil {
+		return err
+	}
+	if err := s.ensureRunTextColumn(ctx, "parent_run_id"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, s.runs, "parent_notified", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	for _, column := range []struct{ name, definition string }{
+		{"claim_token", "TEXT"}, {"claimed_until", s.timestamp()}, {"attempts", "INTEGER NOT NULL DEFAULT 0"}, {"last_error", "TEXT"},
+	} {
+		if err := s.ensureColumn(ctx, s.timers, column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	for _, column := range []struct{ name, definition string }{
+		{"claim_token", "TEXT"}, {"claimed_until", s.timestamp()}, {"attempts", "INTEGER NOT NULL DEFAULT 0"}, {"last_error", "TEXT"},
+		{"subscription_key", "TEXT"},
+		{"pending_event", "TEXT"}, {"pending_correlation", "TEXT"}, {"pending_payload", "TEXT"},
+	} {
+		if err := s.ensureColumn(ctx, s.subs, column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	if err := s.ensureColumn(ctx, s.tasks, "task_key", "TEXT"); err != nil {
+		return err
+	}
+	indexName := s.runs + "_idem_idx"
+	if s.dialect == "mysql" {
+		_, _ = s.db.ExecContext(ctx, fmt.Sprintf("DROP INDEX %s ON %s", indexName, s.runs))
+	} else {
+		_, _ = s.db.ExecContext(ctx, fmt.Sprintf("DROP INDEX IF EXISTS %s", indexName))
+	}
+	statement := fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s_idem_idx ON %s (idempotency_digest)", s.runs, s.runs)
+	if _, err := s.db.ExecContext(ctx, statement); err != nil && !strings.Contains(strings.ToLower(err.Error()), "already exists") && !strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+		return fmt.Errorf("ref/process: migrate idempotency index: %w", err)
+	}
 	return nil
+}
+
+func (s *sqlStore) ensureRunTextColumn(ctx context.Context, column string) error {
+	return s.ensureColumn(ctx, s.runs, column, "TEXT")
+}
+
+func (s *sqlStore) ensureColumn(ctx context.Context, table, column, definition string) error {
+	present := false
+	var columnCount int
+	switch s.dialect {
+	case "sqlite":
+		rows, err := s.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var cid int
+			var name, columnType string
+			var notNull, primaryKey int
+			var defaultValue any
+			if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+				rows.Close()
+				return err
+			}
+			if name == column {
+				present = true
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+	case "mysql":
+		err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns
+			WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`, table, column).Scan(&columnCount)
+		if err == nil {
+			present = columnCount > 0
+		}
+		if err != nil {
+			return err
+		}
+	case "postgres":
+		err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2`, table, column).Scan(&columnCount)
+		if err == nil {
+			present = columnCount > 0
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if present {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
+	return err
 }
 
 // ---------------------------------------------------------------------------
@@ -271,23 +381,28 @@ func (s *sqlStore) Migrate(ctx context.Context) error {
 // ---------------------------------------------------------------------------
 
 const runColumns = `id, process, version, status, input, output, error, failed_step,
-	tenant_id, principal_id, idempotency_key, correlation_id, frames, visits, step_count,
+	tenant_id, principal_id, identity_snapshot, idempotency_key, idempotency_digest, correlation_id, parent_run_id, parent_notified, frames, visits, step_count,
 	compensating, waiting, revision, created_at, updated_at, started_at, completed_at,
 	deadline_at, sla_target_at, sla_breach_at, sla_breached`
 
 // CreateRun implements Store.
 func (s *sqlStore) CreateRun(ctx context.Context, run *Run) error {
 	run.Revision = 1
+	run.IdempotencyDigest = runIdempotencyDigest(run)
 	frames, visits, compensating, waiting, err := encodeRunBlobs(run)
 	if err != nil {
 		return err
 	}
 	statement := s.q(fmt.Sprintf(`INSERT INTO %s (%s) VALUES
-		($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`, s.runs, runColumns))
+		($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)`, s.runs, runColumns))
+	identity, err := encodeIdentity(run.Identity)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.ExecContext(ctx, statement,
 		run.ID, run.Process, run.Version, string(run.Status),
 		blob(run.Input), blob(run.Output), null(run.Error), null(run.FailedStep),
-		null(run.TenantID), null(run.PrincipalID), null(run.IdempotencyKey), null(run.CorrelationID),
+		null(run.TenantID), null(run.PrincipalID), identity, null(run.IdempotencyKey), null(run.IdempotencyDigest), null(run.CorrelationID), null(run.ParentRunID), boolInt(run.ParentNotified),
 		frames, visits, run.Steps, compensating, waiting,
 		run.Revision, run.CreatedAt, run.UpdatedAt,
 		run.StartedAt, run.CompletedAt, run.DeadlineAt, run.SLATargetAt, run.SLABreachAt, boolInt(run.SLABreached),
@@ -296,8 +411,35 @@ func (s *sqlStore) CreateRun(ctx context.Context, run *Run) error {
 }
 
 // SaveRun implements Store. The revision assertion is the whole point.
+func (s *sqlStore) CreateRunOrGet(ctx context.Context, run *Run) (*Run, bool, error) {
+	digest := runIdempotencyDigest(run)
+	if digest == "" {
+		if err := s.CreateRun(ctx, run); err != nil {
+			return nil, false, err
+		}
+		return run, true, nil
+	}
+	if err := s.CreateRun(ctx, run); err == nil {
+		return run, true, nil
+	} else {
+		statement := s.q(fmt.Sprintf("SELECT %s FROM %s WHERE idempotency_digest=$1 ORDER BY created_at DESC LIMIT 1", runColumns, s.runs))
+		existing, findErr := s.scanRun(s.db.QueryRowContext(ctx, statement, digest))
+		if findErr == nil {
+			return existing, false, nil
+		}
+		if !errors.Is(findErr, ErrRunNotFound) && !errors.Is(findErr, sql.ErrNoRows) {
+			return nil, false, findErr
+		}
+		return nil, false, err
+	}
+}
+
 func (s *sqlStore) SaveRun(ctx context.Context, run *Run) error {
 	frames, visits, compensating, waiting, err := encodeRunBlobs(run)
+	if err != nil {
+		return err
+	}
+	identity, err := encodeIdentity(run.Identity)
 	if err != nil {
 		return err
 	}
@@ -305,18 +447,18 @@ func (s *sqlStore) SaveRun(ctx context.Context, run *Run) error {
 	next := run.Revision + 1
 	statement := s.q(fmt.Sprintf(`UPDATE %s SET
 		status=$1, input=$2, output=$3, error=$4, failed_step=$5,
-		tenant_id=$6, principal_id=$7, correlation_id=$8,
-		frames=$9, visits=$10, step_count=$11, compensating=$12, waiting=$13,
-		revision=$14, updated_at=$15, started_at=$16, completed_at=$17,
-		deadline_at=$18, sla_target_at=$19, sla_breach_at=$20, sla_breached=$21, version=$22
-		WHERE id=$23 AND revision=$24`, s.runs))
+		tenant_id=$6, principal_id=$7, identity_snapshot=$8, correlation_id=$9,
+		frames=$10, visits=$11, step_count=$12, compensating=$13, waiting=$14,
+		revision=$15, updated_at=$16, started_at=$17, completed_at=$18,
+		deadline_at=$19, sla_target_at=$20, sla_breach_at=$21, sla_breached=$22, version=$23,
+		parent_run_id=$24, parent_notified=$25 WHERE id=$26 AND revision=$27`, s.runs))
 	result, err := s.db.ExecContext(ctx, statement,
 		string(run.Status), blob(run.Input), blob(run.Output), null(run.Error), null(run.FailedStep),
-		null(run.TenantID), null(run.PrincipalID), null(run.CorrelationID),
+		null(run.TenantID), null(run.PrincipalID), identity, null(run.CorrelationID),
 		frames, visits, run.Steps, compensating, waiting,
 		next, run.UpdatedAt, run.StartedAt, run.CompletedAt,
 		run.DeadlineAt, run.SLATargetAt, run.SLABreachAt, boolInt(run.SLABreached), run.Version,
-		run.ID, run.Revision,
+		null(run.ParentRunID), boolInt(run.ParentNotified), run.ID, run.Revision,
 	)
 	if err != nil {
 		return err
@@ -345,13 +487,14 @@ func (s *sqlStore) GetRun(ctx context.Context, id string) (*Run, error) {
 }
 
 // FindRunByIdempotency implements Store.
-func (s *sqlStore) FindRunByIdempotency(ctx context.Context, process, key string) (*Run, error) {
+func (s *sqlStore) FindRunByIdempotency(ctx context.Context, tenant, process, key string) (*Run, error) {
 	if key == "" {
 		return nil, ErrRunNotFound
 	}
+	digest := runIdempotencyDigest(&Run{TenantID: tenant, Process: process, IdempotencyKey: key})
 	statement := s.q(fmt.Sprintf(
-		"SELECT %s FROM %s WHERE process=$1 AND idempotency_key=$2 ORDER BY created_at DESC LIMIT 1", runColumns, s.runs))
-	run, err := s.scanRun(s.db.QueryRowContext(ctx, statement, process, key))
+		"SELECT %s FROM %s WHERE idempotency_digest=$1 ORDER BY created_at DESC LIMIT 1", runColumns, s.runs))
+	run, err := s.scanRun(s.db.QueryRowContext(ctx, statement, digest))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrRunNotFound
 	}
@@ -430,18 +573,18 @@ type rowScanner interface {
 
 func (s *sqlStore) scanRun(row rowScanner) (*Run, error) {
 	var (
-		run                                                    Run
-		status                                                 string
-		input, output                                          []byte
-		errText, failedStep                                    sql.NullString
-		tenant, principal, idempotency, correlation            sql.NullString
-		frames, visits, compensating, waiting                  sql.NullString
-		startedAt, completedAt, deadlineAt, slaTarget, slaFail sql.NullTime
-		slaBreached                                            int
+		run                                                                                         Run
+		status                                                                                      string
+		input, output                                                                               []byte
+		errText, failedStep                                                                         sql.NullString
+		tenant, principal, identitySnapshot, idempotency, idempotencyDigest, correlation, parentRun sql.NullString
+		frames, visits, compensating, waiting                                                       sql.NullString
+		startedAt, completedAt, deadlineAt, slaTarget, slaFail                                      sql.NullTime
+		slaBreached, parentNotified                                                                 int
 	)
 	if err := row.Scan(
 		&run.ID, &run.Process, &run.Version, &status, &input, &output, &errText, &failedStep,
-		&tenant, &principal, &idempotency, &correlation, &frames, &visits, &run.Steps,
+		&tenant, &principal, &identitySnapshot, &idempotency, &idempotencyDigest, &correlation, &parentRun, &parentNotified, &frames, &visits, &run.Steps,
 		&compensating, &waiting, &run.Revision, &run.CreatedAt, &run.UpdatedAt,
 		&startedAt, &completedAt, &deadlineAt, &slaTarget, &slaFail, &slaBreached,
 	); err != nil {
@@ -452,7 +595,15 @@ func (s *sqlStore) scanRun(row rowScanner) (*Run, error) {
 	run.Error, run.FailedStep = errText.String, failedStep.String
 	run.TenantID, run.PrincipalID = tenant.String, principal.String
 	run.IdempotencyKey, run.CorrelationID = idempotency.String, correlation.String
+	run.IdempotencyDigest = idempotencyDigest.String
+	run.ParentRunID = parentRun.String
+	run.ParentNotified = parentNotified != 0
 	run.SLABreached = slaBreached != 0
+	if identitySnapshot.Valid && identitySnapshot.String != "" {
+		if err := json.Unmarshal([]byte(identitySnapshot.String), &run.Identity); err != nil {
+			return nil, fmt.Errorf("ref/process: run %s has an unreadable identity snapshot: %w", run.ID, err)
+		}
+	}
 
 	if frames.Valid && frames.String != "" {
 		if err := json.Unmarshal([]byte(frames.String), &run.Frames); err != nil {
@@ -477,6 +628,17 @@ func (s *sqlStore) scanRun(row rowScanner) (*Run, error) {
 	run.SLATargetAt = nullableTime(slaTarget)
 	run.SLABreachAt = nullableTime(slaFail)
 	return &run, nil
+}
+
+func encodeIdentity(identity *IdentitySnapshot) (any, error) {
+	if identity == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(identity)
+	if err != nil {
+		return nil, fmt.Errorf("ref/process: encode identity snapshot: %w", err)
+	}
+	return string(encoded), nil
 }
 
 func encodeRunBlobs(run *Run) (any, any, any, any, error) {
@@ -603,17 +765,20 @@ func (s *sqlStore) NextStepSequence(ctx context.Context, runID string) (int64, e
 
 // AddTimer implements Store.
 func (s *sqlStore) AddTimer(ctx context.Context, timer *Timer) error {
-	statement := s.q(fmt.Sprintf(`INSERT INTO %s (id, run_id, fire_at, kind, step, edge, on_fire, payload, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, s.timers))
-	_, err := s.db.ExecContext(ctx, statement,
+	statement := fmt.Sprintf(`INSERT INTO %s (id, run_id, fire_at, kind, step, edge, on_fire, payload, claim_token, claimed_until, attempts, last_error, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,NULL,0,NULL,$9)`, s.timers)
+	if s.dialect == "mysql" {
+		statement += " ON DUPLICATE KEY UPDATE run_id=VALUES(run_id), fire_at=VALUES(fire_at), kind=VALUES(kind), step=VALUES(step), edge=VALUES(edge), on_fire=VALUES(on_fire), payload=VALUES(payload), claim_token=NULL, claimed_until=NULL, last_error=NULL"
+	} else {
+		statement += " ON CONFLICT(id) DO UPDATE SET run_id=EXCLUDED.run_id, fire_at=EXCLUDED.fire_at, kind=EXCLUDED.kind, step=EXCLUDED.step, edge=EXCLUDED.edge, on_fire=EXCLUDED.on_fire, payload=EXCLUDED.payload, claim_token=NULL, claimed_until=NULL, last_error=NULL"
+	}
+	_, err := s.db.ExecContext(ctx, s.q(statement),
 		timer.ID, timer.RunID, timer.Fire.UTC(), timer.Kind,
 		null(timer.Step), null(timer.Edge), null(timer.OnFire), blob(timer.Payload), timer.CreatedAt)
 	return err
 }
 
-// DueTimers implements Store. Claiming is a delete-as-you-read inside one
-// transaction, so a due timer fires exactly once across the deployment.
-func (s *sqlStore) DueTimers(ctx context.Context, now time.Time, limit int) ([]*Timer, error) {
+func (s *sqlStore) ClaimDueTimers(ctx context.Context, now time.Time, limit int, lease time.Duration) ([]*Timer, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -622,46 +787,77 @@ func (s *sqlStore) DueTimers(ctx context.Context, now time.Time, limit int) ([]*
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-
-	selectStatement := fmt.Sprintf(`SELECT id, run_id, fire_at, kind, step, edge, on_fire, payload, created_at
-		FROM %s WHERE fire_at <= $1 ORDER BY fire_at LIMIT %d%s`, s.timers, limit, lockSuffix(s.dialect))
-	rows, err := tx.QueryContext(ctx, s.q(selectStatement), now.UTC())
+	statement := fmt.Sprintf(`SELECT id, run_id, fire_at, kind, step, edge, on_fire, payload, claim_token,
+		claimed_until, attempts, last_error, created_at FROM %s
+		WHERE fire_at <= $1 AND (claimed_until IS NULL OR claimed_until <= $1)
+		ORDER BY fire_at LIMIT %d%s`, s.timers, limit, lockSuffix(s.dialect))
+	rows, err := tx.QueryContext(ctx, s.q(statement), now.UTC())
 	if err != nil {
 		return nil, err
 	}
-	var (
-		out []*Timer
-		ids []string
-	)
-	for rows.Next() {
-		var (
-			timer              Timer
-			step, edge, onFire sql.NullString
-			payload            []byte
-		)
-		if err := rows.Scan(&timer.ID, &timer.RunID, &timer.Fire, &timer.Kind,
-			&step, &edge, &onFire, &payload, &timer.CreatedAt); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		timer.Step, timer.Edge, timer.OnFire = step.String, edge.String, onFire.String
-		timer.Payload = json.RawMessage(payload)
-		out = append(out, &timer)
-		ids = append(ids, timer.ID)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	timers, err := scanTimers(rows)
+	if err != nil {
 		return nil, err
 	}
-	for _, id := range ids {
-		if _, err := tx.ExecContext(ctx, s.q(fmt.Sprintf("DELETE FROM %s WHERE id=$1", s.timers)), id); err != nil {
+	claimedUntil := now.Add(lease)
+	for _, timer := range timers {
+		timer.ClaimToken = randomID()
+		timer.ClaimedUntil = &claimedUntil
+		timer.Attempts++
+		timer.LastError = ""
+		update := s.q(fmt.Sprintf(`UPDATE %s SET claim_token=$1, claimed_until=$2, attempts=$3, last_error=NULL WHERE id=$4`, s.timers))
+		if _, err := tx.ExecContext(ctx, update, timer.ClaimToken, claimedUntil.UTC(), timer.Attempts, timer.ID); err != nil {
 			return nil, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return timers, nil
+}
+
+func (s *sqlStore) AckTimer(ctx context.Context, id, token string) error {
+	statement := s.q(fmt.Sprintf("DELETE FROM %s WHERE id=$1 AND claim_token=$2", s.timers))
+	result, err := s.db.ExecContext(ctx, statement, id, token)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 1 {
+		return nil
+	}
+	var exists int
+	if err := s.db.QueryRowContext(ctx, s.q(fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE id=$1", s.timers)), id).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return nil
+	}
+	return ErrClaimLost
+}
+
+func (s *sqlStore) ReleaseTimer(ctx context.Context, id, token string, retryAt time.Time, cause error) error {
+	lastError := ""
+	if cause != nil {
+		lastError = cause.Error()
+	}
+	statement := s.q(fmt.Sprintf(`UPDATE %s SET claim_token=NULL, claimed_until=NULL, last_error=$1,
+		fire_at=CASE WHEN fire_at < $2 THEN $2 ELSE fire_at END WHERE id=$3 AND claim_token=$4`, s.timers))
+	result, err := s.db.ExecContext(ctx, statement, null(lastError), retryAt.UTC(), id, token)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrClaimLost
+	}
+	return nil
 }
 
 // DeleteTimer implements Store.
@@ -689,26 +885,34 @@ func (s *sqlStore) DeleteRunTimers(ctx context.Context, runID string, kinds ...s
 
 // ListTimers implements Store.
 func (s *sqlStore) ListTimers(ctx context.Context, runID string) ([]*Timer, error) {
-	statement := s.q(fmt.Sprintf(`SELECT id, run_id, fire_at, kind, step, edge, on_fire, payload, created_at
-		FROM %s WHERE run_id=$1 ORDER BY fire_at`, s.timers))
+	statement := s.q(fmt.Sprintf(`SELECT id, run_id, fire_at, kind, step, edge, on_fire, payload, claim_token,
+		claimed_until, attempts, last_error, created_at FROM %s WHERE run_id=$1 ORDER BY fire_at`, s.timers))
 	rows, err := s.db.QueryContext(ctx, statement, runID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanTimers(rows)
+}
+
+func scanTimers(rows *sql.Rows) ([]*Timer, error) {
 	var out []*Timer
 	for rows.Next() {
 		var (
-			timer              Timer
-			step, edge, onFire sql.NullString
-			payload            []byte
+			timer                                     Timer
+			step, edge, onFire, claimToken, lastError sql.NullString
+			payload                                   []byte
+			claimedUntil                              sql.NullTime
 		)
 		if err := rows.Scan(&timer.ID, &timer.RunID, &timer.Fire, &timer.Kind,
-			&step, &edge, &onFire, &payload, &timer.CreatedAt); err != nil {
+			&step, &edge, &onFire, &payload, &claimToken, &claimedUntil, &timer.Attempts,
+			&lastError, &timer.CreatedAt); err != nil {
 			return nil, err
 		}
 		timer.Step, timer.Edge, timer.OnFire = step.String, edge.String, onFire.String
 		timer.Payload = json.RawMessage(payload)
+		timer.ClaimToken, timer.LastError = claimToken.String, lastError.String
+		timer.ClaimedUntil = nullableTime(claimedUntil)
 		out = append(out, &timer)
 	}
 	return out, rows.Err()
@@ -720,29 +924,174 @@ func (s *sqlStore) ListTimers(ctx context.Context, runID string) ([]*Timer, erro
 
 // Subscribe implements Store.
 func (s *sqlStore) Subscribe(ctx context.Context, subscription *Subscription) error {
-	statement := s.q(fmt.Sprintf(`INSERT INTO %s (id, run_id, event, correlation, step, edge, expires_at, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, s.subs))
-	_, err := s.db.ExecContext(ctx, statement,
+	statement := fmt.Sprintf(`INSERT INTO %s (id, run_id, event, correlation, step, subscription_key, edge, expires_at, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, s.subs)
+	if s.dialect == "mysql" {
+		statement += " ON DUPLICATE KEY UPDATE run_id=VALUES(run_id), event=VALUES(event), correlation=VALUES(correlation), step=VALUES(step), subscription_key=VALUES(subscription_key), edge=VALUES(edge), expires_at=VALUES(expires_at), claim_token=NULL, claimed_until=NULL, pending_event=NULL, pending_correlation=NULL, pending_payload=NULL"
+	} else {
+		statement += " ON CONFLICT(id) DO UPDATE SET run_id=EXCLUDED.run_id, event=EXCLUDED.event, correlation=EXCLUDED.correlation, step=EXCLUDED.step, subscription_key=EXCLUDED.subscription_key, edge=EXCLUDED.edge, expires_at=EXCLUDED.expires_at, claim_token=NULL, claimed_until=NULL, pending_event=NULL, pending_correlation=NULL, pending_payload=NULL"
+	}
+	_, err := s.db.ExecContext(ctx, s.q(statement),
 		subscription.ID, subscription.RunID, subscription.Event, null(subscription.Correlation),
-		null(subscription.Step), null(subscription.Edge), subscription.ExpiresAt, subscription.CreatedAt)
+		null(subscription.Step), null(subscription.Key), null(subscription.Edge), subscription.ExpiresAt, subscription.CreatedAt)
 	return err
 }
 
-// MatchSubscriptions implements Store.
-//
-// A subscription with no correlation matches any event of that name; one with a
-// correlation matches only the same value. That asymmetry is deliberate: a
-// broadcast subscriber is a legitimate pattern, an accidentally-broadcast
-// correlated event is not.
-func (s *sqlStore) MatchSubscriptions(ctx context.Context, event, correlation string) ([]*Subscription, error) {
-	statement := s.q(fmt.Sprintf(`SELECT id, run_id, event, correlation, step, edge, expires_at, created_at
-		FROM %s WHERE event=$1 AND (correlation IS NULL OR correlation=$2) ORDER BY created_at`, s.subs))
-	rows, err := s.db.QueryContext(ctx, statement, event, correlation)
+func (s *sqlStore) ClaimSubscriptions(ctx context.Context, event, correlation string, payload []byte, now time.Time, limit int, lease time.Duration) ([]*Subscription, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	return scanSubscriptions(rows)
+	defer func() { _ = tx.Rollback() }()
+	statement := fmt.Sprintf(`SELECT id, run_id, event, correlation, step, subscription_key, edge, expires_at, claim_token,
+		claimed_until, attempts, last_error, pending_event, pending_correlation, pending_payload, created_at
+		FROM %s WHERE event=$1 AND (correlation IS NULL OR correlation=$2)
+		AND (expires_at IS NULL OR expires_at > $3) AND (claimed_until IS NULL OR claimed_until <= $3)
+		ORDER BY created_at LIMIT %d%s`, s.subs, limit, lockSuffix(s.dialect))
+	rows, err := tx.QueryContext(ctx, s.q(statement), event, correlation, now.UTC())
+	if err != nil {
+		return nil, err
+	}
+	subscriptions, err := scanSubscriptions(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.claimSubscriptionsTx(ctx, tx, subscriptions, event, correlation, payload, now, lease); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return subscriptions, nil
+}
+
+func (s *sqlStore) ClaimSubscription(ctx context.Context, id string, payload []byte, now time.Time, lease time.Duration) (*Subscription, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	statement := s.q(fmt.Sprintf(`SELECT id, run_id, event, correlation, step, subscription_key, edge, expires_at, claim_token,
+		claimed_until, attempts, last_error, pending_event, pending_correlation, pending_payload, created_at
+		FROM %s WHERE id=$1%s`, s.subs, lockSuffix(s.dialect)))
+	rows, err := tx.QueryContext(ctx, statement, id)
+	if err != nil {
+		return nil, err
+	}
+	subscriptions, err := scanSubscriptions(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(subscriptions) == 0 {
+		return nil, nil
+	}
+	if subscriptions[0].ClaimedUntil != nil && subscriptions[0].ClaimedUntil.After(now) {
+		return nil, ErrClaimLost
+	}
+	if err := s.claimSubscriptionsTx(ctx, tx, subscriptions, subscriptions[0].Event, subscriptions[0].Correlation, payload, now, lease); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return subscriptions[0], nil
+}
+
+func (s *sqlStore) ClaimExpiredSubscriptions(ctx context.Context, now time.Time, limit int, lease time.Duration) ([]*Subscription, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	statement := fmt.Sprintf(`SELECT id, run_id, event, correlation, step, subscription_key, edge, expires_at, claim_token,
+		claimed_until, attempts, last_error, pending_event, pending_correlation, pending_payload, created_at
+		FROM %s WHERE pending_event IS NOT NULL AND claimed_until IS NOT NULL AND claimed_until <= $1
+		ORDER BY claimed_until LIMIT %d%s`, s.subs, limit, lockSuffix(s.dialect))
+	rows, err := tx.QueryContext(ctx, s.q(statement), now.UTC())
+	if err != nil {
+		return nil, err
+	}
+	subscriptions, err := scanSubscriptions(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.claimSubscriptionsTx(ctx, tx, subscriptions, "", "", nil, now, lease); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return subscriptions, nil
+}
+
+func (s *sqlStore) claimSubscriptionsTx(ctx context.Context, tx *sql.Tx, subscriptions []*Subscription, event, correlation string, payload []byte, now time.Time, lease time.Duration) error {
+	claimedUntil := now.Add(lease)
+	for _, subscription := range subscriptions {
+		subscription.ClaimToken = randomID()
+		subscription.ClaimedUntil = &claimedUntil
+		subscription.Attempts++
+		subscription.LastError = ""
+		if event != "" {
+			subscription.PendingEvent = event
+			subscription.PendingCorrelation = correlation
+			subscription.PendingPayload = append([]byte(nil), payload...)
+		}
+		statement := s.q(fmt.Sprintf(`UPDATE %s SET claim_token=$1, claimed_until=$2, attempts=$3, last_error=NULL,
+			pending_event=$4, pending_correlation=$5, pending_payload=$6 WHERE id=$7`, s.subs))
+		if _, err := tx.ExecContext(ctx, statement, subscription.ClaimToken, claimedUntil.UTC(), subscription.Attempts,
+			null(subscription.PendingEvent), null(subscription.PendingCorrelation), blob(subscription.PendingPayload), subscription.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *sqlStore) AckSubscription(ctx context.Context, id, token string) error {
+	result, err := s.db.ExecContext(ctx, s.q(fmt.Sprintf("DELETE FROM %s WHERE id=$1 AND claim_token=$2", s.subs)), id, token)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 1 {
+		return nil
+	}
+	var exists int
+	if err := s.db.QueryRowContext(ctx, s.q(fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE id=$1", s.subs)), id).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return nil
+	}
+	return ErrClaimLost
+}
+
+func (s *sqlStore) ReleaseSubscription(ctx context.Context, id, token string, cause error) error {
+	lastError := ""
+	if cause != nil {
+		lastError = cause.Error()
+	}
+	result, err := s.db.ExecContext(ctx, s.q(fmt.Sprintf(`UPDATE %s SET claim_token=NULL, claimed_until=NULL, last_error=$1
+		WHERE id=$2 AND claim_token=$3`, s.subs)), null(lastError), id, token)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrClaimLost
+	}
+	return nil
 }
 
 // DeleteSubscription implements Store.
@@ -759,7 +1108,8 @@ func (s *sqlStore) DeleteRunSubscriptions(ctx context.Context, runID string) err
 
 // ListSubscriptions implements Store.
 func (s *sqlStore) ListSubscriptions(ctx context.Context, runID string) ([]*Subscription, error) {
-	statement := s.q(fmt.Sprintf(`SELECT id, run_id, event, correlation, step, edge, expires_at, created_at
+	statement := s.q(fmt.Sprintf(`SELECT id, run_id, event, correlation, step, subscription_key, edge, expires_at, claim_token,
+		claimed_until, attempts, last_error, pending_event, pending_correlation, pending_payload, created_at
 		FROM %s WHERE run_id=$1 ORDER BY created_at`, s.subs))
 	rows, err := s.db.QueryContext(ctx, statement, runID)
 	if err != nil {
@@ -773,16 +1123,23 @@ func scanSubscriptions(rows *sql.Rows) ([]*Subscription, error) {
 	var out []*Subscription
 	for rows.Next() {
 		var (
-			subscription            Subscription
-			correlation, step, edge sql.NullString
-			expiresAt               sql.NullTime
+			subscription                                                    Subscription
+			correlation, step, subscriptionKey, edge, claimToken, lastError sql.NullString
+			pendingEvent, pendingCorrelation                                sql.NullString
+			pendingPayload                                                  []byte
+			expiresAt, claimedUntil                                         sql.NullTime
 		)
 		if err := rows.Scan(&subscription.ID, &subscription.RunID, &subscription.Event,
-			&correlation, &step, &edge, &expiresAt, &subscription.CreatedAt); err != nil {
+			&correlation, &step, &subscriptionKey, &edge, &expiresAt, &claimToken, &claimedUntil, &subscription.Attempts,
+			&lastError, &pendingEvent, &pendingCorrelation, &pendingPayload, &subscription.CreatedAt); err != nil {
 			return nil, err
 		}
-		subscription.Correlation, subscription.Step, subscription.Edge = correlation.String, step.String, edge.String
+		subscription.Correlation, subscription.Step, subscription.Key, subscription.Edge = correlation.String, step.String, subscriptionKey.String, edge.String
 		subscription.ExpiresAt = nullableTime(expiresAt)
+		subscription.ClaimToken, subscription.LastError = claimToken.String, lastError.String
+		subscription.ClaimedUntil = nullableTime(claimedUntil)
+		subscription.PendingEvent, subscription.PendingCorrelation = pendingEvent.String, pendingCorrelation.String
+		subscription.PendingPayload = json.RawMessage(pendingPayload)
 		out = append(out, &subscription)
 	}
 	return out, rows.Err()
@@ -819,6 +1176,75 @@ func (s *sqlStore) SaveJoin(ctx context.Context, join *Join) error {
 	_, err = s.db.ExecContext(ctx, s.q(statement),
 		join.RunID, join.Edge, string(sources), string(results), string(failures), boolInt(join.Emitted), join.UpdatedAt)
 	return err
+}
+
+func (s *sqlStore) SaveJoinAndRun(ctx context.Context, join *Join, run *Run) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	join.UpdatedAt = time.Now().UTC()
+	sources, err := json.Marshal(join.Sources)
+	if err != nil {
+		return err
+	}
+	results, err := json.Marshal(join.Results)
+	if err != nil {
+		return err
+	}
+	failures, err := json.Marshal(join.Errors)
+	if err != nil {
+		return err
+	}
+	joinStatement := fmt.Sprintf(`INSERT INTO %s (run_id, edge, sources, results, errors, emitted, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)`, s.joins)
+	if s.dialect == "mysql" {
+		joinStatement += ` ON DUPLICATE KEY UPDATE sources=VALUES(sources), results=VALUES(results), errors=VALUES(errors), emitted=VALUES(emitted), updated_at=VALUES(updated_at)`
+	} else {
+		joinStatement += ` ON CONFLICT (run_id, edge) DO UPDATE SET sources=EXCLUDED.sources, results=EXCLUDED.results, errors=EXCLUDED.errors, emitted=EXCLUDED.emitted, updated_at=EXCLUDED.updated_at`
+	}
+	if _, err := tx.ExecContext(ctx, s.q(joinStatement), join.RunID, join.Edge, string(sources), string(results), string(failures), boolInt(join.Emitted), join.UpdatedAt); err != nil {
+		return err
+	}
+	frames, visits, compensating, waiting, err := encodeRunBlobs(run)
+	if err != nil {
+		return err
+	}
+	identity, err := encodeIdentity(run.Identity)
+	if err != nil {
+		return err
+	}
+	run.UpdatedAt = join.UpdatedAt
+	next := run.Revision + 1
+	runStatement := s.q(fmt.Sprintf(`UPDATE %s SET status=$1, input=$2, output=$3, error=$4, failed_step=$5,
+		tenant_id=$6, principal_id=$7, identity_snapshot=$8, correlation_id=$9,
+		frames=$10, visits=$11, step_count=$12, compensating=$13, waiting=$14,
+		revision=$15, updated_at=$16, started_at=$17, completed_at=$18,
+		deadline_at=$19, sla_target_at=$20, sla_breach_at=$21, sla_breached=$22, version=$23,
+		parent_run_id=$24, parent_notified=$25 WHERE id=$26 AND revision=$27`, s.runs))
+	result, err := tx.ExecContext(ctx, runStatement,
+		string(run.Status), blob(run.Input), blob(run.Output), null(run.Error), null(run.FailedStep),
+		null(run.TenantID), null(run.PrincipalID), identity, null(run.CorrelationID),
+		frames, visits, run.Steps, compensating, waiting,
+		next, run.UpdatedAt, run.StartedAt, run.CompletedAt,
+		run.DeadlineAt, run.SLATargetAt, run.SLABreachAt, boolInt(run.SLABreached), run.Version,
+		run.ID, run.Revision)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrRevisionConflict
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	run.Revision = next
+	return nil
 }
 
 // GetJoin implements Store, returning nil when the join has not started.
@@ -888,9 +1314,15 @@ func (s *sqlStore) AcquireLease(ctx context.Context, runID, owner string, ttl ti
 		}
 		insert := s.q(fmt.Sprintf("INSERT INTO %s (run_id, owner, expires_at) VALUES ($1,$2,$3)", s.leases))
 		if _, err := s.db.ExecContext(ctx, insert, runID, owner, expires); err != nil {
-			// A duplicate-key error means another replica inserted first, which is
-			// a lost race rather than a failure.
-			return false, nil
+			var existing int
+			probeErr := s.db.QueryRowContext(ctx, s.q(fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE run_id=$1", s.leases)), runID).Scan(&existing)
+			if probeErr != nil {
+				return false, probeErr
+			}
+			if existing > 0 {
+				return false, nil
+			}
+			return false, err
 		}
 		return true, nil
 	}
@@ -908,8 +1340,9 @@ func (s *sqlStore) AcquireLease(ctx context.Context, runID, owner string, ttl ti
 
 // RefreshLease implements Store.
 func (s *sqlStore) RefreshLease(ctx context.Context, runID, owner string, ttl time.Duration) (bool, error) {
-	statement := s.q(fmt.Sprintf("UPDATE %s SET expires_at=$1 WHERE run_id=$2 AND owner=$3", s.leases))
-	result, err := s.db.ExecContext(ctx, statement, time.Now().UTC().Add(ttl), runID, owner)
+	now := time.Now().UTC()
+	statement := s.q(fmt.Sprintf("UPDATE %s SET expires_at=$1 WHERE run_id=$2 AND owner=$3 AND expires_at > $4", s.leases))
+	result, err := s.db.ExecContext(ctx, statement, now.Add(ttl), runID, owner, now)
 	if err != nil {
 		return false, err
 	}
@@ -928,7 +1361,7 @@ func (s *sqlStore) ReleaseLease(ctx context.Context, runID, owner string) error 
 // Tasks
 // ---------------------------------------------------------------------------
 
-const taskColumns = `id, run_id, process, step, status, title, instructions, assignee, role, queue,
+const taskColumns = `id, run_id, process, step, task_key, status, title, instructions, assignee, role, queue,
 	skills, forbid_principals, actions, form_schema, priority, tenant_id, data,
 	claimed_by, claimed_at, completed_by, completed_at, action, result,
 	due_at, reminder_at, created_at, updated_at, revision`
@@ -943,10 +1376,10 @@ func (s *sqlStore) SaveTask(ctx context.Context, task *Task) error {
 	if task.Revision == 0 {
 		task.Revision = 1
 		statement := s.q(fmt.Sprintf(`INSERT INTO %s (%s) VALUES
-			($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
+			($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`,
 			s.tasks, taskColumns))
 		_, err := s.db.ExecContext(ctx, statement,
-			task.ID, task.RunID, task.Process, task.Step, string(task.Status),
+			task.ID, task.RunID, task.Process, task.Step, null(task.Key), string(task.Status),
 			null(task.Title), null(task.Instructions), null(task.Assignee), null(task.Role), null(task.Queue),
 			string(skills), string(forbid), string(actions), null(task.FormSchema), task.Priority, null(task.TenantID), blob(task.Data),
 			null(task.ClaimedBy), task.ClaimedAt, null(task.CompletedBy), task.CompletedAt, null(task.Action), blob(task.Result),
@@ -958,12 +1391,12 @@ func (s *sqlStore) SaveTask(ctx context.Context, task *Task) error {
 	statement := s.q(fmt.Sprintf(`UPDATE %s SET status=$1, title=$2, instructions=$3, assignee=$4, role=$5, queue=$6,
 		skills=$7, forbid_principals=$8, actions=$9, form_schema=$10, priority=$11, tenant_id=$12, data=$13,
 		claimed_by=$14, claimed_at=$15, completed_by=$16, completed_at=$17, action=$18, result=$19,
-		due_at=$20, reminder_at=$21, updated_at=$22, revision=$23 WHERE id=$24 AND revision=$25`, s.tasks))
+		due_at=$20, reminder_at=$21, updated_at=$22, revision=$23, task_key=$24 WHERE id=$25 AND revision=$26`, s.tasks))
 	result, err := s.db.ExecContext(ctx, statement,
 		string(task.Status), null(task.Title), null(task.Instructions), null(task.Assignee), null(task.Role), null(task.Queue),
 		string(skills), string(forbid), string(actions), null(task.FormSchema), task.Priority, null(task.TenantID), blob(task.Data),
 		null(task.ClaimedBy), task.ClaimedAt, null(task.CompletedBy), task.CompletedAt, null(task.Action), blob(task.Result),
-		task.DueAt, task.ReminderAt, task.UpdatedAt, next, task.ID, task.Revision)
+		task.DueAt, task.ReminderAt, task.UpdatedAt, next, null(task.Key), task.ID, task.Revision)
 	if err != nil {
 		return err
 	}
@@ -1009,6 +1442,12 @@ func (s *sqlStore) ListTasks(ctx context.Context, filter TaskFilter) ([]*Task, e
 	}
 	if filter.RunID != "" {
 		add("run_id=$%d", filter.RunID)
+	}
+	if filter.Step != "" {
+		add("step=$%d", filter.Step)
+	}
+	if filter.Key != "" {
+		add("task_key=$%d", filter.Key)
 	}
 	if filter.TenantID != "" {
 		add("tenant_id=$%d", filter.TenantID)
@@ -1099,14 +1538,14 @@ func scanTask(row rowScanner) (*Task, error) {
 		task                                    Task
 		status                                  string
 		title, instructions                     sql.NullString
-		assignee, role, queue                   sql.NullString
+		assignee, role, queue, taskKey          sql.NullString
 		skills, forbid, actions, formSchema     sql.NullString
 		tenant, claimedBy, completedBy, action  sql.NullString
 		data, result                            []byte
 		claimedAt, completedAt, dueAt, reminder sql.NullTime
 	)
 	if err := row.Scan(
-		&task.ID, &task.RunID, &task.Process, &task.Step, &status,
+		&task.ID, &task.RunID, &task.Process, &task.Step, &taskKey, &status,
 		&title, &instructions, &assignee, &role, &queue,
 		&skills, &forbid, &actions, &formSchema, &task.Priority, &tenant, &data,
 		&claimedBy, &claimedAt, &completedBy, &completedAt, &action, &result,
@@ -1117,6 +1556,7 @@ func scanTask(row rowScanner) (*Task, error) {
 	task.Status = TaskStatus(status)
 	task.Title, task.Instructions = title.String, instructions.String
 	task.Assignee, task.Role, task.Queue = assignee.String, role.String, queue.String
+	task.Key = taskKey.String
 	task.FormSchema, task.TenantID = formSchema.String, tenant.String
 	task.ClaimedBy, task.CompletedBy, task.Action = claimedBy.String, completedBy.String, action.String
 	task.Data, task.Result = json.RawMessage(data), json.RawMessage(result)

@@ -81,6 +81,12 @@ func TestEngineEndToEnd(t *testing.T) {
 	if err := engine.Compile(); err != nil {
 		t.Fatalf("engine compile failed: %v", err)
 	}
+	if err := ref.RegisterCapability(engine, authCap); err == nil {
+		t.Fatal("expected sealed capability registry to reject post-compile mutation")
+	}
+	if err := ref.Register(engine, PlaceOrderIntent{}); err == nil {
+		t.Fatal("expected sealed intent registry to reject post-compile mutation")
+	}
 
 	// 4. Dispatch with valid auth
 	inv := &invocation.Invocation{
@@ -122,8 +128,9 @@ func TestEngineEndToEnd(t *testing.T) {
 
 	// 6. Test App integration
 	app := fh.New()
-	refEng := app.EnableREF()
+	refEng := ref.NewFHAdapter(engine)
+	app.SetREF(refEng)
 	if refEng == nil || app.REF() != refEng {
-		t.Errorf("expected App.EnableREF to return non-nil engine and match App.REF()")
+		t.Errorf("expected App.SetREF to retain the REF adapter")
 	}
 }

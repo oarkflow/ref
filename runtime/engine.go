@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -80,31 +81,42 @@ type intentEntry struct {
 
 // Engine coordinates the compilation, scheduling, and effect lifecycle of intents.
 type Engine struct {
-	mu           sync.RWMutex
-	capabilities *capability.Registry
-	intents      *intent.Registry
-	programs     map[intent.Name]*execution.Program
-	plans        map[intent.Name]*graph.Plan
-	intentDefs   map[intent.Name]*intent.Definition
-	effectRunner *effect.Runner
-	scheduler    *execution.Scheduler
-	observers    []observer.Observer
-	compiled     bool
-	generation   atomic.Pointer[compiledGeneration]
+	mu                 sync.RWMutex
+	capabilities       *capability.Registry
+	intents            *intent.Registry
+	programs           map[intent.Name]*execution.Program
+	plans              map[intent.Name]*graph.Plan
+	intentDefs         map[intent.Name]*intent.Definition
+	effectRunner       *effect.Runner
+	effectStore        effect.EffectStore
+	effectResolvers    map[string]effect.EffectResolver
+	effectErrorHandler effect.EffectErrorFunc
+	scheduler          *execution.Scheduler
+	observers          []observer.Observer
+	compiled           bool
+	generation         atomic.Pointer[compiledGeneration]
 }
 
 // NewEngine creates a new REF engine.
 func NewEngine(opts ...Option) *Engine {
 	e := &Engine{
-		capabilities: capability.NewRegistry(),
-		intents:      intent.NewRegistry(),
-		programs:     make(map[intent.Name]*execution.Program),
-		plans:        make(map[intent.Name]*graph.Plan),
-		intentDefs:   make(map[intent.Name]*intent.Definition),
-		effectRunner: effect.NewRunner(nil),
+		capabilities:    capability.NewRegistry(),
+		intents:         intent.NewRegistry(),
+		programs:        make(map[intent.Name]*execution.Program),
+		plans:           make(map[intent.Name]*graph.Plan),
+		intentDefs:      make(map[intent.Name]*intent.Definition),
+		effectResolvers: make(map[string]effect.EffectResolver),
 	}
 	for _, opt := range opts {
 		opt(e)
+	}
+	var runnerOptions []effect.RunnerOption
+	if e.effectErrorHandler != nil {
+		runnerOptions = append(runnerOptions, effect.WithEffectErrorHandler(e.effectErrorHandler))
+	}
+	e.effectRunner = effect.NewRunner(e.effectStore, runnerOptions...)
+	for name, resolver := range e.effectResolvers {
+		e.effectRunner.RegisterEffectResolver(name, resolver)
 	}
 	e.scheduler = execution.NewScheduler(e.observers...)
 	return e
@@ -120,8 +132,23 @@ func (e *Engine) Intents() *intent.Registry {
 	return e.intents
 }
 
+// RegisterCapability registers a capability before compilation.
+func (e *Engine) RegisterCapability(reg capability.Registration) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.compiled {
+		return fmt.Errorf("ref: cannot register capability after engine compilation")
+	}
+	return e.capabilities.Register(reg)
+}
+
 // RegisterIntent registers a typed Intent[I, O] with the engine.
 func (e *Engine) RegisterIntent(it intent.Intent[any, any]) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.compiled {
+		return fmt.Errorf("ref: cannot register intent after engine compilation")
+	}
 	return intent.Register(e.intents, it)
 }
 
@@ -143,25 +170,33 @@ func (e *Engine) Compile() error {
 	defer e.mu.Unlock()
 
 	defs := e.intents.All()
+	programs := make(map[intent.Name]*execution.Program, len(defs))
+	plans := make(map[intent.Name]*graph.Plan, len(defs))
+	intentDefs := make(map[intent.Name]*intent.Definition, len(defs))
 	for name, def := range defs {
 		prog, err := e.compileIntent(def)
 		if err != nil {
 			return fmt.Errorf("ref: intent %q compilation error: %w", name, err)
 		}
-		e.programs[name] = prog
-		e.plans[name] = prog.Plan
-		e.intentDefs[name] = def
+		programs[name] = prog
+		plans[name] = prog.Plan
+		intentDefs[name] = def
 	}
 
+	e.programs = programs
+	e.plans = plans
+	e.intentDefs = intentDefs
+	e.capabilities.Freeze()
+	e.intents.Freeze()
 	e.compiled = true
 
-	// Publish immutable generation for lock-free dispatch
 	gen := &compiledGeneration{
-		entries: make(map[intent.Name]*intentEntry, len(e.programs)),
-		plans:   e.plans,
+		entries: make(map[intent.Name]*intentEntry, len(programs)),
+		plans:   make(map[intent.Name]*graph.Plan, len(plans)),
 	}
-	for name, prog := range e.programs {
-		gen.entries[name] = &intentEntry{prog: prog, def: e.intentDefs[name]}
+	for name, prog := range programs {
+		gen.entries[name] = &intentEntry{prog: prog, def: intentDefs[name]}
+		gen.plans[name] = plans[name]
 	}
 	e.generation.Store(gen)
 
@@ -200,6 +235,12 @@ func (e *Engine) compileIntent(def *intent.Definition) (*execution.Program, erro
 		}
 	}
 
+	capNames := make([]string, 0, len(capSet))
+	for name := range capSet {
+		capNames = append(capNames, name)
+	}
+	sort.Strings(capNames)
+
 	// 2. Assign dense PlanSlots for all involved facts
 	defToSlot := make(map[fact.DefinitionID]fact.PlanSlot)
 	slotCounter := 0
@@ -214,7 +255,8 @@ func (e *Engine) compileIntent(def *intent.Definition) (*execution.Program, erro
 		return slot
 	}
 
-	for _, c := range capSet {
+	for _, name := range capNames {
+		c := capSet[name]
 		for _, f := range c.Provides {
 			assignSlot(f.DefID)
 		}
@@ -235,7 +277,8 @@ func (e *Engine) compileIntent(def *intent.Definition) (*execution.Program, erro
 	var nodeIdx uint32
 
 	// Capabilities
-	for _, c := range capSet {
+	for _, name := range capNames {
+		c := capSet[name]
 		var reqSlots []fact.PlanSlot
 		for _, r := range c.Requires {
 			reqSlots = append(reqSlots, defToSlot[r.DefID])
@@ -299,8 +342,8 @@ func (e *Engine) compileIntent(def *intent.Definition) (*execution.Program, erro
 		if err != nil {
 			return err
 		}
-		if !fx.IsEmpty() {
-			for _, e := range fx.All() {
+		for _, group := range [][]effect.Effect{fx.LocalTx, fx.Durable, fx.FireAndForget} {
+			for _, e := range group {
 				nc.RecordEffect(e)
 			}
 		}
@@ -337,6 +380,9 @@ func (e *Engine) compileIntent(def *intent.Definition) (*execution.Program, erro
 	}
 	if maxDefID > 0 {
 		defSlots := make([]fact.PlanSlot, maxDefID+1)
+		for i := range defSlots {
+			defSlots[i] = fact.NoSlot
+		}
 		for id, slot := range defToSlot {
 			defSlots[id] = slot
 		}
@@ -434,7 +480,40 @@ func isTransitiveAncestor(g *graph.Graph, ancestor, target graph.NodeID) bool {
 // Dispatch executes an intent by invocation input.
 // Dispatch executes an intent and commits its returned effects.
 func (e *Engine) Dispatch(ctx context.Context, inv *invocation.Invocation) (*DispatchResult, error) {
-	return e.dispatch(ctx, inv, true)
+	return e.dispatch(ctx, inv, true, nil)
+}
+
+func (e *Engine) Replay(ctx context.Context, inv *invocation.Invocation, expected *execution.Trace) (*DispatchResult, *execution.Trace, error) {
+	if expected == nil {
+		return nil, nil, fmt.Errorf("ref: expected replay trace is required")
+	}
+	if inv == nil {
+		return nil, nil, errNilInvocation
+	}
+	plan, ok := e.Plan(intent.Name(inv.Intent))
+	if !ok {
+		return nil, nil, intent.Failure{Code: "INTENT_NOT_FOUND", Category: intent.CategoryNotFound, Message: fmt.Sprintf("ref: unknown intent %q", inv.Intent)}
+	}
+	for _, node := range plan.Nodes {
+		if node.Kind == graph.EffectNode || node.Kind == graph.AsyncEffect {
+			return nil, nil, fmt.Errorf("ref: replay refused effect-capable intent %q", inv.Intent)
+		}
+	}
+	actual := execution.NewTrace(string(inv.ID), string(inv.Intent), expected.PlanVersion)
+	result, err := e.dispatch(ctx, inv, false, actual)
+	if err == nil {
+		err = execution.CompareTraces(expected, actual)
+	}
+	return result, actual, err
+}
+
+func (e *Engine) DispatchTraced(ctx context.Context, inv *invocation.Invocation) (*DispatchResult, *execution.Trace, error) {
+	var trace *execution.Trace
+	if inv != nil {
+		trace = execution.NewTrace(string(inv.ID), string(inv.Intent), 0)
+	}
+	result, err := e.dispatch(ctx, inv, true, trace)
+	return result, trace, err
 }
 
 // DispatchPreview evaluates an intent without committing its returned effect plan.
@@ -453,10 +532,10 @@ func (e *Engine) DispatchPreview(ctx context.Context, inv *invocation.Invocation
 			return nil, fmt.Errorf("ref: preview refused effect-capable intent %q", inv.Intent)
 		}
 	}
-	return e.dispatch(ctx, inv, false)
+	return e.dispatch(ctx, inv, false, nil)
 }
 
-func (e *Engine) dispatch(ctx context.Context, inv *invocation.Invocation, commitEffects bool) (*DispatchResult, error) {
+func (e *Engine) dispatch(ctx context.Context, inv *invocation.Invocation, commitEffects bool, trace *execution.Trace) (*DispatchResult, error) {
 	if inv == nil {
 		return nil, errNilInvocation
 	}
@@ -507,8 +586,18 @@ func (e *Engine) dispatch(ctx context.Context, inv *invocation.Invocation, commi
 		}
 	}
 
+	if trace != nil && def != nil {
+		trace.PlanVersion = int(def.Version)
+	}
+	execCtx := ctx
+	if def != nil && def.Spec.Timeout > 0 {
+		var cancel context.CancelFunc
+		execCtx, cancel = context.WithTimeout(ctx, def.Spec.Timeout)
+		defer cancel()
+	}
+
 	var budget *execution.Budget
-	if def != nil && (def.Spec.Timeout > 0 || def.Spec.MaxDBQueries > 0 || def.Spec.MaxExternalIO > 0) {
+	if def != nil && (def.Spec.Timeout > 0 || def.Spec.MaxDBQueries > 0 || def.Spec.MaxExternalIO > 0 || def.Spec.MaxMemory > 0 || def.Spec.MaxEffects > 0) {
 		budget = execution.NewBudget(
 			def.Spec.Timeout,
 			def.Spec.MaxDBQueries,
@@ -518,7 +607,13 @@ func (e *Engine) dispatch(ctx context.Context, inv *invocation.Invocation, commi
 		)
 	}
 
-	outcome, err := e.scheduler.ExecuteProgram(ctx, inv, prog, budget)
+	var outcome *execution.ExecutionOutcome
+	var err error
+	if trace != nil {
+		outcome, err = e.scheduler.ExecuteProgramTraced(execCtx, inv, prog, budget, trace)
+	} else {
+		outcome, err = e.scheduler.ExecuteProgram(execCtx, inv, prog, budget)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -543,7 +638,7 @@ func (e *Engine) dispatch(ctx context.Context, inv *invocation.Invocation, commi
 			}
 			if len(fxList) > 0 {
 				bridge := &effectErrorBridge{obs: e.observers}
-				if err := effect.CommitPlan(ctx, e.effectRunner.Store(), string(inv.ID), fxList, bridge.report); err != nil {
+				if err := e.effectRunner.RunEffects(execCtx, string(inv.ID), fxList, bridge.report); err != nil {
 					return nil, err
 				}
 			}
@@ -561,6 +656,10 @@ func (e *Engine) dispatch(ctx context.Context, inv *invocation.Invocation, commi
 	}
 
 	return AcquireDispatchResult(outcome.Value, intent.OutcomeMeta{}), nil
+}
+
+func (e *Engine) Close() error {
+	return e.effectRunner.Close()
 }
 
 // Plan returns the compiled execution plan for an intent.

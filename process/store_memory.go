@@ -77,8 +77,29 @@ func (m *MemoryStore) CreateRun(_ context.Context, run *Run) error {
 		return fmt.Errorf("ref/process: run %s already exists", run.ID)
 	}
 	run.Revision = 1
+	run.IdempotencyDigest = runIdempotencyDigest(run)
 	m.runs[run.ID] = cloneRun(run)
 	return nil
+}
+
+func (m *MemoryStore) CreateRunOrGet(_ context.Context, run *Run) (*Run, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	digest := runIdempotencyDigest(run)
+	run.IdempotencyDigest = digest
+	if digest != "" {
+		for _, existing := range m.runs {
+			if existing.IdempotencyDigest == digest {
+				return cloneRun(existing), false, nil
+			}
+		}
+	}
+	if _, exists := m.runs[run.ID]; exists {
+		return nil, false, fmt.Errorf("ref/process: run %s already exists", run.ID)
+	}
+	run.Revision = 1
+	m.runs[run.ID] = cloneRun(run)
+	return cloneRun(run), true, nil
 }
 
 // GetRun implements Store.
@@ -93,15 +114,16 @@ func (m *MemoryStore) GetRun(_ context.Context, id string) (*Run, error) {
 }
 
 // FindRunByIdempotency implements Store.
-func (m *MemoryStore) FindRunByIdempotency(_ context.Context, process, key string) (*Run, error) {
+func (m *MemoryStore) FindRunByIdempotency(_ context.Context, tenant, process, key string) (*Run, error) {
 	if key == "" {
 		return nil, ErrRunNotFound
 	}
+	digest := runIdempotencyDigest(&Run{TenantID: tenant, Process: process, IdempotencyKey: key})
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var newest *Run
 	for _, run := range m.runs {
-		if run.Process != process || run.IdempotencyKey != key {
+		if run.IdempotencyDigest != digest {
 			continue
 		}
 		if newest == nil || run.CreatedAt.After(newest.CreatedAt) {
@@ -246,12 +268,14 @@ func (m *MemoryStore) AddTimer(_ context.Context, timer *Timer) error {
 	defer m.mu.Unlock()
 	copied := *timer
 	copied.Payload = slices.Clone(timer.Payload)
+	copied.ClaimToken = ""
+	copied.ClaimedUntil = nil
+	copied.LastError = ""
 	m.timers[timer.ID] = &copied
 	return nil
 }
 
-// DueTimers implements Store, removing what it returns so a timer fires once.
-func (m *MemoryStore) DueTimers(_ context.Context, now time.Time, limit int) ([]*Timer, error) {
+func (m *MemoryStore) ClaimDueTimers(_ context.Context, now time.Time, limit int, lease time.Duration) ([]*Timer, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -259,21 +283,62 @@ func (m *MemoryStore) DueTimers(_ context.Context, now time.Time, limit int) ([]
 	defer m.mu.Unlock()
 	var due []*Timer
 	for _, timer := range m.timers {
-		if !timer.Fire.After(now) {
-			due = append(due, timer)
+		if timer.Fire.After(now) || (timer.ClaimedUntil != nil && timer.ClaimedUntil.After(now)) {
+			continue
 		}
+		due = append(due, timer)
 	}
 	sort.Slice(due, func(i, j int) bool { return due[i].Fire.Before(due[j].Fire) })
 	if len(due) > limit {
 		due = due[:limit]
 	}
+	claimedUntil := now.Add(lease)
 	out := make([]*Timer, 0, len(due))
 	for _, timer := range due {
-		delete(m.timers, timer.ID)
+		timer.ClaimToken = randomID()
+		timer.ClaimedUntil = &claimedUntil
+		timer.Attempts++
+		timer.LastError = ""
 		copied := *timer
+		copied.Payload = slices.Clone(timer.Payload)
 		out = append(out, &copied)
 	}
 	return out, nil
+}
+
+func (m *MemoryStore) AckTimer(_ context.Context, id, token string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	timer, ok := m.timers[id]
+	if !ok {
+		return nil
+	}
+	if timer.ClaimToken != token {
+		return ErrClaimLost
+	}
+	delete(m.timers, id)
+	return nil
+}
+
+func (m *MemoryStore) ReleaseTimer(_ context.Context, id, token string, retryAt time.Time, cause error) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	timer, ok := m.timers[id]
+	if !ok {
+		return nil
+	}
+	if timer.ClaimToken != token {
+		return ErrClaimLost
+	}
+	timer.ClaimToken = ""
+	timer.ClaimedUntil = nil
+	if cause != nil {
+		timer.LastError = cause.Error()
+	}
+	if retryAt.After(timer.Fire) {
+		timer.Fire = retryAt
+	}
+	return nil
 }
 
 // DeleteTimer implements Store.
@@ -327,23 +392,114 @@ func (m *MemoryStore) Subscribe(_ context.Context, subscription *Subscription) e
 	return nil
 }
 
-// MatchSubscriptions implements Store.
-func (m *MemoryStore) MatchSubscriptions(_ context.Context, event, correlation string) ([]*Subscription, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	var out []*Subscription
+func (m *MemoryStore) ClaimSubscriptions(_ context.Context, event, correlation string, payload []byte, now time.Time, limit int, lease time.Duration) ([]*Subscription, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var matched []*Subscription
 	for _, subscription := range m.subs {
-		if subscription.Event != event {
+		if subscription.Event != event || (subscription.Correlation != "" && subscription.Correlation != correlation) {
 			continue
 		}
-		if subscription.Correlation != "" && subscription.Correlation != correlation {
+		if subscription.ExpiresAt != nil && !subscription.ExpiresAt.After(now) {
 			continue
 		}
+		if subscription.ClaimedUntil != nil && subscription.ClaimedUntil.After(now) {
+			continue
+		}
+		matched = append(matched, subscription)
+	}
+	return m.claimSubscriptionsLocked(matched, event, correlation, payload, now, limit, lease), nil
+}
+
+func (m *MemoryStore) ClaimSubscription(_ context.Context, id string, payload []byte, now time.Time, lease time.Duration) (*Subscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	subscription, ok := m.subs[id]
+	if !ok {
+		return nil, nil
+	}
+	if subscription.ClaimedUntil != nil && subscription.ClaimedUntil.After(now) {
+		return nil, ErrClaimLost
+	}
+	claimed := m.claimSubscriptionsLocked([]*Subscription{subscription}, subscription.Event, subscription.Correlation, payload, now, 1, lease)
+	if len(claimed) == 0 {
+		return nil, ErrClaimLost
+	}
+	return claimed[0], nil
+}
+
+func (m *MemoryStore) ClaimExpiredSubscriptions(_ context.Context, now time.Time, limit int, lease time.Duration) ([]*Subscription, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var expired []*Subscription
+	for _, subscription := range m.subs {
+		if subscription.PendingEvent != "" && subscription.ClaimedUntil != nil && !subscription.ClaimedUntil.After(now) {
+			expired = append(expired, subscription)
+		}
+	}
+	return m.claimSubscriptionsLocked(expired, "", "", nil, now, limit, lease), nil
+}
+
+func (m *MemoryStore) claimSubscriptionsLocked(subscriptions []*Subscription, event, correlation string, payload []byte, now time.Time, limit int, lease time.Duration) []*Subscription {
+	sort.Slice(subscriptions, func(i, j int) bool { return subscriptions[i].CreatedAt.Before(subscriptions[j].CreatedAt) })
+	if len(subscriptions) > limit {
+		subscriptions = subscriptions[:limit]
+	}
+	claimedUntil := now.Add(lease)
+	out := make([]*Subscription, 0, len(subscriptions))
+	for _, subscription := range subscriptions {
+		if event != "" {
+			subscription.PendingEvent = event
+			subscription.PendingCorrelation = correlation
+			subscription.PendingPayload = slices.Clone(payload)
+		}
+		subscription.ClaimToken = randomID()
+		subscription.ClaimedUntil = &claimedUntil
+		subscription.Attempts++
+		subscription.LastError = ""
 		copied := *subscription
+		copied.PendingPayload = slices.Clone(subscription.PendingPayload)
 		out = append(out, &copied)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
-	return out, nil
+	return out
+}
+
+func (m *MemoryStore) AckSubscription(_ context.Context, id, token string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	subscription, ok := m.subs[id]
+	if !ok {
+		return nil
+	}
+	if subscription.ClaimToken != token {
+		return ErrClaimLost
+	}
+	delete(m.subs, id)
+	return nil
+}
+
+func (m *MemoryStore) ReleaseSubscription(_ context.Context, id, token string, cause error) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	subscription, ok := m.subs[id]
+	if !ok {
+		return nil
+	}
+	if subscription.ClaimToken != token {
+		return ErrClaimLost
+	}
+	subscription.ClaimToken = ""
+	subscription.ClaimedUntil = nil
+	if cause != nil {
+		subscription.LastError = cause.Error()
+	}
+	return nil
 }
 
 // DeleteSubscription implements Store.
@@ -394,6 +550,24 @@ func (m *MemoryStore) SaveJoin(_ context.Context, join *Join) error {
 	return nil
 }
 
+func (m *MemoryStore) SaveJoinAndRun(_ context.Context, join *Join, run *Run) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	storedRun, ok := m.runs[run.ID]
+	if !ok {
+		return ErrRunNotFound
+	}
+	if storedRun.Revision != run.Revision {
+		return ErrRevisionConflict
+	}
+	join.UpdatedAt = time.Now().UTC()
+	run.UpdatedAt = join.UpdatedAt
+	run.Revision++
+	m.joins[join.RunID+"|"+join.Edge] = cloneJoin(join)
+	m.runs[run.ID] = cloneRun(run)
+	return nil
+}
+
 // GetJoin implements Store.
 func (m *MemoryStore) GetJoin(_ context.Context, runID, edge string) (*Join, error) {
 	m.mu.RLock()
@@ -430,7 +604,7 @@ func (m *MemoryStore) RefreshLease(_ context.Context, runID, owner string, ttl t
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	held, ok := m.leases[runID]
-	if !ok || held.Owner != owner {
+	if !ok || held.Owner != owner || !held.ExpiresAt.After(time.Now().UTC()) {
 		return false, nil
 	}
 	held.ExpiresAt = time.Now().UTC().Add(ttl)
@@ -512,6 +686,10 @@ func matchTask(task *Task, filter TaskFilter, now time.Time) bool {
 	case filter.Process != "" && task.Process != filter.Process:
 		return false
 	case filter.RunID != "" && task.RunID != filter.RunID:
+		return false
+	case filter.Step != "" && task.Step != filter.Step:
+		return false
+	case filter.Key != "" && task.Key != filter.Key:
 		return false
 	case filter.TenantID != "" && task.TenantID != filter.TenantID:
 		return false
@@ -647,6 +825,7 @@ func (m *MemoryStore) PurgeRuns(_ context.Context, process string, before time.T
 
 func cloneRun(run *Run) *Run {
 	copied := *run
+	copied.Identity = cloneIdentity(run.Identity)
 	copied.Input = slices.Clone(run.Input)
 	copied.Output = slices.Clone(run.Output)
 	copied.Frames = make([]Frame, len(run.Frames))

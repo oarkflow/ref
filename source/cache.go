@@ -1,6 +1,8 @@
 package source
 
 import (
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -10,11 +12,21 @@ import (
 // Every field participates in equality — missing a scope field means a cache
 // isolation bug.
 type CacheKey struct {
-	SourceName  string // logical source: "users-db", "payment-api"
-	TenantID    string // tenant isolation
-	PrincipalID string // user-scoped data (empty for tenant-global)
-	QueryHash   uint64 // deterministic hash of the operation shape
-	ParamHash   uint64 // deterministic hash of parameters
+	SourceName   string
+	TenantID     string
+	PrincipalID  string
+	QueryHash    uint64
+	ParamHash    uint64
+	PolicyHash   uint64
+	InvocationID string
+}
+
+func (k CacheKey) ScopeString() string {
+	return strings.Join([]string{k.TenantID, k.PrincipalID, strconv.FormatUint(k.PolicyHash, 10), k.InvocationID}, "\x00")
+}
+
+func (k CacheKey) String() string {
+	return strings.Join([]string{k.SourceName, k.ScopeString(), strconv.FormatUint(k.QueryHash, 10), strconv.FormatUint(k.ParamHash, 10)}, "\x00")
 }
 
 // cacheEntry pairs a value with its expiry and negative-result flag.
@@ -46,12 +58,13 @@ type Cache interface {
 // Thread-safe. Suitable for configuration, schemas, permission metadata,
 // feature flags, and other data that changes infrequently.
 type ProcessCache struct {
-	shards   [cacheShardCount]cacheShard
-	maxSize  int64
-	curSize  atomic.Int64
-	hits     atomic.Uint64
-	misses   atomic.Uint64
-	evicts   atomic.Uint64
+	shards     [cacheShardCount]cacheShard
+	capacityMu sync.Mutex
+	maxSize    int64
+	curSize    atomic.Int64
+	hits       atomic.Uint64
+	misses     atomic.Uint64
+	evicts     atomic.Uint64
 }
 
 const cacheShardCount = 32
@@ -80,20 +93,17 @@ func NewProcessCache(cfg ProcessCacheConfig) *ProcessCache {
 }
 
 func (pc *ProcessCache) shard(key CacheKey) *cacheShard {
-	// FNV-1a inspired hash over source + tenant + query hash
 	h := uint64(14695981039346656037)
-	for _, b := range []byte(key.SourceName) {
-		h ^= uint64(b)
+	for _, value := range []string{key.SourceName, key.TenantID, key.PrincipalID, key.InvocationID} {
+		for _, b := range []byte(value) {
+			h ^= uint64(b)
+			h *= 1099511628211
+		}
+	}
+	for _, value := range []uint64{key.QueryHash, key.ParamHash, key.PolicyHash} {
+		h ^= value
 		h *= 1099511628211
 	}
-	for _, b := range []byte(key.TenantID) {
-		h ^= uint64(b)
-		h *= 1099511628211
-	}
-	h ^= key.QueryHash
-	h *= 1099511628211
-	h ^= key.ParamHash
-	h *= 1099511628211
 	return &pc.shards[h%cacheShardCount]
 }
 
@@ -132,35 +142,31 @@ func (pc *ProcessCache) Get(key CacheKey) (any, bool, error) {
 
 // Set stores a value with a TTL.
 func (pc *ProcessCache) Set(key CacheKey, value any, ttl time.Duration) error {
-	// Capacity check
-	if pc.maxSize > 0 && pc.curSize.Load() >= pc.maxSize {
-		// Simple eviction: sweep expired entries from the target shard
-		s := pc.shard(key)
-		pc.sweepShard(s)
-
-		if pc.curSize.Load() >= pc.maxSize {
-			pc.evicts.Add(1)
-			return nil // silently drop — cache is full
-		}
-	}
-
-	entry := &cacheEntry{
-		value: value,
-	}
+	entry := &cacheEntry{value: value}
 	if ttl > 0 {
 		entry.expiresAt = time.Now().Add(ttl)
 	}
+	return pc.store(key, entry)
+}
 
+func (pc *ProcessCache) store(key CacheKey, entry *cacheEntry) error {
+	pc.capacityMu.Lock()
+	defer pc.capacityMu.Unlock()
 	s := pc.shard(key)
+	if pc.maxSize > 0 && pc.curSize.Load() >= pc.maxSize {
+		pc.sweepShard(s)
+		if pc.curSize.Load() >= pc.maxSize {
+			pc.evicts.Add(1)
+			return nil
+		}
+	}
 	s.mu.Lock()
 	_, existed := s.entries[key]
 	s.entries[key] = entry
 	s.mu.Unlock()
-
 	if !existed {
 		pc.curSize.Add(1)
 	}
-
 	return nil
 }
 
@@ -175,18 +181,7 @@ func (pc *ProcessCache) SetNegative(key CacheKey, ttl time.Duration) error {
 		negative:  true,
 		expiresAt: time.Now().Add(ttl),
 	}
-
-	s := pc.shard(key)
-	s.mu.Lock()
-	_, existed := s.entries[key]
-	s.entries[key] = entry
-	s.mu.Unlock()
-
-	if !existed {
-		pc.curSize.Add(1)
-	}
-
-	return nil
+	return pc.store(key, entry)
 }
 
 // Delete removes a cached entry.

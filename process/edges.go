@@ -518,44 +518,42 @@ func (e *Engine) resolveJoin(ctx context.Context, run *Run, outcome stepOutcome,
 		return true, e.store.SaveJoin(ctx, join)
 	}
 
-	join.Emitted = true
-	if err := e.store.SaveJoin(ctx, join); err != nil {
-		return false, err
-	}
-
-	// The targets receive every source's result keyed by source step, plus the
-	// errors, so a partial_success join can decide what to do about the gaps.
 	results := make(map[string]any, len(join.Results))
 	for source, encoded := range join.Results {
 		var value any
-		if json.Unmarshal(encoded, &value) == nil {
-			results[source] = value
+		if err := json.Unmarshal(encoded, &value); err != nil {
+			return false, err
 		}
+		results[source] = value
 	}
 	payload := map[string]any{
-		"results":  results,
-		"sources":  join.Sources,
-		"strategy": edge.Strategy,
-		"errors":   join.Errors,
+		"results": results, "sources": join.Sources, "strategy": edge.Strategy, "errors": join.Errors,
 	}
+	framed := true
+	shaped := any(payload)
 	if edge.Shaper != nil {
 		joinScope := make(Scope, len(scope)+1)
 		for key, value := range scope {
 			joinScope[key] = value
 		}
 		joinScope["result"] = payload
-		shaped, err := edge.Shaper.Shape(payload, joinScope)
+		shaped, err = edge.Shaper.Shape(payload, joinScope)
 		if err != nil {
-			if errors.Is(err, ErrFiltered) {
-				return false, nil
+			if !errors.Is(err, ErrFiltered) {
+				return false, err
 			}
-			return false, err
+			framed = false
+			shaped = nil
 		}
-		e.pushFrames(run, edge, outcome.frame.Step, edge.allTargets(), shaped, 1)
-		return true, nil
 	}
-	e.pushFrames(run, edge, outcome.frame.Step, edge.allTargets(), payload, 1)
-	return true, nil
+	if framed {
+		e.pushFrames(run, edge, outcome.frame.Step, edge.allTargets(), shaped, 1)
+	}
+	join.Emitted = true
+	if err := e.store.SaveJoinAndRun(ctx, join, run); err != nil {
+		return false, err
+	}
+	return framed, nil
 }
 
 // resolveRace pushes every target and records that the first to finish wins.
@@ -787,7 +785,7 @@ func (e *Engine) resolveWaitEvent(ctx context.Context, run *Run, outcome stepOut
 	}
 	if err := e.store.Subscribe(ctx, &Subscription{
 		ID: randomID(), RunID: run.ID, Event: edge.Event, Correlation: key,
-		Step: targets[0], Edge: edge.Name, ExpiresAt: expires, CreatedAt: e.now(),
+		Step: targets[0], Key: outcome.frame.StateKey(), Edge: edge.Name, ExpiresAt: expires, CreatedAt: e.now(),
 	}); err != nil {
 		return false, err
 	}
@@ -807,7 +805,7 @@ func (e *Engine) parkManual(ctx context.Context, run *Run, edge *Edge, outcome s
 	payload, _ := json.Marshal(outcome.result)
 	if err := e.store.Subscribe(ctx, &Subscription{
 		ID: randomID(), RunID: run.ID, Event: manualEventName, Correlation: edge.Name,
-		Step: targets[0], Edge: edge.Name, CreatedAt: e.now(),
+		Step: targets[0], Key: outcome.frame.StateKey(), Edge: edge.Name, CreatedAt: e.now(),
 	}); err != nil {
 		return err
 	}

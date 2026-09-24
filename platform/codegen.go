@@ -80,7 +80,9 @@ func (p *Platform) TypeScriptClient() string {
 			}
 		}
 		fmt.Fprintf(&b, "      const queryText = query.toString(); if (queryText) url += (url.includes('?') ? '&' : '?') + queryText;%s      const payload = { ...values };%s", nl, nl)
-		if method == "GET" || method == "HEAD" { fmt.Fprintf(&b, "      void payload;%s", nl) }
+		if method == "GET" || method == "HEAD" {
+			fmt.Fprintf(&b, "      void payload;%s", nl)
+		}
 		for _, name := range pathParams(route.Path) {
 			fmt.Fprintf(&b, "      delete payload[%q];%s", name, nl)
 		}

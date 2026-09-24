@@ -81,6 +81,7 @@ type Engine struct {
 
 	mu          sync.RWMutex
 	definitions map[string]*Definition
+	versions    map[string]map[int]*Definition
 }
 
 // New builds an engine.
@@ -105,6 +106,7 @@ func New(opts Options) (*Engine, error) {
 		observers:   opts.Observers,
 		now:         opts.Clock,
 		definitions: map[string]*Definition{},
+		versions:    map[string]map[int]*Definition{},
 	}
 	if engine.owner == "" {
 		engine.owner = "replica-" + randomID()
@@ -132,10 +134,18 @@ func (e *Engine) Register(definition *Definition) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if existing, ok := e.definitions[definition.Name]; ok && existing.Version == definition.Version {
+	versions := e.versions[definition.Name]
+	if versions == nil {
+		versions = map[int]*Definition{}
+		e.versions[definition.Name] = versions
+	}
+	if _, ok := versions[definition.Version]; ok {
 		return fmt.Errorf("ref/process: process %q version %d is already registered", definition.Name, definition.Version)
 	}
-	e.definitions[definition.Name] = definition
+	versions[definition.Version] = definition
+	if current := e.definitions[definition.Name]; current == nil || definition.Version > current.Version {
+		e.definitions[definition.Name] = definition
+	}
 	return nil
 }
 
@@ -144,6 +154,17 @@ func (e *Engine) Definition(name string) (*Definition, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	definition, ok := e.definitions[name]
+	return definition, ok
+}
+
+func (e *Engine) DefinitionVersion(name string, version int) (*Definition, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	versions := e.versions[name]
+	if versions == nil {
+		return nil, false
+	}
+	definition, ok := versions[version]
 	return definition, ok
 }
 
@@ -174,10 +195,13 @@ type StartOptions struct {
 	IdempotencyKey string
 	TenantID       string
 	PrincipalID    string
+	Identity       *IdentitySnapshot
 	CorrelationID  string
+	ParentRunID    string
 	// Detached skips the initial advance, leaving the run pending for a worker to
 	// pick up. Use it when the caller must not wait for the first step.
-	Detached bool
+	Detached  bool
+	DeferWake bool
 }
 
 // Start creates a run and, unless detached, advances it immediately.
@@ -192,9 +216,14 @@ func (e *Engine) Start(ctx context.Context, process string, input any, opts Star
 	}
 
 	if opts.IdempotencyKey != "" {
-		existing, err := e.store.FindRunByIdempotency(ctx, process, opts.IdempotencyKey)
+		existing, err := e.store.FindRunByIdempotency(ctx, opts.TenantID, process, opts.IdempotencyKey)
 		switch {
 		case err == nil:
+			if opts.Detached && !opts.DeferWake && existing.Status.Active() && e.enqueuer != nil {
+				if err := e.enqueuer.EnqueueAdvance(ctx, existing.ID); err != nil {
+					return existing, err
+				}
+			}
 			return existing, nil
 		case !errors.Is(err, ErrRunNotFound):
 			return nil, err
@@ -223,8 +252,10 @@ func (e *Engine) Start(ctx context.Context, process string, input any, opts Star
 		Input:          encoded,
 		TenantID:       opts.TenantID,
 		PrincipalID:    opts.PrincipalID,
+		Identity:       cloneIdentity(opts.Identity),
 		IdempotencyKey: opts.IdempotencyKey,
 		CorrelationID:  opts.CorrelationID,
+		ParentRunID:    opts.ParentRunID,
 		Visits:         map[string]int{},
 		CreatedAt:      now,
 		UpdatedAt:      now,
@@ -258,23 +289,35 @@ func (e *Engine) Start(ctx context.Context, process string, input any, opts Star
 		}
 	}
 
-	if err := e.store.CreateRun(ctx, run); err != nil {
+	stored, created, err := e.store.CreateRunOrGet(ctx, run)
+	if err != nil {
 		return nil, err
 	}
+	if !created {
+		return stored, nil
+	}
+	run = stored
 	if run.DeadlineAt != nil {
-		_ = e.store.AddTimer(ctx, &Timer{
+		if err := e.store.AddTimer(ctx, &Timer{
 			ID: randomID(), RunID: run.ID, Fire: *run.DeadlineAt, Kind: "run_timeout", CreatedAt: now,
-		})
+		}); err != nil {
+			return run, err
+		}
 	}
 	if run.SLABreachAt != nil {
-		_ = e.store.AddTimer(ctx, &Timer{
+		if err := e.store.AddTimer(ctx, &Timer{
 			ID: randomID(), RunID: run.ID, Fire: *run.SLABreachAt, Kind: "sla", CreatedAt: now,
-		})
+		}); err != nil {
+			return run, err
+		}
 	}
 	for _, observer := range e.observers {
 		observer.RunStarted(run)
 	}
 
+	if opts.DeferWake {
+		return run, nil
+	}
 	if opts.Detached {
 		if e.enqueuer != nil {
 			if err := e.enqueuer.EnqueueAdvance(ctx, run.ID); err != nil {
@@ -373,6 +416,9 @@ var errLeaseLost = errors.New("ref/process: the run lease was lost")
 // definitionFor resolves the definition a run should execute, honouring the
 // migration policy.
 func (e *Engine) definitionFor(run *Run) (*Definition, error) {
+	if pinned, ok := e.DefinitionVersion(run.Process, run.Version); ok {
+		return pinned, nil
+	}
 	definition, ok := e.Definition(run.Process)
 	if !ok {
 		return nil, fmt.Errorf("process %q is no longer registered, so run %s cannot advance", run.Process, run.ID)
@@ -558,9 +604,14 @@ func (e *Engine) executeFrame(ctx context.Context, definition *Definition, run *
 			return outcome
 		}
 		if skip {
+			state, recordErr := e.recordSkip(ctx, run, frame, step, input)
+			if recordErr != nil {
+				outcome.err = recordErr
+				return outcome
+			}
 			outcome.skipped = true
 			outcome.result = step.SkipResult
-			outcome.state = e.recordSkip(ctx, run, frame, step, input)
+			outcome.state = state
 			return outcome
 		}
 	}
@@ -613,10 +664,13 @@ func (e *Engine) executeFrame(ctx context.Context, definition *Definition, run *
 		shaped, err = step.InputShaper.Shape(input, scope)
 		if err != nil {
 			if errors.Is(err, ErrFiltered) {
-				// A filtered input means this step should not run at all, which is
-				// the same outcome as a skip.
+				state, recordErr := e.recordSkip(ctx, run, frame, step, input)
+				if recordErr != nil {
+					outcome.err = recordErr
+					return outcome
+				}
 				outcome.skipped = true
-				outcome.state = e.recordSkip(ctx, run, frame, step, input)
+				outcome.state = state
 				return outcome
 			}
 			outcome.err = fmt.Errorf("step %q input shaping: %w", frame.Step, err)
@@ -632,10 +686,16 @@ func (e *Engine) executeFrame(ctx context.Context, definition *Definition, run *
 		Attempt:   max(frame.Attempt, 1),
 		StartedAt: e.now(),
 	}
-	if encoded, err := json.Marshal(shaped); err == nil {
-		state.Input = encoded
+	encodedInput, err := json.Marshal(shaped)
+	if err != nil {
+		outcome.err = err
+		return outcome
 	}
-	_ = e.store.SaveStep(ctx, state)
+	state.Input = encodedInput
+	if err := e.store.SaveStep(ctx, state); err != nil {
+		outcome.err = err
+		return outcome
+	}
 
 	runCtx := ctx
 	if step.Timeout > 0 {
@@ -659,7 +719,10 @@ func (e *Engine) executeFrame(ctx context.Context, definition *Definition, run *
 
 	if err != nil {
 		state.Status, state.Error = StepFailed, err.Error()
-		_ = e.store.SaveStep(ctx, state)
+		if saveErr := e.store.SaveStep(ctx, state); saveErr != nil {
+			outcome.state, outcome.err = state, saveErr
+			return outcome
+		}
 		outcome.state, outcome.err = state, err
 		return outcome
 	}
@@ -671,15 +734,25 @@ func (e *Engine) executeFrame(ctx context.Context, definition *Definition, run *
 			return outcome
 		}
 		shapedResult, shapeErr := step.OutputShaper.Shape(result, resultScope)
-		if shapeErr != nil && !errors.Is(shapeErr, ErrFiltered) {
+		if errors.Is(shapeErr, ErrFiltered) {
+			state.Status = StepSkipped
+			if saveErr := e.store.SaveStep(ctx, state); saveErr != nil {
+				outcome.state, outcome.err = state, saveErr
+				return outcome
+			}
+			outcome.state, outcome.skipped = state, true
+			return outcome
+		}
+		if shapeErr != nil {
 			state.Status, state.Error = StepFailed, shapeErr.Error()
-			_ = e.store.SaveStep(ctx, state)
+			if saveErr := e.store.SaveStep(ctx, state); saveErr != nil {
+				outcome.state, outcome.err = state, saveErr
+				return outcome
+			}
 			outcome.state, outcome.err = state, shapeErr
 			return outcome
 		}
-		if shapeErr == nil {
-			result = shapedResult
-		}
+		result = shapedResult
 	}
 
 	sequence, err := e.store.NextStepSequence(ctx, run.ID)
@@ -688,10 +761,16 @@ func (e *Engine) executeFrame(ctx context.Context, definition *Definition, run *
 		return outcome
 	}
 	state.Status, state.Sequence = StepCompleted, sequence
-	if encoded, err := json.Marshal(result); err == nil {
-		state.Result = encoded
+	encodedResult, err := json.Marshal(result)
+	if err != nil {
+		outcome.err = err
+		return outcome
 	}
-	_ = e.store.SaveStep(ctx, state)
+	state.Result = encodedResult
+	if err := e.store.SaveStep(ctx, state); err != nil {
+		outcome.err = err
+		return outcome
+	}
 
 	outcome.state, outcome.result = state, result
 	for _, observer := range e.observers {
@@ -700,24 +779,33 @@ func (e *Engine) executeFrame(ctx context.Context, definition *Definition, run *
 	return outcome
 }
 
-func (e *Engine) recordSkip(ctx context.Context, run *Run, frame Frame, step *Step, input any) *StepState {
+func (e *Engine) recordSkip(ctx context.Context, run *Run, frame Frame, step *Step, input any) (*StepState, error) {
 	now := e.now()
-	sequence, _ := e.store.NextStepSequence(ctx, run.ID)
+	sequence, err := e.store.NextStepSequence(ctx, run.ID)
+	if err != nil {
+		return nil, err
+	}
 	state := &StepState{
 		RunID: run.ID, Step: frame.Step, Key: frame.StateKey(),
 		Status: StepSkipped, Attempt: max(frame.Attempt, 1),
 		Sequence: sequence, StartedAt: now, FinishedAt: &now,
 	}
-	if encoded, err := json.Marshal(input); err == nil {
-		state.Input = encoded
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
 	}
+	state.Input = encoded
 	if step.SkipResult != nil {
-		if encoded, err := json.Marshal(step.SkipResult); err == nil {
-			state.Result = encoded
+		encoded, err = json.Marshal(step.SkipResult)
+		if err != nil {
+			return nil, err
 		}
+		state.Result = encoded
 	}
-	_ = e.store.SaveStep(ctx, state)
-	return state
+	if err := e.store.SaveStep(ctx, state); err != nil {
+		return nil, err
+	}
+	return state, nil
 }
 
 func (e *Engine) checkStepRateLimit(ctx context.Context, step *Step, scope Scope) (bool, *WaitState, error) {
@@ -838,6 +926,13 @@ func (e *Engine) parkUntilFrame(ctx context.Context, run *Run, future []Frame) e
 	run.Frames = future
 	run.Status = StatusWaiting
 	run.Waiting = &WaitState{Reason: "timer", Until: earliest, Detail: "waiting before the next attempt"}
+	if earliest != nil {
+		if err := e.store.AddTimer(ctx, &Timer{
+			ID: "wake:" + run.ID, RunID: run.ID, Fire: *earliest, Kind: "wake", CreatedAt: e.now(),
+		}); err != nil {
+			return err
+		}
+	}
 	if err := e.store.SaveRun(ctx, run); err != nil {
 		return err
 	}
@@ -845,7 +940,7 @@ func (e *Engine) parkUntilFrame(ctx context.Context, run *Run, future []Frame) e
 		observer.RunParked(run, *run.Waiting)
 	}
 	if earliest != nil && e.enqueuer != nil {
-		return e.enqueuer.EnqueueAdvanceAt(ctx, run.ID, *earliest)
+		_ = e.enqueuer.EnqueueAdvanceAt(ctx, run.ID, *earliest)
 	}
 	return nil
 }
@@ -863,23 +958,35 @@ func (e *Engine) completeRun(ctx context.Context, definition *Definition, run *R
 	// completion order rather than the declaration order — what an author means by
 	// "the result" of a graph that ended on one of several branches.
 	states, err := e.store.ListSteps(ctx, run.ID)
-	if err == nil {
-		for i := len(states) - 1; i >= 0; i-- {
-			if states[i].Status == StepCompleted && len(states[i].Result) > 0 {
-				run.Output = states[i].Result
-				break
-			}
+	if err != nil {
+		return err
+	}
+	for i := len(states) - 1; i >= 0; i-- {
+		if states[i].Status == StepCompleted && len(states[i].Result) > 0 {
+			run.Output = states[i].Result
+			break
 		}
 	}
 	if definition.OutputShaper != nil && len(run.Output) > 0 {
 		var value any
-		if json.Unmarshal(run.Output, &value) == nil {
-			scope, _ := e.scope(ctx, run, Frame{}, nil, value)
-			if shaped, shapeErr := definition.OutputShaper.Shape(value, scope); shapeErr == nil {
-				if encoded, encodeErr := json.Marshal(shaped); encodeErr == nil {
-					run.Output = encoded
-				}
+		if err := json.Unmarshal(run.Output, &value); err != nil {
+			return err
+		}
+		scope, err := e.scope(ctx, run, Frame{}, nil, value)
+		if err != nil {
+			return err
+		}
+		shaped, shapeErr := definition.OutputShaper.Shape(value, scope)
+		if errors.Is(shapeErr, ErrFiltered) {
+			run.Output = nil
+		} else if shapeErr != nil {
+			return shapeErr
+		} else {
+			encoded, err := json.Marshal(shaped)
+			if err != nil {
+				return err
 			}
+			run.Output = encoded
 		}
 	}
 
@@ -887,9 +994,15 @@ func (e *Engine) completeRun(ctx context.Context, definition *Definition, run *R
 		return err
 	}
 	// Housekeeping timers are only useful while the run is live.
-	_ = e.store.DeleteRunTimers(ctx, run.ID)
-	_ = e.store.DeleteRunSubscriptions(ctx, run.ID)
-	e.signalParent(ctx, run)
+	if err := e.store.DeleteRunTimers(ctx, run.ID); err != nil {
+		return err
+	}
+	if err := e.store.DeleteRunSubscriptions(ctx, run.ID); err != nil {
+		return err
+	}
+	if err := e.signalParent(ctx, run); err != nil {
+		return err
+	}
 	for _, observer := range e.observers {
 		observer.RunFinished(run)
 	}
@@ -909,13 +1022,21 @@ func (e *Engine) failRun(ctx context.Context, run *Run, step string, cause error
 	if err := e.store.SaveRun(ctx, run); err != nil {
 		return err
 	}
-	_ = e.store.DeleteRunTimers(ctx, run.ID)
-	_ = e.store.DeleteRunSubscriptions(ctx, run.ID)
-	e.cancelRunTasks(ctx, run)
+	if err := e.store.DeleteRunTimers(ctx, run.ID); err != nil {
+		return err
+	}
+	if err := e.store.DeleteRunSubscriptions(ctx, run.ID); err != nil {
+		return err
+	}
+	if err := e.cancelRunTasks(ctx, run); err != nil {
+		return err
+	}
 	if e.notifier != nil {
 		_ = e.notifier.NotifyProcess(ctx, NotifyEvent{Kind: "run_failed", Run: run, Step: step, Detail: cause.Error()})
 	}
-	e.signalParent(ctx, run)
+	if err := e.signalParent(ctx, run); err != nil {
+		return err
+	}
 	for _, observer := range e.observers {
 		observer.RunFinished(run)
 	}
@@ -952,10 +1073,18 @@ func (e *Engine) Cancel(ctx context.Context, runID, reason string) (*Run, error)
 	if err := e.store.SaveRun(ctx, run); err != nil {
 		return nil, err
 	}
-	_ = e.store.DeleteRunTimers(ctx, runID)
-	_ = e.store.DeleteRunSubscriptions(ctx, runID)
-	e.cancelRunTasks(ctx, run)
-	e.signalParent(ctx, run)
+	if err := e.store.DeleteRunTimers(ctx, runID); err != nil {
+		return nil, err
+	}
+	if err := e.store.DeleteRunSubscriptions(ctx, runID); err != nil {
+		return nil, err
+	}
+	if err := e.cancelRunTasks(ctx, run); err != nil {
+		return nil, err
+	}
+	if err := e.signalParent(ctx, run); err != nil {
+		return nil, err
+	}
 	for _, observer := range e.observers {
 		observer.RunFinished(run)
 	}
@@ -964,18 +1093,21 @@ func (e *Engine) Cancel(ctx context.Context, runID, reason string) (*Run, error)
 
 // cancelRunTasks closes the work items of a run that has ended, so nobody is
 // asked to approve something that no longer exists.
-func (e *Engine) cancelRunTasks(ctx context.Context, run *Run) {
-	tasks, err := e.store.ListTasks(ctx, TaskFilter{RunID: run.ID, Limit: 200})
+func (e *Engine) cancelRunTasks(ctx context.Context, run *Run) error {
+	tasks, err := e.store.ListTasks(ctx, TaskFilter{RunID: run.ID, Limit: 500})
 	if err != nil {
-		return
+		return err
 	}
 	for _, task := range tasks {
 		if !task.Open() {
 			continue
 		}
 		task.Status = TaskCancelled
-		_ = e.store.SaveTask(ctx, task)
+		if err := e.store.SaveTask(ctx, task); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // Snapshot returns the operator view of a run.
@@ -1030,19 +1162,26 @@ func (e *Engine) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, error)
 func (e *Engine) scope(ctx context.Context, run *Run, frame Frame, input, result any) (Scope, error) {
 	var runInput any
 	if len(run.Input) > 0 {
-		_ = json.Unmarshal(run.Input, &runInput)
+		if err := json.Unmarshal(run.Input, &runInput); err != nil {
+			return nil, fmt.Errorf("run %s has unreadable input: %w", run.ID, err)
+		}
 	}
 	results := map[string]any{}
 	states, err := e.store.ListSteps(ctx, run.ID)
-	if err == nil {
-		for _, state := range states {
-			if len(state.Result) == 0 {
-				continue
-			}
-			var value any
-			if json.Unmarshal(state.Result, &value) == nil {
-				results[state.Step] = value
-			}
+	if err != nil {
+		return nil, err
+	}
+	for _, state := range states {
+		if len(state.Result) == 0 {
+			continue
+		}
+		var value any
+		if err := json.Unmarshal(state.Result, &value); err != nil {
+			return nil, fmt.Errorf("step state %s/%s is unreadable: %w", state.Step, state.Key, err)
+		}
+		results[state.Step] = value
+		if state.Key != "" {
+			results[state.Key] = value
 		}
 	}
 	scope := Scope{
@@ -1090,7 +1229,10 @@ var ErrFiltered = errors.New("ref/process: payload filtered")
 // so pushing a frame for the step would re-run it (opening a second task, starting
 // a second child). This resolves off the result instead, which is why it exists
 // rather than the two callers each having their own version to drift apart.
-func (e *Engine) continueFromStep(ctx context.Context, runID, stepName string, result map[string]any, stepErr error) error {
+func (e *Engine) continueFromStep(ctx context.Context, runID, stepName, stateKey string, result map[string]any, stepErr error) error {
+	if stateKey == "" {
+		stateKey = stepName
+	}
 	acquired, err := e.store.AcquireLease(ctx, runID, e.owner, e.leaseTTL)
 	if err != nil {
 		return err
@@ -1132,24 +1274,34 @@ func (e *Engine) continueFromStep(ctx context.Context, runID, stepName string, r
 		// Record the completion so a later edge reading results.<step> sees it, and
 		// so compensation knows this step committed.
 		now := e.now()
-		state, _ := e.stepStateByKey(ctx, runID, stepName)
+		state, err := e.stepStateByKey(ctx, runID, stateKey)
+		if err != nil {
+			return err
+		}
 		if state == nil {
-			state = &StepState{RunID: runID, Step: stepName, Key: stepName, Attempt: 1, StartedAt: now}
+			state = &StepState{RunID: runID, Step: stepName, Key: stateKey, Attempt: 1, StartedAt: now}
 		}
 		state.FinishedAt = &now
 		if stepErr != nil {
 			state.Status, state.Error = StepFailed, stepErr.Error()
 		} else {
-			sequence, _ := e.store.NextStepSequence(ctx, runID)
-			state.Status, state.Sequence = StepCompleted, sequence
-			if encoded, marshalErr := json.Marshal(result); marshalErr == nil {
-				state.Result = encoded
+			sequence, err := e.store.NextStepSequence(ctx, runID)
+			if err != nil {
+				return err
 			}
+			state.Status, state.Sequence = StepCompleted, sequence
+			encoded, err := json.Marshal(result)
+			if err != nil {
+				return err
+			}
+			state.Result = encoded
 		}
-		_ = e.store.SaveStep(ctx, state)
+		if err := e.store.SaveStep(ctx, state); err != nil {
+			return err
+		}
 
 		outcome := stepOutcome{
-			frame:  Frame{Step: stepName, Attempt: 1},
+			frame:  Frame{Step: stepName, Key: stateKey, Attempt: 1},
 			step:   step,
 			state:  state,
 			result: result,
@@ -1177,9 +1329,11 @@ func (e *Engine) continueFromStep(ctx context.Context, runID, stepName string, r
 			return e.store.SaveRun(ctx, run)
 		}
 		if step.Terminal {
-			if encoded, marshalErr := json.Marshal(result); marshalErr == nil {
-				run.Output = encoded
+			encoded, err := json.Marshal(result)
+			if err != nil {
+				return err
 			}
+			run.Output = encoded
 			return e.completeRun(ctx, definition, run)
 		}
 		if traversed == 0 {

@@ -139,19 +139,18 @@ func (p *Platform) serveWebhook(c fh.Ctx, trigger compiledTrigger) error {
 	correlation := ""
 	if trigger.correlation != nil {
 		value, err := trigger.correlation.String(Env{"input": input})
-		if err == nil {
-			correlation = value
+		if err != nil {
+			return projectFailure(c, invalidInput("the webhook correlation could not be evaluated"))
 		}
+		correlation = value
+	}
+	if (trigger.spec.Event != "" || trigger.spec.Process != "") && correlation == "" {
+		return projectFailure(c, invalidInput("this webhook requires a non-empty correlation or delivery id"))
 	}
 
 	switch {
 	case trigger.spec.Event != "":
-		// The webhook delivers an event to whatever runs are waiting for it.
-		engine, ok := p.anyEngine()
-		if !ok {
-			return projectFailure(c, unavailable("this application has no process engine to deliver the event to"))
-		}
-		woken, err := engine.Signal(ctx, trigger.spec.Event, correlation, input)
+		woken, err := p.SignalEvent(ctx, trigger.spec.Event, correlation, input)
 		if err != nil {
 			return projectFailure(c, processFailure(err))
 		}
@@ -161,7 +160,7 @@ func (p *Platform) serveWebhook(c fh.Ctx, trigger compiledTrigger) error {
 		run, err := trigger.engine.Start(ctx, trigger.spec.Process, input, process.StartOptions{
 			// Correlating the run on the webhook's own identifier is what makes a
 			// redelivery return the original run instead of starting a second.
-			IdempotencyKey: correlation,
+			IdempotencyKey: "trigger:" + trigger.spec.Name + ":" + correlation,
 			CorrelationID:  correlation,
 			Detached:       true,
 		})

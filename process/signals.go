@@ -36,17 +36,20 @@ func (e *Engine) Signal(ctx context.Context, name, correlation string, payload a
 		return nil, fmt.Errorf("ref/process: the event payload cannot be serialised: %w", err)
 	}
 
-	_ = e.store.RecordEvent(ctx, &Event{
+	if err := e.store.RecordEvent(ctx, &Event{
 		ID: randomID(), Name: name, Correlation: correlation,
 		Payload: encoded, ReceivedAt: e.now(),
-	})
+	}); err != nil {
+		return nil, err
+	}
 
-	subscriptions, err := e.store.MatchSubscriptions(ctx, name, correlation)
+	subscriptions, err := e.store.ClaimSubscriptions(ctx, name, correlation, encoded, e.now(), 1000, e.leaseTTL)
 	if err != nil {
 		return nil, err
 	}
 	now := e.now()
 	woken := make([]string, 0, len(subscriptions))
+	var failures []error
 	for _, subscription := range subscriptions {
 		if subscription.ExpiresAt != nil && subscription.ExpiresAt.Before(now) {
 			// The run has already given up on this event; its timeout timer will
@@ -54,31 +57,29 @@ func (e *Engine) Signal(ctx context.Context, name, correlation string, payload a
 			continue
 		}
 		if err := e.deliver(ctx, subscription, encoded); err != nil {
-			// One run failing to accept an event must not stop the others: they are
-			// independent, and a partial delivery is better than none.
+			failures = append(failures, fmt.Errorf("subscription %s: %w", subscription.ID, err))
 			continue
 		}
 		woken = append(woken, subscription.RunID)
 	}
-	return woken, nil
+	return woken, errors.Join(failures...)
 }
 
 // deliver consumes one subscription and resumes its run.
 func (e *Engine) deliver(ctx context.Context, subscription *Subscription, payload json.RawMessage) error {
-	if err := e.store.DeleteSubscription(ctx, subscription.ID); err != nil {
+	if err := e.deliverClaimed(ctx, subscription, payload); err != nil {
+		_ = e.store.ReleaseSubscription(context.WithoutCancel(ctx), subscription.ID, subscription.ClaimToken, err)
 		return err
 	}
-	// A child completion resumes *at* the calling step rather than at a target:
-	// the step has now produced its result, so its own edges resolve off it. Pushing
-	// a frame for the step instead would re-execute it and start a second child.
+	return e.store.AckSubscription(context.WithoutCancel(ctx), subscription.ID, subscription.ClaimToken)
+}
+
+func (e *Engine) deliverClaimed(ctx context.Context, subscription *Subscription, payload json.RawMessage) error {
 	if subscription.Event == childCompletedEvent {
 		return e.resumeAfterChild(ctx, subscription, payload)
 	}
 	if err := e.resume(ctx, subscription.RunID, Frame{
-		Step:    subscription.Step,
-		Input:   payload,
-		Edge:    subscription.Edge,
-		Attempt: 1,
+		Step: subscription.Step, Input: payload, Edge: subscription.Edge, Attempt: 1,
 	}, subscription.Edge, "wait_event"); err != nil {
 		return err
 	}
@@ -173,10 +174,18 @@ func (e *Engine) AdvanceManual(ctx context.Context, runID, edge string) error {
 			}
 		}
 	}
-	if err := e.store.DeleteSubscription(ctx, target.ID); err != nil {
+	claimed, err := e.store.ClaimSubscription(ctx, target.ID, nil, e.now(), e.leaseTTL)
+	if err != nil {
 		return err
 	}
+	if claimed == nil {
+		return fmt.Errorf("ref/process: operator gate %s is no longer available", target.ID)
+	}
 	if err := e.resume(ctx, runID, Frame{Step: target.Step, Input: payload, Edge: target.Edge, Attempt: 1}, "", ""); err != nil {
+		_ = e.store.ReleaseSubscription(context.WithoutCancel(ctx), claimed.ID, claimed.ClaimToken, err)
+		return err
+	}
+	if err := e.store.AckSubscription(context.WithoutCancel(ctx), claimed.ID, claimed.ClaimToken); err != nil {
 		return err
 	}
 	return e.Advance(ctx, runID)
@@ -198,25 +207,29 @@ func edgeSuffix(edge string) string {
 // Call it from a scheduled job. It is safe to call from every replica at once: the
 // store claims timers atomically, so each one fires once.
 func (e *Engine) Tick(ctx context.Context, limit int) (int, error) {
-	timers, err := e.store.DueTimers(ctx, e.now(), limit)
+	now := e.now()
+	timers, err := e.store.ClaimDueTimers(ctx, now, limit, e.leaseTTL)
 	if err != nil {
 		return 0, err
 	}
 	handled := 0
+	var failures []error
 	for _, timer := range timers {
 		if err := e.fireTimer(ctx, timer); err != nil {
-			// One bad timer must not stop the rest. The run it belongs to keeps its
-			// state, and an operator can see it in the run's own error.
+			failures = append(failures, fmt.Errorf("timer %s: %w", timer.ID, err))
+			_ = e.store.ReleaseTimer(context.WithoutCancel(ctx), timer.ID, timer.ClaimToken, e.now().Add(time.Second), err)
+			continue
+		}
+		if err := e.store.AckTimer(context.WithoutCancel(ctx), timer.ID, timer.ClaimToken); err != nil {
+			failures = append(failures, fmt.Errorf("ack timer %s: %w", timer.ID, err))
 			continue
 		}
 		handled++
 	}
-	// Overdue tasks are the other thing that needs a periodic look, and folding it
-	// into the same tick means one scheduled job rather than two.
 	if err := e.tickTasks(ctx, limit); err != nil {
-		return handled, err
+		failures = append(failures, err)
 	}
-	return handled, nil
+	return handled, errors.Join(failures...)
 }
 
 // fireTimer dispatches one due timer.
@@ -244,6 +257,9 @@ func (e *Engine) fireTimer(ctx context.Context, timer *Timer) error {
 
 	case "sla":
 		return e.handleSLABreach(ctx, run)
+
+	case "wake":
+		return e.advanceOrEnqueue(ctx, run.ID)
 
 	case "delayed":
 		// The park is over: put the continuation back and go.
@@ -288,8 +304,20 @@ func (e *Engine) handleDeadline(ctx context.Context, run *Run, timer *Timer) err
 			return nil
 		}
 		for _, subscription := range subscriptions {
-			if subscription.Edge == timer.Edge {
-				_ = e.store.DeleteSubscription(ctx, subscription.ID)
+			if subscription.Edge != timer.Edge {
+				continue
+			}
+			claimed, err := e.store.ClaimSubscription(ctx, subscription.ID, nil, e.now(), e.leaseTTL)
+			if errors.Is(err, ErrClaimLost) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if claimed != nil {
+				if err := e.store.AckSubscription(ctx, claimed.ID, claimed.ClaimToken); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -455,20 +483,58 @@ func (e *Engine) RecoverStalled(ctx context.Context, olderThan time.Duration, li
 	if olderThan <= 0 {
 		olderThan = 5 * time.Minute
 	}
-	runs, err := e.store.ListRuns(ctx, RunFilter{Status: StatusRunning, Limit: limit})
+	recovered := 0
+	allRuns, err := e.store.ListRuns(ctx, RunFilter{Limit: limit})
 	if err != nil {
 		return 0, err
 	}
+	for _, run := range allRuns {
+		if run.Status.Terminal() && run.ParentRunID != "" && !run.ParentNotified {
+			if err := e.signalParent(ctx, run); err == nil {
+				recovered++
+			}
+		}
+	}
+	subscriptions, err := e.store.ClaimExpiredSubscriptions(ctx, e.now(), limit, e.leaseTTL)
+	if err != nil {
+		return 0, err
+	}
+	for _, subscription := range subscriptions {
+		if err := e.deliver(ctx, subscription, subscription.PendingPayload); err == nil {
+			recovered++
+		}
+	}
 	cutoff := e.now().Add(-olderThan)
-	recovered := 0
-	for _, run := range runs {
-		if run.UpdatedAt.After(cutoff) {
-			continue
+	for _, status := range []Status{StatusPending, StatusWaiting, StatusRunning} {
+		runs, err := e.store.ListRuns(ctx, RunFilter{Status: status, Limit: limit})
+		if err != nil {
+			return recovered, err
 		}
-		if err := e.advanceOrEnqueue(ctx, run.ID); err != nil {
-			continue
+		for _, run := range runs {
+			if run.UpdatedAt.After(cutoff) {
+				continue
+			}
+			if status == StatusWaiting && run.Waiting != nil && run.Waiting.Reason == "task" {
+				tasks, err := e.store.ListTasks(ctx, TaskFilter{RunID: run.ID, Step: run.Waiting.Step, Status: TaskCompleted, Limit: 10})
+				if err != nil {
+					return recovered, err
+				}
+				for _, task := range tasks {
+					var result map[string]any
+					if err := json.Unmarshal(task.Result, &result); err != nil {
+						continue
+					}
+					if err := e.resumeAfterTask(ctx, task, result); err == nil {
+						recovered++
+						break
+					}
+				}
+				continue
+			}
+			if err := e.advanceOrEnqueue(ctx, run.ID); err == nil {
+				recovered++
+			}
 		}
-		recovered++
 	}
 	return recovered, nil
 }

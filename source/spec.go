@@ -111,6 +111,27 @@ func (s CacheScope) String() string {
 	}
 }
 
+type SecurityScope uint8
+
+const (
+	SecurityTenant SecurityScope = iota
+	SecurityPublic
+	SecurityPrincipal
+)
+
+func (s SecurityScope) String() string {
+	switch s {
+	case SecurityPublic:
+		return "public"
+	case SecurityTenant:
+		return "tenant"
+	case SecurityPrincipal:
+		return "principal"
+	default:
+		return "unknown"
+	}
+}
+
 // Spec declares how a ReadNode interacts with its data source.
 // Optional — capabilities without a Spec work exactly as they do today.
 type Spec struct {
@@ -139,6 +160,7 @@ type Spec struct {
 
 	// CacheScope determines where cached results live.
 	CacheScope CacheScope
+	Security   SecurityScope
 
 	// CostWeight is a relative cost (1–1000) for budget accounting.
 	// Higher values consume more budget tokens per operation.

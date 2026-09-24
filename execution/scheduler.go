@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,35 +34,38 @@ func (e *nodePanicError) Error() string {
 type execCancelCtx struct {
 	context.Context
 	canceled atomic.Bool
-	done     chan struct{}
+	doneCtx  context.Context
+	cancel   context.CancelFunc
 	doneMu   sync.Mutex
 }
 
 func (c *execCancelCtx) reset(parent context.Context) {
-	c.Context = parent
-	c.canceled.Store(false)
 	c.doneMu.Lock()
-	c.done = nil
+	c.Context = parent
+	c.doneCtx = nil
+	c.cancel = nil
 	c.doneMu.Unlock()
+	c.canceled.Store(false)
 }
 
 func (c *execCancelCtx) Done() <-chan struct{} {
 	c.doneMu.Lock()
-	if c.done == nil {
-		c.done = make(chan struct{})
+	if c.doneCtx == nil {
+		c.doneCtx, c.cancel = context.WithCancel(c.Context)
 		if c.canceled.Load() {
-			close(c.done)
+			c.cancel()
 		}
 	}
-	done := c.done
+	done := c.doneCtx.Done()
 	c.doneMu.Unlock()
 	return done
 }
 
-func (c *execCancelCtx) cancel() {
+func (c *execCancelCtx) cancelExecution() {
 	c.doneMu.Lock()
-	if !c.canceled.Swap(true) && c.done != nil {
-		close(c.done)
+	canceled := c.canceled.Swap(true)
+	if !canceled && c.cancel != nil {
+		c.cancel()
 	}
 	c.doneMu.Unlock()
 }
@@ -82,6 +86,7 @@ const (
 	StateDenied
 	StateDeferred
 	StateFailed
+	StateCanceled
 )
 
 func (s ExecutionState) String() string {
@@ -96,6 +101,8 @@ func (s ExecutionState) String() string {
 		return "deferred"
 	case StateFailed:
 		return "failed"
+	case StateCanceled:
+		return "canceled"
 	default:
 		return "unknown"
 	}
@@ -171,6 +178,7 @@ type execState struct {
 	runners   []NodeExecutor
 	budget    *Budget
 	scheduler *Scheduler
+	trace     *Trace
 	nodeCount int
 
 	// Per-execution state
@@ -268,12 +276,18 @@ func (es *execState) isGateEligible(node *graph.Node) bool {
 // executeNode executes a single node synchronously.
 func (es *execState) executeNode(nodeID graph.NodeID) {
 	node := es.plan.Nodes[nodeID]
+	if es.trace != nil {
+		es.trace.NodeStarted(nodeID, node.Name)
+	}
 
 	es.outcomeMu.Lock()
 	hasSC := es.hasSC
 	es.outcomeMu.Unlock()
 	if hasSC || es.specCtx.Err() != nil {
 		es.states[nodeID].state.Store(nsCanceled)
+		if es.trace != nil {
+			es.trace.NodeFinished(nodeID, es.specCtx.Err())
+		}
 		return
 	}
 
@@ -288,6 +302,7 @@ func (es *execState) executeNode(nodeID graph.NodeID) {
 		es.plan.DefSlots,
 		es.plan.MaxDefID,
 	)
+	nc.SetTrace(es.trace)
 
 	hasObs := len(es.scheduler.observers) > 0
 	var info graph.NodeInfo
@@ -299,6 +314,12 @@ func (es *execState) executeNode(nodeID graph.NodeID) {
 	}
 
 	runErr := es.safeRun(nodeID, nc)
+	if es.trace != nil {
+		es.trace.NodeFinished(nodeID, runErr)
+		if node.Kind == graph.DecisionNode {
+			es.trace.RecordDecision(nodeID, es.decisions)
+		}
+	}
 
 	if hasObs {
 		for _, obs := range es.scheduler.observers {
@@ -313,21 +334,21 @@ func (es *execState) executeNode(nodeID graph.NodeID) {
 		es.allEffects = append(es.allEffects, fx)
 	}
 	nc.mu.Unlock()
-	if sc, ok := nc.GetShortCircuit(); ok && !es.hasSC {
+	if sc, ok := nc.GetShortCircuit(); ok && !es.hasSC && (!es.plan.HasDecisions || es.decisions.Verdict() == VerdictAllow) {
 		es.hasSC = true
 		es.scOut = *sc
-		es.specCtx.cancel()
+		es.specCtx.cancelExecution()
 	}
 	es.outcomeMu.Unlock()
 
 	ReleaseNodeContext(nc)
 
 	if runErr != nil {
-		es.errOnce.Do(func() { es.firstErr = runErr })
+		es.setError(runErr)
 		es.states[nodeID].state.Store(nsCanceled)
 
 		if node.Kind == graph.DecisionNode && es.decisions.Verdict() == VerdictDeny {
-			es.specCtx.cancel()
+			es.specCtx.cancelExecution()
 		}
 	} else {
 		es.states[nodeID].state.Store(nsComplete)
@@ -347,6 +368,21 @@ func (es *execState) safeRun(nodeID graph.NodeID, nc *NodeContext) (err error) {
 	return nil
 }
 
+func (es *execState) setError(err error) {
+	if err == nil {
+		return
+	}
+	es.outcomeMu.Lock()
+	es.errOnce.Do(func() { es.firstErr = err })
+	es.outcomeMu.Unlock()
+}
+
+func (es *execState) errorValue() error {
+	es.outcomeMu.Lock()
+	defer es.outcomeMu.Unlock()
+	return es.firstErr
+}
+
 // launchAsync launches a node for async execution in a goroutine.
 func (es *execState) launchAsync(nodeID graph.NodeID) {
 	if !es.states[nodeID].state.CompareAndSwap(nsReady, nsRunning) {
@@ -355,6 +391,9 @@ func (es *execState) launchAsync(nodeID graph.NodeID) {
 
 	es.inFlight.Add(1)
 	es.wg.Add(1)
+	if es.nodeCount >= 8 && sharedNodeWorkers.submit(nodeJob{state: es, nodeID: nodeID}) {
+		return
+	}
 	go func() {
 		defer es.wg.Done()
 		es.executeNode(nodeID)
@@ -363,6 +402,26 @@ func (es *execState) launchAsync(nodeID graph.NodeID) {
 		default:
 		}
 	}()
+}
+
+func (es *execState) runInline(nodeID graph.NodeID) ([]graph.NodeID, bool) {
+	es.states[nodeID].state.Store(nsRunning)
+	es.executeNode(nodeID)
+	es.outcomeMu.Lock()
+	hasSC := es.hasSC
+	es.outcomeMu.Unlock()
+	if hasSC || es.errorValue() != nil || (es.plan.Nodes[nodeID].Kind == graph.DecisionNode && es.decisions.Verdict() == VerdictDeny) {
+		return nil, true
+	}
+	nextReady := es.propagateDownstream(nodeID, es.readyStorage[:0])
+	nextReady = es.checkGatedWait(nextReady)
+	if len(nextReady) > 1 {
+		for _, nid := range nextReady {
+			es.launchAsync(nid)
+		}
+		return nil, false
+	}
+	return nextReady, false
 }
 
 // checkGatedWait evaluates all waiting nodes and promotes eligible ones.
@@ -430,12 +489,18 @@ func (es *execState) reset() {
 	es.runners = nil
 	es.budget = nil
 	es.scheduler = nil
+	es.trace = nil
 	es.states = nil
 	es.facts = nil
 	es.decisions = nil
+	es.specCtx.reset(nil)
 	es.hasSC = false
 	es.scOut = ExecutionOutcome{}
-	es.allEffects = es.allEffects[:0]
+	if len(es.allEffects) > 0 {
+		es.allEffects = nil
+	} else if es.allEffects != nil {
+		es.allEffects = es.allEffects[:0]
+	}
 	es.firstErr = nil
 	es.errOnce = sync.Once{}
 	es.inFlight.Store(0)
@@ -444,6 +509,50 @@ func (es *execState) reset() {
 	es.gatedOverflow = nil
 	es.statesPtr = nil
 	es.nodeCount = 0
+}
+
+type nodeJob struct {
+	state  *execState
+	nodeID graph.NodeID
+}
+
+type nodeWorkerPool struct {
+	once sync.Once
+	jobs chan nodeJob
+}
+
+var sharedNodeWorkers = &nodeWorkerPool{jobs: make(chan nodeJob, 1024)}
+
+func (p *nodeWorkerPool) submit(job nodeJob) bool {
+	p.once.Do(func() {
+		count := runtime.GOMAXPROCS(0) * 2
+		if count < 8 {
+			count = 8
+		}
+		if count > 64 {
+			count = 64
+		}
+		for i := 0; i < count; i++ {
+			go p.worker()
+		}
+	})
+	select {
+	case p.jobs <- job:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *nodeWorkerPool) worker() {
+	for job := range p.jobs {
+		job.state.executeNode(job.nodeID)
+		select {
+		case job.state.completed <- job.nodeID:
+		default:
+		}
+		job.state.wg.Done()
+	}
 }
 
 // Scheduler executes a compiled Plan using dependency readiness and explicit gate queues.
@@ -467,7 +576,39 @@ func (s *Scheduler) ExecuteProgram(
 	if prog == nil {
 		return nil, fmt.Errorf("ref: cannot execute nil program")
 	}
-	return s.Execute(ctx, inv, prog.Plan, prog.Runners, budget)
+	return s.execute(ctx, inv, prog.Plan, prog.Runners, budget, nil)
+}
+
+func (s *Scheduler) ExecuteProgramTraced(ctx context.Context, inv *invocation.Invocation, prog *Program, budget *Budget, trace *Trace) (*ExecutionOutcome, error) {
+	if prog == nil {
+		return nil, fmt.Errorf("ref: cannot execute nil program")
+	}
+	return s.execute(ctx, inv, prog.Plan, prog.Runners, budget, trace)
+}
+
+func (s *Scheduler) ExecuteProgramReplay(ctx context.Context, inv *invocation.Invocation, prog *Program, budget *Budget, expected *Trace) (*ExecutionOutcome, *Trace, error) {
+	if expected == nil {
+		return nil, nil, errors.New("ref: expected replay trace is required")
+	}
+	if inv == nil {
+		return nil, nil, errors.New("ref: replay invocation is required")
+	}
+	if prog == nil {
+		return nil, nil, errors.New("ref: cannot execute nil program")
+	}
+	actual := NewTrace(string(inv.ID), string(inv.Intent), expected.PlanVersion)
+	out, err := s.execute(ctx, inv, prog.Plan, prog.Runners, budget, actual)
+	if err != nil {
+		return out, actual, err
+	}
+	if err := CompareTraces(expected, actual); err != nil {
+		return out, actual, err
+	}
+	return out, actual, nil
+}
+
+func (s *Scheduler) ExecuteTraced(ctx context.Context, inv *invocation.Invocation, plan *graph.Plan, runners []NodeExecutor, budget *Budget, trace *Trace) (*ExecutionOutcome, error) {
+	return s.execute(ctx, inv, plan, runners, budget, trace)
 }
 
 // Execute runs a plan with node executors to completion.
@@ -478,8 +619,28 @@ func (s *Scheduler) Execute(
 	runners []NodeExecutor,
 	budget *Budget,
 ) (*ExecutionOutcome, error) {
+	return s.execute(ctx, inv, plan, runners, budget, nil)
+}
+
+func (s *Scheduler) execute(
+	ctx context.Context,
+	inv *invocation.Invocation,
+	plan *graph.Plan,
+	runners []NodeExecutor,
+	budget *Budget,
+	trace *Trace,
+) (out *ExecutionOutcome, err error) {
 	if plan == nil {
 		return nil, errNilPlan
+	}
+	if ctx == nil {
+		return nil, errors.New("ref: nil execution context")
+	}
+	if err := ctx.Err(); err != nil {
+		out := AcquireOutcome()
+		out.State = StateCanceled
+		out.Err = err
+		return out, err
 	}
 
 	nodeCount := len(plan.Nodes)
@@ -493,6 +654,7 @@ func (s *Scheduler) Execute(
 	es.runners = runners
 	es.budget = budget
 	es.scheduler = s
+	es.trace = trace
 	es.nodeCount = nodeCount
 	es.start = time.Now()
 	es.specCtx.reset(ctx)
@@ -514,7 +676,15 @@ func (s *Scheduler) Execute(
 	es.inFlight.Store(0)
 
 	defer func() {
-		es.specCtx.cancel()
+		if trace != nil {
+			if out != nil {
+				trace.Finalize(out.State, out.Value, err)
+			} else {
+				trace.Finalize(StateFailed, nil, err)
+			}
+			trace.SetFacts(es.facts)
+		}
+		es.specCtx.cancelExecution()
 		// Return pooled resources
 		if es.statesPtr != nil {
 			st := es.states
@@ -551,6 +721,9 @@ func (s *Scheduler) Execute(
 	}
 
 	es.facts = fact.AcquireStore(plan.SlotCount)
+	if trace != nil {
+		es.facts.EnableProvenance()
+	}
 	es.decisions = AcquireDecisionSet(int32(plan.DecisionCount))
 
 	if nodeCount <= 32 {
@@ -578,32 +751,52 @@ func (s *Scheduler) Execute(
 	}
 	es.queueMu.Unlock()
 
-	// Synchronous Fast-Path: if only 1 node is ready and inFlight == 0, run inline!
-	for len(initialReady) == 1 && es.inFlight.Load() == 0 {
+	cheapRoots := len(initialReady) > 1 && nodeCount <= 8
+	if cheapRoots {
+		for _, id := range initialReady {
+			kind := plan.Nodes[id].Kind
+			if kind != graph.PureNode && kind != graph.DecisionNode {
+				cheapRoots = false
+				break
+			}
+		}
+	}
+	inlineSeeded := false
+	if cheapRoots {
 		curr := initialReady[0]
+		for _, id := range initialReady {
+			if plan.Nodes[id].Kind == graph.PureNode {
+				curr = id
+				break
+			}
+		}
+		for _, id := range initialReady {
+			if id != curr {
+				es.launchAsync(id)
+			}
+		}
 		initialReady = nil
-
-		es.states[curr].state.Store(nsRunning)
-		es.executeNode(curr)
-
-		es.outcomeMu.Lock()
-		hasSC := es.hasSC
-		es.outcomeMu.Unlock()
-		if hasSC || es.firstErr != nil || (plan.Nodes[curr].Kind == graph.DecisionNode && es.decisions.Verdict() == VerdictDeny) {
+		nextReady, terminal := es.runInline(curr)
+		if terminal {
 			goto finished
 		}
-
-		nextReady := es.propagateDownstream(curr, es.readyStorage[:0])
-		nextReady = es.checkGatedWait(nextReady)
-
 		if len(nextReady) == 1 {
-			initialReady = nextReady
-		} else if len(nextReady) > 1 {
-			// Fork parallel branches
-			for _, nid := range nextReady {
-				es.launchAsync(nid)
+			es.launchAsync(nextReady[0])
+		}
+		inlineSeeded = true
+	}
+
+	if !inlineSeeded {
+		for len(initialReady) == 1 && es.inFlight.Load() == 0 {
+			curr := initialReady[0]
+			initialReady = nil
+			nextReady, terminal := es.runInline(curr)
+			if terminal {
+				goto finished
 			}
-			break
+			if len(nextReady) == 1 {
+				initialReady = nextReady
+			}
 		}
 	}
 
@@ -619,11 +812,11 @@ func (s *Scheduler) Execute(
 	for {
 		select {
 		case <-ctx.Done():
-			es.specCtx.cancel()
+			es.specCtx.cancelExecution()
 			es.wg.Wait()
 			es.reportFinish(ctx.Err())
 			out := AcquireOutcome()
-			out.State = StateFailed
+			out.State = StateCanceled
 			out.Err = ctx.Err()
 			return out, ctx.Err()
 
@@ -635,7 +828,7 @@ func (s *Scheduler) Execute(
 			es.outcomeMu.Unlock()
 
 			if hasSC {
-				es.specCtx.cancel()
+				es.specCtx.cancelExecution()
 				es.wg.Wait()
 				es.outcomeMu.Lock()
 				out := AcquireOutcome()
@@ -646,23 +839,25 @@ func (s *Scheduler) Execute(
 				return out, nil
 			}
 
-			if es.firstErr != nil {
-				es.specCtx.cancel()
+			firstErr := es.errorValue()
+			if firstErr != nil {
+				es.specCtx.cancelExecution()
 				es.wg.Wait()
-				es.reportFinish(es.firstErr)
+				firstErr = es.errorValue()
+				es.reportFinish(firstErr)
 				out := AcquireOutcome()
 				if es.decisions.Verdict() == VerdictDeny {
 					out.State = StateDenied
 				} else {
 					out.State = StateFailed
 				}
-				out.Err = es.firstErr
+				out.Err = firstErr
 				out.Effects = es.allEffects
-				return out, es.firstErr
+				return out, firstErr
 			}
 
 			if plan.Nodes[nodeID].Kind == graph.DecisionNode && es.decisions.Verdict() == VerdictDeny {
-				es.specCtx.cancel()
+				es.specCtx.cancelExecution()
 				es.wg.Wait()
 				es.reportFinish(nil)
 				out := AcquireOutcome()
@@ -689,17 +884,18 @@ finished:
 
 	es.wg.Wait()
 
-	if es.firstErr != nil {
-		es.reportFinish(es.firstErr)
+	firstErr := es.errorValue()
+	if firstErr != nil {
+		es.reportFinish(firstErr)
 		out := AcquireOutcome()
 		if es.decisions.Verdict() == VerdictDeny {
 			out.State = StateDenied
 		} else {
 			out.State = StateFailed
 		}
-		out.Err = es.firstErr
+		out.Err = firstErr
 		out.Effects = es.allEffects
-		return out, es.firstErr
+		return out, firstErr
 	}
 
 	es.queueMu.Lock()

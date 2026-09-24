@@ -1,6 +1,10 @@
 package source
 
-import "sync"
+import (
+	"context"
+	"fmt"
+	"sync"
+)
 
 // Coalescer deduplicates identical in-flight source requests.
 //
@@ -19,9 +23,9 @@ type Coalescer struct {
 }
 
 type coalesceCall struct {
-	wg  sync.WaitGroup
-	val any
-	err error
+	done chan struct{}
+	val  any
+	err  error
 }
 
 // NewCoalescer creates a new Coalescer.
@@ -38,25 +42,42 @@ func NewCoalescer() *Coalescer {
 // a hash). Do not include authorization scope in the key unless different scopes
 // should share results — usually they should not.
 func (c *Coalescer) Do(key string, fn func() (any, error)) (any, error) {
+	return c.DoContext(context.Background(), key, fn)
+}
+
+func (c *Coalescer) DoContext(ctx context.Context, key string, fn func() (any, error)) (value any, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	c.mu.Lock()
 	if call, ok := c.calls[key]; ok {
 		c.mu.Unlock()
-		call.wg.Wait()
-		return call.val, call.err
+		select {
+		case <-call.done:
+			return call.val, call.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 
-	call := &coalesceCall{}
-	call.wg.Add(1)
+	call := &coalesceCall{done: make(chan struct{})}
 	c.calls[key] = call
 	c.mu.Unlock()
 
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			call.err = fmt.Errorf("ref: source coalesced call panic: %v", recovered)
+			value = nil
+			err = call.err
+		}
+		close(call.done)
+		c.mu.Lock()
+		if c.calls[key] == call {
+			delete(c.calls, key)
+		}
+		c.mu.Unlock()
+	}()
 	call.val, call.err = fn()
-	call.wg.Done()
-
-	c.mu.Lock()
-	delete(c.calls, key)
-	c.mu.Unlock()
-
 	return call.val, call.err
 }
 

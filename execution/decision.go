@@ -160,6 +160,13 @@ func (ds *DecisionSet) Verdict() Verdict {
 	return VerdictPending
 }
 
+func (ds *DecisionSet) Required() int32 {
+	if ds == nil {
+		return 0
+	}
+	return ds.required
+}
+
 // Constraints returns a copy of the accumulated constraints.
 func (ds *DecisionSet) Constraints() ConstraintSet {
 	if ds == nil {

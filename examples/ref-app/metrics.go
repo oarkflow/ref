@@ -9,6 +9,7 @@ import (
 
 	"github.com/oarkflow/ref/execution"
 	"github.com/oarkflow/ref/graph"
+	"github.com/oarkflow/ref/observer"
 )
 
 // Metrics is a REF Observer that also serves Prometheus text.
@@ -140,6 +141,8 @@ func (m *Metrics) ExecutionFinished(intentName string, durationMs float64, err e
 	}
 	hist.observe(durationMs)
 }
+
+func (m *Metrics) SourceFetched(observer.SourceMetrics) {}
 
 // --- exposition -------------------------------------------------------------
 

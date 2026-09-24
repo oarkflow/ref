@@ -172,10 +172,12 @@ func BuildEngine(deps *Deps) (*ref.Engine, error) {
 }
 
 // BuildEngineWithApp is the same, attached to an fh application so the app's own
-// REF integration is used. It exists because EnableREF returns the engine fh will
+// REF integration is used. It exists because SetREF stores the adapter fh will
 // serve, and mounting two engines would be a confusing lie.
 func BuildEngineWithApp(app *fh.App, deps *Deps) (*ref.Engine, error) {
-	return registerAll(app.EnableREF(deps.engineOptions()...), deps)
+	engine := ref.NewEngine(deps.engineOptions()...)
+	app.SetREF(ref.NewFHAdapter(engine))
+	return registerAll(engine, deps)
 }
 
 // engineOptions is the engine's whole configuration: where effects commit, and who

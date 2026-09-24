@@ -9,6 +9,7 @@ import (
 
 	"github.com/oarkflow/ref/execution"
 	"github.com/oarkflow/ref/graph"
+	"github.com/oarkflow/ref/observer"
 )
 
 // AuditObserver writes the execution trail to the database.
@@ -176,6 +177,8 @@ func verdictName(verdict uint8) string {
 }
 
 func (a *AuditObserver) EffectCommitted(string, error) {}
+
+func (a *AuditObserver) SourceFetched(observer.SourceMetrics) {}
 
 func (a *AuditObserver) ExecutionFinished(intentName string, durationMs float64, err error) {
 	event := auditEvent{intent: intentName, durationMs: durationMs}

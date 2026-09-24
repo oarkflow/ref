@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"maps"
 	"slices"
+	"sync"
 	"time"
 )
 
@@ -16,13 +17,15 @@ type IntentID string
 // Invocation is the transport-neutral input to the execution kernel.
 // It is deeply immutable — all byte slices and maps are owned copies.
 type Invocation struct {
-	ID        ID
-	Intent    IntentID
-	Input     Input
-	Principal PrincipalHint
-	Metadata  Metadata
-	Transport Transport
-	Received  time.Time
+	ID         ID
+	Intent     IntentID
+	Input      Input
+	Principal  PrincipalHint
+	Identity   *VerifiedIdentity
+	identityMu sync.RWMutex
+	Metadata   Metadata
+	Transport  Transport
+	Received   time.Time
 }
 
 // Input holds the raw invocation payload. Immutable after creation.
@@ -49,7 +52,8 @@ func NewInputDirect(raw []byte, contentType string) Input {
 }
 
 // Bytes returns a copy of the raw input. Callers cannot mutate the original.
-func (i Input) Bytes() []byte       { return bytes.Clone(i.raw) }
+func (i Input) Bytes() []byte { return bytes.Clone(i.raw) }
+
 // RawBytes returns the internal byte slice without cloning. For read-only operations.
 func (i Input) RawBytes() []byte    { return i.raw }
 func (i Input) ContentType() string { return i.contentType }
@@ -72,6 +76,82 @@ func NewPrincipalHint(bearer, apiKey string, cert []byte, sessionID string) Prin
 		ClientCert:  bytes.Clone(cert),
 		SessionID:   sessionID,
 	}
+}
+
+type VerifiedIdentity struct {
+	id       string
+	tenantID string
+	roles    []string
+	scopes   []string
+	claims   map[string]any
+}
+
+func NewVerifiedIdentityOwned(id, tenantID string, roles, scopes []string, claims map[string]any) *VerifiedIdentity {
+	return &VerifiedIdentity{id: id, tenantID: tenantID, roles: roles, scopes: scopes, claims: claims}
+}
+
+func NewVerifiedIdentity(id, tenantID string, roles, scopes []string, claims map[string]any) *VerifiedIdentity {
+	return &VerifiedIdentity{
+		id:       id,
+		tenantID: tenantID,
+		roles:    slices.Clone(roles),
+		scopes:   slices.Clone(scopes),
+		claims:   maps.Clone(claims),
+	}
+}
+
+func (i *VerifiedIdentity) PrincipalID() string {
+	if i == nil {
+		return ""
+	}
+	return i.id
+}
+
+func (i *VerifiedIdentity) Tenant() string {
+	if i == nil {
+		return ""
+	}
+	return i.tenantID
+}
+
+func (i *VerifiedIdentity) Roles() []string {
+	if i == nil {
+		return nil
+	}
+	return slices.Clone(i.roles)
+}
+
+func (i *VerifiedIdentity) Scopes() []string {
+	if i == nil {
+		return nil
+	}
+	return slices.Clone(i.scopes)
+}
+
+func (i *VerifiedIdentity) Claims() map[string]any {
+	if i == nil {
+		return nil
+	}
+	return maps.Clone(i.claims)
+}
+
+func (i *Invocation) SetIdentity(identity *VerifiedIdentity) {
+	if i == nil {
+		return
+	}
+	i.identityMu.Lock()
+	i.Identity = identity
+	i.identityMu.Unlock()
+}
+
+func (i *Invocation) VerifiedIdentity() *VerifiedIdentity {
+	if i == nil {
+		return nil
+	}
+	i.identityMu.RLock()
+	identity := i.Identity
+	i.identityMu.RUnlock()
+	return identity
 }
 
 // Metadata is transport-specific context. The core kernel never inspects it;

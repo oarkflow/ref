@@ -1,6 +1,9 @@
 package ref
 
 import (
+	"context"
+	"fmt"
+
 	"github.com/oarkflow/ref/capability"
 	"github.com/oarkflow/ref/effect"
 	"github.com/oarkflow/ref/execution"
@@ -37,13 +40,18 @@ type (
 	Constraint = execution.Constraint
 	Obligation = execution.Obligation
 
-	NodeContext  = execution.NodeContext
-	NodeExecutor = execution.NodeExecutor
-	CompiledNode = execution.CompiledNode
-	Program      = execution.Program
-	Budget       = execution.Budget
-	DecisionSet  = execution.DecisionSet
-	Verdict      = execution.Verdict
+	NodeContext   = execution.NodeContext
+	NodeExecutor  = execution.NodeExecutor
+	CompiledNode  = execution.CompiledNode
+	Program       = execution.Program
+	Budget        = execution.Budget
+	DecisionSet   = execution.DecisionSet
+	Verdict       = execution.Verdict
+	Trace         = execution.Trace
+	NodeTrace     = execution.NodeTrace
+	FactTrace     = execution.FactTrace
+	DecisionTrace = execution.DecisionTrace
+	EffectTrace   = execution.EffectTrace
 
 	Observer = observer.Observer
 
@@ -73,9 +81,11 @@ var (
 	AcquireDispatchResult = runtime.AcquireDispatchResult
 	ReleaseDispatchResult = runtime.ReleaseDispatchResult
 
-	WithEffectStore = runtime.WithEffectStore
-	WithObserver    = runtime.WithObserver
-	WithCapability  = runtime.WithCapability
+	WithEffectStore        = runtime.WithEffectStore
+	WithEffectResolver     = runtime.WithEffectResolver
+	WithEffectErrorHandler = runtime.WithEffectErrorHandler
+	WithObserver           = runtime.WithObserver
+	WithCapability         = runtime.WithCapability
 
 	Pure     = capability.Pure
 	Read     = capability.Read
@@ -85,6 +95,8 @@ var (
 	NewInMemoryCircuitBreaker           = capability.NewInMemoryCircuitBreaker
 	NewInMemoryCircuitBreakerCapability = capability.NewInMemoryCircuitBreakerCapability
 	DefaultInMemoryCircuitBreakerConfig = capability.DefaultInMemoryCircuitBreakerConfig
+	NewTrace                            = execution.NewTrace
+	CompareTraces                       = execution.CompareTraces
 )
 
 // NewKey creates a typed fact key with a stable definition ID.
@@ -109,5 +121,53 @@ func Register[I, O any](e *Engine, it intent.Intent[I, O], customDecoder ...inte
 
 // RegisterCapability registers a capability into the engine.
 func RegisterCapability(e *Engine, reg capability.Registration) error {
-	return e.Capabilities().Register(reg)
+	return e.RegisterCapability(reg)
+}
+
+type FHAdapter struct {
+	engine *Engine
+}
+
+func NewFHAdapter(engine *Engine) *FHAdapter {
+	return &FHAdapter{engine: engine}
+}
+
+func (a *FHAdapter) Capabilities() any {
+	return a.engine.Capabilities()
+}
+
+func (a *FHAdapter) Intents() any {
+	return a.engine.Intents()
+}
+
+func (a *FHAdapter) RegisterDefinition(value any) error {
+	definition, ok := value.(*intent.Definition)
+	if !ok {
+		return fmt.Errorf("ref: FH definition must be *intent.Definition, got %T", value)
+	}
+	return a.engine.RegisterDefinition(definition)
+}
+
+func (a *FHAdapter) Compile() error {
+	return a.engine.Compile()
+}
+
+func (a *FHAdapter) Dispatch(ctx context.Context, value any) (any, error) {
+	inv, ok := value.(*invocation.Invocation)
+	if !ok {
+		return nil, fmt.Errorf("ref: FH invocation must be *invocation.Invocation, got %T", value)
+	}
+	return a.engine.Dispatch(ctx, inv)
+}
+
+func (a *FHAdapter) DispatchPreview(ctx context.Context, value any) (any, error) {
+	inv, ok := value.(*invocation.Invocation)
+	if !ok {
+		return nil, fmt.Errorf("ref: FH invocation must be *invocation.Invocation, got %T", value)
+	}
+	return a.engine.DispatchPreview(ctx, inv)
+}
+
+func (a *FHAdapter) Plan(name string) (any, bool) {
+	return a.engine.Plan(intent.Name(name))
 }

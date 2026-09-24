@@ -3,6 +3,8 @@ package process
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -62,11 +64,15 @@ func runStoreConformance(t *testing.T, open func(*testing.T) Store) {
 func newTestRun(id string) *Run {
 	now := time.Now().UTC()
 	return &Run{
-		ID:        id,
-		Process:   "order.fulfil",
-		Version:   1,
-		Status:    StatusPending,
-		Input:     json.RawMessage(`{"order_id":"A-1"}`),
+		ID:      id,
+		Process: "order.fulfil",
+		Version: 1,
+		Status:  StatusPending,
+		Input:   json.RawMessage(`{"order_id":"A-1"}`),
+		Identity: &IdentitySnapshot{
+			ID: "user-1", TenantID: "tenant-a", Roles: []string{"operator"}, Scopes: []string{"orders:write"},
+			Claims: map[string]any{"department": "finance"},
+		},
 		Visits:    map[string]int{},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -87,6 +93,9 @@ func storeRunRoundTrip(t *testing.T, store Store) {
 	}
 	if loaded.Process != "order.fulfil" || loaded.Status != StatusPending {
 		t.Fatalf("round-trip lost fields: %+v", loaded)
+	}
+	if loaded.Identity == nil || loaded.Identity.ID != "user-1" || len(loaded.Identity.Roles) != 1 || loaded.Identity.Claims["department"] != "finance" {
+		t.Fatalf("identity snapshot did not round-trip: %+v", loaded.Identity)
 	}
 	// The cursor is the one field whose loss would strand a run silently, so it is
 	// asserted specifically rather than trusted to a struct comparison.
@@ -142,12 +151,13 @@ func storeRevisionConflict(t *testing.T, store Store) {
 func storeIdempotency(t *testing.T, store Store) {
 	ctx := context.Background()
 	run := newTestRun("run-3")
+	run.TenantID = "tenant-a"
 	run.IdempotencyKey = "order-A-1"
 	if err := store.CreateRun(ctx, run); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	found, err := store.FindRunByIdempotency(ctx, "order.fulfil", "order-A-1")
+	found, err := store.FindRunByIdempotency(ctx, "tenant-a", "order.fulfil", "order-A-1")
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}
@@ -156,8 +166,47 @@ func storeIdempotency(t *testing.T, store Store) {
 	}
 	// A key belonging to another process must not match: two processes may
 	// legitimately use the same business identifier.
-	if _, err := store.FindRunByIdempotency(ctx, "other.process", "order-A-1"); err == nil {
+	if _, err := store.FindRunByIdempotency(ctx, "tenant-a", "other.process", "order-A-1"); err == nil {
 		t.Fatal("a key matched across processes")
+	}
+	if _, err := store.FindRunByIdempotency(ctx, "tenant-b", "order.fulfil", "order-A-1"); err == nil {
+		t.Fatal("a key matched across tenants")
+	}
+	duplicate := newTestRun("run-duplicate")
+	duplicate.TenantID = "tenant-a"
+	duplicate.IdempotencyKey = "order-A-1"
+	existing, created, err := store.CreateRunOrGet(ctx, duplicate)
+	if err != nil || created || existing.ID != "run-3" {
+		t.Fatalf("atomic idempotency = %+v, %v, %v", existing, created, err)
+	}
+	const workers = 16
+	ids := make(chan string, workers)
+	var wait sync.WaitGroup
+	wait.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func(index int) {
+			defer wait.Done()
+			candidate := newTestRun(fmt.Sprintf("concurrent-%d", index))
+			candidate.TenantID = "tenant-a"
+			candidate.IdempotencyKey = "order-A-1"
+			result, wasCreated, createErr := store.CreateRunOrGet(ctx, candidate)
+			if createErr != nil {
+				t.Errorf("create or get: %v", createErr)
+				return
+			}
+			if wasCreated {
+				t.Errorf("concurrent create unexpectedly inserted %s", result.ID)
+				return
+			}
+			ids <- result.ID
+		}(i)
+	}
+	wait.Wait()
+	close(ids)
+	for id := range ids {
+		if id != "run-3" {
+			t.Fatalf("concurrent idempotency returned %s", id)
+		}
 	}
 }
 
@@ -224,7 +273,7 @@ func storeTimerClaim(t *testing.T, store Store) {
 		}
 	}
 
-	due, err := store.DueTimers(ctx, time.Now().UTC(), 10)
+	due, err := store.ClaimDueTimers(ctx, time.Now().UTC(), 10, time.Minute)
 	if err != nil {
 		t.Fatalf("due: %v", err)
 	}
@@ -233,12 +282,17 @@ func storeTimerClaim(t *testing.T, store Store) {
 	}
 	// A second claim must find nothing: a timer that fired twice is a step that ran
 	// twice.
-	again, err := store.DueTimers(ctx, time.Now().UTC(), 10)
+	again, err := store.ClaimDueTimers(ctx, time.Now().UTC(), 10, time.Minute)
 	if err != nil {
 		t.Fatalf("second due: %v", err)
 	}
 	if len(again) != 0 {
 		t.Fatalf("a claimed timer was claimed again: %d", len(again))
+	}
+	for _, timer := range due {
+		if err := store.AckTimer(ctx, timer.ID, timer.ClaimToken); err != nil {
+			t.Fatalf("ack timer: %v", err)
+		}
 	}
 
 	remaining, err := store.ListTimers(ctx, "run-5")
@@ -262,7 +316,7 @@ func storeSubscriptionMatching(t *testing.T, store Store) {
 		}
 	}
 
-	matched, err := store.MatchSubscriptions(ctx, "payment.settled", "order-1")
+	matched, err := store.ClaimSubscriptions(ctx, "payment.settled", "order-1", []byte(`{"paid":true}`), time.Now().UTC(), 10, time.Minute)
 	if err != nil {
 		t.Fatalf("match: %v", err)
 	}
@@ -276,11 +330,20 @@ func storeSubscriptionMatching(t *testing.T, store Store) {
 			t.Fatal("an event reached a run correlated to a different order")
 		}
 	}
+	for _, subscription := range matched {
+		if subscription.RunID == "r1" {
+			if err := store.AckSubscription(ctx, subscription.ID, subscription.ClaimToken); err != nil {
+				t.Fatalf("ack subscription: %v", err)
+			}
+		} else if err := store.ReleaseSubscription(ctx, subscription.ID, subscription.ClaimToken, nil); err != nil {
+			t.Fatalf("release subscription: %v", err)
+		}
+	}
 
 	if err := store.DeleteRunSubscriptions(ctx, "r1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	after, _ := store.MatchSubscriptions(ctx, "payment.settled", "order-1")
+	after, _ := store.ClaimSubscriptions(ctx, "payment.settled", "order-1", nil, time.Now().UTC(), 10, time.Minute)
 	if len(after) != 1 {
 		t.Fatalf("after deleting r1's subscription, got %d", len(after))
 	}

@@ -41,23 +41,27 @@ func (e *Engine) startChild(ctx context.Context, run *Run, step *Step, frame Fra
 		// authorization gates see the same caller the parent did.
 		TenantID:    run.TenantID,
 		PrincipalID: run.PrincipalID,
+		Identity:    cloneIdentity(run.Identity),
 		// Correlating on the parent's run and step makes a repeated advance of the
 		// parent return the existing child rather than starting a second one — the
 		// same idempotency that protects a queue retry.
 		IdempotencyKey: run.ID + ":" + frame.StateKey(),
-		CorrelationID:  run.ID,
+		CorrelationID:  run.CorrelationID,
+		ParentRunID:    run.ID,
 		Detached:       true,
+		DeferWake:      true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("step %q could not start child process %q: %w", step.Name, step.Process, err)
 	}
 
 	if err := e.store.Subscribe(ctx, &Subscription{
-		ID:          randomID(),
+		ID:          "child:" + run.ID + ":" + frame.StateKey(),
 		RunID:       run.ID,
 		Event:       childCompletedEvent,
 		Correlation: child.ID,
 		Step:        step.Name,
+		Key:         frame.StateKey(),
 		CreatedAt:   e.now(),
 	}); err != nil {
 		return nil, err
@@ -78,9 +82,9 @@ func (e *Engine) startChild(ctx context.Context, run *Run, step *Step, frame Fra
 // signalParent tells a waiting parent that this run has ended. It is called from
 // the run's own finalisation, so every terminal path — completion, failure,
 // cancellation — releases the parent.
-func (e *Engine) signalParent(ctx context.Context, run *Run) {
-	if run.CorrelationID == "" {
-		return
+func (e *Engine) signalParent(ctx context.Context, run *Run) error {
+	if run.ParentRunID == "" || run.ParentNotified {
+		return nil
 	}
 	var output any
 	if len(run.Output) > 0 {
@@ -97,7 +101,15 @@ func (e *Engine) signalParent(ctx context.Context, run *Run) {
 	}
 	// A failure to notify the parent is not worth failing the child over: the child
 	// genuinely finished. The parent's own timeout, if it set one, is the backstop.
-	_, _ = e.Signal(ctx, childCompletedEvent, run.ID, payload)
+	woken, err := e.Signal(ctx, childCompletedEvent, run.ParentRunID, payload)
+	if err != nil {
+		return err
+	}
+	if len(woken) == 0 {
+		return ErrNoSubscribers
+	}
+	run.ParentNotified = true
+	return e.store.SaveRun(context.WithoutCancel(ctx), run)
 }
 
 // ChildFailurePolicy decides what a parent does when its child fails.
@@ -134,5 +146,9 @@ func (e *Engine) resumeAfterChild(ctx context.Context, subscription *Subscriptio
 	if err := json.Unmarshal(payload, &outcome); err != nil {
 		outcome = map[string]any{"status": string(StatusFailed), "error": "the child process reported an unreadable result"}
 	}
-	return e.continueFromStep(ctx, subscription.RunID, subscription.Step, outcome, childOutcomeError(outcome))
+	stateKey := subscription.Key
+	if stateKey == "" {
+		stateKey = subscription.Step
+	}
+	return e.continueFromStep(ctx, subscription.RunID, subscription.Step, stateKey, outcome, childOutcomeError(outcome))
 }

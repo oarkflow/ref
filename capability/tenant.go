@@ -71,6 +71,25 @@ func NewTenantCapability(name string, resolver TenantResolverFunc, requirePrinci
 			{Field: "tenant_id", Values: []string{tenant.ID}},
 		})
 
+		inv := nc.Invocation()
+		if inv != nil {
+			identity := inv.VerifiedIdentity()
+			identityID := ""
+			var roles, scopes []string
+			var claims map[string]any
+			if identity != nil {
+				identityID = identity.PrincipalID()
+				roles = identity.Roles()
+				scopes = identity.Scopes()
+				claims = identity.Claims()
+			} else if p != nil {
+				identityID = p.ID
+				roles = p.Roles
+				scopes = p.Scopes
+				claims = p.Claims
+			}
+			inv.SetIdentity(invocation.NewVerifiedIdentityOwned(identityID, tenant.ID, roles, scopes, claims))
+		}
 		execution.Publish(nc, TenantKey, tenant)
 		return nil
 	}

@@ -51,6 +51,7 @@ func NewAuthCapability(name string, auth AuthenticatorFunc, opts ...Option) Regi
 		}
 
 		nc.Decisions().RecordAllow(name, nil)
+		inv.SetIdentity(invocation.NewVerifiedIdentity(principal.ID, "", principal.Roles, principal.Scopes, principal.Claims))
 		execution.Publish(nc, PrincipalKey, principal)
 		return nil
 	}

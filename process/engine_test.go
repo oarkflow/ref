@@ -801,6 +801,9 @@ func TestHumanTaskParksAndResumesOnTheChosenAction(t *testing.T) {
 		t.Fatal("an undeclared action was accepted")
 	}
 
+	if _, err := h.engine.ClaimTaskAs(ctx, task.ID, TaskActor{ID: "alice", Roles: []string{"approver"}}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
 	if _, err := h.engine.CompleteTask(ctx, task.ID, "alice", "approve", map[string]any{"note": "looks fine"}); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
@@ -825,10 +828,10 @@ func TestTaskClaimIsExclusive(t *testing.T) {
 	tasks, _ := h.engine.ListTasks(ctx, TaskFilter{Roles: []string{"approver"}, Limit: 10})
 	task := tasks[0]
 
-	if _, err := h.engine.ClaimTask(ctx, task.ID, "alice"); err != nil {
+	if _, err := h.engine.ClaimTaskAs(ctx, task.ID, TaskActor{ID: "alice", Roles: []string{"approver"}}); err != nil {
 		t.Fatalf("alice claims: %v", err)
 	}
-	if _, err := h.engine.ClaimTask(ctx, task.ID, "bob"); err == nil {
+	if _, err := h.engine.ClaimTaskAs(ctx, task.ID, TaskActor{ID: "bob", Roles: []string{"approver"}}); err == nil {
 		t.Fatal("two people claimed the same task")
 	}
 	if _, err := h.engine.CompleteTask(ctx, task.ID, "bob", "approve", nil); err == nil {
@@ -982,6 +985,9 @@ func TestARunResumesFromItsPersistedCursor(t *testing.T) {
 	if len(tasks) != 1 {
 		t.Fatalf("the restarted engine sees %d tasks, want 1", len(tasks))
 	}
+	if _, err := second.ClaimTaskAs(ctx, tasks[0].ID, TaskActor{ID: "carol", Roles: []string{"checker"}}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
 	if _, err := second.CompleteTask(ctx, tasks[0].ID, "carol", "ok", nil); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
@@ -1061,6 +1067,44 @@ func TestIdempotentStartReturnsTheOriginalRun(t *testing.T) {
 	}
 	if got := h.runner.count("do.a"); got != 1 {
 		t.Fatalf("the step ran %d times, want 1", got)
+	}
+}
+
+func TestConcurrentIdempotentStartsCreateOneRun(t *testing.T) {
+	h := newHarness(t, &Definition{
+		Name: "once", Start: "a",
+		Steps: map[string]*Step{"a": terminal("a", "do.a")},
+	})
+	const workers = 32
+	ids := make(chan string, workers)
+	errors := make(chan error, workers)
+	var wait sync.WaitGroup
+	wait.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wait.Done()
+			run, err := h.engine.Start(context.Background(), "once", nil, StartOptions{IdempotencyKey: "order-1", Detached: true})
+			if err != nil {
+				errors <- err
+				return
+			}
+			ids <- run.ID
+		}()
+	}
+	wait.Wait()
+	close(ids)
+	close(errors)
+	for err := range errors {
+		t.Fatalf("start: %v", err)
+	}
+	var first string
+	for id := range ids {
+		if first == "" {
+			first = id
+		}
+		if id != first {
+			t.Fatalf("concurrent starts created different runs: %s and %s", first, id)
+		}
 	}
 }
 

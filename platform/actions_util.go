@@ -269,6 +269,7 @@ func requireCache(build BuildContext, spec NodeSpec, key string) (cacheHandle, e
 		return cacheHandle{}, fmt.Errorf("node %q: resource %q is not a cache", spec.Name, name)
 	}
 	handle.prefixed, _ = resolved.(spi.CachePrefix)
+	handle.mutator, _ = resolved.(cacheAtomicMutator)
 	return handle, nil
 }
 
@@ -278,6 +279,7 @@ type cacheHandle struct {
 	plain       spi.Cache
 	withContext spi.CacheContext
 	prefixed    spi.CachePrefix
+	mutator     cacheAtomicMutator
 }
 
 func (c cacheHandle) get(ctx context.Context, key string) ([]byte, bool, error) {

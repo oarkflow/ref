@@ -15,6 +15,7 @@ import (
 	"github.com/oarkflow/ref/invocation"
 	"github.com/oarkflow/ref/platform/spi"
 	"github.com/oarkflow/ref/process"
+	"github.com/oarkflow/ref/runtime"
 )
 
 // Compiling `process` blocks into the durable engine.
@@ -384,12 +385,14 @@ func (p *Platform) compileStep(label string, spec StepSpec, intents, processes m
 		return nil, err
 	}
 	if spec.Authz != nil {
-		// A step's authz gate is compiled here so a broken one fails the deployment;
-		// it is enforced by the step runner, which has the principal.
-		if _, err := compileAuthz(p.buildContext(), what, spec.Authz); err != nil {
+		gate, err := compileAuthz(p.buildContext(), what, spec.Authz)
+		if err != nil {
 			return nil, err
 		}
-		p.stepAuthz[label+"/"+spec.Name] = spec.Authz
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(spec.Authz.OnDeny)), "redirect:") {
+			return nil, fmt.Errorf("%s: redirecting process authorization from inside a step is not supported", what)
+		}
+		p.stepAuthz[label+"/"+spec.Name] = compiledStepAuthz{gate: gate, spec: spec.Authz}
 	}
 
 	if spec.Task != nil {
@@ -587,23 +590,75 @@ func (p *Platform) compileProcessRetry(what string, spec *RetrySpec) (*process.R
 // whole action catalog available to it.
 type intentStepRunner struct{ platform *Platform }
 
+func identitySnapshot(principal Principal, tenant string) *process.IdentitySnapshot {
+	if principal.ID == "" && tenant == "" && len(principal.Roles) == 0 && len(principal.Scopes) == 0 && len(principal.Claims) == 0 {
+		return nil
+	}
+	return &process.IdentitySnapshot{
+		ID: principal.ID, TenantID: tenant, Username: principal.Username, Email: principal.Email,
+		Roles: append([]string(nil), principal.Roles...), Scopes: append([]string(nil), principal.Scopes...),
+		Claims: cloneClaims(principal.Claims),
+	}
+}
+
+func principalFromIdentity(identity *process.IdentitySnapshot, tenant string) Principal {
+	if identity == nil {
+		return Principal{ID: "", TenantID: tenant}
+	}
+	if tenant == "" {
+		tenant = identity.TenantID
+	}
+	return Principal{
+		ID: identity.ID, TenantID: tenant, Username: identity.Username, Email: identity.Email,
+		Roles: append([]string(nil), identity.Roles...), Scopes: append([]string(nil), identity.Scopes...),
+		Claims: cloneClaims(identity.Claims),
+	}
+}
+
+func verifiedFromPrincipal(principal Principal, tenant string) *invocation.VerifiedIdentity {
+	if principal.ID == "" && tenant == "" && len(principal.Roles) == 0 && len(principal.Scopes) == 0 {
+		return nil
+	}
+	return invocation.NewVerifiedIdentity(principal.ID, tenant, principal.Roles, principal.Scopes, principal.Claims)
+}
+
+func verifiedFromProcessIdentity(identity *process.IdentitySnapshot) *invocation.VerifiedIdentity {
+	if identity == nil {
+		return nil
+	}
+	return invocation.NewVerifiedIdentity(identity.ID, identity.TenantID, identity.Roles, identity.Scopes, identity.Claims)
+}
+
+func cloneClaims(claims map[string]any) map[string]any {
+	if claims == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(claims))
+	for key, value := range claims {
+		cloned[key] = value
+	}
+	return cloned
+}
+
 // RunStep implements process.StepRunner.
 func (r *intentStepRunner) RunStep(ctx context.Context, call process.StepCall) (any, error) {
 	if call.Intent == "" {
 		return nil, fmt.Errorf("step %q has no intent to run", call.Step.Name)
 	}
-	// The run's identity travels with the dispatch, so a tenant-scoped query or an
-	// authorization gate inside the step sees the caller who started the run rather
-	// than nothing.
+	principal := principalFromIdentity(call.Run.Identity, call.Run.TenantID)
+	if principal.ID == "" {
+		principal.ID = call.Run.PrincipalID
+	}
+	tenant := call.Run.TenantID
+	verified := verifiedFromProcessIdentity(call.Run.Identity)
 	inv := &invocation.Invocation{
-		ID:     invocation.ID(newPrefixedID("step")),
-		Intent: invocation.IntentID(call.Intent),
+		ID:       invocation.ID(fmt.Sprintf("step:%s:%s:%d", call.Run.ID, call.Frame.StateKey(), max(call.Frame.Attempt, 1))),
+		Intent:   invocation.IntentID(call.Intent),
+		Identity: verified,
 		Metadata: invocation.NewQueueMeta("process."+call.Run.Process, 0, call.Run.ID, map[string]string{
-			"run_id":       call.Run.ID,
-			"step":         call.Step.Name,
-			"principal_id": call.Run.PrincipalID,
-			"tenant_id":    call.Run.TenantID,
-			"attempt":      fmt.Sprint(max(call.Frame.Attempt, 1)),
+			"run_id":  call.Run.ID,
+			"step":    call.Step.Name,
+			"attempt": fmt.Sprint(max(call.Frame.Attempt, 1)),
 		}),
 		Transport: invocation.Transport{Protocol: "process"},
 		Received:  time.Now(),
@@ -613,12 +668,30 @@ func (r *intentStepRunner) RunStep(ctx context.Context, call process.StepCall) (
 		return nil, fmt.Errorf("step %q input cannot be serialised: %w", call.Step.Name, err)
 	}
 	inv.Input = invocation.NewInput(encoded, "application/json")
+	ctx = withRequestIdentity(ctx, principal, tenant)
 
-	ctx = withProcessIdentity(ctx, call.Run.PrincipalID, call.Run.TenantID)
+	if compiled, ok := r.platform.stepAuthz[call.Run.Process+"/"+call.Step.Name]; ok {
+		actionCtx := &ActionContext{
+			Context: ctx, Invocation: inv, Inputs: map[string]any{"input": call.Input},
+			Principal: principal, TenantID: tenant, Platform: r.platform, Now: time.Now().UTC(),
+		}
+		allowed, message, err := compiled.gate.evaluate(actionCtx, actionEnv(actionCtx))
+		if err != nil {
+			return nil, unavailable("the process step authorization check failed")
+		}
+		if !allowed {
+			if strings.EqualFold(compiled.spec.OnDeny, "skip") {
+				return call.Input, nil
+			}
+			return nil, permissionDenied(message)
+		}
+	}
+
 	result, err := r.platform.Engine.Dispatch(ctx, inv)
 	if err != nil {
 		return nil, err
 	}
+	defer runtime.ReleaseDispatchResult(result)
 	return result.Value, nil
 }
 
@@ -653,6 +726,7 @@ type queueEnqueuer struct {
 	queue   spi.JobQueue
 	delayed spi.QueueDelay
 	jobType string
+	storeID string
 }
 
 func newQueueEnqueuer(store string, resource Resource) (process.Enqueuer, error) {
@@ -660,7 +734,7 @@ func newQueueEnqueuer(store string, resource Resource) (process.Enqueuer, error)
 	if !ok {
 		return nil, fmt.Errorf("resource %q is not a queue", store)
 	}
-	enqueuer := &queueEnqueuer{queue: queue, jobType: processAdvanceJobType}
+	enqueuer := &queueEnqueuer{queue: queue, jobType: processAdvanceJobType, storeID: store}
 	enqueuer.delayed, _ = queue.(spi.QueueDelay)
 	if enqueuer.delayed == nil {
 		// Without delayed enqueue a timer cannot become a wake-up, so every parked
@@ -680,16 +754,16 @@ func (q *queueEnqueuer) EnqueueAdvance(_ context.Context, runID string) error {
 	// advances of the same run never run at once — belt and braces alongside the
 	// lease.
 	if native, ok := q.queue.(*fh.DurableQueue); ok {
-		_, err := native.EnqueueWithKey(q.jobType, map[string]string{"run_id": runID}, runID)
+		_, err := native.EnqueueWithKey(q.jobType, map[string]string{"run_id": runID, "store": q.storeID}, runID)
 		return err
 	}
-	_, err := q.queue.Enqueue(q.jobType, map[string]string{"run_id": runID})
+	_, err := q.queue.Enqueue(q.jobType, map[string]string{"run_id": runID, "store": q.storeID})
 	return err
 }
 
 // EnqueueAdvanceAt implements process.Enqueuer.
 func (q *queueEnqueuer) EnqueueAdvanceAt(_ context.Context, runID string, at time.Time) error {
-	_, err := q.delayed.EnqueueDelayed(q.jobType, map[string]string{"run_id": runID}, at)
+	_, err := q.delayed.EnqueueDelayed(q.jobType, map[string]string{"run_id": runID, "store": q.storeID}, at)
 	return err
 }
 

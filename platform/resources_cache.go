@@ -199,6 +199,7 @@ func (c *sqlCache) GetContext(ctx context.Context, key string) ([]byte, bool, er
 		return nil, false, err
 	}
 	if expires.Valid && !expires.Time.After(time.Now().UTC()) {
+		_, _ = c.db.ExecContext(ctx, c.query(fmt.Sprintf("DELETE FROM %s WHERE cache_key = $1", c.table)), key)
 		return nil, false, nil
 	}
 	return value, true, nil
