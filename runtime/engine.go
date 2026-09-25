@@ -282,6 +282,8 @@ func (e *Engine) compileIntent(def *intent.Definition) (*execution.Program, erro
 	// 3. Construct graph nodes and decoupled runtime executors
 	var nodes []*graph.Node
 	var runners []execution.NodeExecutor
+	var resilience []execution.Resilience
+	var anyResilience bool
 	var nodeIdx uint32
 
 	// Capabilities
@@ -307,6 +309,20 @@ func (e *Engine) compileIntent(def *intent.Definition) (*execution.Program, erro
 		}
 		nodes = append(nodes, node)
 		runners = append(runners, c.Run)
+
+		// Carry the Registration's Resilience metadata forward so the
+		// scheduler can enforce it. See capability.Resilience.
+		res := execution.Resilience{
+			Timeout:     c.Resilience.Timeout,
+			MaxRetries:  c.Resilience.MaxRetries,
+			Backoff:     c.Resilience.Backoff,
+			Bulkhead:    c.Resilience.Bulkhead,
+			Concurrency: c.Resilience.Concurrency,
+		}
+		if res != (execution.Resilience{}) {
+			anyResilience = true
+		}
+		resilience = append(resilience, res)
 		nodeIdx++
 	}
 
@@ -323,6 +339,7 @@ func (e *Engine) compileIntent(def *intent.Definition) (*execution.Program, erro
 		}
 		nodes = append(nodes, decodeNode)
 		runners = append(runners, def.DecodeNode)
+		resilience = append(resilience, execution.Resilience{})
 		nodeIdx++
 	}
 
@@ -358,6 +375,7 @@ func (e *Engine) compileIntent(def *intent.Definition) (*execution.Program, erro
 		nc.SetShortCircuitWithMeta(val, meta)
 		return nil
 	})
+	resilience = append(resilience, execution.Resilience{})
 
 	// 6. Build graph
 	g, err := graph.Build(nodes, slotCounter)
@@ -398,10 +416,18 @@ func (e *Engine) compileIntent(def *intent.Definition) (*execution.Program, erro
 		plan.MaxDefID = uint32(maxDefID)
 	}
 
-	return &execution.Program{
+	prog := &execution.Program{
 		Plan:    plan,
 		Runners: runners,
-	}, nil
+	}
+	// Only attach the Resilience slice when at least one node actually
+	// configured a policy — keeps the zero-value/unconfigured case exactly
+	// as cheap as before (nil slice, no bulkhead/timeout/retry checks
+	// beyond the single bounds check + zero-value comparison in safeRun).
+	if anyResilience {
+		prog.Resilience = resilience
+	}
+	return prog, nil
 }
 
 // enforceSpeculationInvariants proves speculation safety at compile time (Item 8).
