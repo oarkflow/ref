@@ -147,6 +147,12 @@ type CompiledNode struct {
 type Program struct {
 	Plan    *graph.Plan
 	Runners []NodeExecutor
+
+	// Resilience holds per-node fault-tolerance policy, indexed by
+	// graph.NodeID exactly like Runners. It may be nil or shorter than
+	// Runners — any node without an entry is treated as the zero value
+	// (no timeout, no retry, no bulkhead), identical to today's behavior.
+	Resilience []Resilience
 }
 
 // nodeState tracks per-node runtime state.
@@ -188,14 +194,15 @@ var (
 // All helper functions are methods on this struct to avoid closure heap escapes.
 type execState struct {
 	// Immutable for this execution (set once in init, read everywhere)
-	ctx       context.Context
-	inv       *invocation.Invocation
-	plan      *graph.Plan
-	runners   []NodeExecutor
-	budget    *Budget
-	scheduler *Scheduler
-	trace     *Trace
-	nodeCount int
+	ctx        context.Context
+	inv        *invocation.Invocation
+	plan       *graph.Plan
+	runners    []NodeExecutor
+	resilience []Resilience
+	budget     *Budget
+	scheduler  *Scheduler
+	trace      *Trace
+	nodeCount  int
 
 	// Per-execution state
 	states    []nodeState
@@ -208,6 +215,18 @@ type execState struct {
 	wg        sync.WaitGroup
 	inFlight  atomic.Int32
 	start     time.Time
+
+	// leaked is set when a node timed out (Resilience.Timeout) and its
+	// run(nc) goroutine could not be waited on or killed. In that case nc
+	// — and everything it references (es.facts, es.decisions, and es
+	// itself via its embedded specCtx) — may still be mutated by that
+	// abandoned goroutine after this execution returns. Recycling any of
+	// that shared, pooled state into a future, unrelated execution while
+	// the old goroutine is still writing to it would be a data race, so
+	// when leaked is set the defer in execute() intentionally does not
+	// return es/es.facts/es.decisions to their pools; they are left for
+	// the garbage collector once the abandoned goroutine eventually exits.
+	leaked atomic.Bool
 
 	// Outcome state (protected by outcomeMu)
 	outcomeMu  sync.Mutex
@@ -343,21 +362,34 @@ func (es *execState) executeNode(nodeID graph.NodeID) {
 		}
 	}
 
-	es.outcomeMu.Lock()
-	// Direct iteration avoids the defensive copy in nc.Effects()
-	nc.mu.Lock()
-	for _, fx := range nc.effects {
-		es.allEffects = append(es.allEffects, fx)
-	}
-	nc.mu.Unlock()
-	if sc, ok := nc.GetShortCircuit(); ok && !es.hasSC && (!es.plan.HasDecisions || es.decisions.Verdict() == VerdictAllow) {
-		es.hasSC = true
-		es.scOut = *sc
-		es.specCtx.cancelExecution()
-	}
-	es.outcomeMu.Unlock()
+	// A timed-out node may still have a goroutine running in the
+	// background holding a reference to nc (see runWithTimeout's doc
+	// comment). Reading nc's effects/short-circuit state here, or
+	// returning it to the pool, would race with that goroutine, so both
+	// are skipped for this outcome — nc is intentionally abandoned rather
+	// than reused.
+	timedOut := errors.Is(runErr, ErrNodeTimeout)
+	if timedOut {
+		// Mark this whole execution's pooled state as unsafe to recycle —
+		// see the leaked field's doc comment.
+		es.leaked.Store(true)
+	} else {
+		es.outcomeMu.Lock()
+		// Direct iteration avoids the defensive copy in nc.Effects()
+		nc.mu.Lock()
+		for _, fx := range nc.effects {
+			es.allEffects = append(es.allEffects, fx)
+		}
+		nc.mu.Unlock()
+		if sc, ok := nc.GetShortCircuit(); ok && !es.hasSC && (!es.plan.HasDecisions || es.decisions.Verdict() == VerdictAllow) {
+			es.hasSC = true
+			es.scOut = *sc
+			es.specCtx.cancelExecution()
+		}
+		es.outcomeMu.Unlock()
 
-	ReleaseNodeContext(nc)
+		ReleaseNodeContext(nc)
+	}
 
 	if runErr != nil {
 		es.setError(runErr)
@@ -378,10 +410,21 @@ func (es *execState) safeRun(nodeID graph.NodeID, nc *NodeContext) (err error) {
 			err = &nodePanicError{node: es.plan.Nodes[nodeID].Name, reason: r}
 		}
 	}()
-	if int(nodeID) < len(es.runners) && es.runners[nodeID] != nil {
-		return es.runners[nodeID](nc)
+	if int(nodeID) >= len(es.runners) || es.runners[nodeID] == nil {
+		return nil
 	}
-	return nil
+	run := es.runners[nodeID]
+
+	var res Resilience
+	if int(nodeID) < len(es.resilience) {
+		res = es.resilience[nodeID]
+	}
+	if res == (Resilience{}) {
+		// Fast path: no Resilience configured for this node — identical
+		// to pre-enforcement behavior, no extra work.
+		return run(nc)
+	}
+	return runResilient(nc, run, es.plan.Nodes[nodeID].Name, res)
 }
 
 func (es *execState) setError(err error) {
@@ -503,6 +546,7 @@ func (es *execState) reset() {
 	es.inv = nil
 	es.plan = nil
 	es.runners = nil
+	es.resilience = nil
 	es.budget = nil
 	es.scheduler = nil
 	es.trace = nil
@@ -525,6 +569,7 @@ func (es *execState) reset() {
 	es.gatedOverflow = nil
 	es.statesPtr = nil
 	es.nodeCount = 0
+	es.leaked.Store(false)
 }
 
 type nodeJob struct {
@@ -592,14 +637,14 @@ func (s *Scheduler) ExecuteProgram(
 	if prog == nil {
 		return nil, fmt.Errorf("ref: cannot execute nil program")
 	}
-	return s.execute(ctx, inv, prog.Plan, prog.Runners, budget, nil)
+	return s.execute(ctx, inv, prog.Plan, prog.Runners, prog.Resilience, budget, nil)
 }
 
 func (s *Scheduler) ExecuteProgramTraced(ctx context.Context, inv *invocation.Invocation, prog *Program, budget *Budget, trace *Trace) (*ExecutionOutcome, error) {
 	if prog == nil {
 		return nil, fmt.Errorf("ref: cannot execute nil program")
 	}
-	return s.execute(ctx, inv, prog.Plan, prog.Runners, budget, trace)
+	return s.execute(ctx, inv, prog.Plan, prog.Runners, prog.Resilience, budget, trace)
 }
 
 func (s *Scheduler) ExecuteProgramReplay(ctx context.Context, inv *invocation.Invocation, prog *Program, budget *Budget, expected *Trace) (*ExecutionOutcome, *Trace, error) {
@@ -613,7 +658,7 @@ func (s *Scheduler) ExecuteProgramReplay(ctx context.Context, inv *invocation.In
 		return nil, nil, errors.New("ref: cannot execute nil program")
 	}
 	actual := NewTrace(string(inv.ID), string(inv.Intent), expected.PlanVersion)
-	out, err := s.execute(ctx, inv, prog.Plan, prog.Runners, budget, actual)
+	out, err := s.execute(ctx, inv, prog.Plan, prog.Runners, prog.Resilience, budget, actual)
 	if err != nil {
 		return out, actual, err
 	}
@@ -624,7 +669,7 @@ func (s *Scheduler) ExecuteProgramReplay(ctx context.Context, inv *invocation.In
 }
 
 func (s *Scheduler) ExecuteTraced(ctx context.Context, inv *invocation.Invocation, plan *graph.Plan, runners []NodeExecutor, budget *Budget, trace *Trace) (*ExecutionOutcome, error) {
-	return s.execute(ctx, inv, plan, runners, budget, trace)
+	return s.execute(ctx, inv, plan, runners, nil, budget, trace)
 }
 
 // Execute runs a plan with node executors to completion.
@@ -635,7 +680,23 @@ func (s *Scheduler) Execute(
 	runners []NodeExecutor,
 	budget *Budget,
 ) (*ExecutionOutcome, error) {
-	return s.execute(ctx, inv, plan, runners, budget, nil)
+	return s.execute(ctx, inv, plan, runners, nil, budget, nil)
+}
+
+// ExecuteWithResilience runs a plan with node executors and an explicit,
+// NodeID-indexed Resilience policy slice (see Program.Resilience). It is
+// additive: Execute/ExecuteTraced continue to run with no enforcement, and
+// this method with a nil/empty resilience slice behaves identically to
+// Execute.
+func (s *Scheduler) ExecuteWithResilience(
+	ctx context.Context,
+	inv *invocation.Invocation,
+	plan *graph.Plan,
+	runners []NodeExecutor,
+	resilience []Resilience,
+	budget *Budget,
+) (*ExecutionOutcome, error) {
+	return s.execute(ctx, inv, plan, runners, resilience, budget, nil)
 }
 
 func (s *Scheduler) execute(
@@ -643,6 +704,7 @@ func (s *Scheduler) execute(
 	inv *invocation.Invocation,
 	plan *graph.Plan,
 	runners []NodeExecutor,
+	resilience []Resilience,
 	budget *Budget,
 	trace *Trace,
 ) (out *ExecutionOutcome, err error) {
@@ -668,11 +730,13 @@ func (s *Scheduler) execute(
 	es.inv = inv
 	es.plan = plan
 	es.runners = runners
+	es.resilience = resilience
 	es.budget = budget
 	es.scheduler = s
 	es.trace = trace
 	es.nodeCount = nodeCount
 	es.start = time.Now()
+	es.leaked.Store(false)
 	es.specCtx.reset(ctx)
 	es.firstErr = nil
 	es.errOnce = sync.Once{}
@@ -692,15 +756,29 @@ func (s *Scheduler) execute(
 	es.inFlight.Store(0)
 
 	defer func() {
+		leaked := es.leaked.Load()
 		if trace != nil {
 			if out != nil {
 				trace.Finalize(out.State, out.Value, err)
 			} else {
 				trace.Finalize(StateFailed, nil, err)
 			}
-			trace.SetFacts(es.facts)
+			if !leaked {
+				trace.SetFacts(es.facts)
+			}
 		}
 		es.specCtx.cancelExecution()
+		if leaked {
+			// A node timed out and its run(nc) goroutine is still running
+			// in the background (see the leaked field's doc comment).
+			// Skip every pool return below: es.facts, es.decisions, and es
+			// itself (via its embedded specCtx, which nc.Context aliases)
+			// may still be read or written by that abandoned goroutine, so
+			// handing any of them to a future, unrelated execution would
+			// be unsafe. They are intentionally left for the garbage
+			// collector once the abandoned goroutine eventually exits.
+			return
+		}
 		// Return pooled resources
 		if es.statesPtr != nil {
 			st := es.states

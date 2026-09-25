@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/oarkflow/ref/backoff"
 )
 
 type EffectResolver func(EffectRecord) (Effect, error)
@@ -212,7 +214,10 @@ func (r *Runner) processDeliveries(ctx context.Context) bool {
 			}
 			continue
 		}
-		delay := time.Second << min(delivery.Record.Attempts-1, 6)
+		// Full-jitter exponential backoff (same algorithm/cap as before:
+		// base 1s, doubling per attempt, capped at 64s) — jitter avoids a
+		// dead-letter retry storm when many deliveries fail together.
+		delay := backoff.FullJitter(time.Second, min(delivery.Record.Attempts-1, 6), 64*time.Second)
 		if retryErr := r.delivery.RetryDelivery(ctx, delivery.Record.ID, delivery.ClaimToken, time.Now().Add(delay), err); retryErr != nil && r.onErr != nil {
 			r.onErr(EffectError{Phase: "delivery_retry", Name: delivery.Record.Name, Err: retryErr})
 		}
