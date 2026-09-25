@@ -449,6 +449,14 @@ func (p *Platform) openResources(ctx context.Context, doc Document, registry *Re
 			spec.Config = config
 		}
 
+		// A pipeline resource runs the document's pipeline blocks.
+		if spec.Kind == "pipeline.cases" {
+			config := make(map[string]any, len(spec.Config)+1)
+			maps.Copy(config, spec.Config)
+			config[pipelineDefinitionsKey] = doc.Pipelines
+			spec.Config = config
+		}
+
 		resource, closer, err := factory.Open(ctx, spec)
 		if err != nil {
 			return fmt.Errorf("ref/platform: open resource %q (%s): %w", spec.Name, spec.Kind, err)
