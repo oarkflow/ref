@@ -12,7 +12,18 @@ node "notify_partner" {
 }
 ```
 
-An explicit `uses` always wins. Durable families (`wait`, `timer`, `delay`, `subprocess`, `compensation`, `external_task`) have no request-tier action. They belong in a `process` step, and using one in an intent is a compile error. A test (`TestNodeTypeDefaultActionsAreRegistered`) guarantees that every default action a family names is actually registered.
+An explicit `uses` always wins. Durable families have no request-tier action, because a request cannot wait days. Using one in an intent is a compile error. Each maps to a process construct that parks the run durably:
+
+| Durable family | Process construct |
+|---|---|
+| `wait`, `wait_event`, `external_task` | an edge `kind wait_event` with `event`, `correlation` and `timeout`/`on_timeout`; an external worker reports by signalling that event |
+| `timer`, `delay` | an edge `kind delayed` with `timeout` |
+| `subprocess` | a step with `process "<child>"` instead of `intent`; the parent parks until the child is terminal |
+| `compensation` | `compensate "<intent>"` on a step, with `kind compensate` edges; completed steps are undone in reverse order on failure |
+| `human_task`, `approval`, `form`, `manual_review` | a step with a `task { … }` block (assignee, role or queue, form schema, actions, due date, escalation) |
+| `escalation` | a task's `due` + `escalate`, or an edge `kind escalation` |
+
+Set `family` on the step as well, so editors and generated docs show what it means. A test (`TestNodeTypeDefaultActionsAreRegistered`) guarantees that every default action a family names is actually registered.
 
 ## gRPC (`family grpc` → `service.grpc_json`)
 
