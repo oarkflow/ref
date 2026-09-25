@@ -532,7 +532,33 @@ When the server starts in `cmd/server/main.go`, `platform.LoadDir` reads the fil
 06_routes_web.bcl ──> Maps HTTP paths to SPL templates and intents
 07_routes_api.bcl ──> Maps /api/v1 routes to intents
 08_static.bcl     ──> Configures static file serving from disk
+09–11_*.bcl       ──> Queue workers, schedules, webhook triggers
+12_projects.bcl   ──> Projects/tasks, task.approval durable process, overdue schedule
+13_gov_projects.bcl ──> org.hierarchy resource, jurisdiction-scoped public projects
+14_medical_coding.bcl ──> DOS validation/overlap/expansion, coder work queue
+15_activity.bcl   ──> Activity feed & summaries over audit_log
 ```
+
+`app.bcl` is the same document concatenated into one file (regenerate it with
+`for f in bcl/*.bcl; do cat $f; echo; done > app.bcl`); `platform/bcl_test.go`
+binds and validates it against the action registry on every `go test`.
+
+### Module wiring rules
+
+- **Guards live on the node they protect.** `decision.*` actions record
+  allow/deny but publish no fact, so a node requiring their `provides` never
+  runs and a guard nothing requires is pruned. Use a node-level
+  `authz { condition "…" message "…" }` (403) or `validate.expression` (422).
+- **Everything the response needs, and nothing else, runs.** An audit node
+  must be required by the response (directly or transitively), otherwise it is
+  pruned from the plan.
+- **Effects wait for decisions.** Effect and non-speculative nodes are held
+  until every decision in the plan has allowed, so a denial never leaves a
+  half-written change.
+- **Session principals carry no claims.** The government module resolves the
+  caller's organisational unit from the `user_org_units` table
+  (`gov.caller_scope`, invoked via `flow.subflow`) instead of the
+  `org.hierarchy` assignment claim; see the README's Business Modules section.
 
 1. **Schema Validation**: The BCL compiler checks that every `intent` referenced in a `route` actually exists, and that every `resource` referenced in a node is defined.
 2. **Mounting**: `p.Mount(app)` registers all routes, middlewares, and static file handlers onto the `github.com/oarkflow/fh` HTTP router.

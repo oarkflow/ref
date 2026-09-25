@@ -144,22 +144,20 @@ intent "dashboard.admin_update_role" {
     }
   }
 
-  node "guard-role-elevation" {
-    uses "decision.expression"
-    kind decision
-    requires [input, validated]
-    provides [policy_checked]
-    config {
-      expression "input.role != 'super_admin' && (input.user_id != 'admin@example.com' || input.role == 'admin')"
-      message "Unauthorized privilege escalation: only super_admin can assign super_admin and primary admin cannot be demoted"
-    }
-  }
-
+  # The privilege-escalation guard is a node-level authz condition on the
+  # write itself: it is evaluated before the statement runs and answers 403
+  # with its message. (A decision.expression node publishes no fact, so a
+  # node that required it never ran; and "&&"/"||" are not boolean operators
+  # in the expression language — "and"/"or" are.)
   node "update-role" {
     uses "database.exec"
     resource "database"
     kind effect
-    requires [admin_id, input, validated, policy_checked]
+    requires [admin_id, input, validated]
+    authz {
+      condition "input.role != 'super_admin' and (input.user_id != 'admin@example.com' or input.role == 'admin')"
+      message "Unauthorized privilege escalation: only super_admin can assign super_admin and primary admin cannot be demoted"
+    }
     provides [role_updated]
     config {
       statement "UPDATE users SET roles = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"

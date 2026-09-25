@@ -1,0 +1,69 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div style="margin-bottom: 2rem;">
+    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
+      <span class="badge badge-manager">Manager Access</span>
+      <span class="badge" style="background: rgba(59, 130, 246, 0.15); color: #93C5FD;">Route: /activity</span>
+    </div>
+    <h1 style="font-size: 1.85rem; font-weight: 800; letter-spacing: -0.02em;">User Activity</h1>
+    <p style="color: var(--text-muted); font-size: 0.95rem;">
+      Who did what across authentication, projects, government projects and coding.
+      Filterable JSON feed: <code>/api/v1/activity?actor=&amp;action=&amp;since=&amp;until=</code>.
+    </p>
+  </div>
+
+  <div class="glass-card" style="margin-bottom: 1.5rem;">
+    <h3 style="font-size: 1.2rem; font-weight: 700; margin-bottom: 1rem;">Per-User Summary</h3>
+    <div class="table-container">
+      <table class="custom-table">
+        <thead>
+          <tr>
+            <th>User</th>
+            <th>Events</th>
+            <th>Logins</th>
+            <th>Last Seen</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for(s in summary) {
+            <tr>
+              <td style="font-weight: 600;">${s.actor_name}</td>
+              <td>${s.total}</td>
+              <td>${s.logins}</td>
+              <td style="color: var(--text-muted);">${s.last_seen}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="glass-card">
+    <h3 style="font-size: 1.2rem; font-weight: 700; margin-bottom: 1rem;">Recent Activity</h3>
+    <div class="table-container">
+      <table class="custom-table">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Who</th>
+            <th>Action</th>
+            <th>Target</th>
+            <th>Detail</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for(e in events) {
+            <tr>
+              <td style="color: var(--text-muted);">${e.created_at}</td>
+              <td>${e.actor_name}</td>
+              <td class="font-mono" style="color: #A5B4FC;">${e.action}</td>
+              <td class="font-mono">${e.target_id}</td>
+              <td>${e.detail}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+}

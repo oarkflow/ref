@@ -159,7 +159,8 @@ func main() {
 		fmt.Printf("   ├─ Telemetry: High-Performance Structured Logging (github.com/oarkflow/zlog)\n")
 		fmt.Printf("   ├─ Templates: SPL Engine (github.com/oarkflow/spl + template)\n")
 		fmt.Printf("   ├─ Observability: /metrics (Prometheus), /livez, /readyz (health)\n")
-		fmt.Printf("   └─ Demo Accounts: admin@example.com, manager@example.com, user@example.com\n\n")
+		fmt.Printf("   ├─ Modules: /projects, /gov, /coding, /activity (JSON under /api/v1/...)\n")
+		fmt.Printf("   └─ Demo Accounts (Password123!): admin@, manager@, user@, officer.{bagmati,koshi,ktm}@, coder@, coder2@example.com\n\n")
 
 		if err := app.Listen(addr); err != nil {
 			logger.Error("Server stopped", zlog.Err(err))
