@@ -13,6 +13,7 @@ import (
 	"github.com/oarkflow/ref/execution"
 	"github.com/oarkflow/ref/fact"
 	"github.com/oarkflow/ref/graph"
+	"github.com/oarkflow/ref/health"
 	"github.com/oarkflow/ref/intent"
 	"github.com/oarkflow/ref/invocation"
 	"github.com/oarkflow/ref/observer"
@@ -93,6 +94,7 @@ type Engine struct {
 	effectErrorHandler effect.EffectErrorFunc
 	scheduler          *execution.Scheduler
 	observers          []observer.Observer
+	healthRegistry     *health.Registry
 	compiled           bool
 	generation         atomic.Pointer[compiledGeneration]
 }
@@ -130,6 +132,12 @@ func (e *Engine) Capabilities() *capability.Registry {
 // Intents returns the intent registry.
 func (e *Engine) Intents() *intent.Registry {
 	return e.intents
+}
+
+// Health returns the Engine's health.Registry, or nil if
+// WithHealthRegistry was not supplied when the Engine was constructed.
+func (e *Engine) Health() *health.Registry {
+	return e.healthRegistry
 }
 
 // RegisterCapability registers a capability before compilation.
