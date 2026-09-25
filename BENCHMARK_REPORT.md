@@ -198,6 +198,34 @@ go test -run '^$' -bench '^BenchmarkFlaw(2|5)_' -benchmem -benchtime=500ms -coun
 
 REF is an application execution layer, not an HTTP server replacement. FH handles HTTP in both variants; REF adds decoding, metadata capture, graph scheduling, fact storage, and result projection. The small CPU-only endpoint shows this overhead plainly. The selected scheduler allocations have been reduced substantially, but the keep-alive TCP test still shows a severe high-concurrency CPU-bound gap. Profiling that live-load path remains the next optimization target. These measurements are a baseline, not a production capacity guarantee.
 
+## Cheap-root inlining fix (2026-09-25)
+
+Block-profile analysis (`go test -blockprofile` focused on `oarkflow/ref/execution`) during the TCP load test showed ~1.82s of blocked time inside `Scheduler.execute`, almost entirely `runtime.selectgo` waiting on `es.completed`. Root cause: for small graphs (`nodeCount < 8`, the common shape for an HTTP intent — one auth `DecisionNode` and one decode `PureNode` feeding one `OperationNode`), the scheduler's "cheap roots" fast path ran only the *first* zero-dependency Pure/Decision root inline and dispatched every other one through `launchAsync`, paying for a goroutine spawn and a channel handoff for work that is by definition fast and synchronous.
+
+The fix (`execution/scheduler.go`) runs every initial cheap root (Pure/Decision kind, no dependencies) inline and sequentially, falling back to async dispatch only when a root's completion produces genuine fan-out (more than one newly-ready downstream node). For the typical HTTP intent shape this now executes the entire request inline with zero goroutines and zero channel operations.
+
+Measured on Apple M2 Pro / 10 cores / Go 1.27 (absolute numbers differ from the i9-13900K/Linux runs above; the relative gap is what's comparable):
+
+| Benchmark | Before | After | Change |
+|---|---:|---:|---:|
+| `BenchmarkHTTPParityParallel`/ref, ns/op | 24,876 | 19,980 | -20% |
+| B/op | 24,297 | 24,600 | ~flat |
+| allocs/op | 111 | 108 | -3 |
+| Gap vs. FH traditional (same run) | ~35% slower | ~15% slower | gap roughly halved |
+| Block time in `execution` during TCP load test | ~1.82s | ~3.45ms | effectively eliminated |
+
+This closes the specific goroutine/channel overhead identified by profiling for small, low-fan-out graphs. It does **not** claim to close the 44-97% high-concurrency CPU-bound gap reported above for the i9-13900K/32-client TCP run — that run wasn't re-measured on this hardware, larger/higher-fan-out graphs still go through the pre-existing async and shared-worker-pool paths untouched by this change, and TCP-loopback numbers on the M2 host were too noisy run-to-run to report as a headline figure. Re-profiling the full 32-client TCP path on comparable hardware remains the next step before claiming the gap is closed.
+
+## New production-readiness capabilities (2026-09-25)
+
+Four gaps identified in a production-readiness review have been addressed as opt-in, additive packages — core `execution`/`fact`/`graph` stay dependency-free:
+
+- **Distributed circuit breaker** (`capability/circuit_breaker_redis.go`): a Redis-backed `RedisCircuitBreaker` implementing the same `Allow`/`Record`/`State` shape as the existing `InMemoryCircuitBreaker`, using Lua scripts for atomic state transitions so multiple instances share trip state instead of tripping independently.
+- **Default observability** (`observer/prometheus`, `observer/otel`, `observer/slog`): ready-to-use `observer.Observer` implementations — Prometheus metrics, OpenTelemetry tracing spans, and structured `log/slog` logging — wired into `execution.NewScheduler(obs)` as opt-in imports.
+- **Default authn/authz** (`capability/auth_jwt.go`, `capability/auth_authz.go`): `NewJWTAuthenticator` verifies bearer JWTs into a `PrincipalFact`; `NewAuthzPolicyCapability` checks resolved principals against `oarkflow/authz` policies. This gives every ref application a documented default path at the capability layer instead of requiring the higher-level `platform` package.
+
+All additions pass `go build ./...`, `go vet ./...`, and `go test ./... -race -count=1` for the full repository.
+
 
 ### Why the parallel flaw rows allocate
 

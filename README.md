@@ -272,6 +272,23 @@ Do not treat the earlier direct-dispatch microbenchmark as an HTTP comparison. R
 
 ---
 
+## Production hardening: observability, auth, and resilience
+
+These ship as opt-in subpackages so the core engine stays dependency-free — import only what you need:
+
+| Concern | Package | What it gives you |
+|---|---|---|
+| Metrics | [`ref/observer/prometheus`](./observer/prometheus/) | `promobserver.New(reg)` — Prometheus counters/histograms for node executions, decisions, effects, and source fetches |
+| Tracing | [`ref/observer/otel`](./observer/otel/) | `otelobserver.New(tracer)` — OpenTelemetry spans per node and per intent execution |
+| Logging | [`ref/observer/slog`](./observer/slog/) | `slogobserver.New(logger)` — structured `log/slog` events for the same lifecycle, stdlib only |
+| Authentication | [`ref/capability`](./capability/auth_jwt.go) | `capability.NewJWTAuthenticator(cfg)` verifies bearer JWTs into a `PrincipalFact`, wired via `NewAuthCapability` |
+| Authorization | [`ref/capability`](./capability/auth_authz.go) | `capability.NewAuthzPolicyCapability(name, engine, selector, cfg)` checks the resolved principal against `oarkflow/authz` policies |
+| Circuit breaking | [`ref/capability`](./capability/circuit_breaker_redis.go) | `capability.NewRedisCircuitBreakerCapability(...)` shares trip state across instances via Redis (Lua-atomic transitions); `InMemoryCircuitBreaker` remains available for single-instance deployments |
+
+Wire observers into the scheduler as `execution.NewScheduler(promobserver.New(nil), otelobserver.New(tracer), slogobserver.New(logger))`. Wire auth as a `DecisionNode` capability early in the DAG (`capability.NewAuthCapability("auth.jwt", jwtAuthenticator)`), followed by an authorization `DecisionNode` (`capability.NewAuthzPolicyCapability(...)`) once the principal fact is published. See each package's doc comments for wiring details, and [BENCHMARK_REPORT.md](./BENCHMARK_REPORT.md) for the profiler-verified scheduler fix that halved the CPU-bound concurrency gap for typical HTTP intent graphs.
+
+---
+
 ## Contract-led HTTP modernization
 
 REF can serve as an incremental modernization layer: keep existing endpoints live, describe replacement routes as contracts, compare read-only candidate results, and shift traffic by a stable canary percentage.
