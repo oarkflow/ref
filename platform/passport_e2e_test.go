@@ -1,10 +1,13 @@
 package platform
 
 import (
+	"bytes"
+	"compress/zlib"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -286,6 +289,25 @@ func TestPassportPipelineEndToEnd(t *testing.T) {
 		t.Fatalf("certificate subject: %v", dig(certs, 0, "subject"))
 	}
 
+	// The certificate as a PDF, for the applicant (by access key).
+	req, _ := http.NewRequest("GET", h.base+base+"/certificates/"+fmt.Sprint(dig(certs, 0, "number"))+"/pdf", nil)
+	req.Header.Set("X-Access-Key", key)
+	resp, err := h.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pdf, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "application/pdf" || !bytes.HasPrefix(pdf, []byte("%PDF-1.4")) {
+		t.Fatalf("certificate pdf: %d %s %q", resp.StatusCode, resp.Header.Get("Content-Type"), pdf[:min(len(pdf), 40)])
+	}
+	if text := pdfText(t, pdf); !strings.Contains(text, fmt.Sprint(dig(certs, 0, "code"))) || !strings.Contains(text, "Asha Rai") || !strings.Contains(text, "passport.example.gov/verify") {
+		t.Fatalf("certificate pdf text: %s", text)
+	}
+	if status, _ := h.callKey("GET", base+"/certificates/"+fmt.Sprint(dig(certs, 0, "number"))+"/pdf", "", nil); status != 403 && status != 404 {
+		t.Fatalf("certificate pdf without access: %d", status)
+	}
+
 	// Anyone can verify it, by number or by code.
 	for _, k := range []string{fmt.Sprint(dig(certs, 0, "number")), fmt.Sprint(dig(certs, 0, "code"))} {
 		status, body = h.call("GET", "/api/passport/certificates/"+k, "", nil)
@@ -343,4 +365,19 @@ func TestPassportRenewalRejectAndSignedInApplicant(t *testing.T) {
 	if status != 200 || dig(body, "status") != "rejected" {
 		t.Fatalf("history: %d %v", status, body)
 	}
+}
+
+// pdfText inflates a PDF's content streams (enough to find rendered text).
+func pdfText(t *testing.T, pdf []byte) string {
+	t.Helper()
+	var out strings.Builder
+	for _, m := range regexp.MustCompile(`(?s)stream\n(.*?)\nendstream`).FindAllSubmatch(pdf, -1) {
+		zr, err := zlib.NewReader(bytes.NewReader(m[1]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(zr)
+		out.Write(raw)
+	}
+	return out.String()
 }

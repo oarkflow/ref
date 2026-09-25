@@ -48,7 +48,7 @@ entity "project" {
 
 | Attribute | Meaning |
 |---|---|
-| `kind` | `text` (default), `integer`, `number`, `boolean`, `date`, `datetime`, `email` or `json`. JSON values round-trip as structured data. |
+| `kind` | `text` (default), `integer`, `number`, `decimal`, `boolean`, `date`, `datetime`, `email` or `json`. JSON values round-trip as structured data. `decimal` (with `scale`, default 2) is exact money: stored as integer minor units and returned as a string such as `"1250.50"`. |
 | `required`, `min_length`, `max_length`, `min`, `max`, `pattern`, `options`, `default` | Validation and defaults. |
 | `unique`, `index` | Indexes. Uniqueness is per tenant for tenant-scoped entities; a duplicate returns `409`. |
 | `read_only` | Never writable by clients. |

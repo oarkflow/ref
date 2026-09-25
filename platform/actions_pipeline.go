@@ -99,6 +99,12 @@ func registerPipelineActions(r *Registry) {
 		Config:   with(ConfigField{Name: "key_fact", Type: "fact", Summary: "Fact path of the number or code (default: :key, ?key= or input.key)"}),
 	})
 	roles := ConfigField{Name: "roles", Type: "[]string", Summary: "Only principals holding one of these roles may call it"}
+	mustAction(r, "pipeline.certificate_pdf", pipelineAction("certificate_pdf"), ActionInfo{
+		Family: "workflow", Kind: "read",
+		Summary:  "Render an issued certificate of a case as a PDF with its verification code (:number, default the first valid one)",
+		Provides: "The PDF download",
+		Config:   with(caseParam, ConfigField{Name: "verify_url", Type: "string", Summary: "Public verification URL prefix printed with the code"}),
+	})
 	mustAction(r, "pipeline.work", pipelineAction("work"), ActionInfo{
 		Family: "workflow", Kind: "effect",
 		Summary:  "Work operations on a stage: claim, release, assign, delegate, suspend (put on hold) or resume",
@@ -171,6 +177,7 @@ var pipelineConfigKeys = []string{
 	"pipeline", "id", "id_fact", "stage", "stage_fact", "action", "action_fact", "node", "node_fact",
 	"verb", "verb_fact", "org_unit_fact", "data_fact", "scope", "scope_fact", "limit", "key", "key_fact",
 	"access_key_fact", "op", "op_fact", "roles", "max_items", "token", "token_fact",
+	"number", "number_fact", "verify_url",
 }
 
 func pipelineAction(op string) ActionFactory {
@@ -320,6 +327,8 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 	switch h.op {
 	case "link_view", "link_submit":
 		return h.link(ctx, hookCtx)
+	case "certificate_pdf":
+		return h.certificatePDF(ctx)
 	case "sweep":
 		return h.sweep(ctx, hookCtx)
 	case "analytics":
