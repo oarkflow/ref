@@ -71,7 +71,8 @@ func (e *Engine) beginCompensation(ctx context.Context, definition *Definition, 
 
 	// Outstanding timers and subscriptions belong to the forward path. Leaving them
 	// would wake a compensating run with forward work.
-	_ = e.store.DeleteRunTimers(ctx, run.ID, "delayed", "timeout", "wait_event", "escalation", "manual_payload")
+	_ = e.store.DeleteRunTimers(ctx, run.ID, "delayed", "timeout", "wait_event", "escalation", "manual_payload",
+		"task_escalation", "race_timeout", "rate_limited", "wake")
 	_ = e.store.DeleteRunSubscriptions(ctx, run.ID)
 	e.cancelRunTasks(ctx, run)
 

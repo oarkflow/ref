@@ -1,12 +1,15 @@
 package process
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -24,6 +27,35 @@ import (
 // only the rest. There is no arrangement of conditions that can run a compensation
 // on the happy path.
 
+// edgeFault is an error that comes from how a run's own graph resolved — a
+// condition that could not be evaluated, a loop past its cycle cap, an edge the
+// engine is not configured to honour — rather than from the store.
+//
+// The distinction matters because the two need opposite handling. A store error
+// is transient: the advance returns it, nothing is saved, and a later advance
+// retries. A graph fault is not: retrying re-executes the step that produced it,
+// hits the same fault, and wedges the run in "running" forever while re-running
+// its body on every advance. So a fault fails the run (through compensation, like
+// any failure) instead of being returned.
+type edgeFault struct{ err error }
+
+func (f *edgeFault) Error() string { return f.err.Error() }
+func (f *edgeFault) Unwrap() error { return f.err }
+
+func faultf(format string, args ...any) error {
+	return &edgeFault{err: fmt.Errorf(format, args...)}
+}
+
+// resolve resolves one outcome, turning a graph fault into a failed run.
+func (e *Engine) resolve(ctx context.Context, definition *Definition, run *Run, outcome stepOutcome) error {
+	err := e.resolveOutcome(ctx, definition, run, outcome)
+	var fault *edgeFault
+	if errors.As(err, &fault) {
+		return e.beginCompensation(ctx, definition, run, outcome.frame.Step, fault.err)
+	}
+	return err
+}
+
 // resolveOutcome turns one executed step into cursor changes.
 func (e *Engine) resolveOutcome(ctx context.Context, definition *Definition, run *Run, outcome stepOutcome) error {
 	if outcome.step == nil {
@@ -35,7 +67,7 @@ func (e *Engine) resolveOutcome(ctx context.Context, definition *Definition, run
 	// A parked step contributed no result and no traversal. Its continuation is
 	// held by the task, timer or subscription that parked it.
 	if outcome.parked != nil {
-		return e.recordPark(ctx, run, *outcome.parked)
+		return e.resolvePark(ctx, definition, run, outcome)
 	}
 
 	if !outcome.skipped {
@@ -44,6 +76,25 @@ func (e *Engine) resolveOutcome(ctx context.Context, definition *Definition, run
 			run.Visits = map[string]int{}
 		}
 		run.Visits[outcome.frame.Step]++
+	}
+
+	// The step has finished for good unless it is about to retry. Whatever was
+	// watching it — a timeout edge's deadline, a task step's escalation — has
+	// nothing left to watch. Leaving those timers would hold a finished run open
+	// until they fired, and then fire a timeout on work that completed in time.
+	if outcome.err == nil || !e.willRetry(definition, outcome) {
+		if err := e.disarmStepWatchers(ctx, definition, run, outcome); err != nil {
+			return err
+		}
+	}
+
+	// A race entrant is judged by its race before its own edges: only the winner
+	// continues the graph.
+	if race := e.raceOf(definition, outcome.frame); race != nil {
+		suppressed, err := e.resolveRaceEntrant(ctx, definition, run, outcome, race)
+		if err != nil || suppressed {
+			return err
+		}
 	}
 
 	if outcome.err != nil {
@@ -60,17 +111,16 @@ func (e *Engine) resolveOutcome(ctx context.Context, definition *Definition, run
 		return err
 	}
 
-	// A step marked terminal ends the run here even if nothing traversed. A step
-	// that is not terminal and traversed nothing has reached a dead end the
+	// A step marked terminal may end its branch without traversing anything; the
+	// run completes when nothing else is outstanding (see settle). It does not
+	// complete the run on the spot: in a fan-out, a short terminal branch must not
+	// drop the work still queued on the others, and a terminal step whose own
+	// edges did traverse has more to do.
+	//
+	// A step that is not terminal and traversed nothing has reached a dead end the
 	// compiler could not see — every edge's condition was false — and saying so
 	// beats a run that silently stops.
-	if outcome.step.Terminal {
-		if encoded, err := json.Marshal(outcome.result); err == nil {
-			run.Output = encoded
-		}
-		return e.completeRun(ctx, definition, run)
-	}
-	if traversed == 0 && !e.hasRemainingWork(run) {
+	if traversed == 0 && !outcome.step.Terminal && !e.hasRemainingWork(run) {
 		return e.failRun(ctx, run, outcome.frame.Step,
 			fmt.Errorf("step %q finished but none of its %d outgoing edges' conditions matched, so the run cannot continue",
 				outcome.frame.Step, len(edges)))
@@ -80,19 +130,94 @@ func (e *Engine) resolveOutcome(ctx context.Context, definition *Definition, run
 
 func (e *Engine) hasRemainingWork(run *Run) bool { return len(run.Frames) > 0 }
 
-// resolveFailure handles a failed step: retry it, take an error path, or
-// compensate and fail.
-func (e *Engine) resolveFailure(ctx context.Context, definition *Definition, run *Run, outcome stepOutcome) error {
-	step := outcome.step
+// resolvePark records why a step parked and arms whatever the park needs.
+func (e *Engine) resolvePark(ctx context.Context, definition *Definition, run *Run, outcome stepOutcome) error {
+	wait := *outcome.parked
+	switch wait.Reason {
+	case "rate_limit", "lock":
+		// The step could not start yet. Nothing durable holds a lock or rate-limit
+		// park — no task, no timer, no subscription — so the frame itself must go
+		// back on the cursor, dated for when it may try again. Dropping it (as a
+		// bare recordPark did) lost the step: the run then settled and completed
+		// without ever running it.
+		frame := outcome.frame
+		when := e.now().Add(time.Second)
+		if wait.Until != nil {
+			when = *wait.Until
+		}
+		frame.NotBefore = &when
+		run.Frames = append(run.Frames, frame)
+	case "task":
+		if outcome.state != nil {
+			if err := e.armTaskEscalations(ctx, definition, run, outcome, wait.TaskID); err != nil {
+				return err
+			}
+		}
+	}
+	return e.recordPark(ctx, run, wait)
+}
 
+// retryPolicyFor picks the policy governing a failed frame: the step's own, then
+// the retry edge that reached it, then the process default.
+func (e *Engine) retryPolicyFor(definition *Definition, outcome stepOutcome) *RetryPolicy {
+	if outcome.step.Retry != nil {
+		return outcome.step.Retry
+	}
+	if edge := edgeReaching(definition, outcome.frame, EdgeRetry); edge != nil {
+		// A retry edge's timeout is its backoff: the first retry waits that long and
+		// each later one doubles it.
+		return &RetryPolicy{MaxAttempts: edge.Attempts, Strategy: "exponential", InitialDelay: edge.Timeout}
+	}
+	return definition.Retry
+}
+
+// willRetry reports whether a failed outcome is about to be retried.
+func (e *Engine) willRetry(definition *Definition, outcome stepOutcome) bool {
+	if outcome.err == nil || outcome.step == nil {
+		return false
+	}
+	// Overrunning a timeout edge's bound is not retried: the bound is on the
+	// target's duration, and another attempt would only overrun it again.
+	if e.timedOutByEdge(definition, outcome) != nil {
+		return false
+	}
+	policy := e.retryPolicyFor(definition, outcome)
+	return policy != nil && outcome.frame.Attempt < max(policy.MaxAttempts, 1) && retriable(policy, outcome.err)
+}
+
+// timedOutByEdge returns the timeout edge whose bound a failed step overran.
+func (e *Engine) timedOutByEdge(definition *Definition, outcome stepOutcome) *Edge {
+	if outcome.err == nil || !errors.Is(outcome.err, context.DeadlineExceeded) {
+		return nil
+	}
+	return edgeReaching(definition, outcome.frame, EdgeTimeout)
+}
+
+// edgeReaching returns the edge of one of the given types that pushed a frame,
+// if the frame is one of that edge's direct targets.
+func edgeReaching(definition *Definition, frame Frame, kinds ...EdgeType) *Edge {
+	if frame.Edge == "" || frame.Compensate {
+		return nil
+	}
+	edge, ok := definition.Edge(frame.Edge)
+	if !ok || !slices.Contains(kinds, edge.Type) {
+		return nil
+	}
+	return edge
+}
+
+// multiTargetEdges are the edges whose per-target options (max_concurrency,
+// fail_fast, continue_on_error) apply to the frames they push.
+var multiTargetEdges = []EdgeType{EdgeFanOut, EdgeDynamicFanOut, EdgeParallel, EdgeIterator, EdgeBatchIterator}
+
+// resolveFailure handles a failed step: retry it, take an error path, let a
+// join or a continue_on_error edge absorb it, or compensate and fail.
+func (e *Engine) resolveFailure(ctx context.Context, definition *Definition, run *Run, outcome stepOutcome) error {
 	// Retry first. A retry is not a traversal: the same frame comes back with a
 	// higher attempt number and a delay, so the step's own state row records the
 	// attempt count rather than the graph recording a loop.
-	policy := step.Retry
-	if policy == nil {
-		policy = definition.Retry
-	}
-	if policy != nil && outcome.frame.Attempt < max(policy.MaxAttempts, 1) && retriable(policy, outcome.err) {
+	if e.willRetry(definition, outcome) {
+		policy := e.retryPolicyFor(definition, outcome)
 		next := outcome.frame
 		next.Attempt++
 		delay := retryDelay(policy, outcome.frame.Attempt)
@@ -102,6 +227,21 @@ func (e *Engine) resolveFailure(ctx context.Context, definition *Definition, run
 		if e.enqueuer != nil {
 			_ = e.enqueuer.EnqueueAdvanceAt(ctx, run.ID, when)
 		}
+		return nil
+	}
+
+	// fail_fast: the siblings this failure's edge has not started yet are
+	// dropped. Siblings already executing in this wave cannot be unstarted.
+	if edge := edgeReaching(definition, outcome.frame, multiTargetEdges...); edge != nil && edge.FailFast {
+		run.Frames = slices.DeleteFunc(run.Frames, func(frame Frame) bool {
+			return !frame.Compensate && frame.Edge == edge.Name
+		})
+	}
+
+	// A target that overran its timeout edge's bound takes on_timeout, exactly as
+	// a parked target does when its deadline timer fires.
+	if edge := e.timedOutByEdge(definition, outcome); edge != nil && edge.OnTimeout != "" {
+		e.pushTimedOut(run, edge.Name, outcome.frame.Step, edge.OnTimeout)
 		return nil
 	}
 
@@ -117,8 +257,61 @@ func (e *Engine) resolveFailure(ctx context.Context, definition *Definition, run
 	if traversed > 0 {
 		return nil
 	}
+
+	// A join this step feeds may be able to live with the failure (any, quorum,
+	// partial_success, first_failure). Recording it there — rather than failing
+	// the run outright, as before — is what makes those strategies reachable at
+	// all; and a join that can no longer be met falls through to failure here
+	// instead of waiting forever for results that cannot complete it.
+	absorbed, err := e.reportFailureToJoins(ctx, definition, run, outcome, scope)
+	if err != nil || absorbed {
+		return err
+	}
+
+	// continue_on_error: the failure is recorded on the step and the run goes on.
+	if edge := edgeReaching(definition, outcome.frame, multiTargetEdges...); edge != nil && edge.ContinueOnError {
+		return nil
+	}
+
 	// Nothing caught the failure. Undo what already committed, then fail.
 	return e.beginCompensation(ctx, definition, run, outcome.frame.Step, outcome.err)
+}
+
+// pushTimedOut continues a run at an on_timeout step.
+func (e *Engine) pushTimedOut(run *Run, edge, step, onTimeout string) {
+	payload, _ := json.Marshal(map[string]any{"timed_out": true, "edge": edge, "step": step})
+	run.Frames = append(run.Frames, Frame{Step: onTimeout, Input: payload, From: step, Edge: edge, Attempt: 1})
+}
+
+// reportFailureToJoins records a failed source on the joins it feeds, and
+// reports whether one of them absorbed the failure.
+func (e *Engine) reportFailureToJoins(ctx context.Context, definition *Definition, run *Run, outcome stepOutcome, scope Scope) (bool, error) {
+	absorbed := false
+	for _, edge := range definition.Outgoing(outcome.frame.Step) {
+		switch edge.Type {
+		case EdgeFanIn, EdgeJoin, EdgeQuorum:
+		default:
+			continue
+		}
+		if !slices.Contains(edge.Sources, outcome.frame.Step) {
+			continue
+		}
+		ok, err := evalGuard(edge.Guard, scope)
+		if err != nil {
+			return false, faultf("edge %q condition: %w", edge.Name, err)
+		}
+		if !ok {
+			continue
+		}
+		_, join, err := e.resolveJoin(ctx, run, outcome, edge, scope)
+		if err != nil {
+			return false, err
+		}
+		if join.Emitted || !join.Impossible(edge.Strategy, edge.Quorum) {
+			absorbed = true
+		}
+	}
+	return absorbed, nil
 }
 
 // traverse resolves every eligible edge and returns how many actually traversed.
@@ -127,6 +320,7 @@ func (e *Engine) resolveFailure(ctx context.Context, definition *Definition, run
 // choose among edges that really could fire rather than among all of them.
 func (e *Engine) traverse(ctx context.Context, definition *Definition, run *Run, outcome stepOutcome, edges []*Edge, scope Scope, errorMode bool) (int, error) {
 	eligible := make([]*Edge, 0, len(edges))
+	looping := false
 	for _, edge := range edges {
 		if edge.Type.ErrorPath() != errorMode {
 			continue
@@ -137,20 +331,39 @@ func (e *Engine) traverse(ctx context.Context, definition *Definition, run *Run,
 		if !slices.Contains(edge.allSources(), outcome.frame.Step) {
 			continue
 		}
+		// An escalation edge leaving a human task was armed when the task opened
+		// (armTaskEscalations): it watches the task while it is outstanding. Once
+		// the task is done there is nothing overdue to escalate.
+		if edge.Type == EdgeEscalation && outcome.step != nil && outcome.step.Task != nil {
+			continue
+		}
 		ok, err := evalGuard(edge.Guard, scope)
 		if err != nil {
-			return 0, fmt.Errorf("edge %q condition: %w", edge.Name, err)
+			return 0, faultf("edge %q condition: %w", edge.Name, err)
+		}
+		if edge.Type == EdgeLoopUntil {
+			// A loop_until condition is the loop's exit: "repeat until it holds".
+			// The edge loops back while it does not.
+			ok = !ok
+			looping = looping || ok
 		}
 		if ok {
 			eligible = append(eligible, edge)
 		}
 	}
+	if looping {
+		// While a loop continues, the step's other success edges are the loop's
+		// exit and wait for it to end; otherwise the code after the loop would run
+		// once per iteration.
+		eligible = slices.DeleteFunc(eligible, func(edge *Edge) bool { return edge.Type != EdgeLoopUntil })
+	}
 
-	// Weighted and priority edges are mutually exclusive alternatives, so exactly
-	// one of each group is chosen per resolution — and the draw happens once, so
-	// every weighted case in this call agrees on the winner.
+	// Weighted, priority and switch edges are mutually exclusive alternatives, so
+	// exactly one of each group is chosen per resolution — and the draw happens
+	// once, so every weighted case in this call agrees on the winner.
 	chosenWeighted := pickWeighted(eligible)
 	chosenPriority := pickPriority(eligible)
+	chosenSwitch := pickSwitch(eligible)
 
 	traversed := 0
 	for _, edge := range eligible {
@@ -161,6 +374,10 @@ func (e *Engine) traverse(ctx context.Context, definition *Definition, run *Run,
 			}
 		case EdgePriority:
 			if edge != chosenPriority {
+				continue
+			}
+		case EdgeSwitch:
+			if edge != chosenSwitch {
 				continue
 			}
 		}
@@ -184,6 +401,10 @@ func (e *Engine) resolveEdge(ctx context.Context, definition *Definition, run *R
 	switch edge.Type {
 
 	// --- plain traversal -------------------------------------------------
+	//
+	// retry and timeout traverse like a simple edge; their semantics apply to the
+	// frames they push (see retryPolicyFor, timedOutByEdge and executeFrame's
+	// deadline), because the frame remembers the edge that reached it.
 	case EdgeSimple, EdgeBranch, EdgeSwitch, EdgeFanOut, EdgeParallel, EdgeError, EdgeFallback,
 		EdgeTransform, EdgeFilter, EdgeStreamPipe, EdgeRetry, EdgeTimeout:
 		payload, err := e.edgePayload(edge, outcome, scope)
@@ -193,8 +414,9 @@ func (e *Engine) resolveEdge(ctx context.Context, definition *Definition, run *R
 			}
 			return false, err
 		}
-		// A timeout edge's deadline is enforced by a timer on the target rather
-		// than by holding a goroutine: that is what makes it survive a restart.
+		// A timeout edge's deadline on a target that parks is enforced by a timer
+		// rather than by holding a goroutine: that is what makes it survive a
+		// restart. A target that runs a body is bounded by its context instead.
 		if edge.Type == EdgeTimeout {
 			if err := e.armTargetTimeout(ctx, run, edge); err != nil {
 				return false, err
@@ -249,7 +471,8 @@ func (e *Engine) resolveEdge(ctx context.Context, definition *Definition, run *R
 
 	// --- joins -----------------------------------------------------------
 	case EdgeFanIn, EdgeJoin, EdgeQuorum:
-		return e.resolveJoin(ctx, run, outcome, edge, scope)
+		fired, _, err := e.resolveJoin(ctx, run, outcome, edge, scope)
+		return fired, err
 
 	// --- race ------------------------------------------------------------
 	case EdgeRace:
@@ -300,7 +523,13 @@ func (e *Engine) resolveEdge(ctx context.Context, definition *Definition, run *R
 		}
 		_ = e.store.DeleteRunTimers(ctx, run.ID)
 		_ = e.store.DeleteRunSubscriptions(ctx, run.ID)
-		e.cancelRunTasks(ctx, run)
+		_ = e.cancelRunTasks(ctx, run)
+		// A cancelled child must release its parent like every other terminal path
+		// does (completeRun, failRun, Cancel); without this the parent waited
+		// forever on a child that had already ended.
+		if err := e.signalParent(ctx, run); err != nil {
+			return true, err
+		}
 		for _, observer := range e.observers {
 			observer.RunFinished(run)
 		}
@@ -311,7 +540,7 @@ func (e *Engine) resolveEdge(ctx context.Context, definition *Definition, run *R
 			fmt.Errorf("compensating after %s", outcome.frame.Step))
 
 	default:
-		return false, fmt.Errorf("edge %q has unhandled type %q", edge.Name, edge.Type)
+		return false, faultf("edge %q has unhandled type %q", edge.Name, edge.Type)
 	}
 }
 
@@ -399,6 +628,26 @@ func pickPriority(edges []*Edge) *Edge {
 	return best
 }
 
+// pickSwitch selects one switch case: the first eligible case with a condition,
+// in declaration order, or — when none matched — the first case without one,
+// which is the switch's default. A switch is a single choice; firing every case
+// whose condition held (as a plain branch does) is not what "switch" means.
+func pickSwitch(edges []*Edge) *Edge {
+	var fallback *Edge
+	for _, edge := range edges {
+		if edge.Type != EdgeSwitch {
+			continue
+		}
+		if edge.Guard != nil {
+			return edge
+		}
+		if fallback == nil {
+			fallback = edge
+		}
+	}
+	return fallback
+}
+
 // ---------------------------------------------------------------------------
 // Thresholds
 // ---------------------------------------------------------------------------
@@ -410,11 +659,11 @@ func (e *Engine) resolveThreshold(ctx context.Context, run *Run, outcome stepOut
 		}
 		raw, err := band.Value.Value(scope)
 		if err != nil {
-			return false, fmt.Errorf("edge %q threshold %q: %w", edge.Name, band.Name, err)
+			return false, faultf("edge %q threshold %q: %w", edge.Name, band.Name, err)
 		}
 		number, ok := toFloat(raw)
 		if !ok {
-			return false, fmt.Errorf("edge %q threshold %q: %v is not a number", edge.Name, band.Name, raw)
+			return false, faultf("edge %q threshold %q: %v is not a number", edge.Name, band.Name, raw)
 		}
 		if !band.Contains(number) {
 			continue
@@ -480,12 +729,13 @@ func (e *Engine) dynamicTargets(definition *Definition, edge *Edge, result any) 
 // Joins
 // ---------------------------------------------------------------------------
 
-// resolveJoin accumulates one source's completion and continues when the
-// strategy is satisfied.
-func (e *Engine) resolveJoin(ctx context.Context, run *Run, outcome stepOutcome, edge *Edge, scope Scope) (bool, error) {
+// resolveJoin accumulates one source's completion — or failure — and continues
+// when the strategy is satisfied. It returns whether the edge did anything, and
+// the join's state after this source reported.
+func (e *Engine) resolveJoin(ctx context.Context, run *Run, outcome stepOutcome, edge *Edge, scope Scope) (bool, *Join, error) {
 	join, err := e.store.GetJoin(ctx, run.ID, edge.Name)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	if join == nil {
 		join = &Join{
@@ -499,7 +749,7 @@ func (e *Engine) resolveJoin(ctx context.Context, run *Run, outcome stepOutcome,
 	if join.Emitted {
 		// A late source arriving after the join already continued must not fire the
 		// downstream step a second time.
-		return false, nil
+		return false, join, nil
 	}
 	if join.Results == nil {
 		join.Results = map[string]json.RawMessage{}
@@ -515,9 +765,14 @@ func (e *Engine) resolveJoin(ctx context.Context, run *Run, outcome stepOutcome,
 	}
 
 	if !join.Complete(edge.Strategy, edge.Quorum) {
-		return true, e.store.SaveJoin(ctx, join)
+		return true, join, e.store.SaveJoin(ctx, join)
 	}
+	framed, err := e.emitJoin(ctx, run, edge, join, scope, outcome.frame.Step, nil)
+	return framed, join, err
+}
 
+// emitJoin continues past a satisfied join, once.
+func (e *Engine) emitJoin(ctx context.Context, run *Run, edge *Edge, join *Join, scope Scope, from string, missing []string) (bool, error) {
 	results := make(map[string]any, len(join.Results))
 	for source, encoded := range join.Results {
 		var value any
@@ -529,6 +784,9 @@ func (e *Engine) resolveJoin(ctx context.Context, run *Run, outcome stepOutcome,
 	payload := map[string]any{
 		"results": results, "sources": join.Sources, "strategy": edge.Strategy, "errors": join.Errors,
 	}
+	if len(missing) > 0 {
+		payload["missing"] = missing
+	}
 	framed := true
 	shaped := any(payload)
 	if edge.Shaper != nil {
@@ -537,6 +795,7 @@ func (e *Engine) resolveJoin(ctx context.Context, run *Run, outcome stepOutcome,
 			joinScope[key] = value
 		}
 		joinScope["result"] = payload
+		var err error
 		shaped, err = edge.Shaper.Shape(payload, joinScope)
 		if err != nil {
 			if !errors.Is(err, ErrFiltered) {
@@ -547,7 +806,7 @@ func (e *Engine) resolveJoin(ctx context.Context, run *Run, outcome stepOutcome,
 		}
 	}
 	if framed {
-		e.pushFrames(run, edge, outcome.frame.Step, edge.allTargets(), shaped, 1)
+		e.pushFrames(run, edge, from, edge.allTargets(), shaped, 1)
 	}
 	join.Emitted = true
 	if err := e.store.SaveJoinAndRun(ctx, join, run); err != nil {
@@ -556,13 +815,72 @@ func (e *Engine) resolveJoin(ctx context.Context, run *Run, outcome stepOutcome,
 	return framed, nil
 }
 
-// resolveRace pushes every target and records that the first to finish wins.
+// settleJoins deals with joins still accumulating when a run has nothing left
+// to do.
 //
-// The race is decided by a join row with an "any" strategy on the far side, which
-// is how it survives a restart: a durable race cannot be a goroutine that returns
-// first. The losers still execute; CancelLosers only suppresses their
-// continuations, because a step that has already started cannot be unstarted —
-// only its downstream work can be dropped.
+// At that point every source that has not reported never will: its branch was
+// not taken, a condition skipped it, or a filter dropped it. Before this check
+// such a run simply completed — reporting success for a process whose join step
+// never ran. Now a partial_success join continues with what arrived (that is
+// what the strategy promises), and any other strategy fails the run, naming the
+// join and the sources it was still waiting for.
+func (e *Engine) settleJoins(ctx context.Context, definition *Definition, run *Run) (bool, error) {
+	more := false
+	for _, edge := range definition.Edges {
+		switch edge.Type {
+		case EdgeFanIn, EdgeJoin, EdgeQuorum:
+		default:
+			continue
+		}
+		join, err := e.store.GetJoin(ctx, run.ID, edge.Name)
+		if err != nil {
+			return false, err
+		}
+		if join == nil || join.Emitted {
+			continue
+		}
+		missing := join.Missing()
+		if len(missing) == 0 {
+			// Every source reported and the strategy said no — a first_failure join
+			// when nothing failed. That is a decision, not a stall.
+			continue
+		}
+		if edge.Strategy == "partial_success" && len(join.Results) > 0 {
+			scope, err := e.scope(ctx, run, Frame{}, nil, nil)
+			if err != nil {
+				return false, err
+			}
+			framed, err := e.emitJoin(ctx, run, edge, join, scope, "", missing)
+			if err != nil {
+				return false, err
+			}
+			more = more || framed
+			continue
+		}
+		cause := fmt.Errorf("join %q is still waiting for %s, which can no longer run, so its %q strategy can never be met",
+			edge.Name, strings.Join(missing, ", "), edge.Strategy)
+		if err := e.beginCompensation(ctx, definition, run, "", cause); err != nil {
+			return false, err
+		}
+		return !run.Status.Terminal(), nil
+	}
+	return more, nil
+}
+
+// ---------------------------------------------------------------------------
+// Race
+// ---------------------------------------------------------------------------
+
+// resolveRace pushes every target and opens the race row that decides it.
+//
+// The race is decided durably, by a row, rather than by a goroutine that returns
+// first: that is how it survives a restart. The first entrant to finish
+// successfully wins and only its outgoing edges continue the graph; every other
+// entrant's result is recorded and its continuation suppressed, so the step after
+// a race runs once. CancelLosers additionally drops the entrants that have not
+// started and closes the ones parked on a person or a child process — a step
+// already executing cannot be unstarted. A failing entrant is out of the race; the
+// race fails only when every entrant has failed.
 func (e *Engine) resolveRace(ctx context.Context, definition *Definition, run *Run, outcome stepOutcome, edge *Edge, scope Scope) (bool, error) {
 	payload, err := e.edgePayload(edge, outcome, scope)
 	if err != nil {
@@ -571,30 +889,261 @@ func (e *Engine) resolveRace(ctx context.Context, definition *Definition, run *R
 		}
 		return false, err
 	}
+	// A fresh row every time the race starts: a race inside a loop is a new race
+	// on each iteration, not a replay of the first one's verdict.
 	join := &Join{
 		RunID:   run.ID,
-		Edge:    edge.Name + ":race",
-		Sources: edge.allTargets(),
+		Edge:    raceRow(edge),
+		Sources: slices.Clone(edge.allTargets()),
 		Results: map[string]json.RawMessage{},
 		Errors:  map[string]string{},
-	}
-	if existing, err := e.store.GetJoin(ctx, run.ID, join.Edge); err == nil && existing != nil {
-		join = existing
 	}
 	if err := e.store.SaveJoin(ctx, join); err != nil {
 		return false, err
 	}
 	if edge.Timeout > 0 {
+		when := e.now().Add(edge.Timeout)
 		if err := e.store.AddTimer(ctx, &Timer{
-			ID: randomID(), RunID: run.ID, Fire: e.now().Add(edge.Timeout),
-			Kind: "timeout", Step: outcome.frame.Step, Edge: edge.Name,
+			ID: randomID(), RunID: run.ID, Fire: when,
+			Kind: "race_timeout", Step: outcome.frame.Step, Edge: edge.Name,
 			OnFire: edge.OnTimeout, CreatedAt: e.now(),
 		}); err != nil {
 			return false, err
 		}
+		if e.enqueuer != nil {
+			_ = e.enqueuer.EnqueueAdvanceAt(ctx, run.ID, when)
+		}
 	}
 	e.pushFrames(run, edge, outcome.frame.Step, edge.allTargets(), payload, 1)
 	return true, nil
+}
+
+func raceRow(edge *Edge) string { return edge.Name + ":race" }
+
+// raceOf returns the race a frame is an entrant of.
+func (e *Engine) raceOf(definition *Definition, frame Frame) *Edge {
+	if frame.Compensate {
+		return nil
+	}
+	if frame.Edge != "" {
+		edge, ok := definition.Edge(frame.Edge)
+		if ok && edge.Type == EdgeRace && slices.Contains(edge.allTargets(), frame.Step) {
+			return edge
+		}
+		return nil
+	}
+	// An entrant resumed from outside an advance — a task somebody completed, a
+	// child run that finished — comes back without the edge that reached it. The
+	// race row (checked by the caller) says whether it is still racing.
+	for _, edge := range definition.Incoming(frame.Step) {
+		if edge.Type == EdgeRace {
+			return edge
+		}
+	}
+	return nil
+}
+
+// resolveRaceEntrant records one entrant's outcome and reports whether its
+// continuation is suppressed.
+func (e *Engine) resolveRaceEntrant(ctx context.Context, definition *Definition, run *Run, outcome stepOutcome, race *Edge) (bool, error) {
+	row, err := e.store.GetJoin(ctx, run.ID, raceRow(race))
+	if err != nil || row == nil {
+		return false, err
+	}
+	entrant := outcome.frame.Step
+	if !slices.Contains(row.Sources, entrant) {
+		return false, nil
+	}
+	if _, done := row.Results[entrant]; done {
+		// Already reported: the step is running again for some other reason.
+		return false, nil
+	}
+	if _, done := row.Errors[entrant]; done {
+		return false, nil
+	}
+	if row.Results == nil {
+		row.Results = map[string]json.RawMessage{}
+	}
+	if row.Errors == nil {
+		row.Errors = map[string]string{}
+	}
+
+	if outcome.err != nil {
+		if e.willRetry(definition, outcome) {
+			// Still in the race: the retry is its next attempt.
+			return false, nil
+		}
+		row.Errors[entrant] = outcome.err.Error()
+		if !row.Emitted && len(row.Errors) >= len(row.Sources) {
+			// Every entrant failed: nobody can win. This last failure is the race's,
+			// and it takes the ordinary failure path — error edges, compensation.
+			row.Emitted = true
+			if err := e.store.SaveJoin(ctx, row); err != nil {
+				return false, err
+			}
+			return false, e.deleteTimers(ctx, run.ID, "race_timeout", race.Name, "")
+		}
+		// Out of the race, but somebody else may still win it.
+		return true, e.store.SaveJoin(ctx, row)
+	}
+
+	encoded, err := json.Marshal(outcome.result)
+	if err != nil {
+		return false, err
+	}
+	row.Results[entrant] = encoded
+	if row.Emitted {
+		// Decided already: a loser, whose work is recorded but goes no further.
+		return true, e.store.SaveJoin(ctx, row)
+	}
+	row.Emitted = true
+	if err := e.store.SaveJoin(ctx, row); err != nil {
+		return false, err
+	}
+	if err := e.deleteTimers(ctx, run.ID, "race_timeout", race.Name, ""); err != nil {
+		return false, err
+	}
+	if race.CancelLosers {
+		for _, target := range race.allTargets() {
+			if target == entrant {
+				continue
+			}
+			if _, err := e.cancelOutstanding(ctx, run, target, race.Name); err != nil {
+				return false, err
+			}
+		}
+	}
+	return false, nil
+}
+
+// orderRaceEntrants reorders a wave's race entrants by when they finished, so
+// "first to finish" means that rather than "first declared". Successful
+// entrants are ordered by their completion sequence; failed and parked ones
+// follow. Only the entrants' own slots are permuted: the rest of the wave keeps
+// its resolution order.
+func (e *Engine) orderRaceEntrants(definition *Definition, outcomes []stepOutcome) {
+	var slots []int
+	for index, outcome := range outcomes {
+		if outcome.frame.Edge != "" && e.raceOf(definition, outcome.frame) != nil {
+			slots = append(slots, index)
+		}
+	}
+	if len(slots) < 2 {
+		return
+	}
+	finished := func(outcome stepOutcome) int64 {
+		if outcome.err == nil && outcome.parked == nil && outcome.state != nil && outcome.state.Sequence > 0 {
+			return outcome.state.Sequence
+		}
+		return math.MaxInt64
+	}
+	entrants := make([]stepOutcome, len(slots))
+	for i, slot := range slots {
+		entrants[i] = outcomes[slot]
+	}
+	slices.SortStableFunc(entrants, func(a, b stepOutcome) int { return cmp.Compare(finished(a), finished(b)) })
+	for i, slot := range slots {
+		outcomes[slot] = entrants[i]
+	}
+}
+
+// cancelOutstanding stops a step that has not finished: its queued frames (those
+// pushed by viaEdge, or any when viaEdge is empty), its open human task, and its
+// running child process. It reports whether there was anything to stop.
+func (e *Engine) cancelOutstanding(ctx context.Context, run *Run, step, viaEdge string) (bool, error) {
+	found := false
+	before := len(run.Frames)
+	run.Frames = slices.DeleteFunc(run.Frames, func(frame Frame) bool {
+		return !frame.Compensate && frame.Step == step && (viaEdge == "" || frame.Edge == viaEdge)
+	})
+	found = len(run.Frames) != before
+
+	tasks, err := e.store.ListTasks(ctx, TaskFilter{RunID: run.ID, Step: step, Limit: 500})
+	if err != nil {
+		return found, err
+	}
+	for _, task := range tasks {
+		if !task.Open() {
+			continue
+		}
+		task.Status = TaskCancelled
+		if err := e.store.SaveTask(ctx, task); err != nil {
+			return found, err
+		}
+		found = true
+	}
+
+	subscriptions, err := e.store.ListSubscriptions(ctx, run.ID)
+	if err != nil {
+		return found, err
+	}
+	for _, subscription := range subscriptions {
+		if subscription.Event != childCompletedEvent || subscription.Step != step {
+			continue
+		}
+		if err := e.store.DeleteSubscription(ctx, subscription.ID); err != nil {
+			return found, err
+		}
+		found = true
+		// The child is abandoned with its parent's interest in it. Cancelling it is
+		// best effort: a child that is busy right now ends on its own, and its
+		// completion signal then finds nobody subscribed, which is harmless.
+		_, _ = e.Cancel(ctx, subscription.Correlation, fmt.Sprintf("cancelled by its parent run %s", run.ID))
+	}
+	return found, nil
+}
+
+// deleteTimers removes a run's timers of one kind, narrowed to an edge and/or a
+// step when those are given.
+func (e *Engine) deleteTimers(ctx context.Context, runID, kind, edge, step string) error {
+	timers, err := e.store.ListTimers(ctx, runID)
+	if err != nil {
+		return err
+	}
+	for _, timer := range timers {
+		if timer.Kind != kind || (edge != "" && timer.Edge != edge) || (step != "" && timer.Step != step) {
+			continue
+		}
+		if err := e.store.DeleteTimer(ctx, timer.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// disarmStepWatchers removes the timers that were watching a step which has now
+// finished: a timeout edge's deadline on it, and the escalations of its task.
+func (e *Engine) disarmStepWatchers(ctx context.Context, definition *Definition, run *Run, outcome stepOutcome) error {
+	step := outcome.frame.Step
+	if slices.ContainsFunc(definition.Incoming(step), func(edge *Edge) bool { return edge.Type == EdgeTimeout }) {
+		if err := e.deleteTimers(ctx, run.ID, "timeout", "", step); err != nil {
+			return err
+		}
+	}
+	if outcome.step.Task == nil {
+		return nil
+	}
+	hasEscalation := slices.ContainsFunc(definition.Outgoing(step), func(edge *Edge) bool { return edge.Type == EdgeEscalation })
+	if !hasEscalation {
+		return nil
+	}
+	timers, err := e.store.ListTimers(ctx, run.ID)
+	if err != nil {
+		return err
+	}
+	for _, timer := range timers {
+		if timer.Kind != "task_escalation" {
+			continue
+		}
+		var watched taskEscalation
+		if json.Unmarshal(timer.Payload, &watched) != nil || watched.Step != step || watched.Key != outcome.frame.StateKey() {
+			continue
+		}
+		if err := e.store.DeleteTimer(ctx, timer.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -689,12 +1238,14 @@ func (e *Engine) resolveLoopUntil(ctx context.Context, run *Run, outcome stepOut
 	}
 	target := targets[0]
 
-	// The guard on a loop_until edge is the *exit* condition: it has already been
-	// evaluated as the edge's eligibility, so reaching here means the loop should
-	// continue. The visit cap is the backstop for a condition that never holds.
+	// The guard on a loop_until edge is the *exit* condition, and traverse only
+	// makes the edge eligible while it does not hold — so reaching here means the
+	// loop continues. The cycle cap (max_concurrency) is the backstop for a
+	// condition that never holds; reaching it fails the run rather than returning
+	// an error that would leave it wedged, re-running the body on every advance.
 	if run.Visits[target] >= edge.MaxConcurrency {
-		return false, fmt.Errorf("edge %q looped back to %q %d times without its condition holding",
-			edge.Name, target, run.Visits[target])
+		return false, faultf("edge %q looped back to %q %d times without its condition holding (its cycle cap is %d)",
+			edge.Name, target, run.Visits[target], edge.MaxConcurrency)
 	}
 	payload, err := e.edgePayload(edge, outcome, scope)
 	if err != nil {
@@ -719,7 +1270,7 @@ func (e *Engine) parkOnTimer(ctx context.Context, run *Run, edge *Edge, from str
 	}
 	targets := edge.allTargets()
 	if len(targets) == 0 {
-		return fmt.Errorf("edge %q has no target to resume at", edge.Name)
+		return faultf("edge %q has no target to resume at", edge.Name)
 	}
 	if err := e.store.AddTimer(ctx, &Timer{
 		ID: randomID(), RunID: run.ID, Fire: when, Kind: kind,
@@ -736,14 +1287,18 @@ func (e *Engine) parkOnTimer(ctx context.Context, run *Run, edge *Edge, from str
 	})
 }
 
-// armTargetTimeout records the deadline a timeout edge imposes on its target.
+// armTargetTimeout records the deadline a timeout edge imposes on its targets.
+// The timer is removed when the target finishes (disarmStepWatchers); if it fires
+// first, handleDeadline stops the target and takes on_timeout.
 func (e *Engine) armTargetTimeout(ctx context.Context, run *Run, edge *Edge) error {
 	when := e.now().Add(edge.Timeout)
-	if err := e.store.AddTimer(ctx, &Timer{
-		ID: randomID(), RunID: run.ID, Fire: when, Kind: "timeout",
-		Step: edge.To, Edge: edge.Name, OnFire: edge.OnTimeout, CreatedAt: e.now(),
-	}); err != nil {
-		return err
+	for _, target := range edge.allTargets() {
+		if err := e.store.AddTimer(ctx, &Timer{
+			ID: randomID(), RunID: run.ID, Fire: when, Kind: "timeout",
+			Step: target, Edge: edge.Name, OnFire: edge.OnTimeout, CreatedAt: e.now(),
+		}); err != nil {
+			return err
+		}
 	}
 	if e.enqueuer != nil {
 		_ = e.enqueuer.EnqueueAdvanceAt(ctx, run.ID, when)
@@ -756,17 +1311,17 @@ func (e *Engine) armTargetTimeout(ctx context.Context, run *Run, edge *Edge) err
 func (e *Engine) resolveWaitEvent(ctx context.Context, run *Run, outcome stepOutcome, edge *Edge, scope Scope) (bool, error) {
 	correlation, err := edge.Correlation.Value(scope)
 	if err != nil {
-		return false, fmt.Errorf("edge %q correlation: %w", edge.Name, err)
+		return false, faultf("edge %q correlation: %w", edge.Name, err)
 	}
 	key := fmt.Sprint(correlation)
-	if key == "" {
+	if correlation == nil || key == "" {
 		// An empty correlation would make this subscription match every event of
 		// its name, waking runs that have nothing to do with the signal.
-		return false, fmt.Errorf("edge %q: the correlation expression %q evaluated to empty", edge.Name, edge.Correlation.Source())
+		return false, faultf("edge %q: the correlation expression %q evaluated to empty", edge.Name, edge.Correlation.Source())
 	}
 	targets := edge.allTargets()
 	if len(targets) == 0 {
-		return false, fmt.Errorf("edge %q has no target to resume at", edge.Name)
+		return false, faultf("edge %q has no target to resume at", edge.Name)
 	}
 
 	var expires *time.Time
@@ -800,7 +1355,7 @@ func (e *Engine) resolveWaitEvent(ctx context.Context, run *Run, outcome stepOut
 func (e *Engine) parkManual(ctx context.Context, run *Run, edge *Edge, outcome stepOutcome) error {
 	targets := edge.allTargets()
 	if len(targets) == 0 {
-		return fmt.Errorf("edge %q has no target to resume at", edge.Name)
+		return faultf("edge %q has no target to resume at", edge.Name)
 	}
 	payload, _ := json.Marshal(outcome.result)
 	if err := e.store.Subscribe(ctx, &Subscription{
@@ -823,13 +1378,19 @@ func (e *Engine) parkManual(ctx context.Context, run *Run, edge *Edge, outcome s
 	})
 }
 
-// parkEscalation waits, then raises the work to somebody else.
+// parkEscalation waits, then raises the work to somebody else: when the timer
+// fires the engine notifies edge.Notify, reassigns the run's open tasks to the
+// edge.Escalate role, and continues at the target (see handleEscalation).
+//
+// This is the form for an escalation leaving an ordinary step. One leaving a human
+// task is armed when the task opens instead (armTaskEscalations), because what it
+// escalates is that task being overdue — which it can only be while it is open.
 func (e *Engine) parkEscalation(ctx context.Context, run *Run, edge *Edge, outcome stepOutcome) error {
 	when := e.now().Add(edge.Timeout)
 	payload, _ := json.Marshal(outcome.result)
 	targets := edge.allTargets()
 	if len(targets) == 0 {
-		return fmt.Errorf("edge %q has no target to escalate to", edge.Name)
+		return faultf("edge %q has no target to escalate to", edge.Name)
 	}
 	if err := e.store.AddTimer(ctx, &Timer{
 		ID: randomID(), RunID: run.ID, Fire: when, Kind: "escalation",
@@ -859,12 +1420,12 @@ func (e *Engine) resolveRateLimited(ctx context.Context, run *Run, outcome stepO
 	}
 	targets := edge.allTargets()
 	if len(targets) == 0 {
-		return false, fmt.Errorf("edge %q has no target", edge.Name)
+		return false, faultf("edge %q has no target", edge.Name)
 	}
 	if e.limiter == nil {
 		// Without a limiter the edge cannot honour its contract. Traversing anyway
 		// would silently remove the limit the author asked for.
-		return false, fmt.Errorf("edge %q is rate_limited but this engine has no rate limiter configured", edge.Name)
+		return false, faultf("edge %q is rate_limited but this engine has no rate limiter configured", edge.Name)
 	}
 	allowed, _, resetAt, err := e.limiter.Allow(ctx, "edge:"+edge.Name, edge.Limit, edge.Window)
 	if err != nil {
@@ -874,10 +1435,67 @@ func (e *Engine) resolveRateLimited(ctx context.Context, run *Run, outcome stepO
 		e.pushFrames(run, edge, outcome.frame.Step, targets, payload, 1)
 		return true, nil
 	}
-	if resetAt.IsZero() {
+	if resetAt.IsZero() || !resetAt.After(e.now()) {
 		resetAt = e.now().Add(edge.Window)
 	}
-	return true, e.parkOnTimer(ctx, run, edge, outcome.frame.Step, payload, resetAt, "delayed")
+	// A "rate_limited" timer rather than a "delayed" one: when it fires it asks
+	// the limiter again (handleRateLimited) instead of traversing unconditionally,
+	// which let every parked run through at the end of the window regardless of
+	// how many the limit admits.
+	return true, e.parkOnTimer(ctx, run, edge, outcome.frame.Step, payload, resetAt, "rate_limited")
+}
+
+// taskEscalation is the payload of a timer watching an open human task.
+type taskEscalation struct {
+	TaskID string `json:"task_id"`
+	Step   string `json:"step"`
+	Key    string `json:"key"`
+}
+
+// armTaskEscalations arms the escalation edges leaving a human task step when the
+// task opens. Each becomes a timer that, if the task is still open when it fires,
+// reassigns the task to the edge's escalate role, notifies, and continues at the
+// edge's target (handleTaskEscalation). Completing the task first disarms it.
+func (e *Engine) armTaskEscalations(ctx context.Context, definition *Definition, run *Run, outcome stepOutcome, taskID string) error {
+	var scope Scope
+	for _, edge := range definition.Outgoing(outcome.frame.Step) {
+		if edge.Type != EdgeEscalation || !slices.Contains(edge.allSources(), outcome.frame.Step) {
+			continue
+		}
+		if scope == nil {
+			var input any
+			if len(outcome.frame.Input) > 0 {
+				_ = json.Unmarshal(outcome.frame.Input, &input)
+			}
+			var err error
+			if scope, err = e.scope(ctx, run, outcome.frame, input, nil); err != nil {
+				return err
+			}
+		}
+		ok, err := evalGuard(edge.Guard, scope)
+		if err != nil {
+			return faultf("edge %q condition: %w", edge.Name, err)
+		}
+		targets := edge.allTargets()
+		if !ok || len(targets) == 0 {
+			continue
+		}
+		payload, err := json.Marshal(taskEscalation{TaskID: taskID, Step: outcome.frame.Step, Key: outcome.frame.StateKey()})
+		if err != nil {
+			return err
+		}
+		when := e.now().Add(edge.Timeout)
+		if err := e.store.AddTimer(ctx, &Timer{
+			ID: randomID(), RunID: run.ID, Fire: when, Kind: "task_escalation",
+			Step: targets[0], Edge: edge.Name, Payload: payload, CreatedAt: e.now(),
+		}); err != nil {
+			return err
+		}
+		if e.enqueuer != nil {
+			_ = e.enqueuer.EnqueueAdvanceAt(ctx, run.ID, when)
+		}
+	}
+	return nil
 }
 
 // recordPark notes why the run is waiting. It does not itself set the status:

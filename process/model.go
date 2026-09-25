@@ -249,7 +249,8 @@ type Timer struct {
 	ID    string    `json:"id"`
 	RunID string    `json:"run_id"`
 	Fire  time.Time `json:"fire_at"`
-	// Kind is "delayed", "timeout", "wait_event", "escalation", "sla" or
+	// Kind is "delayed", "timeout", "wait_event", "escalation",
+	// "task_escalation", "race_timeout", "rate_limited", "wake", "sla" or
 	// "run_timeout". The engine dispatches on it when the timer fires.
 	Kind    string          `json:"kind"`
 	Step    string          `json:"step,omitempty"`
@@ -333,6 +334,43 @@ func (j *Join) Complete(strategy string, quorum int) bool {
 	default: // "all" and the empty default
 		return done >= total
 	}
+}
+
+// Impossible reports whether the strategy can no longer be satisfied by the
+// sources still to report. It is what lets a failed source fail the run at once
+// instead of leaving a join waiting for results that cannot make it complete —
+// and, conversely, what lets a tolerant strategy (any, quorum, partial_success)
+// absorb a failure it can live with.
+func (j *Join) Impossible(strategy string, quorum int) bool {
+	done := len(j.Results)
+	failed := len(j.Errors)
+	total := len(j.Sources)
+	switch strategy {
+	case "any", "first", "any_success", "first_success", "partial_success":
+		return failed >= total
+	case "quorum":
+		if quorum <= 0 {
+			quorum = total/2 + 1
+		}
+		return total-failed < quorum
+	case "first_failure":
+		return done >= total
+	default: // "all"
+		return failed > 0
+	}
+}
+
+// Missing lists the sources that have not reported either way.
+func (j *Join) Missing() []string {
+	var missing []string
+	for _, source := range j.Sources {
+		_, succeeded := j.Results[source]
+		_, failed := j.Errors[source]
+		if !succeeded && !failed {
+			missing = append(missing, source)
+		}
+	}
+	return missing
 }
 
 // Lease is one replica's exclusive claim on advancing a run.
