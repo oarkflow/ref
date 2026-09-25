@@ -93,6 +93,31 @@ func (c *execCancelCtx) Err() error {
 	return parent.Err()
 }
 
+// Value and Deadline must not fall through to the embedded Context unguarded:
+// the struct is pooled and reset(nil) clears the parent, while a child context
+// derived during the execution (database/sql and net/http create them) keeps a
+// goroutine that calls parent.Value after the node finished. Without these the
+// embedded nil interface panics the whole process.
+func (c *execCancelCtx) Value(key any) any {
+	c.doneMu.Lock()
+	parent := c.Context
+	c.doneMu.Unlock()
+	if parent == nil {
+		return nil
+	}
+	return parent.Value(key)
+}
+
+func (c *execCancelCtx) Deadline() (time.Time, bool) {
+	c.doneMu.Lock()
+	parent := c.Context
+	c.doneMu.Unlock()
+	if parent == nil {
+		return time.Time{}, false
+	}
+	return parent.Deadline()
+}
+
 // ExecutionState describes how execution completed.
 type ExecutionState uint8
 
