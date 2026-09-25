@@ -3,6 +3,7 @@ package runtime
 import (
 	"github.com/oarkflow/ref/capability"
 	"github.com/oarkflow/ref/effect"
+	"github.com/oarkflow/ref/health"
 	"github.com/oarkflow/ref/observer"
 )
 
@@ -54,5 +55,17 @@ func WithCapability(reg capability.Registration) Option {
 func TryCapability(reg capability.Registration) Option {
 	return func(e *Engine) {
 		_ = e.capabilities.Register(reg)
+	}
+}
+
+// WithHealthRegistry attaches a *health.Registry to the Engine, retrievable
+// via Engine.Health(). The engine itself does not populate or depend on
+// the registry — this option only gives application code a well-known
+// place to register engine-related checks (effect store connectivity,
+// capability circuit breakers, etc.) and to serve them over HTTP via
+// health.NewHTTPHandler / health.LivenessHandler / health.ReadinessHandler.
+func WithHealthRegistry(reg *health.Registry) Option {
+	return func(e *Engine) {
+		e.healthRegistry = reg
 	}
 }
