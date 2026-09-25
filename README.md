@@ -318,3 +318,4 @@ This gives teams a route-by-route migration path. It does not automatically tran
 - [**docs/app-patterns.md**](docs/app-patterns.md): Hierarchical organisations (scoped units, inherited reference data, hierarchy-scoped CRUD) and dates of service (single/multi-DOS rules, overlap detection, per-day expansion, atomic header + line inserts).
 - [**examples/gov-hierarchy/**](examples/gov-hierarchy/): Government services across country → state → district → municipality.
 - [**examples/medical-coding/**](examples/medical-coding/): Single- and multi-DOS medical coding with duplicate-billing checks and per-day claim lines.
+- [**docs/integrations-and-streaming.md**](docs/integrations-and-streaming.md): Node families as shorthand for their default action; gRPC (Connect), Standard Webhooks, RAG retrieval, external workflow orchestrators, and incremental SSE streaming with backpressure.
