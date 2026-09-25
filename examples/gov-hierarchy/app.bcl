@@ -1,0 +1,219 @@
+####################################################################
+# Government services across a hierarchy:
+#   country → state (province) → district → municipality
+#
+# * Officers are assigned to one or more units (JWT claim "org_units") and
+#   only ever see and act on their own subtree.
+# * Reference data (the services a municipality offers) is configured once at
+#   the top and overridden, relabelled or disabled lower down — per unit,
+#   workspace and department.
+# * Every application row carries its unit; list/get/update are scoped to the
+#   caller's jurisdiction by the platform, not by hand-written WHERE clauses.
+####################################################################
+
+name "gov-hierarchy"
+version "1"
+
+resource "db" {
+  kind "database.sql"
+  description "Service applications"
+  config {
+    driver "sqlite"
+    dsn env("GOV_DSN", "file:.data/gov-hierarchy.db?_pragma=busy_timeout(5000)")
+    migrations [
+      "CREATE TABLE IF NOT EXISTS applications (id INTEGER PRIMARY KEY AUTOINCREMENT, org_unit_id TEXT NOT NULL, org_path TEXT NOT NULL, service TEXT NOT NULL, applicant TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'submitted', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+      "CREATE INDEX IF NOT EXISTS applications_org_path_idx ON applications(org_path)"
+    ]
+  }
+}
+
+resource "jwt" {
+  kind "auth.jwt"
+  description "Officer tokens carrying roles and org_units"
+  config {
+    secret env.required("GOV_JWT_SECRET")
+  }
+}
+
+resource "org" {
+  kind "org.hierarchy"
+  description "Administrative divisions and the service catalogue configured along them"
+  config {
+    levels ["country", "state", "district", "municipality"]
+    database "db"
+    assignment_claim "org_units"
+    global_roles ["admin"]
+    nodes [
+      { id "np" level "country" name "Nepal" },
+      { id "bagmati" parent "np" level "state" name "Bagmati Province" code "P3" },
+      { id "koshi" parent "np" level "state" name "Koshi Province" code "P1" },
+      { id "ktm" parent "bagmati" level "district" name "Kathmandu" code "27" },
+      { id "lalitpur" parent "bagmati" level "district" name "Lalitpur" code "25" },
+      { id "morang" parent "koshi" level "district" name "Morang" code "05" },
+      { id "ktm-metro" parent "ktm" level "municipality" name "Kathmandu Metropolitan City" },
+      { id "tokha" parent "ktm" level "municipality" name "Tokha Municipality" },
+      { id "lalitpur-metro" parent "lalitpur" level "municipality" name "Lalitpur Metropolitan City" },
+      { id "biratnagar" parent "morang" level "municipality" name "Biratnagar Metropolitan City" }
+    ]
+    lookups [
+      { set "service" code "birth" label "Birth registration" sort 1 },
+      { set "service" code "death" label "Death registration" sort 2 },
+      { set "service" code "tax" label "Property tax" sort 3 },
+      { set "service" code "tax" node "bagmati" label "Integrated property tax" sort 3 },
+      { set "service" code "death" node "ktm" disabled true },
+      { set "service" code "parking" node "ktm-metro" label "Parking permit" sort 9 },
+      { set "service" code "tax" node "ktm-metro" department "revenue" label "Property tax (revenue section)" sort 3 }
+    ]
+  }
+}
+
+shape "gov.application" {
+  kind object
+  prop "org_unit_id" { kind string required true }
+  prop "service" { kind string required true }
+  prop "applicant" { kind string required true min_length 2 }
+}
+
+# Who am I and what can I reach?
+intent "org.my_scope" {
+  response "scope"
+  node "scope" {
+    uses "org.scope"
+    resource "org"
+    provides [scope]
+  }
+}
+
+# The jurisdiction tree below the caller's assignment(s).
+intent "org.tree" {
+  response "tree"
+  node "tree" {
+    uses "org.query"
+    resource "org"
+    provides [tree]
+    config { operation "tree" }
+  }
+}
+
+intent "org.children" {
+  response "children"
+  node "id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" }
+  }
+  node "children" {
+    uses "org.query"
+    resource "org"
+    requires [id]
+    provides [children]
+    config { operation "children" id_fact "id" }
+  }
+}
+
+# Create or rename a unit inside the caller's jurisdiction.
+intent "org.save_unit" {
+  response "unit"
+  node "unit" {
+    uses "org.write"
+    resource "org"
+    kind effect
+    requires [input]
+    provides [unit]
+    config { operation "upsert" }
+  }
+}
+
+# The service catalogue as it applies to a unit (inheritance + overrides).
+intent "lookup.services" {
+  response "services"
+  node "unit" {
+    uses "request.param"
+    provides [unit]
+    config { name "org_unit" from "query" required false default "" }
+  }
+  node "services" {
+    uses "lookup.resolve"
+    resource "org"
+    requires [unit]
+    provides [services]
+    config { set "service" node_fact "unit" }
+  }
+}
+
+# Override reference data at a unit the caller administers.
+intent "lookup.save" {
+  response "entry"
+  node "entry" {
+    uses "lookup.write"
+    resource "org"
+    kind effect
+    requires [input]
+    provides [entry]
+    config { operation "upsert" }
+  }
+}
+
+intent "applications.create" {
+  response "application"
+  input_schema "gov.application"
+  node "scope" {
+    uses "org.scope"
+    resource "org"
+    requires [input]
+    provides [scope]
+    config { target "input.org_unit_id" require_target true }
+  }
+  # The service must be one the unit actually offers, after inheritance and
+  # overrides — e.g. death registration is disabled across Kathmandu district.
+  node "offered" {
+    uses "lookup.resolve"
+    resource "org"
+    requires [input]
+    provides [offered]
+    config { set "service" node_fact "input.org_unit_id" require_code "input.service" }
+  }
+  node "application" {
+    uses "database.crud"
+    resource "db"
+    kind effect
+    requires [input, scope, offered]
+    provides [application]
+    config {
+      operation "create"
+      table "applications"
+      columns ["id", "org_unit_id", "org_path", "service", "applicant", "status"]
+      writable ["org_unit_id", "service", "applicant"]
+      org_resource "org"
+      org_column "org_unit_id"
+      org_path_column "org_path"
+    }
+  }
+}
+
+intent "applications.list" {
+  response "applications"
+  node "applications" {
+    uses "database.crud"
+    resource "db"
+    provides [applications]
+    config {
+      operation "list"
+      table "applications"
+      columns ["id", "org_unit_id", "service", "applicant", "status"]
+      order_by "id"
+      org_resource "org"
+      org_column "org_unit_id"
+      org_path_column "org_path"
+    }
+  }
+}
+
+route "org.my_scope" { method GET path "/api/org/scope" intent "org.my_scope" auth "jwt" }
+route "org.tree" { method GET path "/api/org/tree" intent "org.tree" auth "jwt" }
+route "org.children" { method GET path "/api/org/units/:id/children" intent "org.children" auth "jwt" }
+route "org.save_unit" { method POST path "/api/org/units" intent "org.save_unit" auth "jwt" }
+route "lookup.services" { method GET path "/api/lookups/services" intent "lookup.services" auth "jwt" }
+route "lookup.save" { method POST path "/api/lookups" intent "lookup.save" auth "jwt" }
+route "applications.create" { method POST path "/api/applications" intent "applications.create" auth "jwt" status 201 }
+route "applications.list" { method GET path "/api/applications" intent "applications.list" auth "jwt" }

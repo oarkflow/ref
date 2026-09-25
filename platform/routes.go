@@ -1227,5 +1227,14 @@ func projectFailure(c fh.Ctx, err error) error {
 	if status == 401 {
 		c.Set("WWW-Authenticate", `Bearer realm="api"`)
 	}
-	return c.Status(status).JSON(map[string]any{"error": map[string]any{"code": code, "message": message}})
+	body := map[string]any{"code": code, "message": message}
+	// A client error may carry structured details (e.g. every failed
+	// date-of-service rule) that the action put there deliberately for the
+	// caller. Server errors never do, for the reason above.
+	if status < 500 && failure.Meta != nil {
+		if details, ok := failure.Meta["details"]; ok {
+			body["details"] = details
+		}
+	}
+	return c.Status(status).JSON(map[string]any{"error": body})
 }

@@ -105,6 +105,9 @@ func registerDatabaseActions(r *Registry) {
 			{Name: "id_fact", Type: "fact", Summary: "Where get/update/delete read the id from"},
 			{Name: "input_fact", Type: "fact", Default: "input", Summary: "Where create/update read the record from"},
 			{Name: "returning", Type: "bool", Default: "true", Summary: "Publish the written row. Disable on MySQL, which has no RETURNING."},
+			{Name: "org_resource", Type: "string", Summary: "org.hierarchy resource: scope every operation to the caller's organisational units"},
+			{Name: "org_column", Type: "string", Summary: "Column holding the row's organisational unit id (required with org_resource)"},
+			{Name: "org_path_column", Type: "string", Summary: "Optional column the platform stamps with the unit's materialised path; enables indexed subtree scoping for large trees"},
 		},
 	})
 }
@@ -429,7 +432,17 @@ type crudPlan struct {
 	returning   bool
 	columnList  string
 	writableSet map[string]struct{}
+
+	// Hierarchical scoping (optional): rows carry the organisational unit
+	// they belong to, and a caller only reaches rows inside its org scope.
+	org           *OrgHierarchy
+	orgColumn     string
+	orgPathColumn string
 }
+
+// maxOrgScopeIDs bounds the IN list a hierarchy-scoped query may expand to.
+// Beyond it the table should carry a materialised path column instead.
+const maxOrgScopeIDs = 2000
 
 var databaseCRUDAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) (Action, error) {
 	db, err := requireResource[*Database](build, spec, "a database.sql resource")
@@ -485,13 +498,31 @@ var databaseCRUDAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpe
 			*pair.target = safe
 		}
 	}
+	if orgName := configString(spec.Config, "org_resource", ""); orgName != "" {
+		resource, ok := build.Resource(orgName)
+		if !ok {
+			return nil, fmt.Errorf("node %q: org_resource names unknown resource %q", spec.Name, orgName)
+		}
+		if plan.org, ok = resource.(*OrgHierarchy); !ok {
+			return nil, fmt.Errorf("node %q: org_resource %q is not an org.hierarchy resource", spec.Name, orgName)
+		}
+		if plan.orgColumn, err = safeIdentifier(configString(spec.Config, "org_column", "")); err != nil {
+			return nil, fmt.Errorf("node %q: org_resource needs a valid org_column: %w", spec.Name, err)
+		}
+		if raw := configString(spec.Config, "org_path_column", ""); raw != "" {
+			if plan.orgPathColumn, err = safeIdentifier(raw); err != nil {
+				return nil, fmt.Errorf("node %q: org_path_column: %w", spec.Name, err)
+			}
+		}
+	}
 	writable := configStrings(spec.Config, "writable")
 	if len(writable) == 0 {
 		// Default to every column except the ones the platform owns. An author
 		// who does not list writable columns still cannot have a client set the
 		// id, the tenant or the owner.
 		for _, column := range columns {
-			if column == plan.idColumn || column == plan.tenant || column == plan.owner || column == plan.softDelete {
+			if column == plan.idColumn || column == plan.tenant || column == plan.owner || column == plan.softDelete ||
+				(plan.orgPathColumn != "" && column == plan.orgPathColumn) {
 				continue
 			}
 			writable = append(writable, column)
@@ -561,7 +592,57 @@ func (p *crudPlan) scope(ctx *ActionContext, args []any) ([]string, []any, error
 	if p.softDelete != "" {
 		conditions = append(conditions, p.softDelete+" IS NULL")
 	}
+	if p.org != nil {
+		snap := p.org.Snapshot(ctx.TenantID)
+		scope := p.org.ScopeFor(ctx.Principal, snap.Tree)
+		switch {
+		case scope.Global:
+		case len(scope.Assigned) == 0:
+			return nil, nil, permissionDenied("this operation is scoped to organisational units but you are not assigned to any")
+		case p.orgPathColumn != "":
+			// One indexed prefix match per assigned subtree.
+			ors := make([]string, 0, len(scope.Assigned))
+			for _, unit := range scope.Assigned {
+				args = append(args, snap.Tree.MaterializedPath(unit)+"%")
+				ors = append(ors, fmt.Sprintf("%s LIKE $%d", p.orgPathColumn, len(args)))
+			}
+			conditions = append(conditions, "("+strings.Join(ors, " OR ")+")")
+		default:
+			ids := snap.Tree.ScopeIDs(scope.Assigned)
+			if len(ids) > maxOrgScopeIDs {
+				return nil, nil, unavailable("organisational scope covers %d units; configure org_path_column for this table", len(ids))
+			}
+			placeholders := make([]string, len(ids))
+			for i, id := range ids {
+				args = append(args, id)
+				placeholders[i] = fmt.Sprintf("$%d", len(args))
+			}
+			conditions = append(conditions, fmt.Sprintf("%s IN (%s)", p.orgColumn, strings.Join(placeholders, ", ")))
+		}
+	}
 	return conditions, args, nil
+}
+
+// orgStamp checks that a written record's unit is inside the caller's scope and
+// returns the materialised path to store alongside it. required is set for a
+// create, where the unit must be present.
+func (p *crudPlan) orgStamp(ctx *ActionContext, record map[string]any, required bool) (string, bool, error) {
+	if p.org == nil {
+		return "", false, nil
+	}
+	raw, present := record[p.orgColumn]
+	unit := strings.TrimSpace(Stringify(raw))
+	if !present || unit == "" {
+		if required {
+			return "", false, invalidInput("%s is required", p.orgColumn)
+		}
+		return "", false, nil
+	}
+	snap := p.org.Snapshot(ctx.TenantID)
+	if !p.org.ScopeFor(ctx.Principal, snap.Tree).Covers(snap.Tree, unit) {
+		return "", false, outOfScope(unit)
+	}
+	return snap.Tree.MaterializedPath(unit), true, nil
 }
 
 func (p *crudPlan) list(ctx *ActionContext, spec NodeSpec) (ActionResult, error) {
@@ -659,6 +740,15 @@ func (p *crudPlan) create(ctx *ActionContext, spec NodeSpec) (ActionResult, erro
 		columns = append(columns, p.owner)
 		placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
 	}
+	path, stamped, err := p.orgStamp(ctx, record, true)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	if stamped && p.orgPathColumn != "" {
+		args = append(args, path)
+		columns = append(columns, p.orgPathColumn)
+		placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+	}
 	if len(columns) == 0 {
 		return ActionResult{}, invalidInput("nothing to create: the request set none of this table's writable columns")
 	}
@@ -686,6 +776,14 @@ func (p *crudPlan) update(ctx *ActionContext, spec NodeSpec) (ActionResult, erro
 		}
 		args = append(args, normalizeSQLArg(value))
 		assignments = append(assignments, fmt.Sprintf("%s = $%d", column, len(args)))
+	}
+	path, stamped, err := p.orgStamp(ctx, record, false)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	if stamped && p.orgPathColumn != "" {
+		args = append(args, path)
+		assignments = append(assignments, fmt.Sprintf("%s = $%d", p.orgPathColumn, len(args)))
 	}
 	if len(assignments) == 0 {
 		return ActionResult{}, invalidInput("nothing to update: the request set none of this table's writable columns")

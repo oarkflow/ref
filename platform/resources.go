@@ -27,4 +27,5 @@ func registerBuiltinResources(r *Registry) {
 	registerStorageResources(r)
 	registerMiscResources(r)
 	registerProcessStoreResources(r)
+	registerOrgResources(r)
 }

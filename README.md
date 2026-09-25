@@ -315,3 +315,6 @@ This gives teams a route-by-route migration path. It does not automatically tran
 
 - [**docs/runtime-execution-fabric.md**](../docs/runtime-execution-fabric.md): Detailed architectural whitepaper explaining the mathematical and systems foundations of REF.
 - [**examples/ref-app/**](../examples/ref-app/): Complete runnable application with HTTP, CLI, and Mermaid diagram endpoints.
+- [**docs/app-patterns.md**](docs/app-patterns.md): Hierarchical organisations (scoped units, inherited reference data, hierarchy-scoped CRUD) and dates of service (single/multi-DOS rules, overlap detection, per-day expansion, atomic header + line inserts).
+- [**examples/gov-hierarchy/**](examples/gov-hierarchy/): Government services across country → state → district → municipality.
+- [**examples/medical-coding/**](examples/medical-coding/): Single- and multi-DOS medical coding with duplicate-billing checks and per-day claim lines.
