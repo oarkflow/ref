@@ -29,6 +29,12 @@ func (e *nodePanicError) Error() string {
 	return "ref: panic in node \"" + e.node + "\""
 }
 
+var closedDoneChan = make(chan struct{})
+
+func init() {
+	close(closedDoneChan)
+}
+
 // execCancelCtx is a lightweight cancellable context that avoids heap allocation.
 // Uses an atomic flag instead of the full context.WithCancel machinery.
 type execCancelCtx struct {
@@ -51,6 +57,10 @@ func (c *execCancelCtx) reset(parent context.Context) {
 func (c *execCancelCtx) Done() <-chan struct{} {
 	c.doneMu.Lock()
 	if c.doneCtx == nil {
+		if c.Context == nil {
+			c.doneMu.Unlock()
+			return closedDoneChan
+		}
 		c.doneCtx, c.cancel = context.WithCancel(c.Context)
 		if c.canceled.Load() {
 			c.cancel()
@@ -74,7 +84,13 @@ func (c *execCancelCtx) Err() error {
 	if c.canceled.Load() {
 		return context.Canceled
 	}
-	return c.Context.Err()
+	c.doneMu.Lock()
+	parent := c.Context
+	c.doneMu.Unlock()
+	if parent == nil {
+		return context.Canceled
+	}
+	return parent.Err()
 }
 
 // ExecutionState describes how execution completed.
