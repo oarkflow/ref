@@ -777,42 +777,50 @@ func (s *Scheduler) execute(
 			}
 		}
 	}
-	inlineSeeded := false
 	if cheapRoots {
+		// All initial roots are Pure/Decision nodes: fast, synchronous,
+		// dependency-free work with no reason to pay for a goroutine spawn
+		// and a channel handoff. Run every one of them inline, sequentially,
+		// instead of running only the first inline and dispatching the rest
+		// as raw goroutines. This is the dominant path for small (<8 node)
+		// HTTP-style graphs such as "auth decision" + "decode" feeding a
+		// single downstream operation node — profiling showed the async
+		// dispatch of that second root (goroutine create + channel send/
+		// receive) was pure overhead for work that never blocks.
+		//
+		// initialReady aliases es.readyStorage, which runInline reuses as
+		// its append destination, so snapshot the roots into a local copy
+		// before iterating.
+		var rootsBuf [32]graph.NodeID
+		roots := rootsBuf[:copy(rootsBuf[:], initialReady)]
+		initialReady = nil
+		var merged []graph.NodeID
+		for _, id := range roots {
+			nextReady, terminal := es.runInline(id)
+			if terminal {
+				goto finished
+			}
+			merged = append(merged, nextReady...)
+		}
+		switch len(merged) {
+		case 1:
+			initialReady = merged
+		default:
+			for _, nid := range merged {
+				es.launchAsync(nid)
+			}
+		}
+	}
+
+	for len(initialReady) == 1 && es.inFlight.Load() == 0 {
 		curr := initialReady[0]
-		for _, id := range initialReady {
-			if plan.Nodes[id].Kind == graph.PureNode {
-				curr = id
-				break
-			}
-		}
-		for _, id := range initialReady {
-			if id != curr {
-				es.launchAsync(id)
-			}
-		}
 		initialReady = nil
 		nextReady, terminal := es.runInline(curr)
 		if terminal {
 			goto finished
 		}
 		if len(nextReady) == 1 {
-			es.launchAsync(nextReady[0])
-		}
-		inlineSeeded = true
-	}
-
-	if !inlineSeeded {
-		for len(initialReady) == 1 && es.inFlight.Load() == 0 {
-			curr := initialReady[0]
-			initialReady = nil
-			nextReady, terminal := es.runInline(curr)
-			if terminal {
-				goto finished
-			}
-			if len(nextReady) == 1 {
-				initialReady = nextReady
-			}
+			initialReady = nextReady
 		}
 	}
 
