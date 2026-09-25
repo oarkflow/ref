@@ -95,12 +95,8 @@ func (e *Expression) Eval(env Env) (any, error) {
 	if e == nil {
 		return nil, nil
 	}
-	if normalized, changed := normalizeNumbers(env); changed {
-		env = normalized.(Env)
-	}
 	opts := *evalOptions
 	opts.Variables = env
-	opts.Functions = exprFunctions
 	value, err := e.prog.Eval(env, &opts)
 	if err != nil {
 		return nil, fmt.Errorf("evaluate %q: %w", e.raw, err)

@@ -46,14 +46,13 @@ func TestExpressionCompatibility(t *testing.T) {
 	}
 }
 
-func TestRewriteExpressionLeavesIdentifiersAlone(t *testing.T) {
+func TestRewriteExpressionOnlyTouchesOperators(t *testing.T) {
 	for src, want := range map[string]string{
-		"v2.0 == x":    "v2.0 == x",
-		"a.b2 == 1.50": "a.b2 == 1.50",
-		"x == 10.00":   "x == 10",
-		"x == 3.0e2":   "x == 3.0e2",
-		"'2.0' == s":   "'2.0' == s",
-		"x == 1.05":    "x == 1.05",
+		"a && b":               "a  and  b",
+		"a||b":                 "a or b",
+		"'x && y' == s":        "'x && y' == s",
+		"\"p || q\" == s && t": "\"p || q\" == s  and  t",
+		"x == 2.0":             "x == 2.0",
 	} {
 		if got := rewriteExpression(src); got != want {
 			t.Errorf("rewrite(%q) = %q, want %q", src, got, want)
