@@ -130,6 +130,14 @@ func TestPassportPipelineEndToEnd(t *testing.T) {
 		t.Fatalf("validation details: %v", body)
 	}
 
+	// A required declaration must be accepted, not merely answered.
+	unticked := passportApplication()
+	unticked["declaration"] = map[string]any{"agree": false}
+	status, body = h.callKey("POST", base+"/stages/application/actions/submit", key, map[string]any{"data": unticked})
+	if status != 422 || !strings.Contains(fmt.Sprint(body), "declaration.agree") {
+		t.Fatalf("unticked declaration: %d %v", status, body)
+	}
+
 	// Save a draft, then submit.
 	if status, body := h.callKey("PUT", base+"/stages/application", key, map[string]any{"data": passportApplication()}); status != 200 {
 		t.Fatalf("save: %d %v", status, body)

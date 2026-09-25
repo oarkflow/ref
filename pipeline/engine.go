@@ -744,7 +744,7 @@ func (e *Engine) missingRequired(c *Case, st *Stage, ss *StageState, actor Actor
 					if _, editable := inputs[in.Name]; !editable {
 						continue
 					}
-					if e.required(in, env) && isEmpty(entry[in.Name]) {
+					if e.required(in, env) && missingValue(in, entry[in.Name]) {
 						errs = append(errs, FieldError{Path: fmt.Sprintf("%s.%d.%s", form, i, in.Name), Rule: "required", Message: titleOr(in.Label, in.Name) + " is required"})
 					}
 				}
@@ -756,7 +756,7 @@ func (e *Engine) missingRequired(c *Case, st *Stage, ss *StageState, actor Actor
 				continue
 			}
 			v, _ := c.Get(form + "." + in.Name)
-			if e.required(in, env) && isEmpty(v) {
+			if e.required(in, env) && missingValue(in, v) {
 				errs = append(errs, FieldError{Path: form + "." + in.Name, Rule: "required", Message: titleOr(in.Label, in.Name) + " is required"})
 			}
 		}
@@ -1093,7 +1093,7 @@ func (e *Engine) NodeAct(ctx context.Context, in *Case, actor Actor, stage, node
 					continue
 				}
 				v, _ := c.Get(form + "." + in.Name)
-				if e.required(in, env) && isEmpty(v) {
+				if e.required(in, env) && missingValue(in, v) {
 					missing = append(missing, FieldError{Path: form + "." + in.Name, Rule: "required", Message: titleOr(in.Label, in.Name) + " is required"})
 				}
 			}

@@ -155,6 +155,16 @@ func (c *Compiled) coerce(form string, in Input, raw any) (any, string, string) 
 	return s, "", ""
 }
 
+// missingValue reports whether a required input is unanswered. A required
+// boolean means "must be accepted" (a declaration), so false counts as missing.
+func missingValue(in Input, v any) bool {
+	if in.Kind == KindBoolean {
+		b, ok := v.(bool)
+		return !ok || !b
+	}
+	return isEmpty(v)
+}
+
 func isEmpty(v any) bool {
 	switch t := v.(type) {
 	case nil:
