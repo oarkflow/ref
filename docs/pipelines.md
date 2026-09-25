@@ -130,6 +130,181 @@ Every change bumps the case's `revision`, and the store updates with `WHERE revi
 
 The engine holds no locks. Automation and stage hooks run within the request, before the store write. If the write then conflicts, a hook with external side effects may have run for an operation that was not saved, so make such hooks idempotent. Alternatively, have the hook enqueue work rather than do it.
 
+## Work management
+
+These features take DAGFlow's human-work layer and close the gaps it leaves open. Capacity is counted from the store (not a per-process ledger), approvers are enforced, escalation reassigns rather than only notifying, and sealed values carry a time lock.
+
+### Workers, routing and claims
+
+```bcl
+calendar "office" { timezone "Asia/Kathmandu"  hours "sun-thu 10:00-17:00; fri 10:00-15:00"  holidays ["01-11", "2026-10-20"] }
+
+worker "officer-1" {
+  roles ["officer"]  skills ["health"]  org_units ["ktm"]  capacity 25  calendar "office"
+  away "leave" { from "2026-04-01"  until "2026-04-08"  reason "annual leave" }
+}
+
+stage "verification" {
+  roles ["officer", "senior_officer"]
+  assign_roles ["supervisor"]          # may assign / reassign
+  routing {
+    strategy least_loaded              # manual | round_robin | least_loaded | skill_based
+    roles ["officer"]  required_skills ["health"]  skills_from "request.skills"
+    preferred_skills ["pediatrics"]  capacity 20  sticky true  same_org_unit true  respect_hours true
+  }
+}
+```
+
+Routing runs when the stage opens. A candidate is eligible only if all of the following hold:
+- is active and holds a routing role;
+- is not away;
+- is within working hours (if `respect_hours`);
+- has the required skills;
+- covers the case's org unit (if `same_org_unit`);
+- is under capacity.
+
+The winner is the least loaded worker, or the least recently assigned (round robin), or the one with the best preferred-skill score (skill based). With `sticky`, the person who worked the stage before wins if they are still eligible. `stage.routing` on the view records every candidate and why they were or were not chosen. When nobody qualifies, the case is **queued**. With `manual`, it always is.
+
+**Claims.** A stage with `routing`, or with `claimable true`, is worked by one person at a time. Only the assignee, or someone holding an `assign_roles` role, may save, act or operate nodes. Approval and vote nodes are exempt, since they are other people's decisions by design. The first eligible person to act on queued work claims it.
+
+Work operations (`pipeline.work`, `POST …/stages/:stage/work/:op`):
+
+| op | Who | Effect |
+|---|---|---|
+| `claim` | anyone who may act at the stage | Take queued work. |
+| `release` | the holder, or an assigner | Give the work back. Routing re-runs and excludes the person who released it. |
+| `assign` `{to}` | assigners | Give the work to an eligible worker. Capacity may be overruled; eligibility may not. |
+| `delegate` `{to}` | the holder | Hand the work to an eligible colleague. |
+| `suspend` `{reason, until?}` | `suspend_roles` | Put the stage on hold. Nothing can be done and the SLA clock stops. `until` resumes it automatically. |
+| `resume` | `suspend_roles` | Lift the hold. The deadline moves by the working time spent on hold. |
+
+Queues:
+- `pipeline.list` with `scope=assigned` returns the caller's work.
+- `scope=queue&assignee=unassigned|me|<id>` filters a stage queue.
+- Queue rows carry `assignee`, `sla_status` and `on_hold`.
+
+### SLAs, business calendars and escalation
+
+```bcl
+sla {
+  duration "2d"                 # 2 working days; "16h" = 16 working hours
+  warn_before "4h"
+  calendar "office"
+  on_breach "reassign"          # notify | reassign | return (return_to) | <action name>
+  escalate "senior" { after "1d"  assign_roles ["senior_officer"]  notify ["director"] }
+  escalate "director" { after "3d"  assign_roles ["director"] }
+}
+```
+
+**Calendars.** A calendar has weekly windows, holidays and a time zone. Holidays are either fixed dates or `MM-DD` dates that repeat every year. With a calendar, SLA time is counted in working time, and `d` means working days.
+
+**`pipeline.sweep`.** Run it on a schedule. It applies every time-based rule:
+- the warning, with the `sla.warning` event;
+- the breach, with the `sla.breached` event and the breach action;
+- each escalation level after the breach, which re-routes to the level's roles, with the `sla.escalated` event;
+- the end of holds whose `until` has passed;
+- retention.
+
+A case changed concurrently is skipped until the next run.
+
+### Notes
+
+Notes are threaded (`parent_id`) and are either **internal** or **public**:
+- Internal notes are written and read only by staff, meaning holders of any role of the pipeline, or of `notes.internal_roles` when that is set.
+- Public notes are seen by everyone who can see the case. The applicant may write them when `notes { applicant_may_write true }` is set.
+
+The view returns only the notes the viewer may read. The endpoint is `pipeline.note` (`POST …/notes {body, internal, parent_id}`).
+
+### Consensus votes
+
+```bcl
+node "panel" { kind vote  voters 3  consensus "majority" }   # unanimous (default) | majority | "2"
+```
+
+Each voter sends `vote` with `result.decision` set to `approve` or `reject`; a reject needs a comment. Voters must be distinct people, and `distinct_from` applies. The node decides as soon as the outcome can no longer change.
+
+### Rules and computed inputs
+
+```bcl
+input "fee" { kind number  compute "(request.pages == '66' ? 10000 : 5000) * (request.service == 'fast_track' ? 2 : 1)" }
+rule "fast_track_office" { check "request.service != 'fast_track' or request.office == 'dop'"
+                           message "Fast track is only available at the Department of Passports"  path "request.office" }
+```
+
+**Computed inputs** are re-evaluated after every change. They are never editable and never need review.
+
+**Rules** can sit on a form (checked when a stage that edits the form advances) or on a stage. They report `422` errors at their `path`.
+
+### Sealed inputs
+
+```bcl
+input "offer" { kind number  sealed true }
+seal { open_roles ["treasurer", "auditor"]  quorum 2  open_after "tender.closes_at" }
+```
+
+**Encryption.** A sealed value is encrypted as soon as it is saved: AES-256-GCM under the resource's `seal_secret`, bound to the case and path. Case data holds only `[sealed]` until the value is opened.
+
+**Opening** (`pipeline.seal_open`):
+- It needs `quorum` distinct approvers holding an `open_roles` role; the applicant can't be one of them.
+- It cannot happen before `open_after`, which is either an RFC 3339 time or a data path such as a tender deadline.
+- Each value's SHA-256 digest is disclosed at opening, so anyone can check the opened value is the one that was submitted.
+
+### External-party links
+
+A stage's `external_roles` may issue a link with `pipeline.link` `{party, scope: ["ward_recommendation"], ttl}`. The link lets an outside party (a ward office, a referee, an employer) fill exactly the scoped forms or inputs, with no account:
+- The token is HMAC-signed and expires, and it is **single-use**: submitting consumes it.
+- The party sees only the groups showing its scope. It cannot act or operate nodes.
+- Its submission is recorded as `link.submitted`, and staff decide what happens next.
+- Routes: `GET /links/:token` renders the page; `POST /links/:token {data}` submits it.
+
+### Events and hooks
+
+```bcl
+on "sla.*" { hook "passport.notify" }
+on "case.completed" { hook "passport.notify"  stage "issuance"  when "request.service == 'fast_track'" }
+```
+
+Every operation emits events. The names are:
+- **Case:** `case.started`, `case.returned`, `case.rejected`, `case.withdrawn`, `case.completed`, `case.approved`
+- **Stage:** `stage.entered`, `stage.completed`, `stage.skipped`
+- **Work:** `assigned`, `queued`, `claimed`, `released`, `delegated`, `suspended`, `resumed`
+- **SLA:** `sla.warning`, `sla.breached`, `sla.escalated`
+- **Other:** `note.added`, `link.issued`, `link.submitted`, `sealed.opened`, `erased`, `retention.applied`
+
+Hooks run **after the change is saved**, receiving `{case, data, stage, event}`, so a notification never announces something that was rolled back. A failing hook is logged; it never undoes the change.
+
+### Analytics
+
+`pipeline.analytics` computes figures from every case's stage timeline:
+- case counts by status, and cycle time;
+- for each stage:
+  - visits, completions and returns;
+  - dwell time (p50/p90/avg/max, excluding time on hold);
+  - rework rate;
+  - open, unassigned and on-hold counts;
+  - SLA met or breached, attainment, and at-risk count;
+- **bottlenecks**: open work weighted by p90 dwell;
+- daily throughput;
+- per-assignee load.
+
+It is scoped to the caller's jurisdiction, and accepts `?from=&to=`.
+
+### Bulk operations
+
+`pipeline.bulk` `{ids, op: act|node|work|note|hold, stage?, action?, node?, verb?, work_op?, input}` applies one operation to up to `max_items` cases. Each case is loaded, authorised, claim-checked and saved on its own, and returns `applied` or `failed` with a reason. One failure never blocks the rest, and nothing is applied that the caller could not do case by case.
+
+### Data protection
+
+- **`pii true`:** marks personal inputs.
+- **`subject [...]`:** names the paths that identify the data subject.
+- **`pipeline.erase`** `{identifiers, mode: anonymize|purge, dry_run, reason}`: finds the subject's cases and anonymises or deletes them.
+  - Anonymisation replaces personal values and scrubs them from notes, history comments and verdicts.
+  - It drops sealed values, links and access keys.
+  - It keeps certificates: they are legal records, and altering them would break verification.
+  - Receipts identify the subject by a SHA-256, never by the data itself.
+- **`pipeline.hold`** (`place` / `release`): a legal hold blocks erasure and retention. A blocked case is reported, not silently skipped.
+- **`retention { after "3650d" action anonymize|purge }`:** is applied by the sweep to finished cases.
+
 ## Running a pipeline
 
 ```bcl
@@ -141,6 +316,7 @@ resource "cases" {
     org_resource "org"              # lookups + jurisdiction-scoped queues
     allow_anonymous true            # public stages without an account
     signing_secret env.required("PASSPORT_SIGNING_SECRET")
+    seal_secret env("PASSPORT_SEAL_SECRET", "")   # required only with sealed inputs
   }
 }
 ```

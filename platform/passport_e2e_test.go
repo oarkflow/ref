@@ -306,7 +306,9 @@ func TestPassportPipelineEndToEnd(t *testing.T) {
 func TestPassportRenewalRejectAndSignedInApplicant(t *testing.T) {
 	h := newPassportApp(t)
 	citizen := h.token("jwt", "citizen-7", nil, nil)
-	officer := h.token("jwt", "officer-1", []string{"officer"}, map[string]any{"org_units": []any{"bagmati"}})
+	// Routing sends a Lalitpur case to officer-2, the officer covering it.
+	officer := h.token("jwt", "officer-2", []string{"officer"}, map[string]any{"org_units": []any{"lalitpur"}})
+	otherOfficer := h.token("jwt", "officer-1", []string{"officer"}, map[string]any{"org_units": []any{"bagmati"}})
 
 	app := passportApplication()
 	app["request"] = map[string]any{"kind": "renewal", "old_passport": "PA1234567", "pages": "66", "service": "fast_track", "office": "dop"}
@@ -329,6 +331,9 @@ func TestPassportRenewalRejectAndSignedInApplicant(t *testing.T) {
 	// A citizen cannot act on the officer's stage.
 	if status, _ := h.call("POST", base+"/stages/verification/actions/accept", citizen, map[string]any{}); status != 403 {
 		t.Fatalf("citizen accept: %d", status)
+	}
+	if status, _ := h.call("POST", base+"/stages/verification/actions/reject", otherOfficer, map[string]any{"comment": "x"}); status != 403 {
+		t.Fatalf("an officer not holding the case rejected it: %d", status)
 	}
 	status, body = h.call("POST", base+"/stages/verification/actions/reject", officer, map[string]any{"comment": "citizenship number does not exist"})
 	if status != 200 || dig(body, "case", "status") != "rejected" {

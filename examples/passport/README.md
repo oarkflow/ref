@@ -16,6 +16,17 @@ Cases belong to a district of the `org.hierarchy`. This has two effects:
 - The *collection office* options are reference data resolved per district.
 - Officers only ever see cases in their own jurisdiction.
 
+The example also exercises the work-management features (see [`docs/pipelines.md`](../../docs/pipelines.md#work-management)):
+
+- **Routing:** verification is routed to the least-loaded officer covering the case's district; after a correction it returns to the same officer. Officers work only the cases they hold, while supervisors assign and officers delegate.
+- **SLA:** two working days on the office calendar (Nepali working week and holidays), with a warning, re-routing on breach, and escalation to a senior officer.
+- **Holds:** a case can be put on hold, which stops the SLA clock.
+- **Notes:** internal notes for staff, public notes for the applicant too.
+- **External link:** the ward office fills its recommendation through a signed, single-use link.
+- **Computed fee and rule:** the fee is computed, and a cross-field rule restricts fast-track service to the Department of Passports.
+- **Event hooks:** SLA, return, completion and link events record notifications after each change is saved.
+- **Operations:** bulk operations, analytics, a scheduled sweep, legal hold and right-to-erasure.
+
 ## Run
 
 ```sh
@@ -43,5 +54,14 @@ curl -s -XPOST localhost:8096/api/passport/cases -d '{"org_unit":"ktm"}' -H 'Con
 | `POST /api/passport/cases/:id/stages/:stage/nodes/:node/:verb` | Verify, complete, approve, reject, run, issue or waive |
 | `GET /api/passport/cases/:id/history` | Stage states, history and certificates |
 | `GET /api/passport/certificates/:number-or-code` | Public certificate verification |
+| `POST /api/passport/cases/:id/stages/:stage/work/:op` | claim, release, assign `{to}`, delegate `{to}`, suspend `{reason, until}`, resume |
+| `POST /api/passport/cases/:id/notes` | Add a note `{body, internal, parent_id}` |
+| `POST /api/passport/cases/:id/stages/:stage/links` | Issue an external link `{party, scope, ttl}` |
+| `GET/POST /api/passport/links/:token` | The outside party's page and submission |
+| `POST /api/passport/cases/:id/hold/:op` | Place or release a legal hold (supervisor, dpo) |
+| `POST /api/passport/erasure` | Right to erasure `{identifiers, mode, dry_run}` (dpo) |
+| `GET /api/passport/analytics` | Process analytics (supervisor) |
+| `POST /api/passport/bulk` | One operation on many cases |
+| `POST /api/passport/sweep` | Apply SLA/escalation/retention now (also runs every minute) |
 
 The full journey is exercised over HTTP in [`platform/passport_e2e_test.go`](../../platform/passport_e2e_test.go). The model is documented in [`docs/pipelines.md`](../../docs/pipelines.md).

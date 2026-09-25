@@ -1451,6 +1451,9 @@ func (e *Engine) reviewPaths(c *Case, n *Node) []string {
 		inputs, _ := e.C.FormInputs(form)
 		cf := e.C.forms[form]
 		for _, in := range inputs {
+			if in.Compute != "" {
+				continue // derived, not submitted: nothing to verify
+			}
 			if ok, _ := e.cond(in.VisibleIf, env); !ok {
 				continue
 			}

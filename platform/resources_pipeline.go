@@ -8,10 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/oarkflow/ref/hierarchy"
 	"github.com/oarkflow/ref/pipeline"
@@ -50,7 +53,8 @@ func registerPipelineResources(r *Registry) {
 			{Name: "database", Type: "string", Summary: "database.sql resource that stores cases and certificates; omit for in-memory storage"},
 			{Name: "table_prefix", Type: "string", Default: "pipeline_"},
 			{Name: "migrate", Type: "bool", Default: "true", Summary: "Create the tables at startup"},
-			{Name: "signing_secret", Type: "string", Summary: "HMAC key that signs issued certificates (use env.required(...)); without it certificates carry a content hash only"},
+			{Name: "signing_secret", Type: "string", Summary: "HMAC key that signs issued certificates and external links (use env.required(...)); without it certificates carry a content hash only"},
+			{Name: "seal_secret", Type: "string", Summary: "Key that encrypts sealed inputs (AES-256-GCM); required when a pipeline declares sealed inputs"},
 			{Name: "org_resource", Type: "string", Summary: "org.hierarchy resource: resolves `lookup` inputs and scopes work queues to the caller's jurisdiction"},
 			{Name: "allow_anonymous", Type: "bool", Default: "false", Summary: "Let anonymous callers start public pipelines; they get an access key to return to their case"},
 		},
@@ -59,7 +63,7 @@ func registerPipelineResources(r *Registry) {
 
 func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("pipeline.cases", spec.Config,
-		"pipelines", "database", "table_prefix", "migrate", "signing_secret", "org_resource", "allow_anonymous",
+		"pipelines", "database", "table_prefix", "migrate", "signing_secret", "seal_secret", "org_resource", "allow_anonymous",
 		pipelineDefinitionsKey); err != nil {
 		return nil, nil, err
 	}
@@ -90,6 +94,7 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 		p.org = org
 	}
 	key := []byte(configString(spec.Config, "signing_secret", ""))
+	sealKey := []byte(configString(spec.Config, "seal_secret", ""))
 	for _, name := range names {
 		def, ok := byName[name]
 		if !ok {
@@ -116,8 +121,14 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 		engine.Automation = pipelineAutomation{}
 		engine.StageHook = pipelineStageHook
 		engine.SigningKey = key
+		engine.SealKey = sealKey
+		engine.Workload = p.workload
 		if p.org != nil {
 			engine.Lookup = p.lookup
+			engine.OrgCovers = p.orgCovers
+		}
+		if hasSealed(&def) && len(sealKey) == 0 {
+			return nil, nil, fmt.Errorf("pipeline.cases %q: pipeline %q has sealed inputs: set seal_secret", spec.Name, name)
 		}
 		p.engines[name] = engine
 		p.order = append(p.order, name)
@@ -168,6 +179,101 @@ func (p *PipelineCases) lookup(set string, c *pipeline.Case) []pipeline.Option {
 		out[i] = pipeline.Option{Value: it.Code, Label: orDefaultString(it.Label, it.Code)}
 	}
 	return out
+}
+
+func hasSealed(def *pipeline.Definition) bool {
+	check := func(inputs []pipeline.Input) bool {
+		return slices.ContainsFunc(inputs, func(in pipeline.Input) bool { return in.Sealed })
+	}
+	if check(def.Inputs) {
+		return true
+	}
+	for _, f := range def.Forms {
+		if check(f.Inputs) {
+			return true
+		}
+	}
+	for _, st := range def.Stages {
+		for _, f := range st.Forms {
+			if check(f.Inputs) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// workload counts each worker's open assignments across the pipeline's open
+// cases, from the store — so capacity holds across replicas.
+func (p *PipelineCases) workload(ctx context.Context, name string) (map[string]pipeline.Load, error) {
+	cases, err := p.store.List(ctx, pipeline.Query{Pipeline: name, Statuses: []string{pipeline.CaseDraft, pipeline.CaseInProgress, pipeline.CaseReturned}, Limit: 5000})
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]pipeline.Load{}
+	for _, c := range cases {
+		for _, ss := range c.Stages {
+			if ss.Assignee == "" || ss.AssignedAt == nil {
+				continue
+			}
+			l := out[ss.Assignee]
+			l.Open++
+			if ss.AssignedAt.After(l.LastAssigned) {
+				l.LastAssigned = *ss.AssignedAt
+			}
+			out[ss.Assignee] = l
+		}
+	}
+	return out, nil
+}
+
+// orgCovers reports whether any of a worker's units is the case's unit or
+// one of its ancestors.
+func (p *PipelineCases) orgCovers(units []string, unit string) bool {
+	return p.org.Snapshot("").Tree.Covers(units, unit)
+}
+
+// dispatch runs the pipeline's `on` hooks for the events a committed
+// operation emitted. Hooks run after the save; a failing hook is logged and
+// never undoes the change.
+func (p *PipelineCases) dispatch(ctx context.Context, e *pipeline.Engine, c *pipeline.Case) {
+	hooks := e.C.Def.On
+	if len(hooks) == 0 {
+		return
+	}
+	caller, ok := pipelineCaller(ctx)
+	if !ok {
+		return
+	}
+	for _, ev := range c.Events() {
+		for _, hook := range hooks {
+			if !eventMatches(hook.Event, ev.Name) || (hook.Stage != "" && hook.Stage != ev.Stage) {
+				continue
+			}
+			input := hookInput(c, ev.Stage, "")
+			input["event"] = map[string]any{"name": ev.Name, "stage": ev.Stage, "actor": ev.Actor, "at": ev.At.Format(time.RFC3339), "detail": ev.Detail}
+			if hook.When != "" {
+				env := map[string]any{}
+				maps.Copy(env, c.Data)
+				maps.Copy(env, input)
+				ok, err := e.Eval.Eval(hook.When, env)
+				if err != nil || !Truthy(ok) {
+					continue
+				}
+			}
+			if _, err := caller.Platform.CallIntent(ctx, hook.Hook, input, caller); err != nil {
+				slog.Warn("pipeline event hook failed", "pipeline", c.Pipeline, "case", c.ID, "event", ev.Name, "hook", hook.Hook, "error", err)
+			}
+		}
+	}
+}
+
+// eventMatches supports exact names, "*" and prefix patterns like "sla.*".
+func eventMatches(pattern, name string) bool {
+	if pattern == "*" || pattern == name {
+		return true
+	}
+	return strings.HasSuffix(pattern, ".*") && strings.HasPrefix(name, strings.TrimSuffix(pattern, "*"))
 }
 
 // jurisdiction returns the org units a principal's queue covers, or nil for

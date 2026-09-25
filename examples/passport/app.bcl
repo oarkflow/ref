@@ -26,6 +26,20 @@ resource "db" {
   config {
     driver "sqlite"
     dsn env("PASSPORT_DSN", "file:.data/passport.db?_pragma=busy_timeout(5000)")
+    migrations [
+      "CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, case_number TEXT NOT NULL, stage TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+    ]
+  }
+}
+
+resource "jobs" {
+  kind "queue.sql"
+  description "Durable queue that fires schedules on exactly one replica"
+  config {
+    database "db"
+    table "passport_jobs"
+    workers 1
+    poll_interval 1s
   }
 }
 
@@ -83,12 +97,67 @@ pipeline "passport" {
   description "Apply for a new passport or renew an existing one"
   number_format "PP-{year}-{seq:6}"
   reveal_roles ["supervisor"]
+  # The data subject, for right-to-erasure requests; pii inputs are removed
+  # when a case is anonymised.
+  subject ["applicant.citizenship_no", "contact.email"]
+
+  # Office hours: SLAs and escalations count working time only.
+  calendar "dop_office" {
+    timezone "Asia/Kathmandu"
+    hours "sun-thu 10:00-17:00; fri 10:00-15:00"
+    holidays ["01-11", "05-29", "2026-10-20", "2026-10-21"]
+  }
+
+  # Who work can be routed to (a host directory can add more).
+  worker "officer-1" {
+    roles ["officer"]
+    org_units ["ktm"]
+    capacity 25
+  }
+  worker "officer-2" {
+    roles ["officer"]
+    org_units ["ktm", "lalitpur"]
+    capacity 25
+  }
+  worker "officer-9" {
+    roles ["officer"]
+    org_units ["morang"]
+  }
+  worker "senior-1" {
+    roles ["senior_officer"]
+    org_units ["bagmati"]
+  }
+
+  notes {
+    applicant_may_write true
+  }
+
+  # Finished cases are anonymised after ten years.
+  retention {
+    after "3650d"
+    action anonymize
+  }
+
+  # Notifications: every hook runs after the change is saved.
+  on "sla.*" {
+    hook "passport.notify"
+  }
+  on "case.returned" {
+    hook "passport.notify"
+  }
+  on "case.completed" {
+    hook "passport.notify"
+  }
+  on "link.submitted" {
+    hook "passport.notify"
+  }
 
   # ---------------------------------------------------------------
   # Shared field catalog: forms list these by name.
   # ---------------------------------------------------------------
   input "full_name" {
     label "Full name (as on citizenship)"
+    pii true
     kind text
     required true
     min_length 3
@@ -96,6 +165,7 @@ pipeline "passport" {
   }
   input "dob" {
     label "Date of birth"
+    pii true
     kind date
     required true
     max "2026-01-01"
@@ -108,6 +178,7 @@ pipeline "passport" {
   }
   input "citizenship_no" {
     label "Citizenship certificate number"
+    pii true
     kind text
     required true
     pattern "^[0-9-]{6,20}$"
@@ -120,6 +191,7 @@ pipeline "passport" {
   }
   input "phone" {
     label "Mobile number"
+    pii true
     kind phone
     required true
   }
@@ -197,6 +269,31 @@ pipeline "passport" {
       kind select
       required true
       lookup "passport_office"
+    }
+    input "fee" {
+      label "Fee (NPR)"
+      kind number
+      compute "(request.pages == '66' ? 10000 : 5000) * (request.service == 'fast_track' ? 2 : 1)"
+    }
+    rule "fast_track_office" {
+      check "request.service != 'fast_track' or request.office == 'dop'"
+      message "Fast track is only available at the Department of Passports"
+      path "request.office"
+    }
+  }
+
+  # Filled by the ward office through a signed external link.
+  form "ward_recommendation" {
+    title "Ward recommendation"
+    input "recommended" {
+      label "The ward recommends this applicant"
+      kind boolean
+      required true
+    }
+    input "ward_officer" {
+      label "Recommending officer"
+      kind text
+      required true
     }
   }
 
@@ -276,9 +373,32 @@ pipeline "passport" {
   stage "verification" {
     title "Document verification"
     kind review
-    roles ["officer"]
+    roles ["officer", "senior_officer"]
     view_roles ["supervisor"]
-    due "72h"
+    assign_roles ["supervisor"]
+    suspend_roles ["officer", "senior_officer"]
+    external_roles ["officer", "senior_officer"]
+    # Work goes to the least-loaded officer covering the case's district;
+    # a correction comes back to the same officer.
+    routing {
+      strategy least_loaded
+      roles ["officer"]
+      same_org_unit true
+      sticky true
+    }
+    # Two working days; a warning half a day before; on breach the case is
+    # re-routed, and a day later it escalates to a senior officer.
+    sla {
+      duration "2d"
+      warn_before "4h"
+      calendar "dop_office"
+      on_breach "reassign"
+      escalate "senior" {
+        after "1d"
+        assign_roles ["senior_officer"]
+        notify ["dop-director"]
+      }
+    }
     form "officer_check" {
       title "Officer notes"
       input "documents_seen" {
@@ -303,6 +423,11 @@ pipeline "passport" {
       group "notes" {
         title "Officer notes"
         forms ["officer_check"]
+      }
+      group "ward" {
+        title "Ward recommendation"
+        mode readonly
+        forms ["ward_recommendation"]
       }
     }
     node "review_identity" {
@@ -396,7 +521,7 @@ pipeline "passport" {
     title "Approval"
     kind approval
     roles ["supervisor"]
-    on_enter "passport.notify"
+    on_enter "passport.announce"
     page {
       title "Approve the passport"
       layout stacked
@@ -477,13 +602,42 @@ intent "passport.watchlist" {
 }
 
 # Stage hook: a case reached the approval queue.
-intent "passport.notify" {
+intent "passport.announce" {
   response "sent"
   node "sent" {
     uses "constant"
     provides [sent]
     config {
       value true
+    }
+  }
+}
+
+# Event hook (see the pipeline's `on` blocks): record the notification. A
+# real deployment would send email/SMS here (notify.send, service.smtp).
+intent "passport.notify" {
+  response "recorded"
+  node "recorded" {
+    uses "database.exec"
+    resource "db"
+    kind effect
+    requires [input]
+    provides [recorded]
+    config {
+      statement "INSERT INTO notifications (event, case_number, stage) VALUES (?, ?, ?)"
+      args ["input.event.name", "input.case.number", "input.event.stage"]
+    }
+  }
+}
+
+intent "passport.notifications" {
+  response "rows"
+  node "rows" {
+    uses "database.query"
+    resource "db"
+    provides [rows]
+    config {
+      statement "SELECT event, case_number, stage FROM notifications ORDER BY id"
     }
   }
 }
@@ -581,6 +735,120 @@ intent "passport.verify" {
   }
 }
 
+intent "passport.work" {
+  response "view"
+  node "view" {
+    uses "pipeline.work"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "passport.note" {
+  response "view"
+  node "view" {
+    uses "pipeline.note"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "passport.link" {
+  response "view"
+  node "view" {
+    uses "pipeline.link"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "passport.link_view" {
+  response "view"
+  node "view" {
+    uses "pipeline.link_view"
+    resource "cases"
+    provides [view]
+  }
+}
+
+intent "passport.link_submit" {
+  response "result"
+  node "result" {
+    uses "pipeline.link_submit"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [result]
+  }
+}
+
+intent "passport.hold" {
+  response "view"
+  node "view" {
+    uses "pipeline.hold"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+    config {
+      roles ["supervisor", "dpo"]
+    }
+  }
+}
+
+intent "passport.erase" {
+  response "result"
+  node "result" {
+    uses "pipeline.erase"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [result]
+    config {
+      roles ["dpo"]
+    }
+  }
+}
+
+intent "passport.sweep" {
+  response "result"
+  node "result" {
+    uses "pipeline.sweep"
+    resource "cases"
+    kind effect
+    provides [result]
+  }
+}
+
+intent "passport.analytics" {
+  response "report"
+  node "report" {
+    uses "pipeline.analytics"
+    resource "cases"
+    provides [report]
+    config {
+      roles ["supervisor", "admin"]
+    }
+  }
+}
+
+intent "passport.bulk" {
+  response "result"
+  node "result" {
+    uses "pipeline.bulk"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [result]
+  }
+}
+
 ####################################################################
 # Routes: the public page and certificate check are anonymous-friendly;
 # staff routes need a token.
@@ -653,6 +921,86 @@ route "verify" {
   path "/api/passport/certificates/:key"
   intent "passport.verify"
   allow_anonymous true
+}
+
+route "work" {
+  method POST
+  path "/api/passport/cases/:id/stages/:stage/work/:op"
+  intent "passport.work"
+  auth "jwt"
+  allow_anonymous true
+}
+route "note" {
+  method POST
+  path "/api/passport/cases/:id/notes"
+  intent "passport.note"
+  auth "jwt"
+  allow_anonymous true
+}
+route "link" {
+  method POST
+  path "/api/passport/cases/:id/stages/:stage/links"
+  intent "passport.link"
+  auth "jwt"
+}
+route "link_view" {
+  method GET
+  path "/api/passport/links/:token"
+  intent "passport.link_view"
+  allow_anonymous true
+}
+route "link_submit" {
+  method POST
+  path "/api/passport/links/:token"
+  intent "passport.link_submit"
+  allow_anonymous true
+}
+route "hold" {
+  method POST
+  path "/api/passport/cases/:id/hold/:op"
+  intent "passport.hold"
+  auth "jwt"
+}
+route "erase" {
+  method POST
+  path "/api/passport/erasure"
+  intent "passport.erase"
+  auth "jwt"
+}
+route "sweep" {
+  method POST
+  path "/api/passport/sweep"
+  intent "passport.sweep"
+  auth "jwt"
+}
+route "analytics" {
+  method GET
+  path "/api/passport/analytics"
+  intent "passport.analytics"
+  auth "jwt"
+}
+route "bulk" {
+  method POST
+  path "/api/passport/bulk"
+  intent "passport.bulk"
+  auth "jwt"
+}
+route "notifications" {
+  method GET
+  path "/api/passport/notifications"
+  intent "passport.notifications"
+  auth "jwt"
+}
+
+# The SLA clock: warnings, breaches, escalations, hold expiry, retention.
+# The sweep is idempotent, so any signed-in caller may also trigger it.
+schedule "passport_sweep" {
+  every 1m
+  queue "jobs"
+  intent "passport.sweep"
+  payload {
+    reason "schedule"
+  }
 }
 
 static "ui" {

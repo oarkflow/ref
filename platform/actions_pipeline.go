@@ -98,12 +98,79 @@ func registerPipelineActions(r *Registry) {
 		Provides: "The verification result",
 		Config:   with(ConfigField{Name: "key_fact", Type: "fact", Summary: "Fact path of the number or code (default: :key, ?key= or input.key)"}),
 	})
+	roles := ConfigField{Name: "roles", Type: "[]string", Summary: "Only principals holding one of these roles may call it"}
+	mustAction(r, "pipeline.work", pipelineAction("work"), ActionInfo{
+		Family: "workflow", Kind: "effect",
+		Summary:  "Work operations on a stage: claim, release, assign, delegate, suspend (put on hold) or resume",
+		Provides: "The updated view",
+		Config:   with(caseParam, stageParam, ConfigField{Name: "op_fact", Type: "fact", Summary: "Fact path of the op (default: :op or input.op)"}),
+	})
+	mustAction(r, "pipeline.note", pipelineAction("note"), ActionInfo{
+		Family: "workflow", Kind: "effect",
+		Summary:  "Add a note to a case (internal notes are visible to staff only)",
+		Provides: "The updated view",
+		Config:   with(caseParam),
+	})
+	mustAction(r, "pipeline.link", pipelineAction("link"), ActionInfo{
+		Family: "workflow", Kind: "effect",
+		Summary:  "Issue a signed, single-use link for an outside party to fill part of the current stage ({party, scope, ttl})",
+		Provides: "The updated view with link_token",
+		Config:   with(caseParam, stageParam),
+	})
+	mustAction(r, "pipeline.link_view", pipelineAction("link_view"), ActionInfo{
+		Family: "workflow", Kind: "read",
+		Summary:  "Render the page an external link opens (:token)",
+		Provides: "The view",
+		Config:   common,
+	})
+	mustAction(r, "pipeline.link_submit", pipelineAction("link_submit"), ActionInfo{
+		Family: "workflow", Kind: "effect",
+		Summary:  "Submit an outside party's inputs through a link (:token, input.data); the link is consumed",
+		Provides: "{submitted, case}",
+		Config:   with(ConfigField{Name: "data_fact", Type: "fact", Default: "input.data"}),
+	})
+	mustAction(r, "pipeline.seal_open", pipelineAction("seal_open"), ActionInfo{
+		Family: "workflow", Kind: "effect",
+		Summary:  "Approve opening a case's sealed values; they open once the quorum of distinct approvers is reached after the opening time",
+		Provides: "The updated view",
+		Config:   with(caseParam),
+	})
+	mustAction(r, "pipeline.hold", pipelineAction("hold"), ActionInfo{
+		Family: "workflow", Kind: "effect",
+		Summary:  "Place (op place, reason) or release (op release) a legal hold that blocks erasure and retention",
+		Provides: "The updated view",
+		Config:   with(caseParam, roles),
+	})
+	mustAction(r, "pipeline.erase", pipelineAction("erase"), ActionInfo{
+		Family: "workflow", Kind: "effect",
+		Summary:  "Right to erasure: find a data subject's cases by identifiers and anonymise (or purge) them, returning receipts; dry_run lists only",
+		Provides: "{subject_ref, matched, receipts}",
+		Config:   with(roles),
+	})
+	mustAction(r, "pipeline.sweep", pipelineAction("sweep"), ActionInfo{
+		Family: "workflow", Kind: "effect",
+		Summary:  "Apply time-based rules to every case: SLA warnings, breaches, escalation, hold expiry and retention (run it on a schedule)",
+		Provides: "{scanned, changed, purged, conflicts}",
+		Config:   with(roles),
+	})
+	mustAction(r, "pipeline.analytics", pipelineAction("analytics"), ActionInfo{
+		Family: "workflow", Kind: "read",
+		Summary:  "Process analytics: cycle and dwell times, rework, SLA attainment, bottlenecks, throughput and per-assignee load",
+		Provides: "The analytics report",
+		Config:   with(roles),
+	})
+	mustAction(r, "pipeline.bulk", pipelineAction("bulk"), ActionInfo{
+		Family: "workflow", Kind: "effect",
+		Summary:  "Apply one operation (act, node, work, note, hold) to many cases ({ids, op, stage, ...}); each case is authorised and saved on its own",
+		Provides: "{applied, failed, results}",
+		Config:   with(ConfigField{Name: "max_items", Type: "int", Default: "200"}),
+	})
 }
 
 var pipelineConfigKeys = []string{
 	"pipeline", "id", "id_fact", "stage", "stage_fact", "action", "action_fact", "node", "node_fact",
 	"verb", "verb_fact", "org_unit_fact", "data_fact", "scope", "scope_fact", "limit", "key", "key_fact",
-	"access_key_fact",
+	"access_key_fact", "op", "op_fact", "roles", "max_items", "token", "token_fact",
 }
 
 func pipelineAction(op string) ActionFactory {
@@ -124,16 +191,22 @@ func pipelineAction(op string) ActionFactory {
 		if err != nil {
 			return nil, fmt.Errorf("node %q: %w", spec.Name, err)
 		}
-		h := &pipelineHandler{res: res, spec: spec, op: op, limit: limit}
+		maxItems, err := configInt(spec.Config, "max_items", 200)
+		if err != nil {
+			return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+		}
+		h := &pipelineHandler{res: res, spec: spec, op: op, limit: limit, maxItems: maxItems, roles: configStrings(spec.Config, "roles")}
 		return ActionFunc(h.run), nil
 	})
 }
 
 type pipelineHandler struct {
-	res   *PipelineCases
-	spec  NodeSpec
-	op    string
-	limit int
+	res      *PipelineCases
+	spec     NodeSpec
+	op       string
+	limit    int
+	maxItems int
+	roles    []string
 }
 
 // param resolves a named parameter (see the file comment for the order).
@@ -241,7 +314,20 @@ func (h *pipelineHandler) load(ctx *ActionContext) (*pipeline.Case, *pipeline.En
 func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 	// Hooks and automations invoke intents as part of this request.
 	hookCtx := context.WithValue(ctx.Context, pipelineCallKey{}, ctx)
+	if len(h.roles) > 0 && !slices.ContainsFunc(h.roles, ctx.Principal.HasRole) {
+		return ActionResult{}, permissionDenied("you may not do that")
+	}
 	switch h.op {
+	case "link_view", "link_submit":
+		return h.link(ctx, hookCtx)
+	case "sweep":
+		return h.sweep(ctx, hookCtx)
+	case "analytics":
+		return h.analytics(ctx)
+	case "erase":
+		return h.erase(ctx, hookCtx)
+	case "bulk":
+		return h.bulk(ctx, hookCtx)
 	case "describe":
 		e, err := h.engine("")
 		if err != nil {
@@ -282,52 +368,163 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 	if stage == "" {
 		stage = c.Stage
 	}
-	var next *pipeline.Case
-	switch h.op {
-	case "save":
-		data, _ := h.body(ctx, "data_fact", "input.data").(map[string]any)
-		if data == nil {
-			return ActionResult{}, invalidInput("input.data must be an object of forms")
-		}
-		next, err = e.Save(hookCtx, c, actor, stage, data)
-	case "act":
-		action := h.param(ctx, "action")
-		if action == "" {
-			return ActionResult{}, invalidInput("an action is required")
-		}
-		var in pipeline.ActInput
-		if err := decodeInto(h.body(ctx, "", "input"), &in); err != nil {
-			return ActionResult{}, invalidInput("the action body is invalid: %v", err)
-		}
-		next, err = e.Act(hookCtx, c, actor, stage, action, in)
-	case "node":
-		node, verb := h.param(ctx, "node"), h.param(ctx, "verb")
-		if node == "" || verb == "" {
-			return ActionResult{}, invalidInput("a node and a verb are required")
-		}
-		var in pipeline.NodeInput
-		if err := decodeInto(h.body(ctx, "", "input"), &in); err != nil {
-			return ActionResult{}, invalidInput("the node body is invalid: %v", err)
-		}
-		next, err = e.NodeAct(hookCtx, c, actor, stage, node, verb, in)
-	default:
-		return ActionResult{}, fmt.Errorf("pipeline: unknown operation %q", h.op)
-	}
+	next, extra, err := h.apply(ctx, hookCtx, c, e, actor, stage, h.op, h.body(ctx, "", "input"))
 	if err != nil {
-		return ActionResult{}, pipelineFailure(err)
+		return ActionResult{}, err
 	}
-	if err := h.res.store.Update(ctx.Context, next); err != nil {
-		return ActionResult{}, pipelineFailure(err)
+	if err := h.commit(ctx, hookCtx, e, next); err != nil {
+		return ActionResult{}, err
 	}
 	v, err := e.View(next, actor, "")
 	if err != nil {
 		// The operation succeeded but the case moved beyond what the caller
 		// may see (an officer who just forwarded it): report the header only.
-		return h.out(map[string]any{"case": map[string]any{
+		return h.out(mergeExtra(map[string]any{"case": map[string]any{
 			"id": next.ID, "number": next.Number, "status": next.Status, "stage": next.Stage, "revision": next.Revision,
-		}})
+		}}, extra))
+	}
+	if len(extra) > 0 {
+		m, err := toMap(v)
+		if err != nil {
+			return ActionResult{}, err
+		}
+		return h.out(mergeExtra(m, extra))
 	}
 	return h.out(v)
+}
+
+func mergeExtra(m, extra map[string]any) map[string]any {
+	for k, v := range extra {
+		m[k] = v
+	}
+	return m
+}
+
+// apply runs one mutating operation on a loaded case. body is the request
+// body (the node's input fact). extra carries values to return beside the
+// view (an issued link token).
+func (h *pipelineHandler) apply(ctx *ActionContext, hookCtx context.Context, c *pipeline.Case, e *pipeline.Engine, actor pipeline.Actor, stage, op string, rawBody any) (*pipeline.Case, map[string]any, error) {
+	body, _ := rawBody.(map[string]any)
+	str := func(key string) string {
+		if v, ok := body[key]; ok && v != nil {
+			return strings.TrimSpace(Stringify(v))
+		}
+		return h.param(ctx, key)
+	}
+	var (
+		next  *pipeline.Case
+		extra map[string]any
+		err   error
+	)
+	switch op {
+	case "save":
+		data, _ := h.body(ctx, "data_fact", "input.data").(map[string]any)
+		if data == nil {
+			data, _ = body["data"].(map[string]any)
+		}
+		if data == nil {
+			return nil, nil, invalidInput("input.data must be an object of forms")
+		}
+		next, err = e.Save(hookCtx, c, actor, stage, data)
+	case "act":
+		action := str("action")
+		if action == "" {
+			return nil, nil, invalidInput("an action is required")
+		}
+		var in pipeline.ActInput
+		if err := decodeInto(body, &in); err != nil {
+			return nil, nil, invalidInput("the action body is invalid: %v", err)
+		}
+		next, err = e.Act(hookCtx, c, actor, stage, action, in)
+	case "node":
+		node, verb := str("node"), str("verb")
+		if node == "" || verb == "" {
+			return nil, nil, invalidInput("a node and a verb are required")
+		}
+		var in pipeline.NodeInput
+		if err := decodeInto(body, &in); err != nil {
+			return nil, nil, invalidInput("the node body is invalid: %v", err)
+		}
+		next, err = e.NodeAct(hookCtx, c, actor, stage, node, verb, in)
+	case "work":
+		comment := str("comment")
+		switch verb := str("op"); verb {
+		case "claim":
+			next, err = e.Claim(hookCtx, c, actor, stage)
+		case "release":
+			next, err = e.Release(hookCtx, c, actor, stage, comment)
+		case "assign":
+			next, err = e.Assign(hookCtx, c, actor, stage, str("to"), comment)
+		case "delegate":
+			next, err = e.Delegate(hookCtx, c, actor, stage, str("to"), comment)
+		case "suspend":
+			var until *time.Time
+			if u := str("until"); u != "" {
+				t, perr := time.Parse(time.RFC3339, u)
+				if perr != nil {
+					return nil, nil, invalidInput("until must be an RFC 3339 time")
+				}
+				until = &t
+			}
+			reason := str("reason")
+			if reason == "" {
+				reason = comment
+			}
+			next, err = e.Suspend(hookCtx, c, actor, stage, reason, until)
+		case "resume":
+			next, err = e.Resume(hookCtx, c, actor, stage, comment)
+		default:
+			return nil, nil, invalidInput("work op must be claim, release, assign, delegate, suspend or resume")
+		}
+	case "note":
+		internal, _ := body["internal"].(bool)
+		next, err = e.AddNote(hookCtx, c, actor, str("body"), internal, str("parent_id"))
+	case "link":
+		var scope []string
+		if list, ok := body["scope"].([]any); ok {
+			for _, s := range list {
+				scope = append(scope, Stringify(s))
+			}
+		}
+		ttl := 7 * 24 * time.Hour
+		if t := str("ttl"); t != "" {
+			d, perr := time.ParseDuration(t)
+			if perr != nil {
+				return nil, nil, invalidInput("ttl must be a duration like 72h")
+			}
+			ttl = d
+		}
+		var token string
+		next, token, err = e.IssueLink(hookCtx, c, actor, stage, str("party"), scope, ttl)
+		if err == nil {
+			extra = map[string]any{"link_token": token}
+		}
+	case "seal_open":
+		next, err = e.ApproveOpening(hookCtx, c, actor, str("comment"))
+	case "hold":
+		if str("op") == "release" {
+			next, err = e.ReleaseHold(hookCtx, c, actor, str("comment"))
+		} else {
+			next, err = e.PlaceHold(hookCtx, c, actor, str("reason"))
+		}
+	default:
+		return nil, nil, fmt.Errorf("pipeline: unknown operation %q", op)
+	}
+	if err != nil {
+		return nil, nil, pipelineFailure(err)
+	}
+	return next, extra, nil
+}
+
+// commit saves a changed case and then runs the pipeline's event hooks for
+// the events the operation emitted. Hooks run after the save, so they only
+// ever see committed changes; a failing hook is recorded, never rolled back.
+func (h *pipelineHandler) commit(ctx *ActionContext, hookCtx context.Context, e *pipeline.Engine, next *pipeline.Case) error {
+	if err := h.res.store.Update(ctx.Context, next); err != nil {
+		return pipelineFailure(err)
+	}
+	h.res.dispatch(hookCtx, e, next)
+	return nil
 }
 
 func (h *pipelineHandler) start(ctx *ActionContext, hookCtx context.Context) (ActionResult, error) {
@@ -371,6 +568,7 @@ func (h *pipelineHandler) start(ctx *ActionContext, hookCtx context.Context) (Ac
 	if err := h.res.store.Create(ctx.Context, c); err != nil {
 		return ActionResult{}, pipelineFailure(err)
 	}
+	h.res.dispatch(hookCtx, e, c)
 	v, err := e.View(c, actor, "")
 	if err != nil {
 		return ActionResult{}, pipelineFailure(err)
@@ -411,12 +609,19 @@ func (h *pipelineHandler) list(ctx *ActionContext) (ActionResult, error) {
 			return ActionResult{}, permissionDenied("sign in to list your cases")
 		}
 		q.CreatedBy = actor.ID
+	case "assigned":
+		// My work: cases whose current stage is assigned to me.
+		if actor.ID == "" {
+			return ActionResult{}, permissionDenied("sign in to list your work")
+		}
+		q.Assignees = []string{actor.ID}
+		q.Statuses = []string{pipeline.CaseDraft, pipeline.CaseInProgress, pipeline.CaseReturned}
 	case "queue", "all":
 		// A work queue holds the stages the caller acts on; "all" adds the
 		// stages they may only view.
 		for _, st := range e.C.Def.Stages {
 			stage := st
-			can := actor.HasAnyRole(stage.Roles)
+			can := actor.HasAnyRole(stage.Roles) || actor.HasAnyRole(stage.AssignRoles)
 			for _, n := range stage.Nodes {
 				can = can || actor.HasAnyRole(n.Roles)
 			}
@@ -441,8 +646,20 @@ func (h *pipelineHandler) list(ctx *ActionContext) (ActionResult, error) {
 			return h.out([]any{})
 		}
 		q.OrgUnits = units
+		if len(q.Statuses) == 0 && scope == "queue" {
+			q.Statuses = []string{pipeline.CaseDraft, pipeline.CaseInProgress, pipeline.CaseReturned}
+		}
+		switch h.param(ctx, "assignee") {
+		case "":
+		case "unassigned":
+			q.Assignees = []string{""}
+		case "me":
+			q.Assignees = []string{actor.ID}
+		default:
+			q.Assignees = []string{h.param(ctx, "assignee")}
+		}
 	default:
-		return ActionResult{}, invalidInput("scope must be mine, queue or all")
+		return ActionResult{}, invalidInput("scope must be mine, assigned, queue or all")
 	}
 	cases, err := h.res.store.List(ctx.Context, q)
 	if err != nil {
@@ -465,6 +682,15 @@ func (h *pipelineHandler) list(ctx *ActionContext) (ActionResult, error) {
 				row["overdue"] = !c.Terminal() && time.Now().After(*ss.DueAt)
 			}
 			row["open_nodes"] = e.OpenNodes(c, c.Stage)
+			if ss.Assignee != "" {
+				row["assignee"] = ss.Assignee
+			}
+			if ss.SLA != nil {
+				row["sla_status"] = ss.SLA.Status
+			}
+			if ss.Suspended != nil {
+				row["on_hold"] = ss.Suspended.Reason
+			}
 		}
 		out = append(out, row)
 	}
