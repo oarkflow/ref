@@ -24,8 +24,10 @@ import (
 	"github.com/oarkflow/ref/execution"
 	"github.com/oarkflow/ref/fact"
 	"github.com/oarkflow/ref/graph"
+	"github.com/oarkflow/ref/health"
 	"github.com/oarkflow/ref/intent"
 	"github.com/oarkflow/ref/invocation"
+	"github.com/oarkflow/ref/observer"
 	"github.com/oarkflow/ref/process"
 	"github.com/oarkflow/ref/runtime"
 )
@@ -68,10 +70,11 @@ type LoadOptions struct {
 	// ReplicaID identifies this process in process leases. Defaults to a random id.
 	ReplicaID string
 	// Observers are attached to the REF engine.
-	Observers []observerFunc
+	Observers []observer.Observer
+	// HealthRegistry, when set, is attached to the REF engine and retrievable
+	// through Platform.Engine.Health().
+	HealthRegistry *health.Registry
 }
-
-type observerFunc any
 
 // DefaultLoadOptions returns production-oriented defaults for trusted application
 // configuration. Neither network access nor command execution is enabled by this
@@ -217,8 +220,18 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 		return nil, fmt.Errorf("ref/platform: compile BCL: %w", err)
 	}
 
+	engineOpts := make([]runtime.Option, 0, len(opts.Observers)+1)
+	for _, obs := range opts.Observers {
+		if obs != nil {
+			engineOpts = append(engineOpts, runtime.WithObserver(obs))
+		}
+	}
+	if opts.HealthRegistry != nil {
+		engineOpts = append(engineOpts, runtime.WithHealthRegistry(opts.HealthRegistry))
+	}
+
 	p := &Platform{
-		Engine:            runtime.NewEngine(),
+		Engine:            runtime.NewEngine(engineOpts...),
 		registry:          opts.Registry,
 		resources:         make(map[string]Resource, len(doc.Resources)),
 		schemas:           map[string]*CompiledSchema{},
