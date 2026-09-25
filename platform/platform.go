@@ -266,6 +266,7 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 	if err := validateRoles(doc.Roles); err != nil {
 		return nil, err
 	}
+	doc = applyFamilyDefaults(doc, opts.Registry)
 	if err := validateDocument(doc, opts.Registry); err != nil {
 		return nil, err
 	}
@@ -970,6 +971,34 @@ func validateRoles(roles []RoleSpec) error {
 		}
 	}
 	return nil
+}
+
+// applyFamilyDefaults lets a node name only its semantic family — `family
+// webhook` — and run that family's default action, so every catalogued node
+// type is directly usable rather than a label an author must pair with the
+// right `uses` by hand. An explicit uses always wins. The intent and node
+// slices are copied so the caller's document is never mutated.
+func applyFamilyDefaults(doc Document, registry *Registry) Document {
+	if registry == nil {
+		return doc
+	}
+	intents := make([]IntentSpec, len(doc.Intents))
+	for i, item := range doc.Intents {
+		nodes := make([]NodeSpec, len(item.Nodes))
+		copy(nodes, item.Nodes)
+		for j := range nodes {
+			if nodes[j].Uses != "" || nodes[j].Family == "" {
+				continue
+			}
+			if info, ok := registry.nodeType(nodes[j].Family); ok && info.DefaultAction != "" && !info.Durable {
+				nodes[j].Uses = info.DefaultAction
+			}
+		}
+		item.Nodes = nodes
+		intents[i] = item
+	}
+	doc.Intents = intents
+	return doc
 }
 
 // validateDocument checks everything that can be checked before anything is opened,
