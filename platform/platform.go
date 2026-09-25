@@ -604,6 +604,7 @@ func (p *Platform) compileIntent(registry *Registry, doc Document, spec IntentSp
 		// plan rather than an orphan the compiler would prune.
 		spec.Nodes = withGateDependency(spec.Nodes, spec.Response, "__authz")
 	}
+	spec.Nodes = keepSideEffectsAlive(spec.Nodes, spec.Response, registry)
 
 	for _, nodeSpec := range spec.Nodes {
 		if err := p.compileNode(registry, build, spec, nodeSpec, prefix, keys, key); err != nil {
@@ -693,11 +694,78 @@ func withGateDependency(nodes []NodeSpec, response, gate string) []NodeSpec {
 	out := slices.Clone(nodes)
 	for i := range out {
 		if slices.Contains(out[i].Provides, response) {
-			out[i].Requires = append(slices.Clone(out[i].Requires), gate)
+			out[i].hiddenRequires = append(slices.Clone(out[i].hiddenRequires), gate)
 			return out
 		}
 	}
 	return out
+}
+
+// keepSideEffectsAlive stops the demand-driven planner from dropping work the
+// author wrote for its side effect. The engine only schedules producers of
+// facts the response needs, so an audit insert, a notification or a guard
+// whose output nothing consumes was silently never run. Every node whose kind
+// (declared, or its action's documented kind) is effect, async_effect or
+// decision now publishes a synthetic fact the response waits for.
+//
+// A node downstream of the response cannot be a prerequisite of it; such a
+// node is left as is.
+func keepSideEffectsAlive(nodes []NodeSpec, response string, registry *Registry) []NodeSpec {
+	producer := -1
+	byFact := map[string]int{}
+	for i, n := range nodes {
+		for _, f := range n.Provides {
+			byFact[f] = i
+		}
+		if slices.Contains(n.Provides, response) {
+			producer = i
+		}
+	}
+	if producer < 0 {
+		return nodes
+	}
+	// upstream reports whether node from transitively requires a fact of node to.
+	var ancestors func(i int, seen map[int]bool)
+	ancestors = func(i int, seen map[int]bool) {
+		for _, f := range append(slices.Clone(nodes[i].Requires), nodes[i].hiddenRequires...) {
+			if j, ok := byFact[f]; ok && !seen[j] {
+				seen[j] = true
+				ancestors(j, seen)
+			}
+		}
+	}
+	needed := map[int]bool{producer: true}
+	ancestors(producer, needed)
+
+	out := slices.Clone(nodes)
+	for i, n := range out {
+		if needed[i] || !sideEffecting(n, registry) {
+			continue
+		}
+		down := map[int]bool{}
+		ancestors(i, down)
+		if down[producer] {
+			continue
+		}
+		fact := "__alive_" + n.Name
+		out[i].keepAlive = fact
+		out[producer].hiddenRequires = append(slices.Clone(out[producer].hiddenRequires), fact)
+	}
+	return out
+}
+
+func sideEffecting(n NodeSpec, registry *Registry) bool {
+	kind := strings.ToLower(strings.TrimSpace(n.Kind))
+	if kind == "" && registry != nil {
+		registry.mu.RLock()
+		kind = registry.actionDoc[n.Uses].Kind
+		registry.mu.RUnlock()
+	}
+	switch kind {
+	case "effect", "async_effect", "decision":
+		return true
+	}
+	return false
 }
 
 // compileNode compiles one node into a REF capability.
@@ -760,13 +828,21 @@ func (p *Platform) compileNode(registry *Registry, build BuildContext, spec Inte
 		return fmt.Errorf("ref/platform: %s has unknown on_error %q (use fail, continue or fallback)", what, nodeSpec.OnError)
 	}
 
-	requires := make([]fact.AnyKey, 0, len(nodeSpec.Requires))
+	requires := make([]fact.AnyKey, 0, len(nodeSpec.Requires)+len(nodeSpec.hiddenRequires))
 	for _, name := range nodeSpec.Requires {
 		requires = append(requires, key(name).Any())
 	}
-	provides := make([]fact.AnyKey, 0, len(nodeSpec.Provides))
+	for _, name := range nodeSpec.hiddenRequires {
+		requires = append(requires, key(name).Any())
+	}
+	provides := make([]fact.AnyKey, 0, len(nodeSpec.Provides)+1)
 	for _, name := range nodeSpec.Provides {
 		provides = append(provides, key(name).Any())
+	}
+	var aliveKey fact.Key[any]
+	if nodeSpec.keepAlive != "" {
+		aliveKey = key(nodeSpec.keepAlive)
+		provides = append(provides, aliveKey.Any())
 	}
 	kind, err := nodeKind(nodeSpec.Kind)
 	if err != nil {
@@ -856,6 +932,16 @@ func (p *Platform) compileNode(registry *Registry, build BuildContext, spec Inte
 			nc.RecordEffect(fx)
 		}
 		return nil
+	}
+	if node.keepAlive != "" {
+		run := reg.Run
+		reg.Run = func(nc *execution.NodeContext) error {
+			if err := run(nc); err != nil {
+				return err
+			}
+			execution.Publish(nc, aliveKey, true)
+			return nil
+		}
 	}
 	return p.Engine.Capabilities().Register(reg)
 }

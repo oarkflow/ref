@@ -117,6 +117,7 @@ func registerAuthResources(r *Registry) {
 			{Name: "scopes_claim", Type: "string", Default: "scopes"},
 			{Name: "username_claim", Type: "string", Default: "username"},
 			{Name: "email_claim", Type: "string", Default: "email"},
+			{Name: "claims", Type: "[]string", Summary: "Session keys exposed as principal claims (e.g. org_units written by auth.login session_fields)"},
 		},
 	})
 
@@ -1036,12 +1037,13 @@ type sessionAuth struct {
 	scopes   string
 	username string
 	email    string
+	claims   []string
 }
 
 func openSessionAuth(_ context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("auth.session", spec.Config,
 		"session", "subject_claim", "roles_claim", "tenant_claim", "scopes_claim",
-		"username_claim", "email_claim"); err != nil {
+		"username_claim", "email_claim", "claims"); err != nil {
 		return nil, nil, err
 	}
 	name, err := requiredString(spec.Config, "session")
@@ -1065,6 +1067,7 @@ func openSessionAuth(_ context.Context, spec ResourceSpec) (Resource, io.Closer,
 		scopes:   configString(spec.Config, "scopes_claim", "scopes"),
 		username: configString(spec.Config, "username_claim", "username"),
 		email:    configString(spec.Config, "email_claim", "email"),
+		claims:   configStrings(spec.Config, "claims"),
 	}, nil, nil
 }
 
@@ -1085,12 +1088,21 @@ func (s *sessionAuth) Authenticate(_ context.Context, creds Credentials) (Princi
 		// That is not an authentication.
 		return Principal{}, errUnauthenticated
 	}
-	return Principal{
+	principal := Principal{
 		ID:       subject,
 		Username: Stringify(stored.Get(s.username)),
 		Email:    Stringify(stored.Get(s.email)),
 		TenantID: Stringify(stored.Get(s.tenant)),
 		Roles:    stringSlice(stored.Get(s.roles)),
 		Scopes:   stringSlice(stored.Get(s.scopes)),
-	}, nil
+	}
+	if len(s.claims) > 0 {
+		principal.Claims = make(map[string]any, len(s.claims))
+		for _, key := range s.claims {
+			if value := stored.Get(key); value != nil {
+				principal.Claims[key] = value
+			}
+		}
+	}
+	return principal, nil
 }

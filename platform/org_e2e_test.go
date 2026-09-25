@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,7 +61,7 @@ func newAppHarness(t *testing.T, bclPath string, env map[string]string) *appHarn
 		<-served
 	})
 	return &appHarness{t: t, platform: p, base: "http://" + listener.Addr().String(),
-		client: &http.Client{Timeout: 10 * time.Second}}
+		client: &http.Client{Timeout: 10 * time.Second, Jar: newCookieJar()}}
 }
 
 // token mints a JWT through the app's own auth.jwt resource.
@@ -83,6 +84,11 @@ func (h *appHarness) token(resource, subject string, roles []string, claims map[
 		h.t.Fatalf("issue token: %v", err)
 	}
 	return tok
+}
+
+func newCookieJar() http.CookieJar {
+	jar, _ := cookiejar.New(nil)
+	return jar
 }
 
 func (h *appHarness) call(method, path, token string, body any) (int, any) {
