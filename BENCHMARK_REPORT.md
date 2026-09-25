@@ -226,6 +226,28 @@ Four gaps identified in a production-readiness review have been addressed as opt
 
 All additions pass `go build ./...`, `go vet ./...`, and `go test ./... -race -count=1` for the full repository.
 
+## Cheap-roots B/op regression: not reproduced (2026-09-25)
+
+Re-measured the +303 B/op regression flagged above on Apple M2 Pro / Go 1.27.0 using `benchstat` over 10 runs (`-benchmem -benchtime=1s -count=10 -cpu=10`) comparing the pre-fix and post-fix scheduler directly. Result: **-8.66% sec/op, -8.94% B/op, -3.57% allocs/op** (all p<0.005) — the current code is strictly better on every axis on this toolchain/hardware; no regression exists here. `-gcflags='-m -m'` confirms the cheap-roots snapshot array stays stack-allocated. The originally reported B/op increase does not reproduce and is most likely measurement noise or a different Go compiler version at the time it was recorded. No code change was needed.
+
+## Unbounded goroutine fallback under extreme concurrency (2026-09-25)
+
+The 32-client TCP load test used throughout this report never exercises `sharedNodeWorkers` at all — that pool only activates for graphs with 8+ nodes, and the benchmark's HTTP intent graph has 2-3. Confirmed: at 32 clients the ref/traditional gap on Apple M2 Pro is only ~5% (107,854 vs 113,537 req/s), nothing like the 44-97% gap measured on the original i9-13900K/Linux host — hardware and possibly measurement conditions differ enough that this pair of numbers isn't directly comparable, and the original gap has not been re-verified on matching hardware.
+
+To actually test the theory that the unbounded-goroutine fallback in `nodeWorkerPool.submit` (spawns a raw goroutine whenever the pool's channel is full) is a fault-tolerance risk, a synthetic 9-node fan-out benchmark and a tunable concurrency-profiling test were added (`execution/scheduler_scale_bench_test.go`, opt-in via `FH_SCALE_LOAD=1`). Findings, sampling `runtime.NumGoroutine()` and GC stats under sustained load:
+
+| Concurrent clients | Unbounded fallback | Bounded overflow (cap 8192) |
+|---:|---|---|
+| 600 | ~18k-22k req/s, peak ~3.6k-4.1k goroutines | ~25k req/s, peak ~3.5k goroutines |
+| 3,000 | 157k req/s, peak ~17.7k goroutines | 142k req/s, peak ~11.2k goroutines |
+| 8,000 | **104k req/s** (down from 157k — collapse), peak ~54k goroutines, GC pause 49.5ms/5s | **208k req/s** (~2x), peak ~16.2k goroutines, GC pause 11.4ms/5s |
+
+The risk is real but the threshold is far higher than 32 clients — goroutine over-subscription only causes measurable throughput collapse and GC thrashing around 8,000 concurrent clients on large fan-out graphs. `nodeWorkerPool.submit` now spawns a bounded number of overflow goroutines (capped at 8,192, chosen empirically — smaller caps measurably hurt throughput before backpressure was needed) before falling back to blocking on the pool channel with an escape hatch via the execution's cancellation context. At extreme concurrency this is a clear win (2x throughput, ~70% fewer goroutines, ~4x lower GC pause); at moderate concurrency (3,000 clients) it costs ~10% throughput in exchange for 36% fewer goroutines — an explicit, documented tradeoff, not a free win. The 32-client TCP test and small-graph HTTP benchmark are both unaffected, since neither reaches this code path.
+
+## Resilience metadata is now enforced (2026-09-25)
+
+A previously undetected gap: `capability.Resilience` (`Timeout`, `MaxRetries`, `Backoff`, `Bulkhead`, `Concurrency`) was declared on every `Registration` and configurable via `WithTimeout`/`WithRetry`/`WithBulkhead`, but was dropped during graph compilation and never read by the scheduler — every capability ran with no timeout, no retry, and no concurrency limiting regardless of configuration. This is now fixed end-to-end: `Resilience` survives compilation into `Program.Resilience`, and `execution/resilience.go` enforces timeout (race-based, since Go cannot cancel a running goroutine — the abandoned goroutine's `NodeContext` is deliberately not returned to its pool after a timeout, to avoid a data race with a still-running abandoned execution), retry with AWS-style full jitter (also applied to `effect/runner.go`'s previously un-jittered dead-letter backoff), and bulkhead concurrency limiting (fail-fast via `ErrBulkheadFull`, not queuing, to avoid priority inversion). The unconfigured (zero-value `Resilience`) fast path is unchanged: `BenchmarkREFDispatch`/`BenchmarkREFDispatchParallel` measured identical 226 B/op, 7 allocs/op before and after.
+
 
 ### Why the parallel flaw rows allocate
 

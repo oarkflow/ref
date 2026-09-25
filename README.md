@@ -269,6 +269,9 @@ Do not treat the earlier direct-dispatch microbenchmark as an HTTP comparison. R
 | [`ref/transport`](./transport/) | Transport adapters & projections | `http.Adapter`, `grpc.UnaryHandler`, `websocket.Handler`, `queue.Consumer`, `cli.Command` |
 | [`ref/debug`](./debug/) | Graph introspection & live visualizers | `InspectPlan`, `ToMermaid`, `ToDOT`, `HTTPHandler` |
 | [`ref/testing`](./testing/) | Transport-independent intent testing harness | `TestBuilder`, `Given`, `AssertFact`, `AssertOutcome` |
+| [`ref/health`](./health/) | Liveness/readiness checks & HTTP handlers | `Registry`, `Checker`, `LivenessHandler`, `ReadinessHandler` |
+| [`ref/config`](./config/) | Layered typed configuration loading | `Load[T]`, `FromEnv`, `FromFile`, `FromMap`, `Watch[T]` |
+| [`ref/backoff`](./backoff/) | Jittered retry backoff | `FullJitter` |
 
 ---
 
@@ -284,6 +287,9 @@ These ship as opt-in subpackages so the core engine stays dependency-free — im
 | Authentication | [`ref/capability`](./capability/auth_jwt.go) | `capability.NewJWTAuthenticator(cfg)` verifies bearer JWTs into a `PrincipalFact`, wired via `NewAuthCapability` |
 | Authorization | [`ref/capability`](./capability/auth_authz.go) | `capability.NewAuthzPolicyCapability(name, engine, selector, cfg)` checks the resolved principal against `oarkflow/authz` policies |
 | Circuit breaking | [`ref/capability`](./capability/circuit_breaker_redis.go) | `capability.NewRedisCircuitBreakerCapability(...)` shares trip state across instances via Redis (Lua-atomic transitions); `InMemoryCircuitBreaker` remains available for single-instance deployments |
+| Health checks | [`ref/health`](./health/) | `health.NewRegistry()` + `health.LivenessHandler`/`ReadinessHandler` — parallel, timeout-bounded, panic-recovered checks with a `FromCircuitBreaker` adapter; attach to `runtime.Engine` via `runtime.WithHealthRegistry(reg)` |
+| Config management | [`ref/config`](./config/) | `config.Load[T](config.FromFile("app.bcl"), config.FromEnv("REF_"), config.FromMap(overrides))` — layered precedence, `env`/`default`/`required` struct tags, an optional `Validate() error` hook, and `config.Watch[T]` for polling-based hot-reload |
+| Timeout / retry / bulkhead | [`ref/capability`](./capability/capability.go) | `capability.WithTimeout`, `WithRetry`, `WithBulkhead` on any `Registration` are now enforced by the scheduler (previously declared but ignored) — timeout via a race against the node's `Run`, retry with AWS-style full jitter, bulkhead as fail-fast concurrency limiting via `execution.ErrBulkheadFull` |
 
 Wire observers into the scheduler as `execution.NewScheduler(promobserver.New(nil), otelobserver.New(tracer), slogobserver.New(logger))`. Wire auth as a `DecisionNode` capability early in the DAG (`capability.NewAuthCapability("auth.jwt", jwtAuthenticator)`), followed by an authorization `DecisionNode` (`capability.NewAuthzPolicyCapability(...)`) once the principal fact is published. See each package's doc comments for wiring details, and [BENCHMARK_REPORT.md](./BENCHMARK_REPORT.md) for the profiler-verified scheduler fix that halved the CPU-bound concurrency gap for typical HTTP intent graphs.
 
