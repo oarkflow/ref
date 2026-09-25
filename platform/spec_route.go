@@ -32,6 +32,9 @@ type RouteSpec struct {
 	// without credentials. It must be explicit: forgetting to set it fails
 	// closed, forgetting to unset it does not silently open the route.
 	AllowAnonymous bool `bcl:"allow_anonymous"`
+	// Flag gates the route behind a feature flag: while the flag is off for
+	// the caller the route answers 404, as if it did not exist.
+	Flag string `bcl:"flag"`
 
 	Status       int               `bcl:"status"`
 	Headers      map[string]string `bcl:"headers"`

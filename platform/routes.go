@@ -413,6 +413,12 @@ func (p *Platform) serve(c fh.Ctx, route compiledRoute) error {
 	c.SetContext(ctx)
 
 	env := requestEnv(c, principal, tenant)
+	if route.spec.Flag != "" && p.flags != nil {
+		res, _ := p.flags.evaluate(route.spec.Flag, flagSubject{principal: principal, tenant: tenant, env: env}, time.Now())
+		if !Truthy(res.Value) {
+			return projectFailure(c, notFoundOrMessage("not found"))
+		}
+	}
 
 	if route.authz != nil {
 		actionCtx := &ActionContext{Context: ctx, Principal: principal, TenantID: tenant, Now: time.Now().UTC()}

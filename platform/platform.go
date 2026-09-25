@@ -122,6 +122,8 @@ type Platform struct {
 
 	static []compiledStatic
 
+	flags *flagRegistry
+
 	background context.CancelFunc
 	wg         sync.WaitGroup
 	closeOnce  sync.Once
@@ -281,6 +283,10 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 	if err := p.openResources(ctx, doc, opts.Registry); err != nil {
 		return nil, err
 	}
+	if p.flags, err = compileFlags(doc, p.resources); err != nil {
+		return nil, err
+	}
+	p.closers = append(p.closers, p.flags)
 
 	// Processes compile before intents, and intents compile against them. The
 	// dependency runs both ways — a step names an intent, and a node may start or
