@@ -23,8 +23,11 @@ type Query struct {
 	Stages   []string
 	Statuses []string
 	OrgUnits []string
-	Limit    int
-	Offset   int
+	// Assignees keeps cases whose current stage is assigned to one of these
+	// ("" in the list matches unassigned work).
+	Assignees []string
+	Limit     int
+	Offset    int
 }
 
 // Store persists cases. Update must fail with ErrConflict when the stored
@@ -38,6 +41,16 @@ type Store interface {
 	NextSeq(ctx context.Context, pipeline string) (int64, error)
 	// FindCertificate looks a certificate up by id, number or code.
 	FindCertificate(ctx context.Context, key string) (*Certificate, error)
+	// Delete removes a case and its certificates (retention purge, erasure).
+	Delete(ctx context.Context, id string) error
+}
+
+// CurrentAssignee is who holds the case's current stage ("" if nobody).
+func (c *Case) CurrentAssignee() string {
+	if ss := c.Stages[c.Stage]; ss != nil && !c.Terminal() {
+		return ss.Assignee
+	}
+	return ""
 }
 
 func (q Query) matches(c *Case) bool {
@@ -46,7 +59,8 @@ func (q Query) matches(c *Case) bool {
 		(q.CreatedBy == "" || c.CreatedBy == q.CreatedBy) &&
 		(len(q.Stages) == 0 || slices.Contains(q.Stages, c.Stage)) &&
 		(len(q.Statuses) == 0 || slices.Contains(q.Statuses, c.Status)) &&
-		(len(q.OrgUnits) == 0 || slices.Contains(q.OrgUnits, c.OrgUnit))
+		(len(q.OrgUnits) == 0 || slices.Contains(q.OrgUnits, c.OrgUnit)) &&
+		(len(q.Assignees) == 0 || slices.Contains(q.Assignees, c.CurrentAssignee()))
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +139,16 @@ func page(cases []*Case, q Query) []*Case {
 		cases = cases[:q.Limit]
 	}
 	return cases
+}
+
+func (s *MemoryStore) Delete(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.cases[id]; !ok {
+		return fmt.Errorf("%w: case %q", ErrNotFound, id)
+	}
+	delete(s.cases, id)
+	return nil
 }
 
 func (s *MemoryStore) NextSeq(_ context.Context, pipeline string) (int64, error) {
@@ -208,6 +232,7 @@ func (s *SQLStore) Migrate(ctx context.Context) error {
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS {p}cases (
 			id %[1]s PRIMARY KEY, pipeline %[1]s NOT NULL, number %[1]s NOT NULL, tenant_id %[1]s NOT NULL DEFAULT '',
 			org_unit %[1]s NOT NULL DEFAULT '', status %[1]s NOT NULL, stage %[1]s NOT NULL, created_by %[1]s NOT NULL DEFAULT '',
+			assignee %[1]s NOT NULL DEFAULT '',
 			revision BIGINT NOT NULL, doc %[2]s NOT NULL, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)`, key, text),
 		`CREATE INDEX IF NOT EXISTS {p}cases_queue_idx ON {p}cases (pipeline, stage, status)`,
 		`CREATE INDEX IF NOT EXISTS {p}cases_owner_idx ON {p}cases (created_by)`,
@@ -232,7 +257,41 @@ func (s *SQLStore) Migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	// Tables created before the assignee column existed get it added; a
+	// "duplicate column" error means it is already there.
+	if _, err := s.db.ExecContext(ctx, s.q(fmt.Sprintf(`ALTER TABLE {p}cases ADD COLUMN assignee %s NOT NULL DEFAULT ''`, key))); err != nil {
+		msg := strings.ToLower(err.Error())
+		if !strings.Contains(msg, "duplicate") && !strings.Contains(msg, "already exists") {
+			return err
+		}
+	}
+	index := `CREATE INDEX IF NOT EXISTS {p}cases_assignee_idx ON {p}cases (assignee)`
+	if s.dialect == "mysql" {
+		index = strings.Replace(index, "IF NOT EXISTS ", "", 1)
+	}
+	if _, err := s.db.ExecContext(ctx, s.q(index)); err != nil && !strings.Contains(err.Error(), "Duplicate key name") {
+		return err
+	}
 	return nil
+}
+
+func (s *SQLStore) Delete(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, s.q(`DELETE FROM {p}cases WHERE id = ?`), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("%w: case %q", ErrNotFound, id)
+	}
+	if _, err := tx.ExecContext(ctx, s.q(`DELETE FROM {p}certificates WHERE case_id = ?`), id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLStore) Create(ctx context.Context, c *Case) error {
@@ -246,9 +305,9 @@ func (s *SQLStore) Create(ctx context.Context, c *Case) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO {p}cases (id, pipeline, number, tenant_id, org_unit, status, stage, created_by, revision, doc, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		c.ID, c.Pipeline, c.Number, c.TenantID, c.OrgUnit, c.Status, c.Stage, c.CreatedBy, c.Revision, string(doc),
+	if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO {p}cases (id, pipeline, number, tenant_id, org_unit, status, stage, created_by, assignee, revision, doc, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		c.ID, c.Pipeline, c.Number, c.TenantID, c.OrgUnit, c.Status, c.Stage, c.CreatedBy, c.CurrentAssignee(), c.Revision, string(doc),
 		c.CreatedAt.UnixNano(), c.UpdatedAt.UnixNano()); err != nil {
 		return err
 	}
@@ -288,9 +347,9 @@ func (s *SQLStore) Update(ctx context.Context, c *Case) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, s.q(`UPDATE {p}cases SET status = ?, stage = ?, org_unit = ?, revision = ?, doc = ?, updated_at = ?
+	res, err := tx.ExecContext(ctx, s.q(`UPDATE {p}cases SET status = ?, stage = ?, org_unit = ?, assignee = ?, revision = ?, doc = ?, updated_at = ?
 		WHERE id = ? AND revision = ?`),
-		c.Status, c.Stage, c.OrgUnit, c.Revision, string(doc), c.UpdatedAt.UnixNano(), c.ID, expected)
+		c.Status, c.Stage, c.OrgUnit, c.CurrentAssignee(), c.Revision, string(doc), c.UpdatedAt.UnixNano(), c.ID, expected)
 	if err != nil {
 		c.Revision = expected
 		return err
@@ -352,8 +411,9 @@ func (s *SQLStore) List(ctx context.Context, q Query) ([]*Case, error) {
 	add("stage", q.Stages)
 	add("status", q.Statuses)
 	add("org_unit", q.OrgUnits)
+	add("assignee", q.Assignees)
 	limit := q.Limit
-	if limit <= 0 || limit > 500 {
+	if limit <= 0 || limit > 5000 {
 		limit = 100
 	}
 	statement := "SELECT doc FROM {p}cases WHERE " + strings.Join(where, " AND ") + " ORDER BY created_at DESC LIMIT ? OFFSET ?"

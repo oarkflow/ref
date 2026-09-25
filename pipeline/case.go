@@ -69,8 +69,75 @@ type Case struct {
 	History      []Entry                `json:"history,omitempty"`
 	Certificates []Certificate          `json:"certificates,omitempty"`
 
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	// Timeline records every stage visit, for analytics and SLA reporting.
+	Timeline []Visit `json:"timeline,omitempty"`
+	Notes    []Note  `json:"notes,omitempty"`
+	// Sealed holds encrypted values of sealed inputs, keyed by "form.input".
+	Sealed map[string]SealedValue `json:"sealed,omitempty"`
+	// SealOpening records approvals to open sealed values.
+	SealOpening *SealOpening `json:"seal_opening,omitempty"`
+	// Links are external-party links issued for this case, keyed by nonce.
+	Links map[string]*Link `json:"links,omitempty"`
+	// Hold is a legal hold: while set the case cannot be erased or purged.
+	Hold *LegalHold `json:"legal_hold,omitempty"`
+	// Erased is set once personal data has been anonymised.
+	Erased *time.Time `json:"erased_at,omitempty"`
+
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	ClosedAt  *time.Time `json:"closed_at,omitempty"`
+
+	// events are emitted by the last operation, for the host to dispatch
+	// after the case is saved. They are not persisted.
+	events []Event
+}
+
+// Visit is one stay of a case in a stage.
+type Visit struct {
+	Stage     string     `json:"stage"`
+	EnteredAt time.Time  `json:"entered_at"`
+	LeftAt    *time.Time `json:"left_at,omitempty"`
+	// Outcome: completed, returned, rejected, withdrawn, skipped, approved.
+	Outcome  string `json:"outcome,omitempty"`
+	Assignee string `json:"assignee,omitempty"`
+	Breached bool   `json:"breached,omitempty"`
+	// Suspended is the total time the case was on hold during the visit.
+	SuspendedSeconds int64 `json:"suspended_seconds,omitempty"`
+}
+
+// Note is a comment on a case. Internal notes are for staff only.
+type Note struct {
+	ID       string    `json:"id"`
+	Stage    string    `json:"stage,omitempty"`
+	Author   string    `json:"author"`
+	Body     string    `json:"body"`
+	Internal bool      `json:"internal,omitempty"`
+	ParentID string    `json:"parent_id,omitempty"`
+	At       time.Time `json:"at"`
+}
+
+// LegalHold blocks erasure and retention.
+type LegalHold struct {
+	Reason   string    `json:"reason"`
+	PlacedBy string    `json:"placed_by"`
+	At       time.Time `json:"at"`
+}
+
+// Event is something that happened to a case.
+type Event struct {
+	Name   string         `json:"event"`
+	Stage  string         `json:"stage,omitempty"`
+	Actor  string         `json:"actor,omitempty"`
+	At     time.Time      `json:"at"`
+	Detail map[string]any `json:"detail,omitempty"`
+}
+
+// Events returns the events the last operation emitted. Dispatch them after
+// the case is saved.
+func (c *Case) Events() []Event { return c.events }
+
+func (c *Case) emit(name, stage, actor string, at time.Time, detail map[string]any) {
+	c.events = append(c.events, Event{Name: name, Stage: stage, Actor: actor, At: at, Detail: detail})
 }
 
 // StageState is one stage's progress.
@@ -88,6 +155,61 @@ type StageState struct {
 	// goes straight back to it.
 	ReturnedFrom string `json:"returned_from,omitempty"`
 	Visits       int    `json:"visits,omitempty"`
+
+	// Assignee is who works the stage now (claimed, routed or assigned).
+	Assignee   string     `json:"assignee,omitempty"`
+	AssignedAt *time.Time `json:"assigned_at,omitempty"`
+	// PreviousAssignee worked the stage on an earlier visit (sticky routing).
+	PreviousAssignee string           `json:"previous_assignee,omitempty"`
+	Routing          *RoutingDecision `json:"routing,omitempty"`
+	SLA              *SLAState        `json:"sla,omitempty"`
+	Suspended        *Suspension      `json:"suspended,omitempty"`
+}
+
+// RoutingDecision explains an assignment: who was considered and why.
+type RoutingDecision struct {
+	Strategy   string      `json:"strategy"`
+	Assignee   string      `json:"assignee,omitempty"`
+	Reason     string      `json:"reason"`
+	Candidates []Candidate `json:"candidates,omitempty"`
+	At         time.Time   `json:"at"`
+}
+
+// Candidate is one worker considered by routing.
+type Candidate struct {
+	ID       string `json:"id"`
+	Eligible bool   `json:"eligible"`
+	Reason   string `json:"reason,omitempty"`
+	Load     int    `json:"load"`
+	Score    int    `json:"score,omitempty"`
+}
+
+// SLA states.
+const (
+	SLAOnTrack  = "on_track"
+	SLAWarning  = "warning"
+	SLABreached = "breached"
+	SLAMet      = "met"
+	SLAPaused   = "paused"
+)
+
+// SLAState is a stage's deadline tracking.
+type SLAState struct {
+	Status     string     `json:"status"`
+	StartedAt  time.Time  `json:"started_at"`
+	WarnAt     *time.Time `json:"warn_at,omitempty"`
+	DueAt      time.Time  `json:"due_at"`
+	BreachedAt *time.Time `json:"breached_at,omitempty"`
+	// Level is the escalation level reached (0 = none).
+	Level int `json:"level,omitempty"`
+}
+
+// Suspension puts a stage on hold; its SLA clock stops.
+type Suspension struct {
+	Reason string     `json:"reason"`
+	By     string     `json:"by"`
+	At     time.Time  `json:"at"`
+	Until  *time.Time `json:"until,omitempty"`
 }
 
 // Flag is one input returned for correction.
@@ -109,11 +231,12 @@ type NodeState struct {
 	UpdatedAt *time.Time         `json:"updated_at,omitempty"`
 }
 
-// Approval is one approver's decision.
+// Approval is one approver's decision. Votes carry a Decision.
 type Approval struct {
-	By      string    `json:"by"`
-	At      time.Time `json:"at"`
-	Comment string    `json:"comment,omitempty"`
+	By       string    `json:"by"`
+	At       time.Time `json:"at"`
+	Comment  string    `json:"comment,omitempty"`
+	Decision string    `json:"decision,omitempty"`
 }
 
 // Verdict is a reviewer's decision on one input.
@@ -142,6 +265,8 @@ type Actor struct {
 	ID     string         `json:"id"`
 	Roles  []string       `json:"roles,omitempty"`
 	Claims map[string]any `json:"claims,omitempty"`
+	// Link is set when an outside party acts through an external link.
+	Link *Link `json:"-"`
 }
 
 // HasAnyRole reports whether the actor holds one of roles. An empty list means

@@ -27,6 +27,19 @@ type Engine struct {
 	// Lookup resolves an input's lookup set (reference data) into options for
 	// the case. When set, submitted values must be one of them.
 	Lookup func(set string, c *Case) []Option
+
+	// Directory adds workers to the definition's worker blocks (host
+	// directory, HR system). Entries with the same id replace them.
+	Directory func(ctx context.Context) []Worker
+	// Workload reports each worker's open assignments across cases, for
+	// capacity and load-based routing.
+	Workload func(ctx context.Context, pipeline string) (map[string]Load, error)
+	// OrgCovers reports whether a worker assigned to units covers unit (for
+	// routing same_org_unit); default: exact membership.
+	OrgCovers func(units []string, unit string) bool
+	// SealKey encrypts sealed inputs (AES-256-GCM). Required when the
+	// pipeline declares sealed inputs.
+	SealKey []byte
 }
 
 // Option is one choice of a lookup-backed input.
@@ -110,17 +123,43 @@ func (e *Engine) Start(ctx context.Context, actor Actor, opts StartOptions) (*Ca
 		return nil, forbidden("you may not start a %s", e.C.Def.Name)
 	}
 	c.History = append(c.History, Entry{At: now, Actor: actor.ID, Action: "start", To: first.Name})
+	c.emit("case.started", first.Name, actor.ID, now, nil)
 	if err := e.enterStage(ctx, c, first.Name, actor, 0); err != nil {
 		return nil, err
 	}
-	c.Status = CaseDraft
-	if len(opts.Data) > 0 {
+	if c.Stage == first.Name {
+		c.Status = CaseDraft
+	}
+	if len(opts.Data) > 0 && c.Stage == first.Name {
 		if _, err := e.saveInto(c, actor, first.Name, opts.Data); err != nil {
 			return nil, err
 		}
 		e.refreshChecks(c, first.Name)
 	}
+	e.recompute(c, actor)
+	e.finish(c, now)
 	return c, nil
+}
+
+// finish stamps a case that just reached a terminal status: closes its open
+// visit and emits the terminal event, exactly once.
+func (e *Engine) finish(c *Case, now time.Time) {
+	if !c.Terminal() || c.ClosedAt != nil {
+		return
+	}
+	c.ClosedAt = &now
+	for i := range c.Timeline {
+		if c.Timeline[i].LeftAt == nil {
+			c.Timeline[i].LeftAt = &now
+			c.Timeline[i].Outcome = c.Status
+		}
+	}
+	for _, ss := range c.Stages {
+		if ss.Assignee != "" {
+			ss.PreviousAssignee, ss.Assignee, ss.AssignedAt = ss.Assignee, "", nil
+		}
+	}
+	c.emit("case."+c.Status, c.Stage, "", now, nil)
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +211,9 @@ func isApplicant(c *Case, actor Actor) bool { return actor.ID != "" && actor.ID 
 
 // CanAct reports whether the actor may work on a stage.
 func (e *Engine) CanAct(c *Case, st *Stage, actor Actor) bool {
+	if actor.Link != nil {
+		return actor.Link.Stage == st.Name && actor.Link.UsedAt == nil
+	}
 	return actor.HasAnyRole(st.Roles) || (st.Public && isApplicant(c, actor))
 }
 
@@ -230,7 +272,10 @@ func (e *Engine) enterStage(ctx context.Context, c *Case, name string, actor Act
 	}
 	if st.SkipIf != "" && skip {
 		ss.Status = StageSkipped
-		c.History = append(c.History, Entry{At: e.now(), Actor: actor.ID, Stage: name, Action: "skip"})
+		at := e.now()
+		c.Timeline = append(c.Timeline, Visit{Stage: name, EnteredAt: at, LeftAt: &at, Outcome: "skipped"})
+		c.History = append(c.History, Entry{At: at, Actor: actor.ID, Stage: name, Action: "skip"})
+		c.emit("stage.skipped", name, actor.ID, at, nil)
 		next := e.nextStage(st)
 		if next == "" {
 			c.Status = CaseCompleted
@@ -259,6 +304,18 @@ func (e *Engine) enterStage(ctx context.Context, c *Case, name string, actor Act
 	c.Stage = name
 	if c.Status != CaseDraft || ss.Visits > 1 || name != e.C.Def.Stages[0].Name {
 		c.Status = CaseInProgress
+	}
+	c.Timeline = append(c.Timeline, Visit{Stage: name, EnteredAt: now})
+	if ss.Assignee != "" {
+		ss.PreviousAssignee = ss.Assignee
+	}
+	ss.Assignee, ss.AssignedAt, ss.Routing, ss.Suspended, ss.SLA = "", nil, nil, nil, nil
+	e.startSLA(st, ss, now)
+	c.emit("stage.entered", name, actor.ID, now, nil)
+	if st.Routing != nil && st.Routing.Strategy != "" && st.Routing.Strategy != RouteManual {
+		if err := e.route(ctx, c, st, ss, nil, nil, ""); err != nil {
+			return err
+		}
 	}
 	e.initNodes(c, st, ss, env)
 	if err := e.runAutomated(ctx, c, st, ss); err != nil {
@@ -441,6 +498,14 @@ func (e *Engine) completeStage(ctx context.Context, c *Case, name string, actor 
 	ss.Status = StageCompleted
 	ss.CompletedAt = &now
 	ss.CompletedBy = actor.ID
+	if ss.SLA != nil && ss.SLA.Status != SLABreached {
+		ss.SLA.Status = SLAMet
+	}
+	c.closeVisit(name, "completed", now)
+	if ss.Assignee != "" {
+		ss.PreviousAssignee, ss.Assignee, ss.AssignedAt = ss.Assignee, "", nil
+	}
+	c.emit("stage.completed", name, actor.ID, now, nil)
 	env := e.Env(c, actor)
 	for _, as := range st.Assign {
 		if e.Eval == nil {
@@ -492,6 +557,28 @@ func (e *Engine) editable(c *Case, st *Stage, ss *StageState, actor Actor) map[s
 	if st.Page == nil || !e.CanAct(c, st, actor) {
 		return out
 	}
+	if actor.Link != nil {
+		// An outside party writes exactly its scope, in any group of the page
+		// that shows those forms.
+		for _, g := range st.Page.Groups {
+			if g.Mode == ModeHidden {
+				continue
+			}
+			for _, form := range g.Forms {
+				inputs, _ := e.C.FormInputs(form)
+				for _, in := range inputs {
+					if in.Compute != "" || !actor.Link.covers(form, in.Name) {
+						continue
+					}
+					if out[form] == nil {
+						out[form] = map[string]Input{}
+					}
+					out[form][in.Name] = in
+				}
+			}
+		}
+		return out
+	}
 	correcting := ss.Status == StageReturned && len(ss.Flags) > 0
 	env := e.Env(c, actor)
 	for _, g := range st.Page.Groups {
@@ -507,6 +594,9 @@ func (e *Engine) editable(c *Case, st *Stage, ss *StageState, actor Actor) map[s
 		for _, form := range g.Forms {
 			inputs, _ := e.C.FormInputs(form)
 			for _, in := range inputs {
+				if in.Compute != "" {
+					continue
+				}
 				if ok, err := e.cond(in.VisibleIf, env); err != nil || !ok {
 					continue
 				}
@@ -591,6 +681,9 @@ func (e *Engine) saveInto(c *Case, actor Actor, stage string, data map[string]an
 	}
 	if !e.CanAct(c, st, actor) {
 		return nil, forbidden("you may not edit stage %q", stage)
+	}
+	if err := e.guardClaim(c, st, ss, actor); err != nil {
+		return nil, err
 	}
 	allowed := e.previewEditable(c, st, ss, actor, data)
 	type write struct {
@@ -681,14 +774,27 @@ func (e *Engine) saveInto(c *Case, actor Actor, stage string, data map[string]an
 	if len(errs) > 0 {
 		return nil, &ValidationError{Message: "some fields are invalid", Fields: errs}
 	}
+	for _, w := range writes {
+		if e.C.sealed[w.path] && w.value != nil && !c.opened() && len(e.SealKey) == 0 {
+			return nil, ErrNoSealKey
+		}
+	}
 	var changed []string
 	for _, w := range writes {
 		old, had := c.Get(w.path)
 		if w.value == nil {
 			if had {
 				e.unset(c, w.path)
+				delete(c.Sealed, w.path)
 				changed = append(changed, w.path)
 			}
+			continue
+		}
+		if e.C.sealed[w.path] {
+			if err := e.sealValue(c, w.path, w.value, actor.ID); err != nil {
+				return nil, err
+			}
+			changed = append(changed, w.path)
 			continue
 		}
 		if !had || fmt.Sprint(old) != fmt.Sprint(w.value) {
@@ -696,7 +802,25 @@ func (e *Engine) saveInto(c *Case, actor Actor, stage string, data map[string]an
 		}
 		c.Set(w.path, w.value)
 	}
+	e.recompute(c, actor)
 	return changed, nil
+}
+
+// recompute evaluates computed inputs after a change.
+func (e *Engine) recompute(c *Case, actor Actor) {
+	if len(e.C.computed) == 0 || e.Eval == nil {
+		return
+	}
+	// Computed inputs may depend on each other: evaluate in declaration
+	// order, refreshing the environment after each.
+	for _, ci := range e.C.computed {
+		v, err := e.Eval.Eval(ci.expr, e.Env(c, actor))
+		if err != nil || v == nil {
+			e.unset(c, ci.path)
+			continue
+		}
+		c.Set(ci.path, v)
+	}
 }
 
 func (e *Engine) unset(c *Case, path string) {
@@ -837,27 +961,49 @@ func (e *Engine) mayTakeAction(c *Case, st *Stage, _ *StageState, a ActionSpec, 
 // reject, withdraw or hold.
 func (e *Engine) Act(ctx context.Context, in *Case, actor Actor, stage, action string, input ActInput) (*Case, error) {
 	c := in.Clone()
+	st, _, err := e.stageOpen(c, stage)
+	if err != nil {
+		return nil, err
+	}
+	spec, found := findAction(st, action)
+	if !found {
+		return nil, fmt.Errorf("%w: action %q at stage %q", ErrNotFound, action, stage)
+	}
+	return e.act(ctx, c, actor, stage, spec, input, false)
+}
+
+func findAction(st *Stage, action string) (ActionSpec, bool) {
+	for _, a := range st.Actions {
+		if a.Name == action {
+			return a, true
+		}
+	}
+	if len(st.Actions) == 0 && action == defaultSubmit.Name {
+		return defaultSubmit, true
+	}
+	return ActionSpec{}, false
+}
+
+// act applies an action to c in place. system actions (SLA breach handling)
+// skip the permission and claim checks.
+func (e *Engine) act(ctx context.Context, c *Case, actor Actor, stage string, spec ActionSpec, input ActInput, system bool) (*Case, error) {
 	st, ss, err := e.stageOpen(c, stage)
 	if err != nil {
 		return nil, err
 	}
-	spec, found := ActionSpec{}, false
-	for _, a := range st.Actions {
-		if a.Name == action {
-			spec, found = a, true
+	action := spec.Name
+	if !system {
+		if actor.Link != nil || !e.mayTakeAction(c, st, ss, spec, actor, e.Env(c, actor)) {
+			return nil, forbidden("you may not %s at stage %q", action, stage)
 		}
-	}
-	if !found && len(st.Actions) == 0 && action == defaultSubmit.Name {
-		spec, found = defaultSubmit, true
-	}
-	if !found {
-		return nil, fmt.Errorf("%w: action %q at stage %q", ErrNotFound, action, stage)
-	}
-	if !e.mayTakeAction(c, st, ss, spec, actor, e.Env(c, actor)) {
-		return nil, forbidden("you may not %s at stage %q", action, stage)
-	}
-	if spec.CommentRequired && strings.TrimSpace(input.Comment) == "" {
-		return nil, &ValidationError{Message: "a comment is required", Fields: []FieldError{{Path: "comment", Rule: "required", Message: "a comment is required to " + titleOr(spec.Label, action)}}}
+		if spec.Outcome != OutcomeWithdraw || !isApplicant(c, actor) {
+			if err := e.guardClaim(c, st, ss, actor); err != nil {
+				return nil, err
+			}
+		}
+		if spec.CommentRequired && strings.TrimSpace(input.Comment) == "" {
+			return nil, &ValidationError{Message: "a comment is required", Fields: []FieldError{{Path: "comment", Rule: "required", Message: "a comment is required to " + titleOr(spec.Label, action)}}}
+		}
 	}
 	var changed []string
 	if len(input.Data) > 0 {
@@ -877,6 +1023,9 @@ func (e *Engine) Act(ctx context.Context, in *Case, actor Actor, stage, action s
 		if missing := e.missingRequired(c, st, ss, actor); len(missing) > 0 {
 			return nil, &ValidationError{Message: "the stage is incomplete", Fields: missing}
 		}
+		if broken := e.brokenRules(c, st, ss, actor); len(broken) > 0 {
+			return nil, &ValidationError{Message: "the stage does not pass its checks", Fields: broken}
+		}
 		if !spec.SkipNodes {
 			for _, n := range st.Nodes {
 				if ns := ss.Nodes[n.Name]; ns != nil && ns.Status == NodeFailed && !n.Optional {
@@ -895,26 +1044,12 @@ func (e *Engine) Act(ctx context.Context, in *Case, actor Actor, stage, action s
 			c.Status = CaseApproved
 		}
 	case OutcomeReturn:
-		target := spec.ReturnTo
-		if target == "" {
-			target = e.C.Def.Stages[0].Name
+		if err := e.returnTo(c, st, ss, spec.ReturnTo, actor, input.Comment, input.Flags, now); err != nil {
+			return nil, err
 		}
-		flags := e.collectFlags(st, ss, input.Flags, actor, now)
-		ts := c.Stages[target]
-		ss.Status = StagePending
-		ts.Status = StageReturned
-		ts.Flags = flags
-		ts.ReturnedFrom = stage
-		ts.Visits++
-		ts.EnteredAt = &now
-		c.Stage = target
-		c.Status = CaseReturned
-		entry.From, entry.To = stage, target
-		for path := range flags {
-			entry.Changes = append(entry.Changes, path)
-		}
-		sort.Strings(entry.Changes)
-		c.History = append(c.History, entry)
+		// returnTo recorded the history entry; keep the action name on it.
+		c.History[len(c.History)-1].Action = action
+		c.History[len(c.History)-1].Changes = append(changed, c.History[len(c.History)-1].Changes...)
 	case OutcomeReject:
 		ss.Status = StageRejected
 		c.Status = CaseRejected
@@ -926,7 +1061,82 @@ func (e *Engine) Act(ctx context.Context, in *Case, actor Actor, stage, action s
 		c.History = append(c.History, entry)
 	}
 	c.UpdatedAt = now
+	e.finish(c, now)
 	return c, nil
+}
+
+// returnTo sends the case back to target (default: the first stage) for
+// correction of the flagged inputs.
+func (e *Engine) returnTo(c *Case, st *Stage, ss *StageState, target string, actor Actor, comment string, extra map[string]string, now time.Time) error {
+	if target == "" {
+		target = e.C.Def.Stages[0].Name
+	}
+	ts := c.Stages[target]
+	if ts == nil {
+		return fmt.Errorf("%w: stage %q", ErrNotFound, target)
+	}
+	flags := e.collectFlags(st, ss, extra, actor, now)
+	ss.Status = StagePending
+	if ss.SLA != nil && ss.SLA.Status != SLABreached {
+		ss.SLA.Status = SLAMet
+	}
+	c.closeVisit(st.Name, "returned", now)
+	if ss.Assignee != "" {
+		ss.PreviousAssignee, ss.Assignee, ss.AssignedAt = ss.Assignee, "", nil
+	}
+	ts.Status = StageReturned
+	ts.Flags = flags
+	ts.ReturnedFrom = st.Name
+	ts.Visits++
+	ts.EnteredAt = &now
+	c.Timeline = append(c.Timeline, Visit{Stage: target, EnteredAt: now})
+	c.Stage = target
+	c.Status = CaseReturned
+	entry := Entry{At: now, Actor: actor.ID, Stage: st.Name, Action: "return", Comment: comment, From: st.Name, To: target}
+	for path := range flags {
+		entry.Changes = append(entry.Changes, path)
+	}
+	sort.Strings(entry.Changes)
+	c.History = append(c.History, entry)
+	c.emit("case.returned", st.Name, actor.ID, now, map[string]any{"to": target, "flags": entry.Changes})
+	if tst, _ := e.C.Stage(target); tst != nil {
+		if ts.Assignee == "" && ts.PreviousAssignee != "" && claimable(tst) {
+			// The person who worked the stage before picks the correction up.
+			e.setAssignee(c, target, ts, ts.PreviousAssignee, now)
+		}
+	}
+	return nil
+}
+
+// brokenRules evaluates the stage's rules and the rules of the forms it edits.
+func (e *Engine) brokenRules(c *Case, st *Stage, ss *StageState, actor Actor) []FieldError {
+	env := e.Env(c, actor)
+	var errs []FieldError
+	check := func(r Rule) {
+		ok, err := e.cond(r.Check, env)
+		if err == nil && ok {
+			return
+		}
+		msg := r.Message
+		if msg == "" {
+			msg = "check " + r.Name + " failed"
+		}
+		errs = append(errs, FieldError{Path: orDefault(r.Path, r.Name), Rule: r.Name, Message: msg})
+	}
+	for _, r := range st.Rules {
+		check(r)
+	}
+	forms := make([]string, 0)
+	for form := range e.editable(c, st, ss, actor) {
+		forms = append(forms, form)
+	}
+	sort.Strings(forms)
+	for _, form := range forms {
+		for _, r := range e.C.forms[form].Rules {
+			check(r)
+		}
+	}
+	return errs
 }
 
 // collectFlags gathers every flagged verdict of the stage's review nodes plus
@@ -990,12 +1200,24 @@ func (e *Engine) NodeAct(ctx context.Context, in *Case, actor Actor, stage, node
 	if ns.Status == NodeSkipped {
 		return nil, badState("node %q does not apply to this case", node)
 	}
+	if actor.Link != nil {
+		return nil, forbidden("an external link cannot act on %q", node)
+	}
 	if verb == "waive" {
 		if !actor.HasAnyRole(n.WaiveRoles) {
 			return nil, forbidden("you may not waive %q", node)
 		}
 	} else if !e.canActNode(c, st, n, actor) {
 		return nil, forbidden("you may not act on %q", node)
+	}
+	// Approval and vote nodes are other people's decisions by design; every
+	// other node belongs to whoever holds the case.
+	if n.Kind != NodeApproval && n.Kind != NodeVote && verb != "waive" {
+		if err := e.guardClaim(c, st, ss, actor); err != nil {
+			return nil, err
+		}
+	} else if ss.Suspended != nil {
+		return nil, badState("stage %q is on hold: %s", stage, ss.Suspended.Reason)
 	}
 	if verb != "waive" && e.violatesFourEyes(c, n, actor) {
 		return nil, forbidden("four-eyes rule: you already acted on this case where %q forbids it", node)
@@ -1083,6 +1305,26 @@ func (e *Engine) NodeAct(ctx context.Context, in *Case, actor Actor, stage, node
 		}
 		ns.Status = NodeFailed
 		markActor()
+	case n.Kind == NodeVote && verb == "vote":
+		if ns.Status == NodePassed || ns.Status == NodeFailed {
+			return nil, badState("the vote on %q is decided", node)
+		}
+		decision := strings.ToLower(fmt.Sprint(input.Result["decision"]))
+		if decision != "approve" && decision != "reject" {
+			return nil, &ValidationError{Message: "a decision is required", Fields: []FieldError{{Path: "result.decision", Rule: "option", Message: "vote approve or reject"}}}
+		}
+		if decision == "reject" && strings.TrimSpace(input.Comment) == "" {
+			return nil, &ValidationError{Message: "a reason is required", Fields: []FieldError{{Path: "comment", Rule: "required", Message: "say why you vote to reject"}}}
+		}
+		for _, a := range ns.Approvals {
+			if a.By == actor.ID {
+				return nil, badState("you already voted on %q", node)
+			}
+		}
+		ns.Approvals = append(ns.Approvals, Approval{By: actor.ID, At: now, Comment: input.Comment, Decision: decision})
+		ns.Status, ns.Result = tallyVotes(n, ns.Approvals)
+		entry.To = fmt.Sprintf("%s (%v/%v)", decision, ns.Result["approve"], ns.Result["reject"])
+		markActor()
 	case n.Kind == NodeForm && verb == "complete":
 		var missing []FieldError
 		env := e.Env(c, actor)
@@ -1145,7 +1387,59 @@ func (e *Engine) NodeAct(ctx context.Context, in *Case, actor Actor, stage, node
 		}
 	}
 	c.UpdatedAt = now
+	e.finish(c, now)
 	return c, nil
+}
+
+// tallyVotes applies a vote node's consensus policy. It decides as soon as
+// the outcome can no longer change.
+func tallyVotes(n *Node, votes []Approval) (string, map[string]any) {
+	need := max(1, n.Voters)
+	yes, no := 0, 0
+	for _, v := range votes {
+		if v.Decision == "approve" {
+			yes++
+		} else {
+			no++
+		}
+	}
+	remaining := need - yes - no
+	result := map[string]any{"approve": yes, "reject": no, "voters": need, "policy": orDefault(n.Consensus, ConsensusUnanimous)}
+	status := NodeInProgress
+	switch policy := orDefault(n.Consensus, ConsensusUnanimous); policy {
+	case ConsensusUnanimous:
+		switch {
+		case no > 0:
+			status = NodeFailed
+		case yes >= need:
+			status = NodePassed
+		}
+	case ConsensusMajority:
+		switch {
+		case yes*2 > need:
+			status = NodePassed
+		case (yes+remaining)*2 <= need:
+			status = NodeFailed
+		}
+	default:
+		k, err := strconv.Atoi(policy)
+		if err != nil || k < 1 {
+			k = need
+		}
+		switch {
+		case yes >= k:
+			status = NodePassed
+		case yes+remaining < k:
+			status = NodeFailed
+		}
+	}
+	switch status {
+	case NodePassed:
+		result["decision"] = "approve"
+	case NodeFailed:
+		result["decision"] = "reject"
+	}
+	return status, result
 }
 
 // reviewPaths lists the "form.input" paths a review node must decide on: the

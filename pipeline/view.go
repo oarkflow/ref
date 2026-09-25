@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -21,6 +22,44 @@ type View struct {
 	CanEdit      bool            `json:"can_edit"`
 	Corrections  []Flag          `json:"corrections,omitempty"`
 	Certificates []Certificate   `json:"certificates,omitempty"`
+	// Work is the stage's assignment, SLA and hold state plus the work
+	// operations (claim, release, assign, delegate, suspend, resume, link,
+	// note) the viewer may use.
+	Work *WorkView `json:"work,omitempty"`
+	// Notes are the notes the viewer may read.
+	Notes []Note `json:"notes,omitempty"`
+	// Seal describes sealed values (staff only).
+	Seal *SealView `json:"seal,omitempty"`
+	// External is set when the viewer is an outside party on a link.
+	External *LinkView `json:"external,omitempty"`
+}
+
+// WorkView is a stage's work state for the viewer.
+type WorkView struct {
+	Claimable  bool             `json:"claimable"`
+	Assignee   string           `json:"assignee,omitempty"`
+	AssignedAt *time.Time       `json:"assigned_at,omitempty"`
+	Routing    *RoutingDecision `json:"routing,omitempty"`
+	SLA        *SLAState        `json:"sla,omitempty"`
+	Suspended  *Suspension      `json:"suspended,omitempty"`
+	LegalHold  *LegalHold       `json:"legal_hold,omitempty"`
+	Operations []string         `json:"operations,omitempty"`
+}
+
+// SealView summarises sealed values without revealing them.
+type SealView struct {
+	Paths     []string   `json:"paths"`
+	Quorum    int        `json:"quorum"`
+	Approvals []Approval `json:"approvals,omitempty"`
+	OpenAfter *time.Time `json:"open_after,omitempty"`
+	OpenedAt  *time.Time `json:"opened_at,omitempty"`
+}
+
+// LinkView tells an outside party what the link lets them do.
+type LinkView struct {
+	Party   string    `json:"party"`
+	Scope   []string  `json:"scope"`
+	Expires time.Time `json:"expires_at"`
 }
 
 // CaseSummary is the case header.
@@ -111,6 +150,8 @@ type InputView struct {
 	Span        int      `json:"span,omitempty"`
 	Value       any      `json:"value,omitempty"`
 	Masked      bool     `json:"masked,omitempty"`
+	Sealed      bool     `json:"sealed,omitempty"`
+	Computed    bool     `json:"computed,omitempty"`
 	Flag        *Flag    `json:"flag,omitempty"`
 	Verdict     *Verdict `json:"verdict,omitempty"`
 }
@@ -203,7 +244,11 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 	if st.Page != nil {
 		page := &PageView{Title: st.Page.Title, Description: st.Page.Description, Layout: orDefault(st.Page.Layout, LayoutStacked), SubmitLabel: st.Page.SubmitLabel}
 		for _, g := range st.Page.Groups {
-			if len(g.Roles) > 0 && !actor.HasAnyRole(g.Roles) {
+			if actor.Link != nil {
+				if !slices.ContainsFunc(g.Forms, func(f string) bool { return linkShowsForm(actor.Link, f) }) {
+					continue
+				}
+			} else if len(g.Roles) > 0 && !actor.HasAnyRole(g.Roles) {
 				continue
 			}
 			if ok, err := e.cond(g.VisibleIf, env); err != nil || !ok {
@@ -217,6 +262,9 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 			anyEditable := false
 			for _, form := range g.Forms {
 				cf := e.C.forms[form]
+				if actor.Link != nil && !linkShowsForm(actor.Link, form) {
+					continue
+				}
 				fv := FormView{Name: form, Title: cf.Title, Description: cf.Description, Repeatable: cf.Repeatable, MinItems: cf.MinItems, MaxItems: cf.MaxItems, Columns: cf.Columns}
 				for _, in := range cf.inputs {
 					if ok, err := e.cond(in.VisibleIf, env); err != nil || !ok {
@@ -247,6 +295,10 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 							iv.Value, iv.Masked = mask(fmt.Sprint(iv.Value)), true
 						}
 					}
+					if _, sealed := c.Sealed[path]; sealed && !c.opened() {
+						iv.Sealed, iv.Value = true, nil
+					}
+					iv.Computed = in.Compute != ""
 					if f, ok := ss.Flags[path]; ok {
 						flag := f
 						iv.Flag = &flag
@@ -303,6 +355,9 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 		if n.Kind == NodeApproval {
 			nv.Required = max(1, n.Approvals)
 		}
+		if n.Kind == NodeVote {
+			nv.Required = max(1, n.Voters)
+		}
 		if ns.Result != nil {
 			nv.Result = ns.Result
 		}
@@ -317,10 +372,96 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 				CommentRequired: a.CommentRequired, Confirm: a.Confirm})
 		}
 	}
+	if actor.Link != nil {
+		v.External = &LinkView{Party: actor.Link.Party, Scope: actor.Link.Scope, Expires: actor.Link.Expires}
+		v.Nodes = nil
+		return v, nil
+	}
 	if c.Terminal() || applicant || e.CanView(c, st, actor) {
 		v.Certificates = c.Certificates
 	}
+	v.Notes = e.NotesFor(c, actor)
+	staff := e.staff(actor)
+	if c.Stage == stage {
+		w := &WorkView{Claimable: claimable(st), Assignee: ss.Assignee, AssignedAt: ss.AssignedAt, SLA: ss.SLA, Suspended: ss.Suspended}
+		if staff {
+			w.Routing = ss.Routing
+			w.LegalHold = c.Hold
+		}
+		if open {
+			w.Operations = e.workOperations(c, st, ss, actor)
+		}
+		if staff || w.Assignee != "" || w.SLA != nil || w.Suspended != nil || len(w.Operations) > 0 {
+			v.Work = w
+		}
+	}
+	if staff && len(c.Sealed) > 0 {
+		sv := &SealView{Quorum: 1}
+		for path := range c.Sealed {
+			sv.Paths = append(sv.Paths, path)
+		}
+		slices.Sort(sv.Paths)
+		if p := e.C.Def.Seal; p != nil {
+			sv.Quorum = max(1, p.Quorum)
+			if at, ok := e.openAfter(c); ok && at.Year() < 9999 {
+				sv.OpenAfter = &at
+			}
+		}
+		if c.SealOpening != nil {
+			sv.Approvals, sv.OpenedAt = c.SealOpening.Approvals, c.SealOpening.OpenedAt
+		}
+		v.Seal = sv
+	}
 	return v, nil
+}
+
+func linkShowsForm(l *Link, form string) bool {
+	for _, s := range l.Scope {
+		if s == form || strings.HasPrefix(s, form+".") {
+			return true
+		}
+	}
+	return false
+}
+
+// workOperations lists the work operations the actor may use at an open stage.
+func (e *Engine) workOperations(c *Case, st *Stage, ss *StageState, actor Actor) []string {
+	var ops []string
+	assigner := actor.HasAnyRole(st.AssignRoles)
+	if claimable(st) && ss.Suspended == nil {
+		if ss.Assignee == "" && e.CanAct(c, st, actor) {
+			ops = append(ops, "claim")
+		}
+		if ss.Assignee != "" && (ss.Assignee == actor.ID || assigner) {
+			ops = append(ops, "release")
+		}
+		if ss.Assignee == actor.ID {
+			ops = append(ops, "delegate")
+		}
+	}
+	if assigner && ss.Suspended == nil {
+		ops = append(ops, "assign")
+	}
+	if actor.HasAnyRole(st.SuspendRoles) {
+		if ss.Suspended == nil {
+			ops = append(ops, "suspend")
+		} else {
+			ops = append(ops, "resume")
+		}
+	}
+	if actor.HasAnyRole(st.ExternalRoles) {
+		ops = append(ops, "link")
+	}
+	if e.staff(actor) || (isApplicant(c, actor) && e.C.Def.Notes != nil && e.C.Def.Notes.ApplicantMayWrite) {
+		ops = append(ops, "note")
+	}
+	if e.internalReader(actor) {
+		ops = append(ops, "note_internal")
+	}
+	if p := e.C.Def.Seal; p != nil && len(c.Sealed) > 0 && !c.opened() && actor.HasAnyRole(p.OpenRoles) && !isApplicant(c, actor) {
+		ops = append(ops, "open_sealed")
+	}
+	return ops
 }
 
 func (e *Engine) nodeOperations(c *Case, st *Stage, n *Node, ns *NodeState, actor Actor) []string {
@@ -335,6 +476,11 @@ func (e *Engine) nodeOperations(c *Case, st *Stage, n *Node, ns *NodeState, acto
 	case NodeReview:
 		if ns.Status != NodePassed {
 			ops = append(ops, "verify", "complete")
+		}
+	case NodeVote:
+		voted := slices.ContainsFunc(ns.Approvals, func(a Approval) bool { return a.By == actor.ID })
+		if !voted && ns.Status != NodePassed && ns.Status != NodeFailed {
+			ops = append(ops, "vote")
 		}
 	case NodeApproval:
 		approved := false

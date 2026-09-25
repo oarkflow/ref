@@ -42,6 +42,170 @@ type Definition struct {
 	Forms        []Form            `bcl:"form,block" json:"forms,omitempty"`
 	Stages       []Stage           `bcl:"stage,block" json:"stages"`
 	Certificates []CertificateSpec `bcl:"certificate,block" json:"certificates,omitempty"`
+
+	// Calendars define working time (hours, holidays, timezone) for SLAs,
+	// escalation and worker availability.
+	Calendars []Calendar `bcl:"calendar,block" json:"calendars,omitempty"`
+	// Workers is the directory routing assigns work from. A host may add to
+	// it (see Engine.Directory).
+	Workers []Worker `bcl:"worker,block" json:"workers,omitempty"`
+	// On hooks run host intents when pipeline events happen (after the
+	// change is saved): notifications, integrations, audit exports.
+	On []EventHook `bcl:"on,block" json:"on,omitempty"`
+	// Seal governs opening sealed inputs (bids, financial offers).
+	Seal *SealPolicy `bcl:"seal" json:"seal,omitempty"`
+	// Retention anonymises or purges finished cases after a period.
+	Retention *Retention `bcl:"retention" json:"retention,omitempty"`
+	// Subject lists the data paths that identify the data subject (for
+	// right-to-erasure requests), e.g. ["applicant.national_id", "contact.email"].
+	Subject []string `bcl:"subject" json:"subject,omitempty"`
+	// Notes configures case notes.
+	Notes *NotesPolicy `bcl:"notes" json:"notes,omitempty"`
+}
+
+// Calendar is working time: weekly hours, holidays and a timezone.
+type Calendar struct {
+	Name     string `bcl:",id" json:"name"`
+	Timezone string `bcl:"timezone" json:"timezone,omitempty"`
+	// Hours is a weekly schedule, e.g. "sun-thu 10:00-17:00; fri 10:00-15:00",
+	// or "24x7".
+	Hours string `bcl:"hours" json:"hours,omitempty"`
+	// Holidays are dates ("2026-10-20") or yearly dates ("01-01").
+	Holidays []string `bcl:"holidays" json:"holidays,omitempty"`
+}
+
+// Worker is a person work can be routed to.
+type Worker struct {
+	ID       string   `bcl:",id" json:"id"`
+	Name     string   `bcl:"name" json:"name,omitempty"`
+	Roles    []string `bcl:"roles" json:"roles,omitempty"`
+	Skills   []string `bcl:"skills" json:"skills,omitempty"`
+	OrgUnits []string `bcl:"org_units" json:"org_units,omitempty"`
+	// Capacity caps the worker's open assignments (0 = the routing default).
+	Capacity int `bcl:"capacity" json:"capacity,omitempty"`
+	// Calendar is the worker's working time; routing with respect_hours
+	// skips workers who are off.
+	Calendar string `bcl:"calendar" json:"calendar,omitempty"`
+	Inactive bool   `bcl:"inactive" json:"inactive,omitempty"`
+	// Away lists absences; work is not routed to an absent worker.
+	Away []Absence `bcl:"away,block" json:"away,omitempty"`
+	// DelegateTo receives this worker's routed work while they are away.
+	DelegateTo string `bcl:"delegate_to" json:"delegate_to,omitempty"`
+}
+
+// Absence is a period a worker is unavailable (leave, training).
+type Absence struct {
+	Name   string `bcl:",id" json:"name"`
+	From   string `bcl:"from" json:"from"`
+	Until  string `bcl:"until" json:"until"`
+	Reason string `bcl:"reason" json:"reason,omitempty"`
+}
+
+// Routing strategies.
+const (
+	RouteManual      = "manual"
+	RouteRoundRobin  = "round_robin"
+	RouteLeastLoaded = "least_loaded"
+	RouteSkills      = "skill_based"
+)
+
+// Routing assigns a stage's work to one person when the stage opens.
+type Routing struct {
+	// Strategy: manual (claim from a queue), round_robin, least_loaded or
+	// skill_based.
+	Strategy string `bcl:"strategy,ident" json:"strategy,omitempty"`
+	// Roles narrows candidates (default: the stage's roles).
+	Roles          []string `bcl:"roles" json:"roles,omitempty"`
+	RequiredSkills []string `bcl:"required_skills" json:"required_skills,omitempty"`
+	// SkillsFrom is a data path holding extra required skills.
+	SkillsFrom      string   `bcl:"skills_from" json:"skills_from,omitempty"`
+	PreferredSkills []string `bcl:"preferred_skills" json:"preferred_skills,omitempty"`
+	// Capacity is the default per-worker cap of open assignments.
+	Capacity int `bcl:"capacity" json:"capacity,omitempty"`
+	// Sticky sends a case back to whoever worked the stage before (after a
+	// correction loop), if they are still eligible.
+	Sticky bool `bcl:"sticky" json:"sticky,omitempty"`
+	// RespectHours skips workers outside their working hours.
+	RespectHours bool `bcl:"respect_hours" json:"respect_hours,omitempty"`
+	// SameOrgUnit restricts candidates to workers assigned to the case's org
+	// unit (or one of its ancestors, as resolved by the host).
+	SameOrgUnit bool `bcl:"same_org_unit" json:"same_org_unit,omitempty"`
+}
+
+// SLA is a stage deadline with a warning, a breach action and escalation.
+type SLA struct {
+	// Duration is the time allowed, e.g. "72h", "3d" (3 working days with
+	// a calendar). With a calendar, time is counted in working time.
+	Duration   string `bcl:"duration" json:"duration"`
+	WarnBefore string `bcl:"warn_before" json:"warn_before,omitempty"`
+	Calendar   string `bcl:"calendar" json:"calendar,omitempty"`
+	// OnBreach: notify (default), reassign, return (to ReturnTo) or an
+	// action name of the stage to take automatically.
+	OnBreach string `bcl:"on_breach" json:"on_breach,omitempty"`
+	ReturnTo string `bcl:"return_to" json:"return_to,omitempty"`
+	// Escalate lists escalation levels after the breach.
+	Escalate []Escalation `bcl:"escalate,block" json:"escalate,omitempty"`
+}
+
+// Escalation is one level of an escalation chain.
+type Escalation struct {
+	Name string `bcl:",id" json:"name"`
+	// After is measured from the breach (working time with the SLA calendar).
+	After string `bcl:"after" json:"after"`
+	// AssignRoles routes the case to someone holding one of these roles.
+	AssignRoles []string `bcl:"assign_roles" json:"assign_roles,omitempty"`
+	// Notify names who is told (passed to event hooks as recipients).
+	Notify []string `bcl:"notify" json:"notify,omitempty"`
+}
+
+// Rule is a cross-field validation rule, checked when a stage advances.
+type Rule struct {
+	Name    string `bcl:",id" json:"name"`
+	Check   string `bcl:"check" json:"check"`
+	Message string `bcl:"message" json:"message"`
+	// Path is where the error is reported (default: the rule name).
+	Path string `bcl:"path" json:"path,omitempty"`
+}
+
+// EventHook runs a host hook (in REF: an intent) on a pipeline event.
+type EventHook struct {
+	// Event: case.started, stage.entered, stage.completed, stage.skipped,
+	// case.returned, case.rejected, case.withdrawn, case.completed,
+	// case.approved, assigned, claimed, released, delegated, queued,
+	// sla.warning, sla.breached, sla.escalated, suspended, resumed,
+	// note.added, sealed.opened, erased, retention.applied — or "*".
+	Event string `bcl:",id" json:"event"`
+	Hook  string `bcl:"hook" json:"hook"`
+	// Stage limits the hook to one stage.
+	Stage string `bcl:"stage" json:"stage,omitempty"`
+	When  string `bcl:"when" json:"when,omitempty"`
+}
+
+// SealPolicy governs opening sealed inputs.
+type SealPolicy struct {
+	// OpenRoles may approve an opening; Quorum distinct approvers are needed.
+	OpenRoles []string `bcl:"open_roles" json:"open_roles"`
+	Quorum    int      `bcl:"quorum" json:"quorum,omitempty"`
+	// OpenAfter is an RFC 3339 time or a data path holding one before which
+	// sealed values cannot be opened (a bid deadline).
+	OpenAfter string `bcl:"open_after" json:"open_after,omitempty"`
+}
+
+// Retention applies to finished cases.
+type Retention struct {
+	// After is how long after the case finished, e.g. "8760h".
+	After string `bcl:"after" json:"after"`
+	// Action: anonymize (default) or purge.
+	Action string `bcl:"action,ident" json:"action,omitempty"`
+}
+
+// NotesPolicy configures case notes.
+type NotesPolicy struct {
+	// InternalRoles may write and read internal notes (default: every staff
+	// role of the pipeline).
+	InternalRoles []string `bcl:"internal_roles" json:"internal_roles,omitempty"`
+	// ApplicantMayWrite lets the applicant add public notes.
+	ApplicantMayWrite bool `bcl:"applicant_may_write" json:"applicant_may_write,omitempty"`
 }
 
 // Input kinds.
@@ -87,6 +251,14 @@ type Input struct {
 	Accept    []string `bcl:"accept" json:"accept,omitempty"` // file types
 	// Span is the grid columns the input occupies (layout hint).
 	Span int `bcl:"span" json:"span,omitempty"`
+	// Compute makes the input derived: the expression is evaluated after
+	// every change and the input is never editable.
+	Compute string `bcl:"compute" json:"compute,omitempty"`
+	// PII marks personal data for retention and erasure.
+	PII bool `bcl:"pii" json:"pii,omitempty"`
+	// Sealed values are encrypted when saved and can only be read after an
+	// opening approved under the pipeline's seal policy.
+	Sealed bool `bcl:"sealed" json:"sealed,omitempty"`
 }
 
 // Form is a reusable group of inputs.
@@ -101,6 +273,9 @@ type Form struct {
 	MinItems   int  `bcl:"min_items" json:"min_items,omitempty"`
 	MaxItems   int  `bcl:"max_items" json:"max_items,omitempty"`
 	Columns    int  `bcl:"columns" json:"columns,omitempty"`
+	// Rules are cross-field checks applied when a stage editing this form
+	// advances.
+	Rules []Rule `bcl:"rule,block" json:"rules,omitempty"`
 }
 
 // Group modes and layouts.
@@ -184,6 +359,24 @@ type Stage struct {
 	// OnEnter / OnComplete name host hooks (in REF: intents) to run.
 	OnEnter    string `bcl:"on_enter" json:"on_enter,omitempty"`
 	OnComplete string `bcl:"on_complete" json:"on_complete,omitempty"`
+
+	// Claimable stages are worked by one person at a time: someone claims
+	// (or is routed) the case and only they may act until they release it.
+	Claimable bool `bcl:"claimable" json:"claimable,omitempty"`
+	// AssignRoles may assign or reassign the stage's work to someone else.
+	AssignRoles []string `bcl:"assign_roles" json:"assign_roles,omitempty"`
+	// Routing assigns work automatically on entry (implies claimable).
+	Routing *Routing `bcl:"routing" json:"routing,omitempty"`
+	// SLA replaces Due with working-time deadlines and escalation.
+	SLA *SLA `bcl:"sla" json:"sla,omitempty"`
+	// SuspendRoles may put the case on hold at this stage (awaiting
+	// documents, an inspection) and resume it.
+	SuspendRoles []string `bcl:"suspend_roles" json:"suspend_roles,omitempty"`
+	// ExternalRoles may issue signed links that let an outside party
+	// (a referee, an employer) fill selected inputs of this stage.
+	ExternalRoles []string `bcl:"external_roles" json:"external_roles,omitempty"`
+	// Rules are cross-field checks applied when the stage advances.
+	Rules []Rule `bcl:"rule,block" json:"rules,omitempty"`
 }
 
 // Node kinds.
@@ -195,6 +388,13 @@ const (
 	NodeAutomated   = "automated"
 	NodeCertificate = "certificate"
 	NodeTask        = "task"
+	NodeVote        = "vote"
+)
+
+// Consensus policies of a vote node.
+const (
+	ConsensusUnanimous = "unanimous"
+	ConsensusMajority  = "majority"
 )
 
 // Node is a unit of work inside a stage with its own status.
@@ -227,6 +427,10 @@ type Node struct {
 	Auto bool `bcl:"auto" json:"auto,omitempty"`
 	// WaiveRoles may waive the node.
 	WaiveRoles []string `bcl:"waive_roles" json:"waive_roles,omitempty"`
+	// Voters is how many distinct people a vote node needs; Consensus is
+	// unanimous (default), majority, or a number of approving votes.
+	Voters    int    `bcl:"voters" json:"voters,omitempty"`
+	Consensus string `bcl:"consensus" json:"consensus,omitempty"`
 }
 
 // Action outcomes.
