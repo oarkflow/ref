@@ -37,6 +37,11 @@ type Document struct {
 	// Pipelines are multi-stage data verification workflows (application →
 	// review → approval → certificate), run by a pipeline.cases resource.
 	Pipelines []pipeline.Definition `bcl:"pipeline,block"`
+
+	// Entities are declarative data resources: a migrated table plus a
+	// validated REST API with filters, search, export, aggregates, access
+	// rules and hooks (see entity.go).
+	Entities []EntitySpec `bcl:"entity,block"`
 }
 
 // SecretSpec resolves one named secret at load time, from the environment or a

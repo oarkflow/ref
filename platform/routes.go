@@ -817,6 +817,20 @@ func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute,
 		return nil
 	}
 
+	if raw, ok := value.(RawResponse); ok {
+		p.applyResponseHeaders(c, route)
+		c.Set("Content-Type", orDefault(raw.ContentType, "application/octet-stream"))
+		if raw.Filename != "" {
+			c.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", raw.Filename))
+		}
+		if err := p.completeIdempotency(ctx, route, idemLease, route.status, raw.Body); err != nil {
+			return projectFailure(c, unavailable("the response could not be committed for idempotent replay"))
+		}
+		*idemCompleted = true
+		p.audit(ctx, route, principal, tenant, body, nil, nil)
+		return c.Status(route.status).Send(raw.Body)
+	}
+
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return projectFailure(c, fmt.Errorf("the response could not be serialised: %w", err))

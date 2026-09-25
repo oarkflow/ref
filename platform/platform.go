@@ -267,6 +267,9 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 		return nil, err
 	}
 	doc = applyFamilyDefaults(doc, opts.Registry)
+	if doc, err = expandEntities(doc); err != nil {
+		return nil, err
+	}
 	if err := validateDocument(doc, opts.Registry); err != nil {
 		return nil, err
 	}
