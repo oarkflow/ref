@@ -24,7 +24,11 @@ role "admin" {
     "roles:manage",
     "audit:read",
     "settings:read",
-    "settings:write"
+    "settings:write",
+    "gov:*",
+    "coding:*",
+    "activity:*",
+    "tasks:admin"
   ]
   inherits ["manager"]
 }
@@ -37,7 +41,11 @@ role "manager" {
     "reports:export",
     "users:read",
     "teams:read",
-    "teams:write"
+    "teams:write",
+    "tasks:approve",
+    "activity:read",
+    "gov:read",
+    "coding:read"
   ]
   inherits ["user"]
 }
@@ -48,9 +56,37 @@ role "user" {
     "dashboard:view",
     "profile:view",
     "profile:update",
-    "notifications:read"
+    "notifications:read",
+    "projects:read",
+    "projects:write",
+    "tasks:read",
+    "tasks:write",
+    "activity:self"
   ]
   inherits ["guest"]
+}
+
+# --- Module roles (bcl/13_gov_projects.bcl, bcl/14_medical_coding.bcl) -----
+# Both inherit "user", so an officer or a coder also manages projects and
+# tasks. Their organisational reach (officers) is not a role: it is the
+# user_org_units row that bcl/13_gov_projects.bcl resolves per request.
+
+role "officer" {
+  description "Government project officer, scoped to an organisational unit subtree"
+  permissions [
+    "gov:read",
+    "gov:write"
+  ]
+  inherits ["user"]
+}
+
+role "coder" {
+  description "Medical coder working the encounter coding queue"
+  permissions [
+    "coding:read",
+    "coding:write"
+  ]
+  inherits ["user"]
 }
 
 role "guest" {

@@ -1,0 +1,1570 @@
+# ===========================================================================
+# Module: Project & Task Management
+#
+# Projects have an owner and members; tasks belong to a project, carry an
+# assignee, a priority and a due date, and move through a status workflow:
+#
+#     todo ──> in_progress ──> review ──(manager approval)──> done
+#      ^            │   ^          │
+#      └────────────┘   └──────────┘  (rework / reject)
+#
+# * database.crud owns project create/update/delete with owner_column
+#   scoping: only the owner can change or delete a project, and a caller
+#   who is not the owner gets a 404 (not a 403 that would disclose it).
+# * Visibility of a project and its tasks is membership: every read joins
+#   project_members on the session user.
+# * Status transitions are classified by a decision.table and rejected
+#   (422) when not in the workflow; a flow.switch then runs the child intent
+#   for the transition's outcome.
+# * Moving a task to "review" starts the durable "task.approval" process,
+#   which parks on a human task for a manager. Approving it marks the task
+#   done; rejecting it sends the task back to in_progress. A task can never
+#   be moved to "done" directly.
+# * The "flag_overdue_tasks" schedule stamps overdue tasks hourly.
+# * Every change writes an audit_log row, which bcl/15_activity.bcl serves
+#   as the activity feed.
+# ===========================================================================
+
+# --- Durable process state (runs, steps, human tasks) ----------------------
+resource "runs" {
+  kind "store.sql"
+  description "Durable process state for the task approval workflow"
+  config {
+    database "database"
+    table_prefix "boilerplate_process"
+  }
+}
+
+# --- Shapes ----------------------------------------------------------------
+shape "project_input" {
+  kind object
+  description "A new project"
+
+  prop "name" {
+    kind string
+    required true
+    min_length 2
+    max_length 120
+  }
+
+  prop "description" {
+    kind string
+    max_length 2000
+    default ""
+  }
+
+  prop "status" {
+    kind string
+    enum ["planning", "active", "on_hold", "completed", "archived"]
+    default "active"
+  }
+
+  prop "due_date" {
+    kind string
+    format date
+  }
+}
+
+shape "project_update_input" {
+  kind object
+  description "A partial project update; only the owner may apply it"
+
+  prop "name" {
+    kind string
+    min_length 2
+    max_length 120
+  }
+
+  prop "description" {
+    kind string
+    max_length 2000
+  }
+
+  prop "status" {
+    kind string
+    enum ["planning", "active", "on_hold", "completed", "archived"]
+  }
+
+  prop "due_date" {
+    kind string
+    format date
+  }
+}
+
+shape "project_member_input" {
+  kind object
+
+  prop "user_id" {
+    kind string
+    required true
+    min_length 1
+  }
+}
+
+shape "task_input" {
+  kind object
+  description "A new task inside a project"
+
+  prop "title" {
+    kind string
+    required true
+    min_length 2
+    max_length 200
+  }
+
+  prop "description" {
+    kind string
+    max_length 4000
+    default ""
+  }
+
+  prop "assignee_id" {
+    kind string
+    description "Defaults to the caller; must be a member of the project"
+  }
+
+  prop "priority" {
+    kind string
+    enum ["low", "medium", "high", "urgent"]
+    default "medium"
+  }
+
+  prop "due_date" {
+    kind string
+    format date
+  }
+}
+
+shape "task_transition_input" {
+  kind object
+
+  prop "status" {
+    kind string
+    required true
+    enum ["todo", "in_progress", "review", "done"]
+  }
+}
+
+shape "task_comment_input" {
+  kind object
+
+  prop "body" {
+    kind string
+    required true
+    min_length 1
+    max_length 4000
+  }
+}
+
+shape "approval_decision" {
+  kind object
+  description "A manager's decision on a task submitted for review"
+
+  prop "action" {
+    kind string
+    required true
+    enum ["approve", "reject"]
+  }
+
+  prop "note" {
+    kind string
+    max_length 1000
+  }
+}
+
+# ===========================================================================
+# Projects
+# ===========================================================================
+
+intent "projects.create" {
+  description "Create a project owned by the caller and add them as its first member"
+  response "response"
+  input_schema "project_input"
+  timeout 5s
+
+  node "user" {
+    family auth
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  # owner_column stamps owner_id from the principal; a client-supplied owner
+  # is dropped because it is not writable.
+  node "project" {
+    family database
+    uses "database.crud"
+    resource "database"
+    kind effect
+    requires [input, user_id]
+    provides [project]
+    config {
+      operation "create"
+      table "projects"
+      columns ["id", "name", "description", "owner_id", "status", "due_date", "created_at", "updated_at"]
+      writable ["name", "description", "status", "due_date"]
+      owner_column "owner_id"
+    }
+  }
+
+  node "owner-membership" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [project, user_id]
+    provides [owner_added]
+    config {
+      statement "INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'owner')"
+      args [project.id, user_id]
+    }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [project, user_id]
+    provides [audited]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, target_id, detail) VALUES ('project.created', $1, $2, $3)"
+      args [user_id, project.id, project.name]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [project, owner_added, audited]
+    provides [response]
+  }
+}
+
+intent "projects.list" {
+  description "Projects the caller owns or is a member of, with task progress"
+  response "response"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "projects" {
+    family database
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [projects]
+    config {
+      statement "SELECT p.id, p.name, p.description, p.owner_id, p.status, p.due_date, p.created_at, m.role AS my_role, (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS task_count, (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status = 'done') AS done_count FROM projects p JOIN project_members m ON m.project_id = p.id AND m.user_id = $1 ORDER BY p.id DESC LIMIT 200"
+      args [user_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [projects]
+    provides [response]
+  }
+}
+
+intent "projects.get" {
+  description "One project with its members and tasks — members only"
+  response "response"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" }
+  }
+
+  node "load" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [id, user_id]
+    provides [project_rows]
+    config {
+      statement "SELECT p.id, p.name, p.description, p.owner_id, p.status, p.due_date, p.created_at, p.updated_at, m.role AS my_role FROM projects p JOIN project_members m ON m.project_id = p.id AND m.user_id = $2 WHERE p.id = $1"
+      args [id, user_id]
+      require_rows true
+      not_found_message "project not found"
+    }
+  }
+
+  node "project" {
+    uses "data.first"
+    requires [project_rows]
+    provides [project]
+    config { source_fact "project_rows" }
+  }
+
+  node "members" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [project]
+    provides [members]
+    config {
+      statement "SELECT m.user_id, m.role, u.name, u.email FROM project_members m LEFT JOIN users u ON u.id = m.user_id WHERE m.project_id = $1 ORDER BY m.role DESC, u.name"
+      args [project.id]
+    }
+  }
+
+  node "tasks" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [project]
+    provides [tasks]
+    config {
+      statement "SELECT id, title, assignee_id, reporter_id, priority, status, due_date, overdue, approval_run_id, created_at, completed_at FROM tasks WHERE project_id = $1 ORDER BY CASE status WHEN 'todo' THEN 1 WHEN 'in_progress' THEN 2 WHEN 'review' THEN 3 ELSE 4 END, due_date"
+      args [project.id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [project, members, tasks]
+    provides [response]
+  }
+}
+
+intent "projects.update" {
+  description "Owner-only partial update of a project"
+  response "response"
+  input_schema "project_update_input"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" }
+  }
+
+  # owner_column adds "AND owner_id = <caller>": a member who is not the owner
+  # updates nothing and receives 404.
+  node "project" {
+    family database
+    uses "database.crud"
+    resource "database"
+    kind effect
+    requires [input, id, user_id]
+    provides [project]
+    config {
+      operation "update"
+      table "projects"
+      columns ["id", "name", "description", "owner_id", "status", "due_date", "updated_at"]
+      writable ["name", "description", "status", "due_date"]
+      owner_column "owner_id"
+      id_fact "id"
+    }
+  }
+
+  node "touch" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [project]
+    provides [touched]
+    config {
+      statement "UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1"
+      args [project.id]
+    }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [project, user_id]
+    provides [audited]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, target_id, detail) VALUES ('project.updated', $1, $2, $3)"
+      args [user_id, project.id, project.status]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [project, touched, audited]
+    provides [response]
+  }
+}
+
+intent "projects.delete" {
+  description "Owner-only delete of a project and everything in it"
+  response "response"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" }
+  }
+
+  node "delete" {
+    family database
+    uses "database.crud"
+    resource "database"
+    kind effect
+    requires [id, user_id]
+    provides [deleted]
+    config {
+      operation "delete"
+      table "projects"
+      columns ["id"]
+      owner_column "owner_id"
+      id_fact "id"
+    }
+  }
+
+  # SQLite does not enforce foreign keys unless asked to, so the children are
+  # removed explicitly — and only after the owner-scoped delete succeeded.
+  node "cleanup" {
+    uses "database.transaction"
+    resource "database"
+    kind effect
+    requires [deleted, id]
+    provides [cleaned]
+    config {
+      statements [
+        { name "comments" sql "DELETE FROM task_comments WHERE task_id IN (SELECT id FROM tasks WHERE project_id = $1)" args [id] },
+        { name "tasks" sql "DELETE FROM tasks WHERE project_id = $1" args [id] },
+        { name "members" sql "DELETE FROM project_members WHERE project_id = $1" args [id] }
+      ]
+    }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [cleaned, user_id, id]
+    provides [audited]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, target_id) VALUES ('project.deleted', $1, $2)"
+      args [user_id, id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [deleted, audited]
+    provides [response]
+  }
+}
+
+intent "projects.add_member" {
+  description "Owner adds an existing user to the project"
+  response "response"
+  input_schema "project_member_input"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" }
+  }
+
+  node "owned" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [id, user_id]
+    provides [owned]
+    config {
+      statement "SELECT id FROM projects WHERE id = $1 AND owner_id = $2"
+      args [id, user_id]
+      require_rows true
+      not_found_message "project not found"
+    }
+  }
+
+  node "member-exists" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [input]
+    provides [member_user]
+    config {
+      statement "SELECT id FROM users WHERE id = $1 AND status = 'active'"
+      args [input.user_id]
+      require_rows true
+      not_found_message "user not found"
+    }
+  }
+
+  node "add" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [owned, member_user, id, input]
+    provides [added]
+    config {
+      statement "INSERT OR IGNORE INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'member')"
+      args [id, input.user_id]
+    }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [added, user_id, id, input]
+    provides [audited]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, target_id, detail) VALUES ('project.member_added', $1, $2, $3)"
+      args [user_id, id, input.user_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [added, audited]
+    provides [response]
+  }
+}
+
+# ===========================================================================
+# Tasks
+# ===========================================================================
+
+intent "tasks.create" {
+  description "Create a task in a project the caller belongs to"
+  response "response"
+  input_schema "task_input"
+  timeout 5s
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "id" {
+    uses "request.param"
+    provides [project_id]
+    config { name "id" }
+  }
+
+  node "membership" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [project_id, user_id]
+    provides [membership]
+    config {
+      statement "SELECT project_id FROM project_members WHERE project_id = $1 AND user_id = $2"
+      args [project_id, user_id]
+      require_rows true
+      not_found_message "project not found"
+    }
+  }
+
+  # Chained after membership so a non-member always gets the 404, never a
+  # racing 422 about the assignee.
+  node "assignee" {
+    uses "expression"
+    requires [input, user_id, membership]
+    provides [assignee_id]
+    config { expression "coalesce(input.assignee_id, user_id)" }
+  }
+
+  node "assignee-membership" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [project_id, assignee_id]
+    provides [assignee_rows]
+    config {
+      statement "SELECT user_id FROM project_members WHERE project_id = $1 AND user_id = $2"
+      args [project_id, assignee_id]
+    }
+  }
+
+  node "assignee-is-member" {
+    uses "validate.expression"
+    requires [assignee_rows]
+    provides [assignee_ok]
+    config {
+      expression "len(assignee_rows) > 0"
+      message "the assignee must be a member of the project"
+    }
+  }
+
+  node "task" {
+    family database
+    uses "database.query"
+    resource "database"
+    kind effect
+    requires [membership, assignee_ok, project_id, input, assignee_id, user_id]
+    provides [task_rows]
+    config {
+      statement "INSERT INTO tasks (project_id, title, description, assignee_id, reporter_id, priority, status, due_date) VALUES ($1, $2, $3, $4, $5, $6, 'todo', $7) RETURNING id, project_id, title, description, assignee_id, reporter_id, priority, status, due_date, created_at"
+      args [project_id, input.title, input.description, assignee_id, user_id, input.priority, input.due_date]
+    }
+  }
+
+  node "first" {
+    uses "data.first"
+    requires [task_rows]
+    provides [task]
+    config { source_fact "task_rows" }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [task, user_id]
+    provides [audited]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, target_id, detail) VALUES ('task.created', $1, $2, $3)"
+      args [user_id, task.id, task.title]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [task, audited]
+    provides [response]
+  }
+}
+
+# --- Status workflow --------------------------------------------------------
+intent "tasks.transition" {
+  description "Move a task through todo → in_progress → review; review starts the approval process"
+  response "response"
+  input_schema "task_transition_input"
+  timeout 10s
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" }
+  }
+
+  node "load" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [id, user_id]
+    provides [task_rows]
+    config {
+      statement "SELECT t.id, t.project_id, t.title, t.status, t.assignee_id FROM tasks t JOIN project_members m ON m.project_id = t.project_id AND m.user_id = $2 WHERE t.id = $1"
+      args [id, user_id]
+      require_rows true
+      not_found_message "task not found"
+    }
+  }
+
+  node "task" {
+    uses "data.first"
+    requires [task_rows]
+    provides [task]
+    config { source_fact "task_rows" }
+  }
+
+  # The workflow as a table. Anything not listed — including a jump straight
+  # to "done", which only the approval process may make — is "invalid".
+  node "classify" {
+    family decision
+    uses "decision.table"
+    requires [task, input]
+    provides [transition]
+    config {
+      rules [
+        { name "start" condition "task.status == 'todo' and input.status == 'in_progress'" outcome "apply" reason "work started" },
+        { name "pause" condition "task.status == 'in_progress' and input.status == 'todo'" outcome "apply" reason "work paused" },
+        { name "submit" condition "task.status == 'in_progress' and input.status == 'review'" outcome "submit" reason "submitted for manager approval" },
+        { name "withdraw" condition "task.status == 'review' and input.status == 'in_progress'" outcome "apply" reason "withdrawn from review" }
+      ]
+      default_outcome "invalid"
+      default_reason "transition not allowed by the task workflow"
+    }
+  }
+
+  node "reject-invalid" {
+    uses "validate.expression"
+    requires [transition]
+    provides [transition_ok]
+    config {
+      expression "transition.outcome != 'invalid'"
+      message "invalid status transition: allowed are todo→in_progress, in_progress→todo, in_progress→review and review→in_progress; review→done happens only through manager approval"
+    }
+  }
+
+  node "change" {
+    uses "data.transform"
+    requires [task, input, user_id, transition_ok]
+    provides [change]
+    config {
+      source_fact "task"
+      data {
+        extract {
+          target_status "input.status"
+          actor "user_id"
+        }
+      }
+    }
+  }
+
+  node "apply" {
+    family switch
+    uses "flow.switch"
+    requires [change, transition]
+    provides [applied]
+    config {
+      on "transition.outcome"
+      input_fact "change"
+      cases [
+        { label "apply" intent "tasks.apply_status" },
+        { label "submit" intent "tasks.submit_review" }
+      ]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [change, transition, applied]
+    provides [response]
+  }
+}
+
+intent "tasks.apply_status" {
+  description "Child of tasks.transition: write a plain status change"
+  response "response"
+
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [input]
+    provides [updated]
+    config {
+      statement "UPDATE tasks SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND status = $3"
+      args [input.target_status, input.id, input.status]
+      require_affected true
+      not_found_message "the task changed while you were editing it; reload and try again"
+    }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [updated, input]
+    provides [audited]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, target_id, detail) VALUES ('task.status_changed', $1, $2, $3 || '->' || $4)"
+      args [input.actor, input.id, input.status, input.target_status]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [updated, audited]
+    provides [response]
+  }
+}
+
+intent "tasks.submit_review" {
+  description "Child of tasks.transition: move to review and start the approval process"
+  response "response"
+
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [input]
+    provides [updated]
+    config {
+      statement "UPDATE tasks SET status = 'review', updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND status = $2"
+      args [input.id, input.status]
+      require_affected true
+      not_found_message "the task changed while you were editing it; reload and try again"
+    }
+  }
+
+  node "payload" {
+    uses "data.transform"
+    requires [input, updated]
+    provides [payload]
+    config {
+      source_fact "input"
+      data {
+        extract {
+          work_task_id "input.id"
+          requested_by "input.actor"
+        }
+        pick ["work_task_id", "title", "requested_by", "project_id"]
+      }
+    }
+  }
+
+  node "run" {
+    family process
+    uses "process.start"
+    kind effect
+    requires [payload]
+    provides [run]
+    config {
+      process "task.approval"
+      input_fact "payload"
+      wait true
+    }
+  }
+
+  node "link" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [run, input]
+    provides [linked]
+    config {
+      statement "UPDATE tasks SET approval_run_id = $1 WHERE id = $2"
+      args [run.run_id, input.id]
+    }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [linked, input]
+    provides [audited]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, target_id, detail) VALUES ('task.submitted_for_review', $1, $2, $3)"
+      args [input.actor, input.id, input.title]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [run, audited]
+    provides [response]
+  }
+}
+
+# Steps of the approval process. Their input is the human task's result
+# (action, completed_by, note, …) with work_task_id extracted from the run.
+intent "tasks.mark_done" {
+  description "Approval process step: the manager approved — the task is done"
+  response "response"
+
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [input]
+    provides [updated]
+    config {
+      statement "UPDATE tasks SET status = 'done', overdue = 0, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND status = 'review'"
+      args [input.work_task_id]
+    }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [updated, input]
+    provides [audited]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, target_id, detail) VALUES ('task.approved', $1, $2, $3)"
+      args [input.completed_by, input.work_task_id, input.note]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [updated, audited]
+    provides [response]
+  }
+}
+
+intent "tasks.mark_rework" {
+  description "Approval process step: the manager rejected — back to in_progress"
+  response "response"
+
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [input]
+    provides [updated]
+    config {
+      statement "UPDATE tasks SET status = 'in_progress', updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND status = 'review'"
+      args [input.work_task_id]
+    }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [updated, input]
+    provides [audited]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, target_id, detail) VALUES ('task.rejected', $1, $2, $3)"
+      args [input.completed_by, input.work_task_id, input.note]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [updated, audited]
+    provides [response]
+  }
+}
+
+process "task.approval" {
+  description "A manager approves (→ done) or rejects (→ in_progress) a task in review"
+  store "runs"
+  queue "jobs"
+  start "approve"
+  max_steps 20
+
+  step "approve" {
+    description "Parks until a manager decides"
+    family approval
+    task {
+      title "Approve task #{{ run.input.work_task_id }}: {{ run.input.title }}"
+      instructions "The assignee moved this task to review. Approve to mark it done, or reject to send it back."
+      role "manager"
+      actions [approve, reject]
+      form_schema "approval_decision"
+      due 72h
+      # Four eyes: whoever submitted the task cannot approve it.
+      forbid_principals ["run.input.requested_by"]
+    }
+  }
+
+  step "mark_done" {
+    intent "tasks.mark_done"
+    family database
+    terminal true
+    input_data {
+      extract { work_task_id "run.input.work_task_id" }
+    }
+  }
+
+  step "mark_rework" {
+    intent "tasks.mark_rework"
+    family database
+    terminal true
+    input_data {
+      extract { work_task_id "run.input.work_task_id" }
+    }
+  }
+
+  edge "approved" {
+    kind branch
+    from "approve"
+    to "mark_done"
+    condition "result.action == 'approve'"
+  }
+
+  edge "rejected" {
+    kind branch
+    from "approve"
+    to "mark_rework"
+    condition "result.action == 'reject'"
+  }
+}
+
+intent "approvals.list" {
+  description "The caller's approval queue (managers)"
+  response "response"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "tasks" {
+    family human_task
+    uses "task.list"
+    kind read
+    requires [user_id]
+    provides [approvals]
+    config {
+      process "task.approval"
+      scope "mine"
+      limit 50
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [approvals]
+    provides [response]
+  }
+}
+
+intent "approvals.decide" {
+  description "Approve or reject a task in review; the process continues on the queue"
+  response "response"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "id" {
+    uses "request.param"
+    provides [approval_id]
+    config { name "id" }
+  }
+
+  node "decide" {
+    family approval
+    uses "task.complete"
+    kind effect
+    requires [approval_id, input, user_id]
+    provides [approval]
+    config {
+      process "task.approval"
+      task_id_fact "approval_id"
+      action_fact "input.action"
+      payload_fact "input"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [approval]
+    provides [response]
+    config { unwrap true }
+  }
+}
+
+# --- Task queries ------------------------------------------------------------
+intent "tasks.mine" {
+  description "Open tasks assigned to the caller, soonest due first"
+  response "response"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "tasks" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [tasks]
+    config {
+      statement "SELECT t.id, t.project_id, p.name AS project_name, t.title, t.priority, t.status, t.due_date, t.overdue FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.assignee_id = $1 AND t.status <> 'done' ORDER BY t.due_date IS NULL, t.due_date, t.id LIMIT 200"
+      args [user_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [tasks]
+    provides [response]
+  }
+}
+
+intent "tasks.overdue" {
+  description "Open tasks past their due date in projects the caller belongs to"
+  response "response"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "tasks" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [tasks]
+    config {
+      statement "SELECT t.id, t.project_id, p.name AS project_name, t.title, t.assignee_id, t.priority, t.status, t.due_date, CAST(julianday(date('now')) - julianday(t.due_date) AS INTEGER) AS days_overdue FROM tasks t JOIN projects p ON p.id = t.project_id JOIN project_members m ON m.project_id = t.project_id AND m.user_id = $1 WHERE t.status <> 'done' AND t.due_date IS NOT NULL AND t.due_date < date('now') ORDER BY t.due_date LIMIT 200"
+      args [user_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [tasks]
+    provides [response]
+  }
+}
+
+# Run hourly by the "flag_overdue_tasks" schedule (no session there), and on
+# demand by admins through POST /api/v1/admin/tasks/flag-overdue.
+intent "tasks.flag_overdue" {
+  description "Stamp overdue on open tasks past their due date and clear it on the rest"
+  response "response"
+  timeout 30s
+
+  node "flag" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    provides [flagged]
+    config {
+      statement "UPDATE tasks SET overdue = 1 WHERE overdue = 0 AND status <> 'done' AND due_date IS NOT NULL AND due_date < date('now')"
+    }
+  }
+
+  node "clear" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [flagged]
+    provides [cleared]
+    config {
+      statement "UPDATE tasks SET overdue = 0 WHERE overdue = 1 AND (status = 'done' OR due_date IS NULL OR due_date >= date('now'))"
+    }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [flagged]
+    provides [audited]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, detail) VALUES ('task.overdue_flagged', 'system', CAST($1 AS TEXT) || ' task(s) flagged')"
+      args [flagged]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [flagged, cleared, audited]
+    provides [response]
+  }
+}
+
+# --- Comments -----------------------------------------------------------------
+intent "tasks.comment" {
+  description "Comment on a task in a project the caller belongs to"
+  response "response"
+  input_schema "task_comment_input"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" }
+  }
+
+  node "visible" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [id, user_id]
+    provides [visible]
+    config {
+      statement "SELECT t.id FROM tasks t JOIN project_members m ON m.project_id = t.project_id AND m.user_id = $2 WHERE t.id = $1"
+      args [id, user_id]
+      require_rows true
+      not_found_message "task not found"
+    }
+  }
+
+  node "insert" {
+    uses "database.query"
+    resource "database"
+    kind effect
+    requires [visible, id, user_id, input]
+    provides [comment_rows]
+    config {
+      statement "INSERT INTO task_comments (task_id, author_id, body) VALUES ($1, $2, $3) RETURNING id, task_id, author_id, body, created_at"
+      args [id, user_id, input.body]
+    }
+  }
+
+  node "comment" {
+    uses "data.first"
+    requires [comment_rows]
+    provides [comment]
+    config { source_fact "comment_rows" }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [comment, user_id, id]
+    provides [audited]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, target_id, detail) VALUES ('task.commented', $1, $2, 'comment ' || $3)"
+      args [user_id, id, comment.id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [comment, audited]
+    provides [response]
+  }
+}
+
+intent "tasks.comments" {
+  description "A task's comment thread"
+  response "response"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" }
+  }
+
+  node "comments" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [id, user_id]
+    provides [comments]
+    config {
+      statement "SELECT c.id, c.author_id, u.name AS author_name, c.body, c.created_at FROM task_comments c JOIN tasks t ON t.id = c.task_id JOIN project_members m ON m.project_id = t.project_id AND m.user_id = $2 LEFT JOIN users u ON u.id = c.author_id WHERE c.task_id = $1 ORDER BY c.id"
+      args [id, user_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [comments]
+    provides [response]
+  }
+}
+
+# --- Web page ----------------------------------------------------------------
+intent "projects.page" {
+  description "Projects hub: my projects, my open tasks, overdue work"
+  response "response"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "projects" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [projects]
+    config {
+      statement "SELECT p.id, p.name, p.status, COALESCE(p.due_date, '—') AS due_date, m.role AS my_role, (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS task_count, (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status = 'done') AS done_count FROM projects p JOIN project_members m ON m.project_id = p.id AND m.user_id = $1 ORDER BY p.id DESC LIMIT 100"
+      args [user_id]
+    }
+  }
+
+  node "my-tasks" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [my_tasks]
+    config {
+      statement "SELECT t.id, p.name AS project_name, t.title, t.priority, t.status, COALESCE(t.due_date, '—') AS due_date, t.overdue FROM tasks t JOIN projects p ON p.id = t.project_id WHERE t.assignee_id = $1 AND t.status <> 'done' ORDER BY t.due_date IS NULL, t.due_date LIMIT 100"
+      args [user_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [projects, my_tasks]
+    provides [response]
+  }
+}
+
+# ===========================================================================
+# Routes
+# ===========================================================================
+
+route "web.projects" {
+  method GET
+  path "/projects"
+  intent "projects.page"
+  template "pages/projects/index"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["projects:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.projects.list" {
+  method GET
+  path "/api/v1/projects"
+  intent "projects.list"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["projects:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.projects.create" {
+  method POST
+  path "/api/v1/projects"
+  intent "projects.create"
+  session "sessions"
+  auth "session_auth"
+  status 201
+  cache_control "no-store"
+  authz {
+    permissions ["projects:write"]
+    authorizer "authorization"
+  }
+}
+
+route "api.projects.get" {
+  method GET
+  path "/api/v1/projects/:id"
+  intent "projects.get"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["projects:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.projects.update" {
+  method PATCH
+  path "/api/v1/projects/:id"
+  intent "projects.update"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+  authz {
+    permissions ["projects:write"]
+    authorizer "authorization"
+  }
+}
+
+route "api.projects.delete" {
+  method DELETE
+  path "/api/v1/projects/:id"
+  intent "projects.delete"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+  authz {
+    permissions ["projects:write"]
+    authorizer "authorization"
+  }
+}
+
+route "api.projects.add_member" {
+  method POST
+  path "/api/v1/projects/:id/members"
+  intent "projects.add_member"
+  session "sessions"
+  auth "session_auth"
+  status 201
+  cache_control "no-store"
+  authz {
+    permissions ["projects:write"]
+    authorizer "authorization"
+  }
+}
+
+route "api.tasks.create" {
+  method POST
+  path "/api/v1/projects/:id/tasks"
+  intent "tasks.create"
+  session "sessions"
+  auth "session_auth"
+  status 201
+  cache_control "no-store"
+  authz {
+    permissions ["tasks:write"]
+    authorizer "authorization"
+  }
+}
+
+route "api.tasks.mine" {
+  method GET
+  path "/api/v1/tasks/mine"
+  intent "tasks.mine"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["tasks:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.tasks.overdue" {
+  method GET
+  path "/api/v1/tasks/overdue"
+  intent "tasks.overdue"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["tasks:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.tasks.transition" {
+  method POST
+  path "/api/v1/tasks/:id/transition"
+  intent "tasks.transition"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+  authz {
+    permissions ["tasks:write"]
+    authorizer "authorization"
+  }
+}
+
+route "api.tasks.comment" {
+  method POST
+  path "/api/v1/tasks/:id/comments"
+  intent "tasks.comment"
+  session "sessions"
+  auth "session_auth"
+  status 201
+  cache_control "no-store"
+  authz {
+    permissions ["tasks:write"]
+    authorizer "authorization"
+  }
+}
+
+route "api.tasks.comments" {
+  method GET
+  path "/api/v1/tasks/:id/comments"
+  intent "tasks.comments"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["tasks:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.approvals.list" {
+  method GET
+  path "/api/v1/approvals"
+  intent "approvals.list"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["tasks:approve"]
+    authorizer "authorization"
+  }
+}
+
+route "api.approvals.decide" {
+  method POST
+  path "/api/v1/approvals/:id/decide"
+  intent "approvals.decide"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+  authz {
+    permissions ["tasks:approve"]
+    authorizer "authorization"
+  }
+  route_audit {
+    action "api.tasks.approval"
+    include_request true
+  }
+}
+
+route "api.admin.tasks.flag_overdue" {
+  method POST
+  path "/api/v1/admin/tasks/flag-overdue"
+  intent "tasks.flag_overdue"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+  authz {
+    permissions ["tasks:admin"]
+    authorizer "authorization"
+  }
+}
+
+# --- Schedule -----------------------------------------------------------------
+schedule "flag_overdue_tasks" {
+  description "Hourly: stamp overdue on open tasks past their due date"
+  cron "5 * * * *"
+  timezone "UTC"
+  queue "jobs"
+  intent "tasks.flag_overdue"
+  jitter 2m
+}

@@ -1,0 +1,957 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Passport Request</title>
+<meta name="description" content="Apply for a passport, follow your case, and verify certificates.">
+<style>
+:root{
+  --bg:#f5f6f8;--surface:#fff;--surface-2:#f0f2f5;--text:#1b1f24;--muted:#5b6470;--border:#d7dbe0;
+  --accent:#1f5fbf;--accent-text:#fff;--accent-soft:#e6eefb;--ok:#1d7a46;--ok-soft:#e3f4ea;
+  --warn:#9a5b00;--warn-soft:#fff3dc;--bad:#b3261e;--bad-soft:#fde8e6;--focus:#1f5fbf;
+  --radius:10px;--shadow:0 1px 2px rgba(0,0,0,.06),0 2px 8px rgba(0,0,0,.04);
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#121417;--surface:#1b1e23;--surface-2:#23272d;--text:#e7e9ec;--muted:#9aa3ad;--border:#343a42;
+  --accent:#7aa7f0;--accent-text:#0d1420;--accent-soft:#1d2a40;--ok:#6fcf97;--ok-soft:#18301f;
+  --warn:#f0b35a;--warn-soft:#352812;--bad:#f28b82;--bad-soft:#3a1c1a;--focus:#7aa7f0;
+  --shadow:none;color-scheme:dark;
+}}
+*{box-sizing:border-box}
+html,body{margin:0;overflow-x:hidden}
+body{background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:var(--accent)}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+header.top{background:var(--surface);border-bottom:1px solid var(--border)}
+.wrap{max-width:1040px;margin:0 auto;padding:0 16px}
+.top .wrap{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;padding-top:10px;padding-bottom:10px}
+.brand{font-weight:700;text-decoration:none;color:var(--text);margin-right:auto}
+.top nav{display:flex;gap:12px}
+.ident{display:flex;gap:6px;align-items:center;flex-wrap:wrap;min-width:0}
+.ident input{width:200px;max-width:100%}
+.ident small{color:var(--muted)}
+main{padding-top:20px;padding-bottom:48px}
+main:focus{outline:none}
+h1{font-size:1.5rem;margin:0 0 4px}h2{font-size:1.15rem;margin:0 0 8px}h3{font-size:1rem;margin:0 0 6px}
+p{margin:0 0 8px}.muted{color:var(--muted)}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px;box-shadow:var(--shadow);min-width:0}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.cards .card{margin:0}
+input,select,textarea,button{font:inherit;color:inherit}
+input[type=text],input[type=email],input[type=tel],input[type=number],input[type=date],input[type=datetime-local],input[type=password],select,textarea{
+  width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface);min-width:0}
+textarea{resize:vertical}
+button,.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);cursor:pointer;text-decoration:none;color:var(--text)}
+button:disabled{opacity:.55;cursor:not-allowed}
+.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-text)}
+.danger{color:var(--bad);border-color:var(--bad)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.row.end{justify-content:flex-end}
+.stack>*+*{margin-top:10px}
+.badge{display:inline-block;padding:1px 8px;border-radius:999px;font-size:.78rem;font-weight:600;background:var(--surface-2);color:var(--muted);border:1px solid var(--border);white-space:nowrap}
+.b-ok{background:var(--ok-soft);color:var(--ok);border-color:transparent}
+.b-warn{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+.b-bad{background:var(--bad-soft);color:var(--bad);border-color:transparent}
+.b-info{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+.banner{border-radius:var(--radius);padding:12px 14px;margin-bottom:16px;overflow-wrap:anywhere}
+.banner.error{background:var(--bad-soft);color:var(--bad)}
+.banner.warn{background:var(--warn-soft);color:var(--warn)}
+.banner.ok{background:var(--ok-soft);color:var(--ok)}
+.banner ul{margin:6px 0 0;padding-left:20px}
+.progress{display:flex;list-style:none;padding:0;margin:0 0 16px;gap:4px;overflow-x:auto}
+.progress li{flex:1 1 0;min-width:90px}
+.progress a{display:block;padding:8px 6px 6px;border-top:4px solid var(--border);text-decoration:none;color:var(--muted);font-size:.85rem}
+.progress .completed a{border-color:var(--ok);color:var(--text)}
+.progress .active a{border-color:var(--accent);color:var(--text);font-weight:600}
+.progress .returned a{border-color:var(--warn);color:var(--text);font-weight:600}
+.progress .rejected a{border-color:var(--bad)}
+.progress .skipped a{border-top-style:dashed}
+.progress [aria-current] a{background:var(--accent-soft)}
+.grid{display:grid;grid-template-columns:repeat(var(--cols,1),minmax(0,1fr));gap:12px 16px}
+.field{min-width:0}
+.field>label,.field .lbl{display:block;font-weight:600;font-size:.9rem;margin-bottom:4px}
+.req{color:var(--bad)}
+.help,.note{color:var(--muted);font-size:.82rem;margin-top:3px}
+.help:empty{display:none}
+.value{padding:8px 10px;border-radius:8px;background:var(--surface-2);border:1px dashed var(--border);min-height:38px;overflow-wrap:anywhere}
+.field.flagged{border-left:4px solid var(--warn);padding-left:10px}
+.flag{background:var(--warn-soft);color:var(--warn);border-radius:6px;padding:6px 8px;margin-top:6px;font-size:.88rem}
+.err{color:var(--bad);font-size:.85rem;margin-top:4px}
+.field.invalid input,.field.invalid select,.field.invalid textarea{border-color:var(--bad)}
+.check{display:flex;gap:8px;align-items:flex-start;font-weight:500}
+.check input{margin-top:4px}
+.opts{display:flex;flex-wrap:wrap;gap:4px 16px}
+dl.summary{display:grid;grid-template-columns:minmax(120px,max-content) 1fr;gap:4px 16px;margin:0}
+dl.summary dt{color:var(--muted)}dl.summary dd{margin:0;overflow-wrap:anywhere}
+.form+.form{margin-top:18px;padding-top:14px;border-top:1px solid var(--border)}
+.entry{border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px;background:var(--surface-2)}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:14px;overflow-x:auto}
+.tabs button{border:0;border-bottom:3px solid transparent;border-radius:0;background:none;padding:8px 12px;white-space:nowrap}
+.tabs button[aria-selected=true]{border-color:var(--accent);font-weight:600}
+details.acc{border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--surface)}
+details.acc>summary{cursor:pointer;padding:10px 12px;font-weight:600}
+details.acc>div{padding:0 12px 12px}
+.steps{display:flex;gap:6px;list-style:none;padding:0;margin:0 0 14px;flex-wrap:wrap}
+.steps li{font-size:.82rem;padding:3px 10px;border-radius:999px;background:var(--surface-2);color:var(--muted)}
+.steps li[aria-current]{background:var(--accent);color:var(--accent-text)}
+.steps li.done{color:var(--ok)}
+.dot{color:var(--bad);font-weight:700}
+.bar{display:flex;flex-wrap:wrap;gap:8px;justify-content:space-between;align-items:center;margin-top:16px;padding-top:12px;border-top:1px solid var(--border)}
+.node{border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px}
+.node-head{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.node-head h3{margin:0;margin-right:auto}
+.rv{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 12px;align-items:center;padding:8px 0;border-top:1px solid var(--border)}
+.rv .rv-c{grid-column:1/-1}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.seg label{padding:4px 10px;cursor:pointer;font-size:.85rem;position:relative}
+.seg input{position:absolute;opacity:0;width:1px;height:1px}
+.seg label:has(input:checked){background:var(--accent-soft);font-weight:700}
+.seg label:has(input:focus-visible){outline:2px solid var(--focus)}
+.tbl-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%}
+th,td{text-align:left;padding:8px;border-bottom:1px solid var(--border);white-space:nowrap}
+th{font-size:.82rem;color:var(--muted)}
+.timeline{list-style:none;padding:0;margin:0}
+.timeline li{padding:6px 0;border-bottom:1px solid var(--border)}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.82rem;background:var(--surface-2);padding:8px;border-radius:6px;margin:6px 0 0}
+code{overflow-wrap:anywhere}
+.banner.info{background:var(--accent-soft);color:var(--text)}
+.banner .note{color:inherit;opacity:.85}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.ico{vertical-align:-2px;margin-right:4px;flex:none}
+.sealed{color:var(--muted);font-style:italic}
+.linkish{border:0;background:none;padding:2px 0;color:var(--accent);text-decoration:underline;font-size:.85rem}
+.notes,.thread{list-style:none;margin:0;padding:0}
+.thread{padding-left:14px;margin-left:8px;border-left:2px solid var(--border)}
+.nt{padding-top:8px}
+.nt-card{border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--surface)}
+.nt.internal>.nt-card{background:var(--warn-soft);border-color:transparent;border-left:4px solid var(--warn)}
+.nt-body{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:2px}
+.kpi{font-size:1.6rem;font-weight:700;line-height:1.2}
+.linkout{display:flex;gap:8px;align-items:center}.linkout input{flex:1 1 auto}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+@media (max-width:640px){
+  .grid{grid-template-columns:1fr}.grid>*{grid-column:1/-1 !important}
+  dl.summary{grid-template-columns:1fr}dl.summary dd{margin-bottom:6px}
+  .ident,.ident input{width:100%}.ident input{flex:1 1 100%}
+  .rv{grid-template-columns:1fr}
+  .thread{padding-left:8px;margin-left:4px}
+  .linkout{flex-wrap:wrap}
+}
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="#/">Passport Request</a>
+  <nav aria-label="Main"><a href="#/">Home</a><a href="#/queue">Cases</a><a href="#/analytics">Analytics</a></nav>
+  <div class="ident">
+    <label for="tok" class="sr">Access token</label>
+    <input id="tok" type="password" autocomplete="off" placeholder="Staff / citizen token (optional)">
+    <button id="tokSave" type="button">Use token</button><button id="tokClear" type="button">Sign out</button>
+    <small id="who" aria-live="polite"></small>
+  </div>
+</div></header>
+<main class="wrap" id="app" tabindex="-1"></main>
+<script>
+'use strict';
+const API = '/api/passport';
+const DISTRICTS = [['ktm', 'Kathmandu'], ['lalitpur', 'Lalitpur'], ['morang', 'Morang']];
+const app = document.getElementById('app');
+
+// ---------- storage (always guarded) ----------
+function load(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } }
+function store(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } }
+let token = load('passport.token', '') || '';
+let keys = load('passport.keys', {}) || {};
+function saveKey(id, key) { keys[id] = key; store('passport.keys', keys); }
+
+// ---------- DOM helper: text only, never innerHTML ----------
+function h(tag, props, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (v == null || v === false) continue;
+    if (k === 'class') el.className = v;
+    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (['value', 'checked', 'disabled', 'open'].includes(k)) el[k] = v;
+    else el.setAttribute(k, v === true ? '' : String(v));
+  }
+  return add(el, kids);
+}
+function add(el, kids) { for (const k of kids.flat(Infinity)) if (k != null && k !== false) el.append(k instanceof Node ? k : String(k)); return el; }
+const badgeClass = s => ({ passed: 'b-ok', completed: 'b-ok', approved: 'b-ok', verified: 'b-ok', active: 'b-info', in_progress: 'b-info',
+  returned: 'b-warn', flagged: 'b-warn', waived: 'b-warn', failed: 'b-bad', rejected: 'b-bad', withdrawn: 'b-bad',
+  on_track: 'b-info', met: 'b-ok', warning: 'b-warn', breached: 'b-bad', approve: 'b-ok', reject: 'b-bad' }[s] || '');
+const badge = (s, label) => h('span', { class: 'badge ' + badgeClass(s) }, label || String(s || '').replace(/_/g, ' '));
+const when = t => { if (!t) return ''; const d = new Date(t); return isNaN(d) ? String(t) : d.toLocaleString(); };
+const safeId = p => 'f_' + String(p).replace(/[^\w-]/g, '_');
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+// Relative time ("in 3h 5m", "2d 4h ago"); elements carrying data-rel refresh every 30s.
+function rel(t) {
+  const d = new Date(t); if (!t || isNaN(d)) return '';
+  const diff = d - Date.now(), m = Math.round(Math.abs(diff) / 60000);
+  const dd = Math.floor(m / 1440), hh = Math.floor((m % 1440) / 60), mm = m % 60;
+  const s = dd ? dd + 'd ' + hh + 'h' : hh ? hh + 'h ' + mm + 'm' : mm + 'm';
+  return diff < 0 ? s + ' ago' : 'in ' + s;
+}
+const relEl = t => h('span', { 'data-rel': t }, rel(t));
+setInterval(() => document.querySelectorAll('[data-rel]').forEach(e => { e.textContent = rel(e.getAttribute('data-rel')); }), 30000);
+function lockIcon() {
+  const ns = 'http://www.w3.org/2000/svg', mk = (t, a) => { const e = document.createElementNS(ns, t); for (const k in a) e.setAttribute(k, a[k]); return e; };
+  const s = mk('svg', { viewBox: '0 0 16 16', width: 14, height: 14, 'aria-hidden': 'true', class: 'ico' });
+  s.append(mk('rect', { x: 3, y: 7, width: 10, height: 7, rx: 1.5, fill: 'currentColor' }),
+    mk('path', { d: 'M5 7V5a3 3 0 0 1 6 0v2', fill: 'none', stroke: 'currentColor', 'stroke-width': 1.6 }));
+  return s;
+}
+const hours = x => { if (x == null || isNaN(x)) return '—'; if (x < 1) return Math.round(x * 60) + 'm'; return x < 48 ? (Math.round(x * 10) / 10) + 'h' : (Math.round(x / 2.4) / 10) + 'd'; };
+const pct = x => x == null || isNaN(x) ? '—' : Math.round(x * 100) + '%';
+
+// ---------- API ----------
+// anon: send neither the token nor an access key (external links).
+async function api(method, path, body, caseId, anon) {
+  const headers = { Accept: 'application/json' };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (token && !anon) headers.Authorization = 'Bearer ' + token;
+  if (!anon && caseId && keys[caseId]) headers['X-Access-Key'] = keys[caseId];
+  const res = await fetch(API + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  let json = null;
+  try { json = await res.json(); } catch (e) { /* empty or non-JSON body */ }
+  if (!res.ok) {
+    // Failures render as {"error": {"code", "message", "details": [{path, rule, message}]}}.
+    const e = json && json.error && typeof json.error === 'object' ? json.error : (json || {});
+    const msg = e.message || (json && typeof json.error === 'string' ? json.error : '') || (res.status + ' ' + res.statusText);
+    const err = new Error(msg); err.status = res.status; err.details = Array.isArray(e.details) ? e.details : [];
+    throw err;
+  }
+  return json;
+}
+
+// ---------- identity ----------
+function claims() {
+  try { const p = token.split('.')[1]; return JSON.parse(atob(p.replace(/-/g, '+').replace(/_/g, '/'))); } catch (e) { return null; }
+}
+function renderIdent() {
+  const c = claims(); const who = document.getElementById('who');
+  who.textContent = !token ? 'Anonymous' : c ? 'Signed in as ' + (c.sub || '?') + (c.roles && c.roles.length ? ' (' + [].concat(c.roles).join(', ') + ')' : '') : 'Token set';
+  document.getElementById('tokClear').hidden = !token;
+}
+document.getElementById('tokSave').addEventListener('click', () => {
+  const inp = document.getElementById('tok'); token = inp.value.trim(); inp.value = ''; store('passport.token', token || null); renderIdent(); route();
+});
+document.getElementById('tokClear').addEventListener('click', () => { token = ''; store('passport.token', null); renderIdent(); route(); });
+
+// ---------- state ----------
+const S = { view: null, vals: {}, reps: {}, dirty: new Set(), errs: {}, notice: null, flash: null, steps: {}, verdicts: {}, nodeIn: {}, comment: '', busy: false, history: null, key: '',
+  wf: null, linkUrl: '', note: { body: '', internal: false, replyTo: '' }, link: null };
+
+function page(...kids) { app.replaceChildren(...kids.flat().filter(Boolean)); }
+function notice() {
+  const n = S.notice; if (!n) return null;
+  return h('div', { class: 'banner ' + n.kind, role: n.kind === 'error' ? 'alert' : 'status' }, n.text,
+    n.list && n.list.length ? h('ul', null, n.list.map(t => h('li', null, t))) : null);
+}
+const errList = list => (list || []).map(m => h('div', { class: 'err', role: 'alert' }, m));
+
+// ---------- router ----------
+async function route() {
+  const parts = (location.hash.replace(/^#\/?/, '') || '').split('/').map(p => { try { return decodeURIComponent(p); } catch (e) { return p; } });
+  S.notice = S.flash; S.flash = null; S.link = null;
+  try {
+    if (parts[0] === 'case' && parts[1]) await showCase(parts[1], parts[2] || '');
+    else if (parts[0] === 'queue') await showQueue(parts[1] || (claims() && !(claims().roles || []).length ? 'mine' : 'queue'), parts[2] || '');
+    else if (parts[0] === 'verify' && parts[1]) await showVerify(parts[1]);
+    else if (parts[0] === 'link' && parts[1]) await showLink(parts[1]);
+    else if (parts[0] === 'analytics') await showAnalytics();
+    else showHome();
+  } catch (e) {
+    const isLink = parts[0] === 'link';
+    page(h('h1', null, 'Something went wrong'), h('div', { class: 'banner error', role: 'alert' }, e.message),
+      isLink ? h('p', { class: 'muted' }, 'This link may have expired or already been used. Ask the office that sent it for a new one.')
+        : e.status === 401 || e.status === 403 || e.status === 404 ? h('p', { class: 'muted' }, 'You may need a staff token, or the access key for this case.') : null,
+      h('a', { class: 'btn', href: '#/' }, 'Back home'));
+  }
+  app.focus({ preventScroll: true });
+}
+window.addEventListener('hashchange', route);
+
+// ---------- home ----------
+function showHome() {
+  const dist = h('select', { id: 'dist' }, DISTRICTS.map(([v, l]) => h('option', { value: v }, l)));
+  const startBtn = h('button', { class: 'primary', type: 'button', onclick: async () => {
+    startBtn.disabled = true;
+    try {
+      const v = await api('POST', '/cases', { org_unit: dist.value });
+      if (v.access_key) saveKey(v.case.id, v.access_key);
+      S.flash = { kind: 'ok', text: 'Application ' + v.case.number + ' started.' + (v.access_key
+        ? ' It is remembered on this device. To come back from elsewhere, note your case ID ' + v.case.id + ' and access key ' + v.access_key + '.' : '') };
+      location.hash = '#/case/' + encodeURIComponent(v.case.id);
+    } catch (e) { S.notice = { kind: 'error', text: e.message }; showHome(); }
+  } }, 'Start application');
+  const rid = h('input', { type: 'text', id: 'rid', autocomplete: 'off' }), rkey = h('input', { type: 'text', id: 'rkey', autocomplete: 'off' });
+  const vkey = h('input', { type: 'text', id: 'vkey', autocomplete: 'off', placeholder: 'Number or code' });
+  const mine = Object.keys(keys);
+  page(
+    h('h1', null, 'Passport services'), h('p', { class: 'muted' }, 'Apply for a new passport or renew one, follow your application, or check a certificate.'),
+    notice(),
+    h('div', { class: 'cards' },
+      h('section', { class: 'card stack', 'aria-labelledby': 'h-start' }, h('h2', { id: 'h-start' }, 'Start an application'),
+        h('div', { class: 'field' }, h('label', { for: 'dist' }, 'Your district'), dist), startBtn),
+      h('form', { class: 'card stack', 'aria-labelledby': 'h-res', onsubmit: e => {
+        e.preventDefault(); const id = rid.value.trim(); if (!id) return;
+        if (rkey.value.trim()) saveKey(id, rkey.value.trim()); location.hash = '#/case/' + encodeURIComponent(id);
+      } }, h('h2', { id: 'h-res' }, 'Resume an application'),
+        h('div', { class: 'field' }, h('label', { for: 'rid' }, 'Case ID'), rid),
+        h('div', { class: 'field' }, h('label', { for: 'rkey' }, 'Access key'), rkey, h('div', { class: 'help' }, 'Not needed when you use a token.')),
+        h('button', { type: 'submit' }, 'Open')),
+      h('form', { class: 'card stack', 'aria-labelledby': 'h-ver', onsubmit: e => {
+        e.preventDefault(); if (vkey.value.trim()) location.hash = '#/verify/' + encodeURIComponent(vkey.value.trim());
+      } }, h('h2', { id: 'h-ver' }, 'Verify a certificate'),
+        h('div', { class: 'field' }, h('label', { for: 'vkey' }, 'Certificate number or verification code'), vkey),
+        h('button', { type: 'submit' }, 'Verify'))),
+    mine.length ? h('section', { class: 'card', style: 'margin-top:16px' }, h('h2', null, 'Applications on this device'),
+      h('ul', null, mine.map(id => h('li', null, h('a', { href: '#/case/' + encodeURIComponent(id) }, id), ' ',
+        h('button', { type: 'button', onclick: () => { delete keys[id]; store('passport.keys', keys); showHome(); } }, 'Forget'))))) : null);
+}
+
+// ---------- case ----------
+async function showCase(id, stage) {
+  page(h('p', { class: 'muted' }, 'Loading…'));
+  const v = await api('GET', '/cases/' + encodeURIComponent(id) + (stage ? '/stages/' + encodeURIComponent(stage) : ''), undefined, id);
+  S.history = null; S.errs = {}; S.wf = null; S.linkUrl = '';
+  if (!S.view || S.view.case.id !== v.case.id) S.note = { body: '', internal: false, replyTo: '' };
+  applyView(v);
+  renderCase();
+}
+
+function forEachInput(fn) {
+  for (const g of (S.view.page && S.view.page.groups) || []) for (const f of g.forms || []) for (const inp of f.inputs || []) fn(inp, f, g);
+}
+function applyView(v) {
+  const key = v.case.id + '/' + (v.stage && v.stage.name);
+  if (key !== S.key) { S.steps = {}; S.key = key; }
+  S.view = v; S.vals = {}; S.reps = {}; S.dirty = new Set(); S.verdicts = {}; S.nodeIn = {}; S.comment = '';
+  if (!v.stage) return;
+  const seen = {};
+  forEachInput((inp, f) => {
+    // A form shown in several groups keeps its editable rendering's value.
+    if (!seen[inp.path] || inp.editable) { S.vals[inp.path] = inp.value; seen[inp.path] = true; }
+    if (f.repeatable && !S.reps[f.name]) S.reps[f.name] = (f.entries || []).map(e => Object.assign({}, e));
+    if (inp.verdict) for (const n of v.nodes || []) if ((n.forms || []).includes(f.name)) {
+      (S.verdicts[n.name] = S.verdicts[n.name] || {})[inp.path] = { status: inp.verdict.status, comment: inp.verdict.comment || '' };
+    }
+  });
+}
+
+function display(val, inp) {
+  if (val == null || val === '' || (Array.isArray(val) && !val.length)) return '—';
+  if (typeof val === 'boolean') return val ? 'Yes' : 'No';
+  const label = x => { const c = inp && (inp.choices || []).find(o => String(o.value) === String(x)); return c ? (c.label || String(c.value)) : String(x); };
+  if (Array.isArray(val)) return val.map(label).join(', ');
+  if (typeof val === 'object') return String(val.name || val.id || JSON.stringify(val));
+  if (inp && inp.kind === 'datetime') return when(val);
+  return label(val);
+}
+// Like display, but a sealed input never shows a value.
+function shown(val, inp) {
+  if (inp && inp.sealed) return h('span', { class: 'sealed' }, lockIcon(), 'Sealed until opening');
+  return display(val, inp);
+}
+const calcBadge = inp => inp && inp.computed ? [' ', h('span', { class: 'badge b-info', title: 'Calculated automatically' }, 'calculated')] : null;
+function toLocal(iso) {
+  const d = new Date(iso); if (!iso || isNaN(d)) return ''; const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+function control(inp, path, val, set) {
+  const id = safeId(path), desc = id + '_d';
+  const base = { id, name: path, 'aria-describedby': desc, 'aria-required': inp.required ? 'true' : null, placeholder: inp.placeholder || null,
+    'aria-invalid': S.errs[path] ? 'true' : null };
+  const choices = inp.choices && inp.choices.length ? inp.choices : (inp.options || []).map(o => ({ value: o, label: o }));
+  const str = val == null ? '' : String(val);
+  switch (inp.kind) {
+    case 'textarea': return h('textarea', { ...base, rows: 3, maxlength: inp.max_length || null, value: str, oninput: e => set(e.target.value) });
+    case 'boolean': return h('input', { ...base, type: 'checkbox', checked: val === true, onchange: e => set(e.target.checked ? true : (inp.required ? null : false)) });
+    case 'number': case 'integer': return h('input', { ...base, type: 'number', step: inp.kind === 'integer' ? '1' : 'any', min: inp.min || null, max: inp.max || null,
+      value: str, oninput: e => set(e.target.value === '' ? null : Number(e.target.value)) });
+    case 'date': return h('input', { ...base, type: 'date', min: inp.min || null, max: inp.max || null, value: str.slice(0, 10), onchange: e => set(e.target.value || null) });
+    case 'datetime': return h('input', { ...base, type: 'datetime-local', value: toLocal(val), onchange: e => set(e.target.value ? new Date(e.target.value).toISOString() : null) });
+    case 'select': return h('select', { ...base, placeholder: null, onchange: e => set(e.target.value || null) }, h('option', { value: '' }, inp.placeholder || 'Choose…'),
+      choices.map(c => { const o = h('option', { value: String(c.value) }, c.label || String(c.value)); o.selected = String(c.value) === str; return o; }));
+    case 'radio': case 'multiselect': {
+      const multi = inp.kind === 'multiselect', cur = multi ? [].concat(val || []).map(String) : [];
+      return h('div', { class: 'opts', id, role: multi ? 'group' : 'radiogroup', 'aria-labelledby': id + '_l', 'aria-describedby': desc },
+        choices.map(c => h('label', { class: 'check' }, h('input', {
+          type: multi ? 'checkbox' : 'radio', name: path, value: String(c.value), checked: multi ? cur.includes(String(c.value)) : String(c.value) === str,
+          onchange: e => {
+            if (!multi) return set(e.target.value);
+            const s = new Set(cur); if (e.target.checked) s.add(e.target.value); else s.delete(e.target.value);
+            cur.splice(0, cur.length, ...s); set(cur.length ? cur.slice() : null);
+          }
+        }), c.label || String(c.value))));
+    }
+    case 'file': return h('input', { ...base, type: 'text', value: val && typeof val === 'object' ? String(val.id || '') : str,
+      placeholder: inp.placeholder || 'upload://file-reference', oninput: e => set(e.target.value) });
+    default: return h('input', { ...base, type: { email: 'email', phone: 'tel' }[inp.kind] || 'text', maxlength: inp.max_length || null,
+      value: str, oninput: e => set(e.target.value) });
+  }
+}
+
+function fieldEl(inp, path, val, editable, set) {
+  const id = safeId(path), errs = S.errs[path];
+  if (inp.sealed || inp.computed) editable = false;
+  const labelKids = [inp.label, inp.required && editable ? h('span', { class: 'req', title: 'required' }, ' *') : null];
+  const extras = [
+    inp.verdict ? h('div', { class: 'note' }, 'Review: ', badge(inp.verdict.status), inp.verdict.comment ? ' ' + inp.verdict.comment : '') : null,
+    inp.flag ? h('div', { class: 'flag', role: 'note' }, h('strong', null, 'Correction requested: '), inp.flag.comment || 'please check this field') : null,
+    errList(errs)];
+  const help = h('div', { class: 'help', id: id + '_d' }, inp.help || '',
+    editable && inp.kind === 'file' ? (inp.help ? ' ' : '') + 'Enter the reference of an uploaded file' + (inp.accept && inp.accept.length ? ' (' + inp.accept.join(', ') + ')' : '') + '.' : '');
+  const span = parseInt(inp.span, 10);
+  const style = span > 1 ? 'grid-column:span ' + span : null;
+  const cls = 'field' + (inp.flag ? ' flagged' : '') + (errs ? ' invalid' : '');
+  if (!editable) return h('div', { class: cls, style, 'data-path': path }, h('div', { class: 'lbl' }, inp.label, calcBadge(inp)),
+    h('div', { class: 'value' }, shown(val, inp), inp.masked && !inp.sealed ? h('span', { class: 'muted' }, ' (masked)') : null), inp.help ? help : null, extras);
+  const ctl = control(inp, path, val, set);
+  if (inp.kind === 'boolean') return h('div', { class: cls, style, 'data-path': path }, h('label', { class: 'check', for: id }, ctl, labelKids), help, extras);
+  const lbl = ['radio', 'multiselect'].includes(inp.kind) ? h('div', { class: 'lbl', id: id + '_l' }, labelKids) : h('label', { for: id }, labelKids);
+  return h('div', { class: cls, style, 'data-path': path }, lbl, ctl, help, extras);
+}
+
+function formEl(f, g) {
+  const cols = Math.max(1, parseInt(f.columns || g.columns || 1, 10) || 1), editableGroup = g.mode === 'editable';
+  const head = [f.title ? h('h3', null, f.title) : null, f.description ? h('p', { class: 'muted' }, f.description) : null];
+  if (g.mode === 'summary') {
+    const dl = get => h('dl', { class: 'summary' }, f.inputs.map(inp => [h('dt', null, inp.label), h('dd', null, shown(get(inp), inp), calcBadge(inp))]));
+    if (f.repeatable) return h('div', { class: 'form' }, head, (S.reps[f.name] || []).map(e => h('div', { class: 'entry' }, dl(inp => e[inp.name]))));
+    return h('div', { class: 'form' }, head, dl(inp => S.vals[inp.path]));
+  }
+  if (!f.repeatable) return h('div', { class: 'form' }, head, h('div', { class: 'grid', style: '--cols:' + cols },
+    f.inputs.map(inp => fieldEl(inp, inp.path, S.vals[inp.path], editableGroup && inp.editable, v => { S.vals[inp.path] = v; S.dirty.add(inp.path); }))));
+  const list = S.reps[f.name] = S.reps[f.name] || [];
+  const canEdit = editableGroup && f.inputs.some(i => i.editable);
+  const min = f.min_items || 0, max = f.max_items || Infinity;
+  const noun = (f.title || 'entry').toLowerCase();
+  return h('div', { class: 'form', 'data-path': f.name }, head, errList(S.errs[f.name]),
+    list.length ? null : h('p', { class: 'muted' }, 'No entries yet.'),
+    list.map((entry, i) => h('div', { class: 'entry', role: 'group', 'aria-label': (f.title || f.name) + ' ' + (i + 1) },
+      h('div', { class: 'row' }, h('strong', null, '#' + (i + 1)), canEdit && list.length > min ? h('button', { type: 'button', class: 'danger', style: 'margin-left:auto',
+        'aria-label': 'Remove ' + noun + ' ' + (i + 1), onclick: () => { list.splice(i, 1); S.dirty.add(f.name); renderCase(); } }, 'Remove') : null),
+      errList(S.errs[f.name + '.' + i]),
+      h('div', { class: 'grid', style: '--cols:' + cols },
+        f.inputs.map(inp => fieldEl(inp, f.name + '.' + i + '.' + inp.name, entry[inp.name], canEdit && inp.editable, v => { entry[inp.name] = v; S.dirty.add(f.name); }))))),
+    canEdit && list.length < max ? h('button', { type: 'button', onclick: () => { list.push({}); S.dirty.add(f.name); renderCase(); } }, '+ Add ' + noun) : null,
+    canEdit && (min || max < Infinity) ? h('div', { class: 'note' }, [min ? 'At least ' + min : '', max < Infinity ? 'at most ' + max : ''].filter(Boolean).join(', ') + ' entries.') : null);
+}
+
+// Arranges items ({title, el, forms, flagged, collapsed}) in a layout; used for a page's groups and a group's forms.
+function arrange(layout, key, items, footer) {
+  const issues = it => it.flagged || Object.keys(S.errs).some(p => it.forms.includes(p.split('.')[0]));
+  const mark = it => issues(it) ? h('span', { class: 'dot', title: 'Needs attention' }, ' •', h('span', { class: 'sr' }, ' needs attention')) : null;
+  const cur = Math.max(0, Math.min(S.steps[key] || 0, items.length - 1));
+  const go = (i, focusTab) => {
+    S.steps[key] = i; renderCase();
+    const t = document.getElementById(focusTab ? 'tab_' + key + '_' + i : 'ar_' + key);
+    if (t) { if (!focusTab) t.scrollIntoView({ block: 'start' }); t.focus({ preventScroll: !focusTab ? true : false }); }
+  };
+  if (layout === 'wizard') {
+    const last = cur === items.length - 1;
+    return h('div', null,
+      h('ol', { class: 'steps', 'aria-label': 'Steps' }, items.map((it, i) => h('li', { 'aria-current': i === cur ? 'step' : null, class: i < cur ? 'done' : '' },
+        (i + 1) + '. ' + it.title, mark(it)))),
+      h('section', { id: 'ar_' + key, tabindex: '-1', 'aria-label': 'Step ' + (cur + 1) + ' of ' + items.length },
+        h('h3', { style: 'font-size:1.05rem' }, items[cur].title), items[cur].el),
+      h('div', { class: 'bar' }, h('div', { class: 'row' },
+        h('button', { type: 'button', disabled: cur === 0, onclick: () => go(cur - 1) }, 'Back'),
+        last ? null : h('button', { type: 'button', class: 'primary', onclick: () => go(cur + 1) }, 'Next')),
+        h('span', { class: 'muted' }, 'Step ' + (cur + 1) + ' of ' + items.length)),
+      last ? footer : null);
+  }
+  let body;
+  if (layout === 'tabbed') {
+    const tabs = h('div', { class: 'tabs', role: 'tablist' }, items.map((it, i) => h('button', { type: 'button', role: 'tab', id: 'tab_' + key + '_' + i,
+      'aria-selected': i === cur ? 'true' : 'false', 'aria-controls': 'ar_' + key, tabindex: i === cur ? '0' : '-1', onclick: () => go(i, true),
+      onkeydown: e => { const d = { ArrowRight: 1, ArrowLeft: -1 }[e.key]; if (d) { e.preventDefault(); go((cur + d + items.length) % items.length, true); } } },
+      it.title, mark(it))));
+    body = h('div', null, tabs, h('div', { role: 'tabpanel', id: 'ar_' + key, tabindex: '-1', 'aria-labelledby': 'tab_' + key + '_' + cur }, items[cur].el));
+  } else if (layout === 'accordion') {
+    body = h('div', null, items.map((it, i) => {
+      const k = key + '_' + i, open = k in S.steps ? S.steps[k] : !it.collapsed;
+      return h('details', { class: 'acc', open, ontoggle: e => { S.steps[k] = e.target.open; } }, h('summary', null, it.title, mark(it)), h('div', null, it.el));
+    }));
+  } else {
+    body = h('div', { class: 'stack' }, items.map(it => h('section', null, it.title ? h('h3', { style: 'font-size:1.05rem' }, it.title, mark(it)) : null, it.el)));
+  }
+  return h('div', null, body, footer);
+}
+
+function groupEl(g) {
+  const desc = g.description ? h('p', { class: 'muted' }, g.description) : null;
+  if (['tabbed', 'accordion', 'wizard'].includes(g.layout) && g.forms.length > 1) {
+    const items = g.forms.map(f => ({ title: f.title || f.name, forms: [f.name], flagged: f.inputs.some(i => i.flag), el: formEl({ ...f, title: '' }, g) }));
+    return h('div', null, desc, arrange(g.layout, 'g_' + g.name, items));
+  }
+  return h('div', null, desc, g.forms.map(f => formEl(f, g)));
+}
+
+// ---------- collecting & mutating ----------
+function collect() {
+  const data = {}; let any = false;
+  forEachInput((inp, f, g) => {
+    if (g.mode !== 'editable' || !inp.editable || inp.computed || inp.sealed) return;
+    any = true;
+    if (f.repeatable) {
+      data[f.name] = (S.reps[f.name] || []).map(e => { const o = {}; for (const i of f.inputs) if (i.editable && !i.computed && !i.sealed && e[i.name] !== undefined) o[i.name] = e[i.name]; return o; });
+      return;
+    }
+    if (inp.masked && !S.dirty.has(inp.path)) return; // never send a masked placeholder back
+    const v = S.vals[inp.path];
+    (data[f.name] = data[f.name] || {})[inp.name] = v === undefined ? null : v;
+  });
+  return any ? data : null;
+}
+
+function failed(e, prefix) {
+  for (const d of e.details) (S.errs[prefix + d.path] = S.errs[prefix + d.path] || []).push(d.message);
+  S.notice = { kind: 'error', text: e.status === 409 ? e.message + ' Reload the page to get the latest version.' : e.message,
+    list: e.details.map(d => (d.path && d.path !== 'comment' ? labelFor(d.path) + ': ' : '') + d.message) };
+}
+// after(v) runs on success, before the re-render.
+async function mutate(method, path, body, prefix, okText, after) {
+  if (S.busy) return;
+  S.busy = true; S.errs = {}; S.notice = { kind: 'warn', text: 'Working…' }; renderCase();
+  const id = S.view.case.id;
+  try {
+    const v = await api(method, '/cases/' + encodeURIComponent(id) + path, body, id);
+    applyView(v); S.history = null;
+    S.notice = { kind: 'ok', text: okText + (v.stage ? '' : ' The case moved to stage "' + v.case.stage + '", which you may not view.') };
+    if (after) after(v);
+  } catch (e) { failed(e, prefix); }
+  S.busy = false; renderCase();
+}
+const stagePath = () => '/stages/' + encodeURIComponent(S.view.stage.name);
+
+function actionBar() {
+  const v = S.view, acts = v.actions || [];
+  if (!v.can_edit && !acts.length) return null;
+  const needs = acts.filter(a => a.comment_required).map(a => a.label);
+  return h('div', { class: 'bar' },
+    acts.length ? h('div', { class: 'field', style: 'flex:1 1 100%', 'data-path': 'comment' },
+      h('label', { for: 'act_comment' }, 'Comment', h('span', { class: 'muted' }, needs.length ? ' (required to ' + needs.join(', ') + ')' : ' (optional)')),
+      h('textarea', { id: 'act_comment', rows: 2, value: S.comment, 'aria-invalid': S.errs.comment ? 'true' : null, oninput: e => { S.comment = e.target.value; } }),
+      errList(S.errs.comment)) : null,
+    v.can_edit ? h('button', { type: 'button', disabled: S.busy,
+      onclick: () => mutate('PUT', stagePath(), { data: collect() || {}, revision: v.case.revision }, '', 'Draft saved.') }, 'Save draft') : h('span'),
+    h('div', { class: 'row end' }, acts.map(a => h('button', { type: 'button', disabled: S.busy,
+      class: ['reject', 'withdraw'].includes(a.outcome) ? 'danger' : (a.outcome === 'advance' ? 'primary' : ''),
+      onclick: () => {
+        const comment = S.comment.trim();
+        if (a.comment_required && !comment) {
+          S.errs = { comment: ['A comment is required to ' + a.label + '.'] }; renderCase(); document.getElementById('act_comment').focus(); return;
+        }
+        if (a.confirm && !window.confirm(a.confirm)) return;
+        const body = { revision: v.case.revision }; if (comment) body.comment = comment;
+        const data = collect(); if (data) body.data = data;
+        mutate('POST', stagePath() + '/actions/' + encodeURIComponent(a.name), body, '', a.label + ': done.');
+      } }, a.label))));
+}
+
+// ---------- nodes ----------
+function reviewInputs(n) {
+  const out = [], seen = new Set();
+  // Computed inputs are derived, not submitted: the server never asks for a verdict on them.
+  forEachInput((inp, f) => { if ((n.forms || []).includes(f.name) && !inp.computed && !seen.has(inp.path)) { seen.add(inp.path); out.push(inp); } });
+  return out;
+}
+function nodeEl(n) {
+  const ops = n.operations || [], st = S.nodeIn[n.name] = S.nodeIn[n.name] || { comment: '', result: '' };
+  const pre = 'node:' + n.name + ':', vd = S.verdicts[n.name] = S.verdicts[n.name] || {};
+  const rows = n.kind === 'review' && ops.includes('verify') ? reviewInputs(n) : [];
+  const send = (verb, extra) => {
+    const body = Object.assign({}, extra); if (st.comment.trim()) body.comment = st.comment.trim();
+    if (verb === 'complete' && st.result.trim()) {
+      try { body.result = JSON.parse(st.result); if (!body.result || typeof body.result !== 'object' || Array.isArray(body.result)) throw 0; }
+      catch (e) { S.errs = { [pre + 'result']: ['Result must be a JSON object.'] }; renderCase(); return; }
+    }
+    mutate('POST', stagePath() + '/nodes/' + encodeURIComponent(n.name) + '/' + encodeURIComponent(verb), body, pre, (n.title || n.name) + ': ' + verb + ' done.');
+  };
+  const onOp = op => {
+    if (op === 'vote:approve' || op === 'vote:reject') {
+      const decision = op.slice(5);
+      if (decision === 'reject' && !st.comment.trim()) {
+        S.errs = { [pre + 'comment']: ['Say why you vote to reject.'] }; renderCase();
+        const c = document.getElementById(safeId(pre + 'c')); if (c) c.focus(); return;
+      }
+      return send('vote', { result: { decision } });
+    }
+    if (op === 'verify') {
+      const verdicts = {};
+      for (const [p, x] of Object.entries(vd)) if (x.status) verdicts[p] = x.status === 'flagged' ? { status: 'flagged', comment: x.comment || '' } : { status: 'verified' };
+      return send('verify', { verdicts });
+    }
+    if (['waive', 'reject', 'fail'].includes(op) && !window.confirm(cap(op) + ' "' + (n.title || n.name) + '"?')) return;
+    send(op);
+  };
+  const otherErrs = Object.keys(S.errs).filter(k => k.startsWith(pre) && !['comment', 'result'].includes(k.slice(pre.length)) && !rows.some(r => r.path === k.slice(pre.length)));
+  return h('div', { class: 'node' },
+    h('div', { class: 'node-head' }, h('h3', null, n.title || n.name), h('span', { class: 'badge' }, n.kind), n.optional ? h('span', { class: 'badge' }, 'optional') : null, badge(n.status)),
+    n.description ? h('p', { class: 'muted' }, n.description) : null,
+    n.kind === 'approval' ? h('p', { class: 'muted' }, 'Approvals: ' + (n.approvals || []).length + ' of ' + (n.required_approvals || 1)) : null,
+    n.kind === 'vote' ? tallyEl(n) : null,
+    (n.approvals || []).map(a => h('div', { class: 'note' }, a.decision ? ['Voted ', badge(a.decision), ' by ' + a.by] : 'Approved by ' + a.by,
+      ' · ' + when(a.at) + (a.comment ? ' · ' + a.comment : ''))),
+    n.comment ? h('p', null, h('strong', null, 'Comment: '), n.comment) : null,
+    n.result != null && n.kind !== 'vote' ? h('pre', null, JSON.stringify(n.result, null, 2)) : null,
+    rows.length ? h('div', { role: 'group', 'aria-label': 'Field verdicts for ' + (n.title || n.name) }, rows.map(inp => {
+      const x = vd[inp.path] = vd[inp.path] || { status: '', comment: '' }, gid = safeId(pre + inp.path);
+      return h('div', { class: 'rv' },
+        h('div', null, h('div', { id: gid + '_l', style: 'font-weight:600' }, inp.label), h('div', { class: 'muted' }, shown(S.vals[inp.path], inp))),
+        h('div', { class: 'seg', role: 'radiogroup', 'aria-labelledby': gid + '_l' }, [['', 'Unset'], ['verified', 'Verified'], ['flagged', 'Flag']].map(([val, l]) =>
+          h('label', null, h('input', { type: 'radio', name: gid, value: val, checked: x.status === val, onchange: () => { x.status = val; renderCase(); } }), l))),
+        x.status === 'flagged' ? h('div', { class: 'rv-c' }, h('label', { class: 'sr', for: gid + '_c' }, 'What is wrong with ' + inp.label),
+          h('input', { type: 'text', id: gid + '_c', placeholder: 'What is wrong? (shown to the applicant)', value: x.comment, oninput: e => { x.comment = e.target.value; } })) : null,
+        S.errs[pre + inp.path] ? h('div', { class: 'rv-c' }, errList(S.errs[pre + inp.path])) : null);
+    })) : null,
+    ops.length ? h('div', { class: 'stack', style: 'margin-top:10px' },
+      h('div', { class: 'field' }, h('label', { for: safeId(pre + 'c') }, 'Comment', h('span', { class: 'muted' }, ops.includes('reject') || ops.includes('vote') ? ' (required to reject)' : ' (optional)')),
+        h('input', { type: 'text', id: safeId(pre + 'c'), value: st.comment, oninput: e => { st.comment = e.target.value; } }), errList(S.errs[pre + 'comment'])),
+      ops.includes('complete') && ['task', 'form'].includes(n.kind) ? h('div', { class: 'field' }, h('label', { for: safeId(pre + 'r') }, 'Result (optional JSON object)'),
+        h('textarea', { id: safeId(pre + 'r'), rows: 2, placeholder: '{"station": "K-2"}', value: st.result, oninput: e => { st.result = e.target.value; } }), errList(S.errs[pre + 'result'])) : null,
+      otherErrs.map(k => errList(S.errs[k])),
+      h('div', { class: 'row' }, ops.flatMap(op => op === 'vote' ? ['vote:approve', 'vote:reject'] : [op]).map(op => h('button', { type: 'button', disabled: S.busy, onclick: () => onOp(op),
+        class: ['reject', 'fail', 'vote:reject'].includes(op) ? 'danger' : (['approve', 'complete', 'issue', 'run', 'vote:approve'].includes(op) ? 'primary' : '') },
+        op === 'verify' ? 'Save verdicts' : op.startsWith('vote:') ? 'Vote to ' + op.slice(5) : cap(op))))) : null);
+}
+// A vote node's tally: {approve, reject, voters, policy}.
+function tallyEl(n) {
+  const r = n.result && typeof n.result === 'object' ? n.result : null;
+  if (!r) return (n.approvals || []).length ? null : h('p', { class: 'muted' }, 'No votes yet.');
+  return h('p', { class: 'row' }, 'Votes:', h('span', { class: 'badge b-ok' }, 'approve ' + (r.approve || 0)), h('span', { class: 'badge b-bad' }, 'reject ' + (r.reject || 0)),
+    h('span', { class: 'muted' }, [r.voters != null ? r.voters + ' voter' + (r.voters === 1 ? '' : 's') + ' needed' : '', r.policy ? 'policy: ' + String(r.policy) : ''].filter(Boolean).join(' · ')));
+}
+
+// ---------- work: assignment, SLA, holds, routing, links ----------
+const WORK_OPS = ['claim', 'release', 'assign', 'delegate', 'suspend', 'resume', 'link'];
+const WORK_FORMS = ['assign', 'delegate', 'suspend', 'link'];
+const WORK_LABEL = { claim: 'Claim', release: 'Release', assign: 'Assign…', delegate: 'Delegate…', suspend: 'Put on hold…', resume: 'Resume', link: 'External link…' };
+const TTLS = [['24h', '1 day'], ['72h', '3 days'], ['168h', '7 days'], ['336h', '14 days']];
+
+function workRun(op, body, okText, after) {
+  return mutate('POST', stagePath() + '/work/' + encodeURIComponent(op), body, 'work:', okText, v => { S.wf = null; if (after) after(v); });
+}
+function pageForms() {
+  const out = [], seen = new Set();
+  for (const g of (S.view.page && S.view.page.groups) || []) for (const f of g.forms || []) if (!seen.has(f.name)) { seen.add(f.name); out.push(f); }
+  return out;
+}
+function workForm(wf) {
+  const errOf = k => errList(S.errs['work:' + k]);
+  const need = (k, msg) => { S.errs = { ['work:' + k]: [msg] }; renderCase(); const el = document.getElementById('wf_' + k); if (el) el.focus(); };
+  const txt = (k, props) => h('input', Object.assign({ type: 'text', id: 'wf_' + k, value: wf[k], autocomplete: 'off', oninput: e => { wf[k] = e.target.value; } }, props));
+  const fld = (k, label, ctl) => h('div', { class: 'field' }, h('label', { for: 'wf_' + k }, label), ctl, errOf(k));
+  const opt = s => s.trim() || undefined;
+  let title, fields, submit;
+  if (wf.op === 'assign' || wf.op === 'delegate') {
+    title = wf.op === 'assign' ? 'Assign to a worker' : 'Delegate to a colleague';
+    fields = [fld('to', 'Worker ID', txt('to', { required: true })), fld('comment', 'Comment (optional)', txt('comment'))];
+    submit = () => wf.to.trim() ? workRun(wf.op, { to: wf.to.trim(), comment: opt(wf.comment) }, (wf.op === 'assign' ? 'Assigned' : 'Delegated') + ' to ' + wf.to.trim() + '.') : need('to', 'Enter a worker ID.');
+  } else if (wf.op === 'suspend') {
+    title = 'Put on hold';
+    fields = [fld('reason', 'Reason', txt('reason', { required: true })),
+      fld('until', 'Resume automatically at (optional)', h('input', { type: 'datetime-local', id: 'wf_until', value: wf.until, onchange: e => { wf.until = e.target.value; } }))];
+    submit = () => {
+      if (!wf.reason.trim()) return need('reason', 'Give a reason for the hold.');
+      const until = wf.until ? new Date(wf.until) : null;
+      if (until && isNaN(until)) return need('until', 'Enter a valid date and time.');
+      workRun('suspend', { reason: wf.reason.trim(), until: until ? until.toISOString() : undefined }, 'The stage is on hold.');
+    };
+  } else {
+    title = 'Issue an external link';
+    const forms = pageForms();
+    fields = [fld('party', 'Outside party', txt('party', { required: true, placeholder: 'e.g. an office or organisation' })),
+      h('fieldset', { class: 'field', style: 'border:0;padding:0;margin:0' }, h('legend', { class: 'lbl', id: 'wf_scope' , tabindex: '-1' }, 'Forms they may fill'),
+        forms.length ? h('div', { class: 'opts' }, forms.map(f => h('label', { class: 'check' }, h('input', { type: 'checkbox', value: f.name, checked: wf.scope.includes(f.name),
+          onchange: e => { wf.scope = e.target.checked ? wf.scope.concat(f.name) : wf.scope.filter(x => x !== f.name); } }), f.title || f.name)))
+          : h('p', { class: 'muted' }, 'This page has no forms.'), errOf('scope')),
+      fld('ttl', 'Valid for', h('select', { id: 'wf_ttl', onchange: e => { wf.ttl = e.target.value; } },
+        TTLS.map(([v, l]) => { const o = h('option', { value: v }, l); o.selected = v === wf.ttl; return o; })))];
+    submit = () => {
+      if (!wf.party.trim()) return need('party', 'Name the outside party.');
+      if (!wf.scope.length) return need('scope', 'Choose at least one form.');
+      mutate('POST', stagePath() + '/links', { party: wf.party.trim(), scope: wf.scope, ttl: wf.ttl }, 'work:', 'Link issued.', v => {
+        S.wf = null; if (v.link_token) S.linkUrl = location.origin + '/#/link/' + encodeURIComponent(v.link_token);
+      });
+    };
+  }
+  return h('form', { class: 'entry stack', id: 'work_form', 'aria-label': title, onsubmit: e => { e.preventDefault(); submit(); } }, h('h3', null, title), fields,
+    h('div', { class: 'row' }, h('button', { type: 'submit', class: 'primary', disabled: S.busy }, wf.op === 'link' ? 'Issue link' : 'Confirm'),
+      h('button', { type: 'button', onclick: () => { S.wf = null; S.errs = {}; renderCase(); } }, 'Cancel')));
+}
+function linkOut() {
+  if (!S.linkUrl) return null;
+  const inp = h('input', { type: 'text', id: 'link_url', readonly: true, value: S.linkUrl, onfocus: e => e.target.select() });
+  return h('div', { class: 'banner ok stack', role: 'status' }, h('label', { for: 'link_url' }, h('strong', null, 'Link ready. '), 'Send it to the outside party; it works once.'),
+    h('div', { class: 'linkout' }, inp, h('button', { type: 'button', onclick: async e => {
+      const b = e.currentTarget;
+      try { await navigator.clipboard.writeText(S.linkUrl); b.textContent = 'Copied'; } catch (x) { inp.focus(); inp.select(); b.textContent = 'Press Ctrl+C to copy'; }
+    } }, 'Copy')));
+}
+function workEl() {
+  const w = S.view.work; if (!w) return null;
+  const ops = (w.operations || []).filter(o => WORK_OPS.includes(o));
+  if (!w.assignee && !w.sla && !w.suspended && !w.legal_hold && !w.routing && !ops.length && !S.linkUrl) return null;
+  const me = (claims() || {}).sub, sla = w.sla, r = w.routing, sp = w.suspended, lh = w.legal_hold, wf = S.wf;
+  const rows = [['Assignee', w.assignee ? [w.assignee, w.assignee === me ? ' (you)' : '', w.assigned_at ? h('span', { class: 'muted' }, ' · since ' + when(w.assigned_at)) : null]
+    : h('span', { class: 'muted' }, w.claimable ? 'Unassigned — anyone eligible can claim it' : 'Unassigned')]];
+  if (sla) rows.push(['Deadline', h('span', { class: 'row', style: 'gap:6px' }, badge(sla.status),
+    sla.due_at ? [h('span', null, 'due ' + when(sla.due_at)), sla.status === 'met' || sla.status === 'paused' ? null : h('span', { class: 'muted' }, '(', relEl(sla.due_at), ')')] : null,
+    sla.level ? h('span', { class: 'badge b-bad' }, 'escalation level ' + sla.level) : null,
+    sla.breached_at ? h('span', { class: 'muted' }, 'breached ' + when(sla.breached_at)) : null,
+    sla.warn_at && sla.status === 'on_track' ? h('span', { class: 'muted' }, 'warning ' + when(sla.warn_at)) : null)]);
+  if (r) rows.push(['Routing', [r.strategy ? h('span', { class: 'badge' }, r.strategy) : null, ' ', r.reason || '']]);
+  const cands = r && (r.candidates || []).length ? h('details', { class: 'acc', style: 'margin-top:10px' }, h('summary', null, 'Candidates considered (' + r.candidates.length + ')'),
+    h('div', { class: 'tbl-wrap' }, h('table', null, h('thead', null, h('tr', null, ['Worker', 'Eligible', 'Reason', 'Load', 'Score'].map((t, i) => h('th', { scope: 'col', class: i > 2 ? 'num' : null }, t)))),
+      h('tbody', null, r.candidates.map(c => h('tr', null, h('td', null, c.id, c.id === r.assignee ? [' ', h('span', { class: 'badge b-ok' }, 'chosen')] : null),
+        h('td', null, c.eligible ? badge('passed', 'yes') : badge('failed', 'no')), h('td', { style: 'white-space:normal' }, c.reason || '—'),
+        h('td', { class: 'num' }, String(c.load ?? 0)), h('td', { class: 'num' }, c.score != null ? String(c.score) : '—'))))))) : null;
+  return h('section', { class: 'card', 'aria-labelledby': 'work-h' }, h('h2', { id: 'work-h' }, 'Work'),
+    lh ? h('div', { class: 'banner error', role: 'status' }, h('strong', null, 'Legal hold: '), lh.reason || '',
+      h('div', { class: 'note' }, 'Placed by ' + (lh.placed_by || '?') + (lh.at ? ' · ' + when(lh.at) : ''))) : null,
+    sp ? h('div', { class: 'banner warn', role: 'status' }, h('strong', null, 'On hold: '), sp.reason || 'no reason given',
+      h('div', { class: 'note' }, 'By ' + (sp.by || '?') + (sp.at ? ' · ' + when(sp.at) : ''), sp.until ? [' · until ' + when(sp.until) + ' (', relEl(sp.until), ')'] : '')) : null,
+    h('dl', { class: 'summary' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', null, v)])), cands,
+    ops.length ? h('div', { class: 'row', style: 'margin-top:12px' }, ops.map(op => h('button', { type: 'button', disabled: S.busy,
+      class: op === 'claim' ? 'primary' : '', 'aria-expanded': WORK_FORMS.includes(op) ? String(!!(wf && wf.op === op)) : null,
+      onclick: () => {
+        S.errs = {};
+        if (!WORK_FORMS.includes(op)) return workRun(op, {}, { claim: 'Claimed.', release: 'Released.', resume: 'Resumed.' }[op] || cap(op) + ': done.');
+        S.wf = wf && wf.op === op ? null : { op, to: '', comment: '', reason: '', until: '', party: '', scope: [], ttl: '72h' };
+        renderCase();
+        const first = document.querySelector('#work_form input'); if (first && S.wf) first.focus();
+      } }, WORK_LABEL[op]))) : null,
+    wf && ops.includes(wf.op) ? h('div', { style: 'margin-top:12px' }, workForm(wf)) : null,
+    linkOut());
+}
+
+// ---------- notes ----------
+function notesEl() {
+  const v = S.view, notes = (v.notes || []).slice().sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  const ops = (v.work && v.work.operations) || [], canWrite = ops.includes('note'), canInternal = ops.includes('note_internal');
+  if (!notes.length && !canWrite) return null;
+  const byId = new Map(notes.map(n => [n.id, n])), kids = new Map(), roots = [];
+  for (const n of notes) {
+    if (n.parent_id && byId.has(n.parent_id)) { if (!kids.has(n.parent_id)) kids.set(n.parent_id, []); kids.get(n.parent_id).push(n); } else roots.push(n);
+  }
+  const nt = S.note;
+  const item = n => h('li', { class: 'nt' + (n.internal ? ' internal' : '') },
+    h('div', { class: 'nt-card' },
+      h('div', { class: 'row', style: 'gap:6px' }, h('strong', null, n.author || 'unknown'), n.internal ? h('span', { class: 'badge b-warn' }, 'Internal') : null,
+        n.stage ? h('span', { class: 'badge' }, n.stage) : null, h('span', { class: 'muted', style: 'font-size:.85rem' }, when(n.at))),
+      h('div', { class: 'nt-body' }, n.body),
+      canWrite ? h('button', { type: 'button', class: 'linkish', 'aria-label': 'Reply to ' + (n.author || 'note'), onclick: () => {
+        nt.replyTo = n.id; nt.internal = !!n.internal && canInternal; renderCase();
+        const c = document.getElementById('note_body'); if (c) c.focus();
+      } }, 'Reply') : null),
+    kids.has(n.id) ? h('ul', { class: 'thread' }, kids.get(n.id).map(item)) : null);
+  const parent = nt.replyTo && byId.get(nt.replyTo);
+  const composer = canWrite ? h('form', { class: 'stack', style: 'margin-top:14px', onsubmit: e => {
+    e.preventDefault();
+    const body = nt.body.trim();
+    if (!body) { S.errs = { 'note:body': ['Write a note first.'] }; renderCase(); document.getElementById('note_body').focus(); return; }
+    mutate('POST', '/notes', { body, internal: canInternal && nt.internal, parent_id: parent ? parent.id : undefined }, 'note:', 'Note added.',
+      () => { S.note = { body: '', internal: false, replyTo: '' }; });
+  } },
+    parent ? h('div', { class: 'row note' }, 'Replying to ' + (parent.author || 'note') + ': “' + String(parent.body || '').slice(0, 80) + (String(parent.body || '').length > 80 ? '…' : '') + '”',
+      h('button', { type: 'button', class: 'linkish', onclick: () => { nt.replyTo = ''; renderCase(); } }, 'Cancel reply')) : null,
+    h('div', { class: 'field' }, h('label', { for: 'note_body' }, parent ? 'Your reply' : 'Add a note'),
+      h('textarea', { id: 'note_body', rows: 3, value: nt.body, 'aria-invalid': S.errs['note:body'] ? 'true' : null, oninput: e => { nt.body = e.target.value; } }),
+      errList(S.errs['note:body'])),
+    h('div', { class: 'row' },
+      canInternal ? h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: nt.internal, onchange: e => { nt.internal = e.target.checked; } }),
+        'Internal (staff only)') : h('span', { class: 'muted' }, 'Notes are visible to case staff.'),
+      h('button', { type: 'submit', class: 'primary', style: 'margin-left:auto', disabled: S.busy }, parent ? 'Post reply' : 'Post note'))) : null;
+  return h('section', { class: 'card', 'aria-labelledby': 'notes-h' }, h('h2', { id: 'notes-h' }, 'Notes'),
+    notes.length ? h('ul', { class: 'notes' }, roots.map(item)) : h('p', { class: 'muted' }, 'No notes yet.'), composer);
+}
+
+// ---------- case page ----------
+function labelFor(path) { let l = path; forEachInput(i => { if (i.path === path) l = i.label; }); return l; }
+function renderCase() {
+  if (S.link) return renderLink();
+  const v = S.view, c = v.case, st = v.stage;
+  if (!st) { page(h('h1', null, 'Case ' + (c.number || c.id)), notice(), h('p', null, 'Status: ', badge(c.status)), h('a', { class: 'btn', href: '#/' }, 'Home')); return; }
+  const cid = encodeURIComponent(c.id);
+  const overdue = st.due_at && st.current && ['active', 'returned'].includes(st.status) && new Date(st.due_at) < new Date();
+  const progress = h('ol', { class: 'progress', 'aria-label': 'Case progress' }, (v.progress || []).map(p =>
+    h('li', { class: p.status, 'aria-current': p.name === st.name ? 'page' : null },
+      h('a', { href: '#/case/' + cid + '/' + encodeURIComponent(p.name) }, p.title || p.name, h('br'), h('small', null, String(p.status).replace(/_/g, ' '))))));
+  const pg = v.page, footer = actionBar();
+  let body = null;
+  if (pg && pg.groups && pg.groups.length) {
+    const items = pg.groups.map(g => ({ title: g.title || g.name, forms: g.forms.map(f => f.name), flagged: g.forms.some(f => f.inputs.some(i => i.flag)),
+      collapsed: g.collapsed, el: groupEl(g) }));
+    body = h('section', { class: 'card', 'aria-labelledby': 'pg-title' },
+      h('h2', { id: 'pg-title' }, pg.title || st.title || st.name), pg.description ? h('p', { class: 'muted' }, pg.description) : null,
+      arrange(pg.layout, 'page', items, footer));
+  } else if (footer) {
+    body = h('section', { class: 'card' }, h('h2', null, st.title || st.name), st.description ? h('p', { class: 'muted' }, st.description) : null, footer);
+  }
+  const nodes = (v.nodes || []).length ? h('section', { class: 'card', 'aria-labelledby': 'nodes-h' }, h('h2', { id: 'nodes-h' }, 'Checks and tasks'), v.nodes.map(nodeEl)) : null;
+  const certs = (v.certificates || []).length ? h('section', { class: 'card', 'aria-labelledby': 'certs-h' }, h('h2', { id: 'certs-h' }, 'Certificates'),
+    v.certificates.map(ct => h('div', { class: 'entry' }, h('strong', null, (ct.title || ct.name || 'Certificate') + ' ' + ct.number),
+      h('div', null, 'Verification code: ', h('code', null, ct.code), ' · ', h('a', { href: '#/verify/' + encodeURIComponent(ct.code) }, 'Verify')),
+      h('div', { class: 'note' }, 'Issued ' + when(ct.issued_at) + (ct.expires_at ? ' · expires ' + when(ct.expires_at) : '') + (ct.revoked_at ? ' · revoked' : ''))))) : null;
+  const hs = S.history;
+  const hist = h('section', { class: 'card', 'aria-labelledby': 'hist-h' }, h('div', { class: 'row' }, h('h2', { id: 'hist-h', style: 'margin:0;margin-right:auto' }, 'History'),
+    hs && hs.history ? null : h('button', { type: 'button', onclick: async () => {
+      try { S.history = await api('GET', '/cases/' + cid + '/history', undefined, c.id); } catch (e) { S.history = { error: e.message }; }
+      renderCase();
+    } }, 'Show history')),
+    hs && hs.error ? h('p', { class: 'err' }, hs.error) : null,
+    hs && hs.history ? h('ol', { class: 'timeline' }, hs.history.slice().reverse().map(e => h('li', null,
+      h('strong', null, String(e.action).replace(/_/g, ' ')), e.stage ? ' · ' + e.stage : '', e.node ? ' / ' + e.node : '',
+      e.from || e.to ? ' · ' + (e.from || '') + ' → ' + (e.to || '') : '',
+      h('div', { class: 'note' }, when(e.at) + (e.actor ? ' · ' + e.actor : '')), e.comment ? h('div', null, '“' + e.comment + '”') : null,
+      e.changes && e.changes.length ? h('div', { class: 'note' }, 'Changed: ' + e.changes.join(', ')) : null))) : null);
+  page(
+    h('div', { class: 'row' }, h('h1', { style: 'margin-right:auto' }, (c.title || 'Case') + ' ' + c.number), badge(c.status)),
+    h('p', { class: 'muted' }, 'Stage: ' + (st.title || st.name) + ' ', badge(st.status), st.current ? '' : ' (not the current stage)',
+      st.due_at ? ' · due ' + when(st.due_at) : '', overdue ? [' ', badge('failed', 'overdue')] : null,
+      keys[c.id] ? [' · Case ID ', h('code', null, c.id)] : null),
+    progress, notice(),
+    (v.corrections || []).length ? h('div', { class: 'banner warn', role: 'status' }, h('strong', null, 'Corrections requested. '),
+      v.can_edit ? 'Only these fields can be changed:' : 'Fields returned for correction:',
+      h('ul', null, v.corrections.map(f => h('li', null, h('strong', null, labelFor(f.path)), f.comment ? ': ' + f.comment : '')))) : null,
+    workEl(), body, nodes, notesEl(), certs, hist);
+}
+
+// ---------- external link page ----------
+async function showLink(tok) {
+  page(h('p', { class: 'muted' }, 'Loading…'));
+  const v = await api('GET', '/links/' + encodeURIComponent(tok), undefined, null, true);
+  S.link = { token: tok, done: null }; S.history = null; S.errs = {};
+  applyView(v);
+  renderCase();
+}
+async function submitLink() {
+  if (S.busy) return;
+  S.busy = true; S.errs = {}; S.notice = { kind: 'warn', text: 'Sending…' }; renderCase();
+  try {
+    S.link.done = await api('POST', '/links/' + encodeURIComponent(S.link.token), { data: collect() || {} }, null, true) || {};
+    S.notice = null;
+  } catch (e) { failed(e, ''); }
+  S.busy = false; renderCase();
+  if (S.link.done) window.scrollTo(0, 0);
+}
+function renderLink() {
+  const v = S.view, x = v.external || {}, pg = v.page, done = S.link.done;
+  if (done) {
+    page(h('h1', null, 'Thank you'),
+      h('div', { class: 'banner ok', role: 'status' }, 'Your response', done.case && done.case.number ? ' for case ' + done.case.number : '', ' has been received.'),
+      h('p', { class: 'muted' }, 'This link could be used once and is now closed. You can close this page.'));
+    return;
+  }
+  const footer = h('div', { class: 'bar' }, h('span', { class: 'muted' }, 'You can submit once. Check your answers first.'),
+    h('button', { type: 'button', class: 'primary', disabled: S.busy, onclick: submitLink }, (pg && pg.submit_label) || 'Submit'));
+  const items = pg && pg.groups ? pg.groups.map(g => ({ title: g.title || g.name, forms: g.forms.map(f => f.name), flagged: false, collapsed: g.collapsed, el: groupEl(g) })) : [];
+  page(h('h1', null, (pg && pg.title) || (v.stage && (v.stage.title || v.stage.name)) || 'Information request'),
+    v.case && v.case.number ? h('p', { class: 'muted' }, (v.case.title || 'Case') + ' ' + v.case.number) : null,
+    h('div', { class: 'banner info', role: 'note' }, 'You are responding as ', h('strong', null, x.party || 'an outside party'), '.',
+      x.expires_at ? [' This link expires ', when(x.expires_at), ' (', relEl(x.expires_at), ').'] : null),
+    notice(),
+    items.length ? h('section', { class: 'card', 'aria-label': 'Your response' }, pg.description ? h('p', { class: 'muted' }, pg.description) : null,
+      arrange(pg.layout, 'page', items, footer)) : h('p', { class: 'muted' }, 'There is nothing to fill on this link.'));
+}
+
+// ---------- queue ----------
+const SCOPES = { mine: 'My cases', assigned: 'My work', queue: 'Work queue', all: 'All' };
+async function showQueue(scope, who) {
+  const sw = h('div', { class: 'row', role: 'group', 'aria-label': 'Scope' }, Object.keys(SCOPES).map(s =>
+    h('a', { class: 'btn' + (s === scope ? ' primary' : ''), href: '#/queue/' + s, 'aria-current': s === scope ? 'page' : null }, SCOPES[s])));
+  const filt = scope === 'queue' ? h('div', { class: 'row', style: 'margin-top:12px' }, h('label', { for: 'q_assignee' }, 'Assignee'),
+    h('select', { id: 'q_assignee', style: 'width:auto', onchange: e => { location.hash = '#/queue/queue' + (e.target.value ? '/' + e.target.value : ''); } },
+      [['', 'All'], ['unassigned', 'Unassigned'], ['me', 'Me']].map(([v, l]) => { const o = h('option', { value: v }, l); o.selected = v === who; return o; }))) : null;
+  if (!token) { page(h('h1', null, 'Cases'), sw, h('div', { class: 'banner warn', style: 'margin-top:16px' }, 'Paste a staff or citizen token in the header to list cases.')); return; }
+  page(h('h1', null, 'Cases'), sw, filt, h('p', { class: 'muted' }, 'Loading…'));
+  const rows = await api('GET', '/cases?scope=' + encodeURIComponent(scope) + (scope === 'queue' && who ? '&assignee=' + encodeURIComponent(who) : ''));
+  const nodesText = x => Array.isArray(x) ? (x.length ? x.map(n => typeof n === 'object' && n ? (n.title || n.name) : n).join(', ') : '—') : (x == null ? '—' : String(x));
+  const me = (claims() || {}).sub;
+  page(h('h1', null, 'Cases'), sw, filt, notice(), h('div', { class: 'card', style: 'margin-top:16px' },
+    !rows || !rows.length ? h('p', { class: 'muted' }, 'No cases.') : h('div', { class: 'tbl-wrap' }, h('table', null,
+      h('thead', null, h('tr', null, ['Number', 'Stage', 'Stage status', 'Case status', 'Assignee', 'SLA', 'On hold', 'Due', 'Open tasks'].map(t => h('th', { scope: 'col' }, t)))),
+      h('tbody', null, rows.map(r => h('tr', null,
+        h('td', null, h('a', { href: '#/case/' + encodeURIComponent(r.id) }, r.number || r.id)),
+        h('td', null, r.stage_title || r.stage), h('td', null, r.stage_status ? badge(r.stage_status) : '—'), h('td', null, badge(r.status)),
+        h('td', null, r.assignee ? r.assignee + (r.assignee === me ? ' (you)' : '') : h('span', { class: 'muted' }, 'unassigned')),
+        h('td', null, r.sla_status ? badge(r.sla_status) : '—'),
+        h('td', null, r.on_hold ? [h('span', { class: 'badge b-warn' }, 'on hold'), ' ', r.on_hold] : '—'),
+        h('td', null, r.due_at ? when(r.due_at) : '—', r.overdue ? [' ', badge('failed', 'overdue')] : null),
+        h('td', null, nodesText(r.open_nodes)))))))));
+}
+
+// ---------- analytics ----------
+function table(cols, rows) {
+  return h('div', { class: 'tbl-wrap' }, h('table', null,
+    h('thead', null, h('tr', null, cols.map(c => h('th', { scope: 'col', class: c.num ? 'num' : null }, c.label)))),
+    h('tbody', null, rows.map(r => h('tr', null, cols.map(c => h('td', { class: c.num ? 'num' : null }, c.get(r))))))));
+}
+async function showAnalytics() {
+  if (!token) { page(h('h1', null, 'Analytics'), h('div', { class: 'banner warn' }, 'Paste a supervisor token in the header to see analytics.')); return; }
+  page(h('h1', null, 'Analytics'), h('p', { class: 'muted' }, 'Loading…'));
+  const a = await api('GET', '/analytics') || {};
+  const stages = a.stages || [], title = n => { const s = stages.find(x => x.stage === n); return (s && s.title) || n; };
+  const num = (label, get) => ({ label, num: true, get: r => { const x = get(r); return x == null ? '—' : String(x); } });
+  const dwell = (k, get) => ({ label: 'Dwell ' + k, num: true, get: r => hours((get(r) || {})[k]) });
+  const kpi = (label, val, sub) => h('div', { class: 'card' }, h('div', { class: 'muted' }, label), h('div', { class: 'kpi' }, val), sub ? h('div', { class: 'note' }, sub) : null);
+  const cyc = a.cycle_hours || {};
+  const byStatus = Object.entries(a.by_status || {}).sort((x, y) => y[1] - x[1]);
+  page(h('div', { class: 'row' }, h('h1', { style: 'margin-right:auto' }, 'Analytics'), a.as_of ? h('span', { class: 'muted' }, 'As of ' + when(a.as_of)) : null),
+    notice(),
+    h('div', { class: 'cards', style: 'margin-bottom:16px' },
+      kpi('Cases', String(a.cases || 0), byStatus.length ? h('span', { class: 'row', style: 'gap:4px' }, byStatus.map(([k, n]) => badge(k, k.replace(/_/g, ' ') + ' ' + n))) : null),
+      kpi('Open', String(a.open || 0)),
+      kpi('Cycle time (p50 / p90)', hours(cyc.p50) + ' / ' + hours(cyc.p90), cyc.count ? cyc.count + ' closed · avg ' + hours(cyc.avg) + ' · max ' + hours(cyc.max) : 'No closed cases yet')),
+    h('section', { class: 'card', 'aria-labelledby': 'an-st' }, h('h2', { id: 'an-st' }, 'Stages'),
+      stages.length ? table([
+        { label: 'Stage', get: r => r.title || r.stage },
+        num('Visits', r => r.visits), num('Completed', r => r.completed), num('Returned', r => r.returned),
+        num('Open now', r => r.open_now), num('Unassigned', r => r.unassigned), num('On hold', r => r.on_hold),
+        dwell('p50', r => r.dwell_hours), dwell('p90', r => r.dwell_hours),
+        { label: 'Rework', num: true, get: r => pct(r.rework_rate) },
+        { label: 'SLA attainment', num: true, get: r => (r.sla_met || 0) + (r.sla_breached || 0) ? h('span', { class: 'badge ' + (r.sla_attainment >= 0.9 ? 'b-ok' : r.sla_attainment >= 0.7 ? 'b-warn' : 'b-bad') }, pct(r.sla_attainment)) : '—' },
+        { label: 'At risk', num: true, get: r => r.at_risk ? h('span', { class: 'badge b-warn' }, String(r.at_risk)) : '0' },
+      ], stages) : h('p', { class: 'muted' }, 'No stages.')),
+    h('div', { class: 'cards', style: 'margin-bottom:16px' },
+      h('section', { class: 'card', 'aria-labelledby': 'an-bn' }, h('h2', { id: 'an-bn' }, 'Bottlenecks'),
+        (a.bottlenecks || []).length ? h('ol', { style: 'margin:0;padding-left:20px' }, a.bottlenecks.map(n => {
+          const s = stages.find(x => x.stage === n) || {};
+          return h('li', null, h('strong', null, title(n)), h('span', { class: 'muted' }, ' · ' + (s.open_now || 0) + ' open · p90 dwell ' + hours((s.dwell_hours || {}).p90)));
+        })) : h('p', { class: 'muted' }, 'None — work is flowing.')),
+      h('section', { class: 'card', 'aria-labelledby': 'an-tp' }, h('h2', { id: 'an-tp' }, 'Throughput'),
+        (a.throughput || []).length ? table([{ label: 'Day', get: r => r.day }, num('Opened', r => r.opened || 0), num('Closed', r => r.closed || 0)],
+          a.throughput.slice().sort((x, y) => String(y.day).localeCompare(String(x.day)))) : h('p', { class: 'muted' }, 'No activity yet.'))),
+    h('section', { class: 'card', 'aria-labelledby': 'an-as' }, h('h2', { id: 'an-as' }, 'Assignees'),
+      (a.assignees || []).length ? table([{ label: 'Assignee', get: r => r.assignee }, num('Open', r => r.open || 0), num('Completed', r => r.completed || 0),
+        dwell('p50', r => r.dwell_hours), dwell('p90', r => r.dwell_hours)], a.assignees) : h('p', { class: 'muted' }, 'No assigned work yet.')));
+}
+
+// ---------- verify ----------
+async function showVerify(key) {
+  page(h('p', { class: 'muted' }, 'Checking…'));
+  const r = await api('GET', '/certificates/' + encodeURIComponent(key));
+  const ct = r.certificate || {};
+  page(h('h1', null, 'Certificate check'),
+    h('div', { class: 'banner ' + (r.valid ? 'ok' : 'error'), role: 'status' }, h('strong', null, r.valid ? 'Valid certificate' : 'Not valid'), r.reason ? ' — ' + r.reason : ''),
+    r.certificate ? h('section', { class: 'card' }, h('h2', null, (ct.title || 'Certificate') + ' ' + (ct.number || '')),
+      h('dl', { class: 'summary' },
+        [['Verification code', ct.code], ['Case', ct.case_number], ['Issued', when(ct.issued_at)], ['Expires', when(ct.expires_at)]]
+          .map(([k, val]) => [h('dt', null, k), h('dd', null, val || '—')]),
+        Object.entries(ct.subject || {}).map(([k, val]) => [h('dt', null, k), h('dd', null, display(val))]))) : null,
+    h('a', { class: 'btn', href: '#/' }, 'Check another'));
+}
+
+renderIdent();
+route();
+</script>
+</body>
+</html>

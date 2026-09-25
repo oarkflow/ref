@@ -1,0 +1,234 @@
+####################################################################
+# Medical coding & billing: patient encounters on a single date of service
+# (an office visit) or across multiple dates (an inpatient stay, a course of
+# therapy), coded into per-day claim lines.
+#
+# * dos.period     normalises "dos" or "dos_from/dos_to" into one period shape
+# * dos.validate   timely filing, no future dates, max span, every line inside
+#                  the encounter period — all violations returned at once
+# * dos.overlap    duplicate-billing guard: the same patient + provider cannot
+#                  have two encounters covering the same date
+# * dos.expand     one claim line per date of service (per-day units)
+# * database.insert_many  writes the encounter and its lines in one transaction
+#
+# Every row is tenant-scoped (one tenant per billing client), from the JWT's
+# tenant_id claim.
+####################################################################
+
+name "medical-coding"
+version "1"
+
+resource "db" {
+  kind "database.sql"
+  description "Encounters and coded claim lines"
+  config {
+    driver "sqlite"
+    dsn env("CODING_DSN", "file:.data/medical-coding.db?_pragma=busy_timeout(5000)")
+    migrations [
+      "CREATE TABLE IF NOT EXISTS encounters (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL, patient_id TEXT NOT NULL, provider_id TEXT NOT NULL, dos_from TEXT NOT NULL, dos_to TEXT NOT NULL, dos_kind TEXT NOT NULL, days INTEGER NOT NULL, place_of_service TEXT, status TEXT NOT NULL DEFAULT 'coded', coded_by TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+      "CREATE INDEX IF NOT EXISTS encounters_patient_idx ON encounters(tenant_id, patient_id, provider_id, dos_from)",
+      "CREATE TABLE IF NOT EXISTS encounter_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL, encounter_id INTEGER NOT NULL REFERENCES encounters(id), line_no INTEGER NOT NULL, dos TEXT NOT NULL, cpt TEXT NOT NULL, modifier TEXT, icd TEXT NOT NULL, units REAL NOT NULL)",
+      "CREATE INDEX IF NOT EXISTS encounter_lines_enc_idx ON encounter_lines(encounter_id, dos)"
+    ]
+  }
+}
+
+resource "jwt" {
+  kind "auth.jwt"
+  description "Coder tokens; tenant_id identifies the billing client"
+  config {
+    secret env.required("CODING_JWT_SECRET")
+  }
+}
+
+shape "coding.line" {
+  kind object
+  prop "cpt" { kind string required true pattern "^[0-9A-Z]{5}$" }
+  prop "modifier" { kind string }
+  prop "icd" { kind string required true }
+  prop "units" { kind number min 0 }
+  prop "dos" { kind string format date }
+  prop "dos_from" { kind string format date }
+  prop "dos_to" { kind string format date }
+}
+
+shape "coding.encounter" {
+  kind object
+  prop "patient_id" { kind string required true }
+  prop "provider_id" { kind string required true }
+  prop "place_of_service" { kind string }
+  prop "dos" { kind string format date }
+  prop "dos_from" { kind string format date }
+  prop "dos_to" { kind string format date }
+  prop "lines" { kind array required true items "coding.line" }
+}
+
+# Shared DOS rules, kept identical between preview and save by using the same
+# config in both intents.
+intent "encounters.preview" {
+  description "Validate and expand an encounter without saving it"
+  response "preview"
+  input_schema "coding.encounter"
+  node "period" {
+    uses "dos.period"
+    requires [input]
+    provides [period]
+    config { split_by_month true }
+  }
+  node "validation" {
+    uses "dos.validate"
+    requires [input]
+    provides [validation]
+    config {
+      lines "input.lines"
+      max_span_days 60
+      max_age_days 365
+      fail false
+    }
+  }
+  node "lines" {
+    uses "dos.expand"
+    requires [input]
+    provides [lines]
+    config { lines "input.lines" mode "per_day" }
+  }
+  node "preview" { uses "collect" requires [period, validation, lines] provides [preview] }
+}
+
+intent "encounters.create" {
+  description "Code an encounter: validate DOS, block duplicate billing, save per-day lines"
+  response "response"
+  input_schema "coding.encounter"
+  timeout 5s
+
+  node "tenant" {
+    uses "expression"
+    provides [tenant_id]
+    config { expression "tenant" }
+  }
+  node "coder" {
+    uses "expression"
+    provides [coder_id]
+    config { expression "principal.id" }
+  }
+  node "period" {
+    uses "dos.period"
+    requires [input]
+    provides [period]
+  }
+  node "valid" {
+    uses "dos.validate"
+    requires [input]
+    provides [valid]
+    config {
+      lines "input.lines"
+      max_span_days 60
+      max_age_days 365
+    }
+  }
+  node "existing" {
+    uses "database.query"
+    resource "db"
+    kind read
+    requires [input, tenant_id]
+    provides [existing]
+    config {
+      statement "SELECT id, dos_from, dos_to FROM encounters WHERE tenant_id = $1 AND patient_id = $2 AND provider_id = $3 AND status <> 'void'"
+      args ["tenant_id", "input.patient_id", "input.provider_id"]
+    }
+  }
+  node "no_overlap" {
+    uses "dos.overlap"
+    requires [input, existing]
+    provides [no_overlap]
+    config { existing "existing" }
+  }
+  node "lines" {
+    uses "dos.expand"
+    requires [input]
+    provides [lines]
+    config { lines "input.lines" mode "per_day" }
+  }
+  # The encounter header and its per-day lines commit in one transaction:
+  # a failure on any line leaves no half-coded encounter behind.
+  node "saved" {
+    uses "database.insert_many"
+    resource "db"
+    kind effect
+    requires [input, coder_id, period, valid, no_overlap, lines]
+    provides [saved]
+    config {
+      parent {
+        table "encounters"
+        values {
+          patient_id "input.patient_id"
+          provider_id "input.provider_id"
+          dos_from "period.from"
+          dos_to "period.to"
+          dos_kind "period.kind"
+          days "period.days"
+          place_of_service "input.place_of_service"
+          coded_by "coder_id"
+        }
+        key "id"
+        link "encounter_id"
+        returning ["dos_from", "dos_to", "dos_kind", "days", "status"]
+      }
+      table "encounter_lines"
+      columns ["line_no", "dos", "cpt", "modifier", "icd", "units"]
+      rows "lines"
+      tenant_column "tenant_id"
+      allow_empty false
+    }
+  }
+  node "response" {
+    uses "collect"
+    requires [saved, lines]
+    provides [response]
+  }
+}
+
+intent "encounters.list" {
+  response "encounters"
+  node "encounters" {
+    uses "database.crud"
+    resource "db"
+    provides [encounters]
+    config {
+      operation "list"
+      table "encounters"
+      columns ["id", "patient_id", "provider_id", "dos_from", "dos_to", "dos_kind", "days", "status"]
+      tenant_column "tenant_id"
+      order_by "dos_from"
+    }
+  }
+}
+
+intent "encounters.lines" {
+  response "lines"
+  node "id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" }
+  }
+  node "tenant" {
+    uses "expression"
+    provides [tenant_id]
+    config { expression "tenant" }
+  }
+  node "lines" {
+    uses "database.query"
+    resource "db"
+    requires [id, tenant_id]
+    provides [lines]
+    config {
+      statement "SELECT line_no, dos, cpt, modifier, icd, units FROM encounter_lines WHERE encounter_id = $1 AND tenant_id = $2 ORDER BY dos, line_no"
+      args ["id", "tenant_id"]
+    }
+  }
+}
+
+route "encounters.preview" { method POST path "/api/encounters/preview" intent "encounters.preview" auth "jwt" tenant { required true } }
+route "encounters.create" { method POST path "/api/encounters" intent "encounters.create" auth "jwt" status 201 tenant { required true } }
+route "encounters.list" { method GET path "/api/encounters" intent "encounters.list" auth "jwt" tenant { required true } }
+route "encounters.lines" { method GET path "/api/encounters/:id/lines" intent "encounters.lines" auth "jwt" tenant { required true } }

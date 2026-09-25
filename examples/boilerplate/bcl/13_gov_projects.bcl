@@ -1,0 +1,908 @@
+# ===========================================================================
+# Module: Government Projects across an Organisational Hierarchy
+#
+#   country (np) → state/province → district → municipality
+#
+# Public projects are executed at a unit of the hierarchy. An officer is
+# assigned to one unit and sees and acts on that unit's whole subtree — never
+# a sibling province. Budget line items use budget heads that are configured
+# once at the top of the hierarchy (org.hierarchy lookups) and relabelled,
+# added or disabled lower down; lookup.resolve with require_code rejects a
+# line whose code is not in effect at the project's unit.
+#
+# How the caller's scope is resolved (session auth)
+# -------------------------------------------------
+# The org.hierarchy resource reads a user's units from principal.Claims
+# (assignment_claim). auth.session principals carry no claims: the session
+# stores only user_id, username, email, tenant_id and roles. So, instead of
+# the claim, the assignment lives in the user_org_units table and the
+# internal intent "gov.caller_scope" resolves it per request:
+#
+#   1. read user_org_units for the session user
+#   2. admin / super_admin (the resource's global_roles) resolve to the root
+#   3. deny (403) a caller with no assignment
+#   4. org.query get (scoped false) publishes the unit with its
+#      materialised path, e.g. /np/bagmati/
+#
+# Every gov intent calls it through flow.subflow and scopes rows with
+# "org_path LIKE <scope.path>%" — the same indexed predicate database.crud
+# generates for org_path_column. Target units are checked with
+# starts_with(target.path, scope.path). Platform org actions are used with
+# scoped false and an explicit unit (org.query, lookup.resolve), which does
+# not depend on claims.
+#
+# database.crud's own org scoping (org_resource/org_column/org_path_column)
+# needs the claim, so it is used where the caller is always global: the
+# admin-only reassignment route, which re-stamps org_path automatically.
+# ===========================================================================
+
+resource "org" {
+  kind "org.hierarchy"
+  description "Administrative divisions and the budget heads configured along them"
+  config {
+    levels ["country", "state", "district", "municipality"]
+    assignment_claim "org_units"
+    global_roles ["admin", "super_admin"]
+    nodes [
+      { id "np" level "country" name "Nepal" },
+      { id "bagmati" parent "np" level "state" name "Bagmati Province" code "P3" },
+      { id "koshi" parent "np" level "state" name "Koshi Province" code "P1" },
+      { id "ktm" parent "bagmati" level "district" name "Kathmandu" code "27" },
+      { id "lalitpur" parent "bagmati" level "district" name "Lalitpur" code "25" },
+      { id "morang" parent "koshi" level "district" name "Morang" code "05" },
+      { id "ktm-metro" parent "ktm" level "municipality" name "Kathmandu Metropolitan City" },
+      { id "tokha" parent "ktm" level "municipality" name "Tokha Municipality" },
+      { id "lalitpur-metro" parent "lalitpur" level "municipality" name "Lalitpur Metropolitan City" },
+      { id "biratnagar" parent "morang" level "municipality" name "Biratnagar Metropolitan City" }
+    ]
+    lookups [
+      { set "budget_head" code "civil" label "Civil works" sort 1 },
+      { set "budget_head" code "equipment" label "Equipment & machinery" sort 2 },
+      { set "budget_head" code "salary" label "Staff salaries" sort 3 },
+      { set "budget_head" code "consultancy" label "Consultancy services" sort 4 },
+      { set "budget_head" code "civil" node "bagmati" label "Civil works (provincial schedule)" sort 1 },
+      { set "budget_head" code "consultancy" node "ktm" disabled true },
+      { set "budget_head" code "heritage" node "ktm-metro" label "Heritage conservation" sort 5 }
+    ]
+  }
+}
+
+shape "gov_project_input" {
+  kind object
+  description "A public project executed at one organisational unit"
+
+  prop "org_unit_id" {
+    kind string
+    required true
+  }
+
+  prop "title" {
+    kind string
+    required true
+    min_length 3
+    max_length 200
+  }
+
+  prop "description" {
+    kind string
+    max_length 4000
+    default ""
+  }
+
+  prop "budget_total" {
+    kind number
+    required true
+    min 0
+  }
+
+  prop "start_date" {
+    kind string
+    format date
+  }
+
+  prop "end_date" {
+    kind string
+    format date
+  }
+}
+
+shape "gov_budget_line_input" {
+  kind object
+
+  prop "code" {
+    kind string
+    required true
+  }
+
+  prop "amount" {
+    kind number
+    required true
+    min 0
+  }
+
+  prop "note" {
+    kind string
+    max_length 1000
+    default ""
+  }
+}
+
+shape "gov_status_input" {
+  kind object
+
+  prop "status" {
+    kind string
+    required true
+    enum ["proposed", "approved", "in_progress", "completed", "cancelled"]
+  }
+}
+
+shape "gov_reassign_input" {
+  kind object
+
+  prop "org_unit_id" {
+    kind string
+    required true
+  }
+}
+
+# --- Caller scope (internal; invoked through flow.subflow) ------------------
+intent "gov.caller_scope" {
+  description "Resolve the session user's organisational unit (see the header of this file)"
+  response "response"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "assignment" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [assignment_rows]
+    config {
+      statement "SELECT COALESCE((SELECT org_unit_id FROM user_org_units WHERE user_id = $1), '') AS org_unit_id"
+      args [user_id]
+    }
+  }
+
+  node "assigned" {
+    uses "data.first"
+    requires [assignment_rows]
+    provides [assigned]
+    config { source_fact "assignment_rows" }
+  }
+
+  node "unit-id" {
+    uses "expression"
+    requires [assigned]
+    provides [unit_id]
+    config { expression "principal.roles has_any ['admin', 'super_admin'] ? 'np' : assigned.org_unit_id" }
+  }
+
+  # Guards are node-level authz conditions on the node they protect: the
+  # platform's decision.* actions publish no fact, so a node requiring one
+  # would never run (and a fact-less node is pruned from the plan).
+  node "unit" {
+    uses "org.query"
+    resource "org"
+    requires [unit_id]
+    provides [unit]
+    authz {
+      condition "unit_id != ''"
+      message "you are not assigned to any organisational unit"
+    }
+    config {
+      operation "get"
+      id_fact "unit_id"
+      scoped false
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [unit]
+    provides [response]
+    config { unwrap true }
+  }
+}
+
+# --- Hierarchy & reference data ---------------------------------------------
+intent "gov.tree" {
+  description "The jurisdiction tree below the caller's unit"
+  response "response"
+
+  node "scope" {
+    uses "flow.subflow"
+    provides [scope]
+    config { intent "gov.caller_scope" }
+  }
+
+  node "tree" {
+    uses "org.query"
+    resource "org"
+    requires [scope]
+    provides [tree]
+    config {
+      operation "tree"
+      id_fact "scope.id"
+      scoped false
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [scope, tree]
+    provides [response]
+  }
+}
+
+intent "gov.budget_heads" {
+  description "Budget heads in effect at a unit (inherited, relabelled, disabled down the tree)"
+  response "response"
+
+  node "scope" {
+    uses "flow.subflow"
+    provides [scope]
+    config { intent "gov.caller_scope" }
+  }
+
+  node "param" {
+    uses "request.param"
+    provides [unit_param]
+    config {
+      name "org_unit"
+      from "query"
+      required false
+      default ""
+    }
+  }
+
+  node "unit-id" {
+    uses "expression"
+    requires [scope, unit_param]
+    provides [unit_id]
+    config { expression "unit_param != '' ? unit_param : scope.id" }
+  }
+
+  node "target" {
+    uses "org.query"
+    resource "org"
+    requires [unit_id]
+    provides [target]
+    config {
+      operation "get"
+      id_fact "unit_id"
+      scoped false
+    }
+  }
+
+  node "heads" {
+    uses "lookup.resolve"
+    resource "org"
+    requires [unit_id, scope, target]
+    provides [budget_heads]
+    authz {
+      condition "starts_with(target.path, scope.path)"
+      message "that unit is outside your jurisdiction"
+    }
+    config {
+      set "budget_head"
+      node_fact "unit_id"
+      scoped false
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [target, budget_heads]
+    provides [response]
+  }
+}
+
+# --- Projects -----------------------------------------------------------------
+intent "gov.projects.list" {
+  description "Public projects in the caller's jurisdiction, with allocated budget"
+  response "response"
+
+  node "scope" {
+    uses "flow.subflow"
+    provides [scope]
+    config { intent "gov.caller_scope" }
+  }
+
+  node "status" {
+    uses "request.param"
+    provides [status_filter]
+    config {
+      name "status"
+      from "query"
+      required false
+      default ""
+    }
+  }
+
+  node "projects" {
+    family database
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [scope, status_filter]
+    provides [projects]
+    config {
+      statement "SELECT p.id, p.org_unit_id, p.org_path, p.title, p.status, p.budget_total, COALESCE((SELECT SUM(b.amount) FROM gov_budget_lines b WHERE b.project_id = p.id), 0) AS budget_allocated, p.start_date, p.end_date, p.created_by, p.created_at FROM gov_projects p WHERE p.org_path LIKE $1 || '%' AND ($2 = '' OR p.status = $2) ORDER BY p.id DESC LIMIT 500"
+      args [scope.path, status_filter]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [scope, projects]
+    provides [response]
+  }
+}
+
+intent "gov.projects.create" {
+  description "Create a public project at a unit inside the caller's jurisdiction"
+  response "response"
+  input_schema "gov_project_input"
+  timeout 5s
+
+  node "scope" {
+    uses "flow.subflow"
+    provides [scope]
+    config { intent "gov.caller_scope" }
+  }
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  # 404 for a unit that does not exist; its path for the scope check.
+  node "target" {
+    uses "org.query"
+    resource "org"
+    requires [input]
+    provides [target]
+    config {
+      operation "get"
+      id_fact "input.org_unit_id"
+      scoped false
+    }
+  }
+
+  node "dates" {
+    uses "validate.expression"
+    requires [input]
+    provides [dates_ok]
+    config {
+      expression "input.start_date == nil or input.end_date == nil or input.start_date <= input.end_date"
+      message "end_date must not be before start_date"
+    }
+  }
+
+  node "insert" {
+    family database
+    uses "database.query"
+    resource "database"
+    kind effect
+    requires [scope, dates_ok, target, input, user_id]
+    provides [project_rows]
+    authz {
+      condition "starts_with(target.path, scope.path)"
+      message "the project's unit is outside your jurisdiction"
+    }
+    config {
+      statement "INSERT INTO gov_projects (org_unit_id, org_path, title, description, budget_total, status, start_date, end_date, created_by) VALUES ($1, $2, $3, $4, $5, 'proposed', $6, $7, $8) RETURNING id, org_unit_id, org_path, title, description, budget_total, status, start_date, end_date, created_by, created_at"
+      args [target.id, target.path, input.title, input.description, input.budget_total, input.start_date, input.end_date, user_id]
+    }
+  }
+
+  node "project" {
+    uses "data.first"
+    requires [project_rows]
+    provides [project]
+    config { source_fact "project_rows" }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [project, user_id]
+    provides [audited]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, target_id, detail) VALUES ('gov.project.created', $1, $2, $3 || ' @ ' || $4)"
+      args [user_id, project.id, project.title, project.org_unit_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [project, audited]
+    provides [response]
+  }
+}
+
+intent "gov.projects.get" {
+  description "One project with its budget lines and unit breadcrumbs — in scope only"
+  response "response"
+
+  node "scope" {
+    uses "flow.subflow"
+    provides [scope]
+    config { intent "gov.caller_scope" }
+  }
+
+  node "id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" }
+  }
+
+  node "load" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [scope, id]
+    provides [project_rows]
+    config {
+      statement "SELECT p.id, p.org_unit_id, p.org_path, p.title, p.description, p.status, p.budget_total, COALESCE((SELECT SUM(b.amount) FROM gov_budget_lines b WHERE b.project_id = p.id), 0) AS budget_allocated, p.start_date, p.end_date, p.created_by, p.created_at, p.updated_at FROM gov_projects p WHERE p.id = $1 AND p.org_path LIKE $2 || '%'"
+      args [id, scope.path]
+      require_rows true
+      not_found_message "project not found"
+    }
+  }
+
+  node "project" {
+    uses "data.first"
+    requires [project_rows]
+    provides [project]
+    config { source_fact "project_rows" }
+  }
+
+  node "lines" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [project]
+    provides [budget_lines]
+    config {
+      statement "SELECT id, code, amount, note, created_by, created_at FROM gov_budget_lines WHERE project_id = $1 ORDER BY id"
+      args [project.id]
+    }
+  }
+
+  node "breadcrumbs" {
+    uses "org.query"
+    resource "org"
+    requires [project]
+    provides [ancestors]
+    config {
+      operation "ancestors"
+      id_fact "project.org_unit_id"
+      scoped false
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [project, budget_lines, ancestors]
+    provides [response]
+  }
+}
+
+intent "gov.projects.status" {
+  description "Move a project through proposed → approved → in_progress → completed (or cancelled)"
+  response "response"
+  input_schema "gov_status_input"
+
+  node "scope" {
+    uses "flow.subflow"
+    provides [scope]
+    config { intent "gov.caller_scope" }
+  }
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" }
+  }
+
+  node "load" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [scope, id]
+    provides [project_rows]
+    config {
+      statement "SELECT id, status FROM gov_projects WHERE id = $1 AND org_path LIKE $2 || '%'"
+      args [id, scope.path]
+      require_rows true
+      not_found_message "project not found"
+    }
+  }
+
+  node "project" {
+    uses "data.first"
+    requires [project_rows]
+    provides [project]
+    config { source_fact "project_rows" }
+  }
+
+  node "allowed" {
+    uses "validate.expression"
+    requires [project, input]
+    provides [allowed]
+    config {
+      expression "(project.status + '>' + input.status) in ['proposed>approved', 'proposed>cancelled', 'approved>in_progress', 'approved>cancelled', 'in_progress>completed', 'in_progress>cancelled']"
+      message "invalid project status transition"
+    }
+  }
+
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [allowed, input, project]
+    provides [updated]
+    config {
+      statement "UPDATE gov_projects SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND status = $3"
+      args [input.status, project.id, project.status]
+      require_affected true
+      not_found_message "the project changed while you were editing it"
+    }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [updated, user_id, project, input]
+    provides [audited]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, target_id, detail) VALUES ('gov.project.status_changed', $1, $2, $3 || '->' || $4)"
+      args [user_id, project.id, project.status, input.status]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [updated, audited]
+    provides [response]
+  }
+}
+
+intent "gov.budget_lines.add" {
+  description "Add a budget line; its code must be a budget head in effect at the project's unit"
+  response "response"
+  input_schema "gov_budget_line_input"
+
+  node "scope" {
+    uses "flow.subflow"
+    provides [scope]
+    config { intent "gov.caller_scope" }
+  }
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" }
+  }
+
+  node "load" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [scope, id]
+    provides [project_rows]
+    config {
+      statement "SELECT p.id, p.org_unit_id, p.status, p.budget_total, COALESCE((SELECT SUM(b.amount) FROM gov_budget_lines b WHERE b.project_id = p.id), 0) AS budget_allocated FROM gov_projects p WHERE p.id = $1 AND p.org_path LIKE $2 || '%'"
+      args [id, scope.path]
+      require_rows true
+      not_found_message "project not found"
+    }
+  }
+
+  node "project" {
+    uses "data.first"
+    requires [project_rows]
+    provides [project]
+    config { source_fact "project_rows" }
+  }
+
+  # The code must be offered at the project's unit after inheritance: e.g.
+  # "heritage" exists only in Kathmandu Metropolitan City and "consultancy" is
+  # disabled across Kathmandu district. A wrong code is a 422.
+  node "head" {
+    uses "lookup.resolve"
+    resource "org"
+    requires [project, input]
+    provides [budget_heads]
+    config {
+      set "budget_head"
+      node_fact "project.org_unit_id"
+      scoped false
+      require_code "input.code"
+    }
+  }
+
+  node "open" {
+    uses "validate.expression"
+    requires [project]
+    provides [project_open]
+    config {
+      expression "project.status != 'completed' and project.status != 'cancelled'"
+      message "budget lines cannot be added to a completed or cancelled project"
+    }
+  }
+
+  node "within-budget" {
+    uses "validate.expression"
+    requires [project, input]
+    provides [within_budget]
+    config {
+      expression "project.budget_allocated + input.amount <= project.budget_total"
+      message "this line would exceed the project's approved budget"
+    }
+  }
+
+  node "insert" {
+    uses "database.query"
+    resource "database"
+    kind effect
+    requires [budget_heads, project_open, within_budget, project, input, user_id]
+    provides [line_rows]
+    config {
+      statement "INSERT INTO gov_budget_lines (project_id, code, amount, note, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING id, project_id, code, amount, note, created_by, created_at"
+      args [project.id, input.code, input.amount, input.note, user_id]
+    }
+  }
+
+  node "line" {
+    uses "data.first"
+    requires [line_rows]
+    provides [line]
+    config { source_fact "line_rows" }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [line, user_id]
+    provides [audited]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, target_id, detail) VALUES ('gov.budget_line.added', $1, $2, $3)"
+      args [user_id, line.project_id, line.code]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [line, audited]
+    provides [response]
+  }
+}
+
+# Admin-only: move a project to another unit. The caller holds a global role,
+# so database.crud's own org scoping applies (and passes), and org_path is
+# re-stamped from the new unit's materialised path by the platform.
+intent "gov.projects.reassign" {
+  description "Reassign a project to another unit (admin), re-stamping its org_path"
+  response "response"
+  input_schema "gov_reassign_input"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" }
+  }
+
+  node "project" {
+    family database
+    uses "database.crud"
+    resource "database"
+    kind effect
+    requires [input, id]
+    provides [project]
+    config {
+      operation "update"
+      table "gov_projects"
+      columns ["id", "org_unit_id", "org_path", "title", "status"]
+      writable ["org_unit_id"]
+      id_fact "id"
+      org_resource "org"
+      org_column "org_unit_id"
+      org_path_column "org_path"
+    }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [project, user_id]
+    provides [audited]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, target_id, detail) VALUES ('gov.project.reassigned', $1, $2, $3)"
+      args [user_id, project.id, project.org_unit_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [project, audited]
+    provides [response]
+  }
+}
+
+# ===========================================================================
+# Routes
+# ===========================================================================
+
+route "web.gov" {
+  method GET
+  path "/gov"
+  intent "gov.projects.list"
+  template "pages/gov/index"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["gov:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.gov.scope" {
+  method GET
+  path "/api/v1/gov/scope"
+  intent "gov.caller_scope"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["gov:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.gov.tree" {
+  method GET
+  path "/api/v1/gov/tree"
+  intent "gov.tree"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["gov:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.gov.budget_heads" {
+  method GET
+  path "/api/v1/gov/budget-heads"
+  intent "gov.budget_heads"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["gov:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.gov.projects.list" {
+  method GET
+  path "/api/v1/gov/projects"
+  intent "gov.projects.list"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["gov:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.gov.projects.create" {
+  method POST
+  path "/api/v1/gov/projects"
+  intent "gov.projects.create"
+  session "sessions"
+  auth "session_auth"
+  status 201
+  cache_control "no-store"
+  authz {
+    permissions ["gov:write"]
+    authorizer "authorization"
+  }
+}
+
+route "api.gov.projects.get" {
+  method GET
+  path "/api/v1/gov/projects/:id"
+  intent "gov.projects.get"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["gov:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.gov.projects.status" {
+  method POST
+  path "/api/v1/gov/projects/:id/status"
+  intent "gov.projects.status"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+  authz {
+    permissions ["gov:write"]
+    authorizer "authorization"
+  }
+}
+
+route "api.gov.budget_lines.add" {
+  method POST
+  path "/api/v1/gov/projects/:id/budget-lines"
+  intent "gov.budget_lines.add"
+  session "sessions"
+  auth "session_auth"
+  status 201
+  cache_control "no-store"
+  authz {
+    permissions ["gov:write"]
+    authorizer "authorization"
+  }
+}
+
+route "api.gov.projects.reassign" {
+  method PUT
+  path "/api/v1/gov/projects/:id/unit"
+  intent "gov.projects.reassign"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+  authz {
+    permissions ["gov:admin"]
+    authorizer "authorization"
+  }
+  route_audit {
+    action "api.gov.project.reassign"
+    include_request true
+  }
+}

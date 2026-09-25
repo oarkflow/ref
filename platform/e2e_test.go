@@ -806,6 +806,10 @@ func newE2E(t *testing.T) *e2eHarness {
 	}()
 	t.Cleanup(func() {
 		_ = app.ShutdownWithTimeout(2 * time.Second)
+		// fh closes the listener only if Serve registered it before Shutdown
+		// ran; on a loaded machine the test can finish first, leaving Accept
+		// blocked forever. Closing it here unblocks Serve in every ordering.
+		_ = listener.Close()
 		<-served
 	})
 

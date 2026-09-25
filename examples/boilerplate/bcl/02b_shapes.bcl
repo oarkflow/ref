@@ -116,7 +116,7 @@ shape "role_update_input" {
   prop "role" {
     kind string
     required true
-    enum ["guest", "user", "manager", "admin", "super_admin"]
+    enum ["guest", "user", "officer", "coder", "manager", "admin", "super_admin"]
   }
 }
 

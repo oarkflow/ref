@@ -71,7 +71,12 @@ boilerplate/
 │   ├── 05_intents_dashboard.bcl    # Dashboard overview, admin governance, reports, profile
 │   ├── 06_routes_web.bcl           # HTML Web routes mapped to SPL templates
 │   ├── 07_routes_api.bcl           # REST API JSON endpoints (/api/v1/auth/*)
-│   └── 08_static.bcl               # Declarative static asset serving (/static)
+│   ├── 08_static.bcl               # Declarative static asset serving (/static)
+│   ├── 09_workers.bcl … 11_triggers.bcl  # Queue workers, schedules, webhooks
+│   ├── 12_projects.bcl             # Module: projects, tasks, approval process, comments
+│   ├── 13_gov_projects.bcl         # Module: public projects across an org hierarchy
+│   ├── 14_medical_coding.bcl       # Module: encounters, dates of service, coder queue
+│   └── 15_activity.bcl             # Module: activity feed & per-user summaries
 ├── cmd/
 │   └── server/
 │       └── main.go                 # Server entry point (BCL loader + zlog + tcpguard)
@@ -111,8 +116,10 @@ boilerplate/
 │   └── pages/
 │       ├── auth/                   # login.html, register.html, forgot_password.html, reset_password.html
 │       ├── dashboard/              # index.html, admin.html, manager.html, profile.html
+│       ├── projects/ gov/ coding/ activity/  # index.html — one page per module
 │       └── errors/                 # 403.html (Access Denied), 404.html (Not Found)
-└── boilerplate_test.go             # Comprehensive automated test suite
+├── boilerplate_test.go             # Comprehensive automated test suite
+└── modules_test.go                 # End-to-end HTTP tests for the business modules
 ```
 
 ---
@@ -320,20 +327,30 @@ From the repository root:
 
 ```bash
 # Start server on default port 8080 (or specify PORT)
-PORT=8080 go run ./boilerplate/cmd/server
+PORT=8080 go run ./examples/boilerplate/cmd/server
+
+# Or keep all state out of the repository:
+DATABASE_URL="file:/tmp/bp/app.db?_pragma=busy_timeout(5000)" SESSION_DIR=/tmp/bp/sessions \
+UPLOAD_DIR=/tmp/bp/uploads go run ./examples/boilerplate/cmd/server
 ```
 
 Open your browser and visit: `http://localhost:8080`
 
 ### 2. Pre-Seeded Demo Test Accounts
 
-The SQLite database is pre-seeded with three demo accounts. All accounts share the password `Password123!`:
+The SQLite database is pre-seeded with demo accounts. All accounts share the password `Password123!`:
 
 | Email | Role | Accessible Areas | Password |
 | :--- | :--- | :--- | :--- |
 | `admin@example.com` | `admin` | `/dashboard`, `/dashboard/admin`, `/dashboard/manager`, `/profile` | `Password123!` |
 | `manager@example.com` | `manager` | `/dashboard`, `/dashboard/manager`, `/profile` | `Password123!` |
-| `user@example.com` | `user` | `/dashboard`, `/profile` | `Password123!` |
+| `user@example.com` | `user` | `/dashboard`, `/profile`, `/projects` | `Password123!` |
+| `officer.bagmati@example.com` | `officer` (unit `bagmati`) | `/gov` — Bagmati Province and below | `Password123!` |
+| `officer.ktm@example.com` | `officer` (unit `ktm`) | `/gov` — Kathmandu district and below | `Password123!` |
+| `officer.koshi@example.com` | `officer` (unit `koshi`) | `/gov` — Koshi Province and below | `Password123!` |
+| `coder@example.com`, `coder2@example.com` | `coder` | `/coding` | `Password123!` |
+
+The manager is also assigned to `bagmati` (read-only `gov:read`); admins see the whole hierarchy.
 
 *(Note: Clicking the demo buttons on the `/login` page automatically fills in these accounts for instant evaluation.)*
 
@@ -359,6 +376,138 @@ All tests execute in sub-second times with zero external network dependencies:
 - `TestRouteBasedAuthorization`: Verifies route authorization blocks.
 - `TestSPLTemplateRendering`: Verifies template compilation, layouts, and data binding.
 - `TestBCLLoadDirAndMount`: Verifies multi-file BCL parsing, compilation, and route mounting onto `fh.App`.
+- `TestModuleProjectsAndTasks`, `TestModuleGovHierarchy`, `TestModuleMedicalCoding`, `TestModuleActivityFeed` (`modules_test.go`): drive every module over real HTTP with one cookie jar per demo user — create/list, scoping and authorization denials, and the business rules listed per module below.
+- `TestBoilerplateAuthFlowsRegression`: registration and admin role updates work end to end, and privilege escalation is refused.
+
+
+---
+
+## 🧩 Business Modules
+
+Four modules turn the auth boilerplate into a multi-module business application. Each is one BCL file, owns its tables (migrations in `bcl/03_resources.bcl`), writes an `audit_log` row per business event, exposes a JSON API under `/api/v1/...` guarded by RBAC permissions, and has a web page linked from the navbar and dashboard.
+
+### RBAC additions (`bcl/02_roles.bcl`)
+
+| Role | New permissions |
+| :--- | :--- |
+| `user` | `projects:read`, `projects:write`, `tasks:read`, `tasks:write`, `activity:self` |
+| `officer` (inherits `user`) | `gov:read`, `gov:write` |
+| `coder` (inherits `user`) | `coding:read`, `coding:write` |
+| `manager` | `tasks:approve`, `activity:read`, `gov:read`, `coding:read` |
+| `admin` | `gov:*`, `coding:*`, `activity:*`, `tasks:admin` |
+
+Routes check **permissions** (which follow inheritance) rather than literal role names.
+
+### 1. Projects & Tasks (`bcl/12_projects.bcl`, page `/projects`)
+
+- Projects have an owner and members. `database.crud` with `owner_column "owner_id"` creates, updates and deletes projects: the owner is stamped from the session, and a non-owner's update/delete answers **404**. Every read joins `project_members`, so non-members see nothing.
+- Tasks carry an assignee (must be a project member, defaults to the caller), a priority and a due date. Status workflow: `todo → in_progress → review → done`, plus `in_progress → todo` and `review → in_progress`. A `decision.table` classifies the transition and anything else is **422**; a `flow.switch` runs the child intent for the outcome.
+- Moving to `review` starts the durable **`task.approval` process**: it parks on a human task for the `manager` role (the submitter can never approve it). Approving marks the task `done`; rejecting sends it back to `in_progress`. `done` can never be set directly.
+- `GET /api/v1/tasks/mine` (my open tasks) and `GET /api/v1/tasks/overdue` (open tasks past due in my projects). The hourly `flag_overdue_tasks` schedule stamps `tasks.overdue`; admins can run it on demand.
+
+| Method | Endpoint | Permission |
+| :--- | :--- | :--- |
+| `GET` / `POST` | `/api/v1/projects` | `projects:read` / `projects:write` |
+| `GET` / `PATCH` / `DELETE` | `/api/v1/projects/:id` | `projects:read` / `projects:write` (owner only) |
+| `POST` | `/api/v1/projects/:id/members` | `projects:write` (owner only) |
+| `POST` | `/api/v1/projects/:id/tasks` | `tasks:write` (members) |
+| `GET` | `/api/v1/tasks/mine`, `/api/v1/tasks/overdue` | `tasks:read` |
+| `POST` | `/api/v1/tasks/:id/transition` | `tasks:write` (members) |
+| `GET` / `POST` | `/api/v1/tasks/:id/comments` | `tasks:read` / `tasks:write` |
+| `GET` | `/api/v1/approvals` | `tasks:approve` |
+| `POST` | `/api/v1/approvals/:id/decide` | `tasks:approve` |
+| `POST` | `/api/v1/admin/tasks/flag-overdue` | `tasks:admin` |
+
+```bash
+B=http://localhost:8080
+curl -c u.txt -H 'Content-Type: application/json' -d '{"email":"user@example.com","password":"Password123!"}' $B/api/v1/auth/login
+curl -b u.txt -H 'Content-Type: application/json' -d '{"name":"Website relaunch","due_date":"2026-12-31"}' $B/api/v1/projects
+curl -b u.txt -H 'Content-Type: application/json' -d '{"user_id":"usr_coder_01"}' $B/api/v1/projects/1/members
+curl -b u.txt -H 'Content-Type: application/json' -d '{"title":"Write copy","assignee_id":"usr_coder_01","priority":"high","due_date":"2026-10-01"}' $B/api/v1/projects/1/tasks
+curl -b u.txt -H 'Content-Type: application/json' -d '{"status":"done"}' $B/api/v1/tasks/1/transition        # 422: not in the workflow
+curl -b u.txt -H 'Content-Type: application/json' -d '{"status":"in_progress"}' $B/api/v1/tasks/1/transition
+curl -b u.txt -H 'Content-Type: application/json' -d '{"status":"review"}' $B/api/v1/tasks/1/transition      # starts task.approval
+curl -c m.txt -H 'Content-Type: application/json' -d '{"email":"manager@example.com","password":"Password123!"}' $B/api/v1/auth/login
+curl -b m.txt $B/api/v1/approvals                                                  # → approvals[0].task_id
+curl -b m.txt -H 'Content-Type: application/json' -d '{"action":"approve","note":"ok"}' $B/api/v1/approvals/<task_id>/decide
+```
+
+### 2. Government Projects (`bcl/13_gov_projects.bcl`, page `/gov`)
+
+- An `org.hierarchy` resource (inline nodes) models Nepal → provinces → districts → municipalities, plus a `budget_head` lookup set configured at the country and relabelled, added (`heritage` in Kathmandu Metropolitan City) or disabled (`consultancy` across Kathmandu district) lower down.
+- An officer is assigned to one unit (`user_org_units` table) and reaches that unit's whole subtree: listing, reading and changing projects are scoped by `org_path LIKE '<unit path>%'`; creating a project at a unit outside the subtree is **403**; another state's project is **404**.
+- Budget lines are validated with `lookup.resolve require_code` against the project's unit (**422** for a head not in effect there) and may not exceed the project budget.
+- Admins may reassign a project to another unit (`PUT /api/v1/gov/projects/:id/unit`) through `database.crud` with `org_resource`/`org_column`/`org_path_column`, which re-stamps `org_path`.
+
+> **Why a table instead of a claim?** `org.hierarchy` reads a user's units from `principal.Claims[assignment_claim]`, but `auth.session` principals carry no claims (the session stores only user id, username, email, tenant and roles). The internal intent `gov.caller_scope` therefore reads `user_org_units`, maps `admin`/`super_admin` to the root, and resolves the unit's materialised path with `org.query get` (`scoped false`); every gov intent calls it through `flow.subflow`. Platform org actions are used with `scoped false` plus an explicit unit, which does not depend on claims. `database.crud` org scoping (which does read the claim) is used only on the admin route, where the caller's global role makes it apply.
+
+| Method | Endpoint | Permission |
+| :--- | :--- | :--- |
+| `GET` | `/api/v1/gov/scope`, `/api/v1/gov/tree` | `gov:read` |
+| `GET` | `/api/v1/gov/budget-heads?org_unit=` | `gov:read` |
+| `GET` / `POST` | `/api/v1/gov/projects[?status=]` | `gov:read` / `gov:write` |
+| `GET` | `/api/v1/gov/projects/:id` | `gov:read` |
+| `POST` | `/api/v1/gov/projects/:id/status` | `gov:write` |
+| `POST` | `/api/v1/gov/projects/:id/budget-lines` | `gov:write` |
+| `PUT` | `/api/v1/gov/projects/:id/unit` | `gov:admin` |
+
+```bash
+curl -c o.txt -H 'Content-Type: application/json' -d '{"email":"officer.ktm@example.com","password":"Password123!"}' $B/api/v1/auth/login
+curl -b o.txt $B/api/v1/gov/scope
+curl -b o.txt "$B/api/v1/gov/budget-heads?org_unit=ktm-metro"
+curl -b o.txt -H 'Content-Type: application/json' -d '{"org_unit_id":"ktm-metro","title":"Durbar Square restoration","budget_total":1000}' $B/api/v1/gov/projects
+curl -b o.txt -H 'Content-Type: application/json' -d '{"org_unit_id":"lalitpur-metro","title":"Ring road","budget_total":10}' $B/api/v1/gov/projects   # 403
+curl -b o.txt -H 'Content-Type: application/json' -d '{"code":"heritage","amount":300}' $B/api/v1/gov/projects/1/budget-lines
+curl -b o.txt -H 'Content-Type: application/json' -d '{"code":"consultancy","amount":10}' $B/api/v1/gov/projects/1/budget-lines                  # 422
+```
+
+### 3. Medical Coding (`bcl/14_medical_coding.bcl`, page `/coding`)
+
+- Encounters on a single date of service (`dos`) or a span (`dos_from`/`dos_to`). `dos.validate` enforces timely filing (365 days), no future dates, a 60-day maximum span and every line inside the encounter — all violations are returned at once (**422** `INVALID_DATE_OF_SERVICE` with `details`).
+- `dos.overlap` blocks duplicate billing: the same patient and provider cannot have two live encounters covering one date (**409** `DOS_OVERLAP`). Voided encounters do not count.
+- `dos.expand` produces one claim line per date and `database.insert_many` with `parent {}` writes the encounter header and all its lines in one transaction.
+- Coder work queue and status: `pending → (claim) in_progress → coded | on_hold | void`; only the assigned coder (or a manager/admin) may change an encounter.
+
+| Method | Endpoint | Permission |
+| :--- | :--- | :--- |
+| `POST` | `/api/v1/coding/encounters/preview` | `coding:write` |
+| `GET` / `POST` | `/api/v1/coding/encounters[?status=]` | `coding:read` / `coding:write` |
+| `GET` | `/api/v1/coding/encounters/:id/lines` | `coding:read` |
+| `GET` | `/api/v1/coding/queue` | `coding:read` |
+| `POST` | `/api/v1/coding/encounters/:id/claim` | `coding:write` |
+| `POST` | `/api/v1/coding/encounters/:id/status` | `coding:write` |
+
+```bash
+curl -c c.txt -H 'Content-Type: application/json' -d '{"email":"coder@example.com","password":"Password123!"}' $B/api/v1/auth/login
+curl -b c.txt -H 'Content-Type: application/json' -d '{"patient_id":"PAT-1","provider_id":"DR-7","dos_from":"2026-09-10","dos_to":"2026-09-12","lines":[{"cpt":"99223","icd":"J18.9","units":1},{"cpt":"71046","icd":"J18.9","units":1,"dos":"2026-09-11"}]}' $B/api/v1/coding/encounters
+curl -b c.txt -H 'Content-Type: application/json' -d '{"patient_id":"PAT-1","provider_id":"DR-7","dos":"2026-09-11","lines":[{"cpt":"99232","icd":"J18.9","units":1}]}' $B/api/v1/coding/encounters   # 409 DOS_OVERLAP
+curl -b c.txt $B/api/v1/coding/queue
+curl -b c.txt -X POST $B/api/v1/coding/encounters/1/claim
+curl -b c.txt -H 'Content-Type: application/json' -d '{"status":"coded"}' $B/api/v1/coding/encounters/1/status
+```
+
+### 4. User Activity (`bcl/15_activity.bcl`, page `/activity`)
+
+Every module (and login/logout/registration) writes `audit_log` rows — actor, action (`auth.login`, `project.created`, `task.status_changed`, `task.approved`, `gov.project.created`, `encounter.claimed`, …), target and detail. The feed filters by `actor`, `action` (prefix: `task.` matches every task event), `since`/`until` (inclusive `YYYY-MM-DD`; not `from`/`to`, because BCL reads a bare `"to"` value as its range keyword) and `limit`.
+
+| Method | Endpoint | Permission |
+| :--- | :--- | :--- |
+| `GET` | `/api/v1/activity?actor=&action=&since=&until=&limit=` | `activity:read` (managers+) |
+| `GET` | `/api/v1/activity/me?action=&since=&until=` | `activity:self` (every user) |
+| `GET` | `/api/v1/activity/summary?since=&until=` | `activity:read` — per-user counts (SQL `GROUP BY`) + totals (`data.aggregate`) |
+| `GET` | `/api/v1/activity/users/:id/summary` | `activity:read` — counts per action + events grouped by action (`data.group`) |
+
+```bash
+curl -b m.txt "$B/api/v1/activity?actor=usr_user_01&action=task.&since=2026-09-01"
+curl -b m.txt "$B/api/v1/activity/summary?since=2026-09-01"
+curl -b u.txt $B/api/v1/activity/me
+```
+
+### Authoring notes learned while building the modules
+
+- **Guards:** `decision.*` actions record allow/deny but publish no fact, so a node that `requires` their `provides` never runs (the request ends as a generic 403), and a guard with no consumer is pruned. Put the check on the protected node itself as `authz { condition "…" message "…" }` (403 with the message), or use `validate.expression` (422).
+- **Boolean operators:** write `and` / `or`. `&&` and `||` evaluate only their left operand in the current expression engine.
+- **`to` as a value:** `name "to"` does not bind in BCL; pick another parameter name.
 
 ---
 
@@ -546,3 +695,5 @@ When preparing to deploy this boilerplate into production environments:
 | `POST` | `/api/v1/auth/register` | REST API register endpoint (JSON) | No |
 | `POST` | `/api/v1/auth/login` | REST API login endpoint (JSON) | No |
 | `POST` | `/api/v1/auth/logout` | REST API logout endpoint (JSON) | Yes |
+| `GET` | `/projects`, `/gov`, `/coding`, `/activity` | Module web pages | Yes (see [Business Modules](#-business-modules)) |
+| — | `/api/v1/projects…`, `/api/v1/tasks…`, `/api/v1/approvals…`, `/api/v1/gov/…`, `/api/v1/coding/…`, `/api/v1/activity…` | Module JSON APIs | Yes (see [Business Modules](#-business-modules)) |

@@ -1,0 +1,392 @@
+# ===========================================================================
+# Module: User Activity Feed
+#
+# Every module writes one audit_log row per business event — who (actor_id),
+# what (action, e.g. "auth.login", "project.created", "task.status_changed",
+# "gov.project.created", "encounter.claimed"), on what (target_id) and a short
+# detail. This module serves that table as an activity feed:
+#
+# * GET /api/v1/activity          managers+ — everyone's activity, filterable
+# * GET /api/v1/activity/me       any user  — the caller's own activity
+# * GET /api/v1/activity/summary  managers+ — per-user counts (SQL GROUP BY)
+#                                  plus overall totals (data.aggregate)
+# * GET /api/v1/activity/users/:id/summary  managers+ — one user's actions
+#                                  grouped by action (data.group)
+#
+# Filters (query string, all optional): actor, action (prefix match, so
+# "task." matches every task event), since and until (YYYY-MM-DD, both
+# inclusive), limit (default 100, max 500). The pair is since/until rather
+# than from/to because BCL reads a bare "to" value as its range keyword.
+# The platform's own hash-chained route audit (platform_audit) is separate
+# and stays the tamper-evident trail.
+# ===========================================================================
+
+intent "activity.feed" {
+  description "Activity feed across all users with actor/action/date filters"
+  response "response"
+
+  node "actor" {
+    uses "request.param"
+    provides [actor]
+    config {
+      name "actor"
+      from "query"
+      required false
+      default ""
+    }
+  }
+
+  node "action" {
+    uses "request.param"
+    provides [action]
+    config {
+      name "action"
+      from "query"
+      required false
+      default ""
+    }
+  }
+
+  node "date-from" {
+    uses "request.param"
+    provides [date_from]
+    config {
+      name "since"
+      from "query"
+      required false
+      default ""
+    }
+  }
+
+  node "date-to" {
+    uses "request.param"
+    provides [date_to]
+    config {
+      name "until"
+      from "query"
+      required false
+      default ""
+    }
+  }
+
+  node "limit" {
+    uses "request.param"
+    provides [limit]
+    config {
+      name "limit"
+      from "query"
+      required false
+      default "100"
+    }
+  }
+
+  node "events" {
+    family database
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [actor, action, date_from, date_to, limit]
+    provides [events]
+    config {
+      statement "SELECT a.id, a.action, a.actor_id, u.name AS actor_name, a.target_id, a.detail, a.ip_address, a.created_at FROM audit_log a LEFT JOIN users u ON u.id = a.actor_id WHERE ($1 = '' OR a.actor_id = $1) AND ($2 = '' OR a.action LIKE $2 || '%') AND ($3 = '' OR a.created_at >= $3) AND ($4 = '' OR a.created_at < date($4, '+1 day')) ORDER BY a.id DESC LIMIT MIN(MAX(CAST($5 AS INTEGER), 1), 500)"
+      args [actor, action, date_from, date_to, limit]
+      max_rows 500
+    }
+  }
+
+  node "count" {
+    uses "data.count"
+    requires [events]
+    provides [count]
+    config { source_fact "events" }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [events, count]
+    provides [response]
+  }
+}
+
+intent "activity.mine" {
+  description "The caller's own activity, with action/date filters"
+  response "response"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "action" {
+    uses "request.param"
+    provides [action]
+    config {
+      name "action"
+      from "query"
+      required false
+      default ""
+    }
+  }
+
+  node "date-from" {
+    uses "request.param"
+    provides [date_from]
+    config {
+      name "since"
+      from "query"
+      required false
+      default ""
+    }
+  }
+
+  node "date-to" {
+    uses "request.param"
+    provides [date_to]
+    config {
+      name "until"
+      from "query"
+      required false
+      default ""
+    }
+  }
+
+  node "events" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id, action, date_from, date_to]
+    provides [events]
+    config {
+      statement "SELECT id, action, target_id, detail, ip_address, created_at FROM audit_log WHERE actor_id = $1 AND ($2 = '' OR action LIKE $2 || '%') AND ($3 = '' OR created_at >= $3) AND ($4 = '' OR created_at < date($4, '+1 day')) ORDER BY id DESC LIMIT 200"
+      args [user_id, action, date_from, date_to]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [events]
+    provides [response]
+  }
+}
+
+intent "activity.summary" {
+  description "Per-user activity summary for a date range"
+  response "response"
+
+  node "date-from" {
+    uses "request.param"
+    provides [date_from]
+    config {
+      name "since"
+      from "query"
+      required false
+      default ""
+    }
+  }
+
+  node "date-to" {
+    uses "request.param"
+    provides [date_to]
+    config {
+      name "until"
+      from "query"
+      required false
+      default ""
+    }
+  }
+
+  node "per-user" {
+    family database
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [date_from, date_to]
+    provides [users]
+    config {
+      statement "SELECT a.actor_id, COALESCE(u.name, a.actor_id) AS actor_name, COUNT(*) AS total, SUM(CASE WHEN a.action = 'auth.login' THEN 1 ELSE 0 END) AS logins, SUM(CASE WHEN a.action LIKE 'project.%' OR a.action LIKE 'task.%' THEN 1 ELSE 0 END) AS project_events, SUM(CASE WHEN a.action LIKE 'gov.%' THEN 1 ELSE 0 END) AS gov_events, SUM(CASE WHEN a.action LIKE 'encounter.%' THEN 1 ELSE 0 END) AS coding_events, MIN(a.created_at) AS first_seen, MAX(a.created_at) AS last_seen FROM audit_log a LEFT JOIN users u ON u.id = a.actor_id WHERE a.actor_id IS NOT NULL AND ($1 = '' OR a.created_at >= $1) AND ($2 = '' OR a.created_at < date($2, '+1 day')) GROUP BY a.actor_id ORDER BY total DESC, a.actor_id LIMIT 500"
+      args [date_from, date_to]
+      max_rows 500
+    }
+  }
+
+  node "totals" {
+    uses "data.aggregate"
+    requires [users]
+    provides [totals]
+    config {
+      source_fact "users"
+      value_field "total"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [users, totals]
+    provides [response]
+  }
+}
+
+intent "activity.user_summary" {
+  description "One user's activity grouped by action"
+  response "response"
+
+  node "id" {
+    uses "request.param"
+    provides [actor_id]
+    config { name "id" }
+  }
+
+  node "events" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [actor_id]
+    provides [events]
+    config {
+      statement "SELECT action, target_id, created_at FROM audit_log WHERE actor_id = $1 ORDER BY id DESC LIMIT 1000"
+      args [actor_id]
+    }
+  }
+
+  node "by-action" {
+    uses "data.group"
+    requires [events]
+    provides [by_action]
+    config {
+      source_fact "events"
+      by "action"
+    }
+  }
+
+  node "counts" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [actor_id]
+    provides [counts]
+    config {
+      statement "SELECT action, COUNT(*) AS count, MAX(created_at) AS last_at FROM audit_log WHERE actor_id = $1 GROUP BY action ORDER BY count DESC, action"
+      args [actor_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [actor_id, counts, by_action]
+    provides [response]
+  }
+}
+
+# --- Web page ----------------------------------------------------------------
+intent "activity.page" {
+  description "Activity dashboard: recent events and per-user summary"
+  response "response"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "events" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [events]
+    config {
+      statement "SELECT a.id, a.action, a.actor_id, COALESCE(u.name, a.actor_id, '') AS actor_name, COALESCE(a.target_id, '') AS target_id, COALESCE(a.detail, '') AS detail, a.created_at FROM audit_log a LEFT JOIN users u ON u.id = a.actor_id ORDER BY a.id DESC LIMIT 100"
+    }
+  }
+
+  node "summary" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [summary]
+    config {
+      statement "SELECT a.actor_id, COALESCE(u.name, a.actor_id) AS actor_name, COUNT(*) AS total, SUM(CASE WHEN a.action = 'auth.login' THEN 1 ELSE 0 END) AS logins, MAX(a.created_at) AS last_seen FROM audit_log a LEFT JOIN users u ON u.id = a.actor_id WHERE a.actor_id IS NOT NULL GROUP BY a.actor_id ORDER BY total DESC LIMIT 50"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [events, summary]
+    provides [response]
+  }
+}
+
+# ===========================================================================
+# Routes
+# ===========================================================================
+
+route "web.activity" {
+  method GET
+  path "/activity"
+  intent "activity.page"
+  template "pages/activity/index"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["activity:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.activity.feed" {
+  method GET
+  path "/api/v1/activity"
+  intent "activity.feed"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["activity:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.activity.mine" {
+  method GET
+  path "/api/v1/activity/me"
+  intent "activity.mine"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["activity:self"]
+    authorizer "authorization"
+  }
+}
+
+route "api.activity.summary" {
+  method GET
+  path "/api/v1/activity/summary"
+  intent "activity.summary"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["activity:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.activity.user_summary" {
+  method GET
+  path "/api/v1/activity/users/:id/summary"
+  intent "activity.user_summary"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["activity:read"]
+    authorizer "authorization"
+  }
+}

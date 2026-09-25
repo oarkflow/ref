@@ -15,6 +15,12 @@
         @if(isManager) {
           <a href="/dashboard/manager" class="nav-item" style="color: #60A5FA;">Operations</a>
         }
+        <a href="/projects" class="nav-item">Projects</a>
+        <a href="/gov" class="nav-item">Gov Projects</a>
+        <a href="/coding" class="nav-item">Coding</a>
+        @if(isManager) {
+          <a href="/activity" class="nav-item">Activity</a>
+        }
         <a href="/profile" class="nav-item">Profile</a>
         <form method="POST" action="/logout" style="display: inline; margin-left: 0.5rem;">
           <button type="submit" class="btn btn-secondary btn-sm">Sign Out</button>

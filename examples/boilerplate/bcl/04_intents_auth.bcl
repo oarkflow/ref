@@ -40,13 +40,17 @@ intent "auth.register" {
     }
   }
 
+  # validate.expression rather than decision.expression: a decision action
+  # records allow/deny but never publishes its provides fact, so a node that
+  # required it never ran and every registration ended as a 403. "< 1"
+  # rather than "== 0": the expression engine's == does not match len()'s
+  # integer against a numeric literal.
   node "guard-duplicate" {
-    uses "decision.expression"
-    kind decision
+    uses "validate.expression"
     requires [existing_users]
     provides [not_duplicate]
     config {
-      expression "len(existing_users) == 0"
+      expression "len(existing_users) < 1"
       message "An account with this email already exists"
     }
   }
@@ -73,7 +77,7 @@ intent "auth.register" {
     requires [input, password_hash]
     provides [users]
     config {
-      statement "INSERT INTO users (id, email, name, password_hash, roles, status) VALUES (LOWER($1), LOWER($1), $2, $3, 'user', 'active') RETURNING id, email, name, roles, status, created_at"
+      statement "INSERT INTO users (id, email, name, password_hash, roles, status) VALUES (LOWER($1), LOWER($1), $2, $3, 'user', 'active') RETURNING id, email, name, password_hash, roles, status, created_at"
       args [input.email, input.name, password_hash]
     }
   }
@@ -90,6 +94,8 @@ intent "auth.register" {
     }
   }
 
+  # auth.login verifies the password against the row's password_hash (which
+  # is why the INSERT returns it) and never copies the hash into the principal.
   node "login" {
     family auth
     uses "auth.login"
@@ -112,6 +118,9 @@ intent "auth.register" {
 }
 
 # --- Login ------------------------------------------------------------------
+# The response requires audit_logged: the plan only runs nodes the response
+# (transitively) depends on, so an audit node nothing requires is pruned and
+# the login never reaches the activity feed (bcl/15_activity.bcl).
 intent "auth.login" {
   description "Verify credentials with Argon2id and create session"
   response "response"
@@ -168,7 +177,7 @@ intent "auth.login" {
 
   node "response" {
     uses "collect"
-    requires [principal]
+    requires [principal, audit_logged]
     provides [response]
   }
 }
@@ -207,7 +216,7 @@ intent "auth.logout" {
 
   node "response" {
     uses "collect"
-    requires [logged_out]
+    requires [logged_out, audit_logged]
     provides [response]
   }
 }
@@ -407,7 +416,7 @@ intent "auth.change_password" {
 
   node "response" {
     uses "collect"
-    requires [password_updated]
+    requires [password_updated, audit_logged]
     provides [response]
   }
 }

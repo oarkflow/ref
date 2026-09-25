@@ -358,6 +358,7 @@ func (e *Engine) Advance(ctx context.Context, runID string) error {
 		// the TTL expires.
 		_ = e.store.ReleaseLease(context.WithoutCancel(ctx), runID, e.owner)
 	}()
+	ctx = withLeaseHeld(ctx, runID)
 
 	for pass := 0; pass < e.maxPasses; pass++ {
 		run, err := e.store.GetRun(ctx, runID)
@@ -465,21 +466,31 @@ func (e *Engine) pass(ctx context.Context, definition *Definition, run *Run) (bo
 			// backoff does not need a timer row of its own.
 			return true, e.parkUntilFrame(ctx, run, future)
 		}
-		return true, e.settle(ctx, definition, run)
+		more, err := e.settle(ctx, definition, run)
+		return !more, err
 	}
+	ready, held := throttle(definition, ready)
 
 	// The remaining frames are whatever we are not executing in this wave. They
 	// are written back alongside whatever this wave produces.
-	run.Frames = future
+	run.Frames = append(held, future...)
 
 	outcomes := e.executeWave(ctx, definition, run, ready)
+	e.orderRaceEntrants(definition, outcomes)
 
 	// Resolution is sequential even though execution was concurrent. Edge
 	// resolution mutates the cursor, the visit counts and the join rows, and doing
 	// that from several goroutines would need a lock around everything that
 	// matters — at which point the concurrency buys nothing.
 	for _, outcome := range outcomes {
-		if err := e.resolveOutcome(ctx, definition, run, outcome); err != nil {
+		// Once a failure in this wave has started compensation, the wave's other
+		// forward outcomes must not push more forward work onto a run that is
+		// unwinding: their committed effects are already on the compensation list,
+		// and anything they would continue into would only need undoing too.
+		if run.Status == StatusCompensating && !outcome.frame.Compensate {
+			continue
+		}
+		if err := e.resolve(ctx, definition, run, outcome); err != nil {
 			return false, err
 		}
 		if run.Status.Terminal() {
@@ -493,6 +504,28 @@ func (e *Engine) pass(ctx context.Context, definition *Definition, run *Run) (bo
 	// More frames means another pass; none means settle on the next iteration,
 	// which keeps the "is it finished" decision in one place.
 	return false, nil
+}
+
+// throttle enforces max_concurrency on the frames a fan-out, parallel or
+// iterator edge pushed: at most that many of one edge's frames execute in a wave,
+// and the rest stay queued for the next. Without it the field was accepted and
+// ignored, so a 10,000-item iterator ran as wide as the step concurrency allowed.
+func throttle(definition *Definition, ready []Frame) (run, held []Frame) {
+	var counts map[string]int
+	for _, frame := range ready {
+		if edge := edgeReaching(definition, frame, multiTargetEdges...); edge != nil && edge.MaxConcurrency > 0 {
+			if counts == nil {
+				counts = map[string]int{}
+			}
+			if counts[edge.Name] >= edge.MaxConcurrency {
+				held = append(held, frame)
+				continue
+			}
+			counts[edge.Name]++
+		}
+		run = append(run, frame)
+	}
+	return run, held
 }
 
 // splitFrames divides the cursor into what can run now and what cannot yet.
@@ -698,22 +731,37 @@ func (e *Engine) executeFrame(ctx context.Context, definition *Definition, run *
 	}
 
 	runCtx := ctx
-	if step.Timeout > 0 {
+	limit := step.Timeout
+	// A timeout edge bounds the duration of the step it reached. For a step with a
+	// body that bound is the body's context deadline; overrunning it takes the
+	// edge's on_timeout (resolveFailure). A parked target is bounded by the
+	// edge's timer instead.
+	if edge := edgeReaching(definition, frame, EdgeTimeout); edge != nil && (limit <= 0 || edge.Timeout < limit) {
+		limit = edge.Timeout
+	}
+	if limit > 0 {
 		var cancel context.CancelFunc
-		runCtx, cancel = context.WithTimeout(ctx, step.Timeout)
+		runCtx, cancel = context.WithTimeout(ctx, limit)
 		defer cancel()
 	}
 
+	var result any
 	if step.Process != "" {
 		// A child process is started rather than called: the parent parks on its
-		// completion event, so the child's own durability applies.
-		wait, err := e.startChild(ctx, run, step, frame, shaped)
-		outcome.parked, outcome.err = wait, err
-		outcome.state = state
-		return outcome
+		// completion event, so the child's own durability applies — unless the
+		// child finished within the call, in which case its outcome is the step's.
+		wait, childResult, childErr := e.startChild(ctx, run, step, frame, shaped)
+		if childErr == nil && wait != nil {
+			outcome.parked, outcome.state = wait, state
+			return outcome
+		}
+		result, err = childResult, childErr
+		if err == nil {
+			err = childOutcomeError(childResult)
+		}
+	} else {
+		result, err = e.runStepSafely(runCtx, run, step, frame, shaped, scope)
 	}
-
-	result, err := e.runStepSafely(runCtx, run, step, frame, shaped, scope)
 	finished := e.now()
 	state.FinishedAt = &finished
 
@@ -860,15 +908,16 @@ func (e *Engine) acquireStepLock(ctx context.Context, step *Step, scope Scope) (
 // ---------------------------------------------------------------------------
 
 // settle decides what an empty cursor means: finished, parked, or the end of a
-// compensation.
-func (e *Engine) settle(ctx context.Context, definition *Definition, run *Run) error {
+// compensation. It reports whether settling produced more work for another pass
+// (a join that could only now be resolved).
+func (e *Engine) settle(ctx context.Context, definition *Definition, run *Run) (bool, error) {
 	if run.Status == StatusCompensating {
-		return e.finishCompensation(ctx, run)
+		return false, e.finishCompensation(ctx, run)
 	}
 
 	outstanding, err := e.hasOutstandingWait(ctx, run)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if outstanding {
 		if run.Status != StatusWaiting {
@@ -880,9 +929,16 @@ func (e *Engine) settle(ctx context.Context, definition *Definition, run *Run) e
 				observer.RunParked(run, *run.Waiting)
 			}
 		}
-		return e.store.SaveRun(ctx, run)
+		return false, e.store.SaveRun(ctx, run)
 	}
-	return e.completeRun(ctx, definition, run)
+	more, err := e.settleJoins(ctx, definition, run)
+	if err != nil || run.Status.Terminal() {
+		return false, err
+	}
+	if more {
+		return true, e.store.SaveRun(ctx, run)
+	}
+	return false, e.completeRun(ctx, definition, run)
 }
 
 // hasOutstandingWait reports whether anything external will wake this run. It is
@@ -896,8 +952,15 @@ func (e *Engine) hasOutstandingWait(ctx context.Context, run *Run) (bool, error)
 	}
 	for _, timer := range timers {
 		// The run's own timeout and SLA timers are housekeeping, not work: a run
-		// whose only pending timer is its deadline has actually finished.
-		if timer.Kind != "run_timeout" && timer.Kind != "sla" {
+		// whose only pending timer is its deadline has actually finished. A wake
+		// timer exists only to advance future-dated frames, and settle is reached
+		// only when there are none — so a leftover wake (from a retry that was
+		// advanced directly rather than by its timer) is not work either. Counting
+		// it parked a finished run as waiting, and when the wake then fired the run
+		// settled onto its own claimed wake row and stayed waiting for good.
+		switch timer.Kind {
+		case "run_timeout", "sla", "wake":
+		default:
 			return true, nil
 		}
 	}
@@ -1054,6 +1117,7 @@ func (e *Engine) Cancel(ctx context.Context, runID, reason string) (*Run, error)
 		return nil, fmt.Errorf("ref/process: run %s is being advanced right now; try again in a moment", runID)
 	}
 	defer func() { _ = e.store.ReleaseLease(context.WithoutCancel(ctx), runID, e.owner) }()
+	ctx = withLeaseHeld(ctx, runID)
 
 	run, err := e.store.GetRun(ctx, runID)
 	if err != nil {
@@ -1222,7 +1286,7 @@ func (e *Engine) scope(ctx context.Context, run *Run, frame Frame, input, result
 var ErrFiltered = errors.New("ref/process: payload filtered")
 
 // continueFromStep resolves one step's outgoing edges against a result the step
-// produced outside an ordinary execution.
+// produced outside an ordinary execution, then advances the run.
 //
 // Two things reach the engine this way: a human task somebody completed, and a
 // child process that finished. Both have already "run" — the step's work is done —
@@ -1230,28 +1294,43 @@ var ErrFiltered = errors.New("ref/process: payload filtered")
 // a second child). This resolves off the result instead, which is why it exists
 // rather than the two callers each having their own version to drift apart.
 func (e *Engine) continueFromStep(ctx context.Context, runID, stepName, stateKey string, result map[string]any, stepErr error) error {
+	if err := e.applyStepCompletion(ctx, runID, stepName, stateKey, result, stepErr, nil); err != nil {
+		return err
+	}
+	return e.advanceOrEnqueue(ctx, runID)
+}
+
+// applyStepCompletion is continueFromStep without the advance, for a caller that
+// must consume its own durable marker (a child's completion subscription) after
+// the continuation is on the cursor and before the run advances past it.
+//
+// It waits for the lease rather than giving up on it. The previous version, on
+// finding the run busy, returned success after queueing an advance — but nothing
+// in an advance looks for a completed-but-unresolved step, so the task's decision
+// or the child's result was silently lost (and a child's completion subscription
+// acknowledged). Now a run that stays busy is an error the caller can retry: a
+// signal delivery releases its subscription for redelivery.
+//
+// wanted, when given, is checked under the lease: it lets a caller confirm the
+// run still wants this completion — a child whose parent timed out or lost a
+// race was abandoned while its completion waited for the lease, and must not
+// continue the graph a second time.
+func (e *Engine) applyStepCompletion(ctx context.Context, runID, stepName, stateKey string, result map[string]any, stepErr error,
+	wanted func(ctx context.Context) (bool, error)) error {
 	if stateKey == "" {
 		stateKey = stepName
 	}
-	acquired, err := e.store.AcquireLease(ctx, runID, e.owner, e.leaseTTL)
-	if err != nil {
-		return err
-	}
-	if !acquired {
-		// Somebody is advancing the run. The step's own state row is already
-		// recorded, so a queued advance will pick the continuation up.
-		return e.advanceOrEnqueue(ctx, runID)
-	}
-
-	err = func() error {
-		defer func() { _ = e.store.ReleaseLease(context.WithoutCancel(ctx), runID, e.owner) }()
-
-		run, err := e.store.GetRun(ctx, runID)
-		if err != nil {
-			return err
-		}
-		if run.Status.Terminal() {
+	return e.withRunLease(ctx, runID, func(ctx context.Context, run *Run) error {
+		if run.Status == StatusCompensating {
+			// The run is unwinding. Its forward work — this step's continuation
+			// included — was abandoned when the rollback began.
 			return nil
+		}
+		if wanted != nil {
+			ok, err := wanted(ctx)
+			if err != nil || !ok {
+				return err
+			}
 		}
 		definition, err := e.definitionFor(run)
 		if err != nil {
@@ -1265,11 +1344,6 @@ func (e *Engine) continueFromStep(ctx context.Context, runID, stepName, stateKey
 
 		run.Status = StatusRunning
 		run.Waiting = nil
-		run.Steps++
-		if run.Visits == nil {
-			run.Visits = map[string]int{}
-		}
-		run.Visits[stepName]++
 
 		// Record the completion so a later edge reading results.<step> sees it, and
 		// so compensation knows this step committed.
@@ -1300,50 +1374,102 @@ func (e *Engine) continueFromStep(ctx context.Context, runID, stepName, stateKey
 			return err
 		}
 
-		outcome := stepOutcome{
-			frame:  Frame{Step: stepName, Key: stateKey, Attempt: 1},
+		// From here the step resolves exactly as an executed one does — retry,
+		// error edges, joins, races, terminal handling — through the same code.
+		key := stateKey
+		if key == stepName {
+			key = ""
+		}
+		return e.resolve(ctx, definition, run, stepOutcome{
+			frame:  Frame{Step: stepName, Key: key, Attempt: 1},
 			step:   step,
 			state:  state,
 			result: result,
 			err:    stepErr,
+		})
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Leases outside an advance
+// ---------------------------------------------------------------------------
+
+// leaseHeldKey marks, on a context, a run whose lease this call chain holds.
+type leaseHeldKey struct{ runID string }
+
+func withLeaseHeld(ctx context.Context, runID string) context.Context {
+	return context.WithValue(ctx, leaseHeldKey{runID: runID}, true)
+}
+
+// leaseHeld reports whether the lease on a run is held further up this call
+// chain. Leases are not re-entrant, so code that would otherwise wait for one
+// its own caller holds — a child run completing synchronously inside its
+// parent's advance, a step body signalling its own run — must not wait: the
+// wait can only end in a timeout.
+func leaseHeld(ctx context.Context, runID string) bool {
+	held, _ := ctx.Value(leaseHeldKey{runID: runID}).(bool)
+	return held
+}
+
+// errRunBusy reports that a run's lease could not be had.
+var errRunBusy = errors.New("ref/process: the run is being advanced elsewhere")
+
+// acquireLeaseWaiting takes a run's lease, waiting briefly for a concurrent
+// advance to finish.
+func (e *Engine) acquireLeaseWaiting(ctx context.Context, runID string) error {
+	if leaseHeld(ctx, runID) {
+		return fmt.Errorf("%w: run %s is being advanced by this very call", errRunBusy, runID)
+	}
+	for attempt := range 3 {
+		acquired, err := e.store.AcquireLease(ctx, runID, e.owner, e.leaseTTL)
+		if err != nil {
+			return err
 		}
-		if stepErr != nil {
-			if err := e.resolveFailure(ctx, definition, run, outcome); err != nil {
+		if acquired {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("%w: run %s stayed busy across three attempts", errRunBusy, runID)
+}
+
+// withRunLease loads a run under its lease, lets fn change it, and saves it.
+//
+// It is how everything outside an advance — a signal, a timer, a task, an
+// operator — changes a run without interleaving with an advance. A terminal run
+// is left alone (fn is not called); a run fn itself finished is not saved again.
+// A revision conflict re-reads and retries.
+func (e *Engine) withRunLease(ctx context.Context, runID string, fn func(ctx context.Context, run *Run) error) error {
+	for range 3 {
+		if err := e.acquireLeaseWaiting(ctx, runID); err != nil {
+			return err
+		}
+		err := func() error {
+			defer func() { _ = e.store.ReleaseLease(context.WithoutCancel(ctx), runID, e.owner) }()
+			leased := withLeaseHeld(ctx, runID)
+			run, err := e.store.GetRun(leased, runID)
+			if err != nil {
 				return err
 			}
 			if run.Status.Terminal() {
 				return nil
 			}
-			return e.store.SaveRun(ctx, run)
-		}
-
-		scope, err := e.scope(ctx, run, outcome.frame, nil, result)
-		if err != nil {
-			return err
-		}
-		traversed, err := e.traverse(ctx, definition, run, outcome, definition.Outgoing(stepName), scope, false)
-		if err != nil {
-			return err
-		}
-		if run.Status.Terminal() {
-			return e.store.SaveRun(ctx, run)
-		}
-		if step.Terminal {
-			encoded, err := json.Marshal(result)
-			if err != nil {
+			if err := fn(leased, run); err != nil {
 				return err
 			}
-			run.Output = encoded
-			return e.completeRun(ctx, definition, run)
+			if run.Status.Terminal() {
+				return nil
+			}
+			return e.store.SaveRun(leased, run)
+		}()
+		if errors.Is(err, ErrRevisionConflict) {
+			continue
 		}
-		if traversed == 0 {
-			return e.failRun(ctx, run, stepName,
-				fmt.Errorf("step %q finished but none of its outgoing edges matched its result", stepName))
-		}
-		return e.store.SaveRun(ctx, run)
-	}()
-	if err != nil {
 		return err
 	}
-	return e.advanceOrEnqueue(ctx, runID)
+	return fmt.Errorf("%w: run %s kept changing underneath three attempts", errRunBusy, runID)
 }

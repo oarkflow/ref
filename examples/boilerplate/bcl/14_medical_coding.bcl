@@ -1,0 +1,633 @@
+# ===========================================================================
+# Module: Medical Coding
+#
+# Patient encounters on a single date of service (an office visit) or across
+# several (an inpatient stay, a course of therapy), coded into per-day claim
+# lines, and worked by coders through a queue:
+#
+#     pending ──claim──> in_progress ──> coded
+#        │                  │   ^
+#        └──> void <────────┴─> on_hold
+#
+# * dos.period     normalises "dos" or "dos_from/dos_to" into one period
+# * dos.validate   timely filing (365 days), no future dates, 60-day max span,
+#                  every line inside the encounter — all violations at once
+#                  (422 INVALID_DATE_OF_SERVICE with details)
+# * dos.overlap    duplicate-billing guard: the same patient + provider cannot
+#                  have two live encounters covering the same date (409)
+# * dos.expand     one claim line per date of service (per-day units)
+# * database.insert_many with parent{}: the encounter header and all of its
+#                  per-day lines commit in one transaction
+# ===========================================================================
+
+shape "coding_line" {
+  kind object
+
+  prop "cpt" {
+    kind string
+    required true
+    pattern "^[0-9A-Z]{5}$"
+  }
+
+  prop "modifier" {
+    kind string
+  }
+
+  prop "icd" {
+    kind string
+    required true
+  }
+
+  prop "units" {
+    kind number
+    min 0
+  }
+
+  prop "dos" {
+    kind string
+    format date
+  }
+
+  prop "dos_from" {
+    kind string
+    format date
+  }
+
+  prop "dos_to" {
+    kind string
+    format date
+  }
+}
+
+shape "coding_encounter" {
+  kind object
+  description "An encounter on one date of service (dos) or a span (dos_from/dos_to)"
+
+  prop "patient_id" {
+    kind string
+    required true
+  }
+
+  prop "provider_id" {
+    kind string
+    required true
+  }
+
+  prop "place_of_service" {
+    kind string
+  }
+
+  prop "dos" {
+    kind string
+    format date
+  }
+
+  prop "dos_from" {
+    kind string
+    format date
+  }
+
+  prop "dos_to" {
+    kind string
+    format date
+  }
+
+  prop "lines" {
+    kind array
+    required true
+    items "coding_line"
+  }
+}
+
+shape "coding_status_input" {
+  kind object
+
+  prop "status" {
+    kind string
+    required true
+    enum ["in_progress", "coded", "on_hold", "void"]
+  }
+}
+
+intent "encounters.preview" {
+  description "Validate and expand an encounter without saving it"
+  response "preview"
+  input_schema "coding_encounter"
+
+  node "period" {
+    uses "dos.period"
+    requires [input]
+    provides [period]
+    config { split_by_month true }
+  }
+
+  node "validation" {
+    uses "dos.validate"
+    requires [input]
+    provides [validation]
+    config {
+      lines "input.lines"
+      max_span_days 60
+      max_age_days 365
+      fail false
+    }
+  }
+
+  node "lines" {
+    uses "dos.expand"
+    requires [input]
+    provides [lines]
+    config {
+      lines "input.lines"
+      mode "per_day"
+    }
+  }
+
+  node "preview" {
+    uses "collect"
+    requires [period, validation, lines]
+    provides [preview]
+  }
+}
+
+intent "encounters.create" {
+  description "Register an encounter: validate DOS, block duplicate billing, save per-day lines"
+  response "response"
+  input_schema "coding_encounter"
+  timeout 5s
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "period" {
+    uses "dos.period"
+    requires [input]
+    provides [period]
+  }
+
+  node "valid" {
+    uses "dos.validate"
+    requires [input]
+    provides [valid]
+    config {
+      lines "input.lines"
+      max_span_days 60
+      max_age_days 365
+    }
+  }
+
+  node "existing" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [input]
+    provides [existing]
+    config {
+      statement "SELECT id, dos_from, dos_to FROM encounters WHERE patient_id = $1 AND provider_id = $2 AND status <> 'void'"
+      args [input.patient_id, input.provider_id]
+    }
+  }
+
+  node "no-overlap" {
+    uses "dos.overlap"
+    requires [input, existing]
+    provides [no_overlap]
+    config { existing "existing" }
+  }
+
+  node "lines" {
+    uses "dos.expand"
+    requires [input]
+    provides [lines]
+    config {
+      lines "input.lines"
+      mode "per_day"
+    }
+  }
+
+  node "saved" {
+    family database
+    uses "database.insert_many"
+    resource "database"
+    kind effect
+    requires [input, user_id, period, valid, no_overlap, lines]
+    provides [saved]
+    config {
+      parent {
+        table "encounters"
+        values {
+          patient_id "input.patient_id"
+          provider_id "input.provider_id"
+          dos_from "period.from"
+          dos_to "period.to"
+          dos_kind "period.kind"
+          days "period.days"
+          place_of_service "input.place_of_service"
+          created_by "user_id"
+        }
+        key "id"
+        link "encounter_id"
+        returning ["dos_from", "dos_to", "dos_kind", "days", "status"]
+      }
+      table "encounter_lines"
+      columns ["line_no", "dos", "cpt", "modifier", "icd", "units"]
+      rows "lines"
+      allow_empty false
+    }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [saved, user_id, input]
+    provides [audited]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, target_id, detail) VALUES ('encounter.created', $1, $2, $3)"
+      args [user_id, saved.parent.id, input.patient_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [saved, lines, audited]
+    provides [response]
+  }
+}
+
+intent "encounters.list" {
+  description "Encounters, optionally filtered by coding status"
+  response "response"
+
+  node "status" {
+    uses "request.param"
+    provides [status_filter]
+    config {
+      name "status"
+      from "query"
+      required false
+      default ""
+    }
+  }
+
+  node "encounters" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [status_filter]
+    provides [encounters]
+    config {
+      statement "SELECT e.id, e.patient_id, e.provider_id, e.dos_from, e.dos_to, e.dos_kind, e.days, e.place_of_service, e.status, e.assigned_coder, e.coded_by, e.created_by, e.created_at, (SELECT COUNT(*) FROM encounter_lines l WHERE l.encounter_id = e.id) AS line_count FROM encounters e WHERE ($1 = '' OR e.status = $1) ORDER BY e.dos_from DESC, e.id DESC LIMIT 500"
+      args [status_filter]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [encounters]
+    provides [response]
+  }
+}
+
+intent "encounters.lines" {
+  description "An encounter's per-day claim lines"
+  response "response"
+
+  node "id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" }
+  }
+
+  node "encounter" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [id]
+    provides [encounter_rows]
+    config {
+      statement "SELECT id, patient_id, provider_id, dos_from, dos_to, dos_kind, days, status FROM encounters WHERE id = $1"
+      args [id]
+      require_rows true
+      not_found_message "encounter not found"
+    }
+  }
+
+  node "first" {
+    uses "data.first"
+    requires [encounter_rows]
+    provides [encounter]
+    config { source_fact "encounter_rows" }
+  }
+
+  node "lines" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [encounter]
+    provides [lines]
+    config {
+      statement "SELECT line_no, dos, cpt, modifier, icd, units FROM encounter_lines WHERE encounter_id = $1 ORDER BY dos, line_no"
+      args [encounter.id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [encounter, lines]
+    provides [response]
+  }
+}
+
+# The coder's work queue: everything unclaimed plus what the coder holds.
+intent "encounters.queue" {
+  description "Coder work queue: pending encounters plus the caller's in-progress and on-hold work"
+  response "response"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "queue" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [queue]
+    config {
+      statement "SELECT e.id, e.patient_id, e.provider_id, e.dos_from, e.dos_to, e.dos_kind, e.days, e.status, e.assigned_coder, CAST(julianday(date('now')) - julianday(e.dos_from) AS INTEGER) AS age_days, (SELECT COUNT(*) FROM encounter_lines l WHERE l.encounter_id = e.id) AS line_count FROM encounters e WHERE e.status = 'pending' OR (e.status IN ('in_progress', 'on_hold') AND e.assigned_coder = $1) ORDER BY CASE e.status WHEN 'in_progress' THEN 1 WHEN 'on_hold' THEN 2 ELSE 3 END, e.dos_from, e.id LIMIT 200"
+      args [user_id]
+    }
+  }
+
+  node "counts" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [status_counts]
+    config {
+      statement "SELECT status, COUNT(*) AS count FROM encounters GROUP BY status ORDER BY status"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [queue, status_counts]
+    provides [response]
+  }
+}
+
+intent "encounters.claim" {
+  description "Claim a pending encounter for the caller"
+  response "response"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" }
+  }
+
+  node "claim" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [id, user_id]
+    provides [claimed]
+    config {
+      statement "UPDATE encounters SET status = 'in_progress', assigned_coder = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND status = 'pending'"
+      args [user_id, id]
+      require_affected true
+      not_found_message "encounter not found or already claimed"
+    }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [claimed, user_id, id]
+    provides [audited]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, target_id) VALUES ('encounter.claimed', $1, $2)"
+      args [user_id, id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [claimed, audited]
+    provides [response]
+  }
+}
+
+intent "encounters.status" {
+  description "Change an encounter's coding status (assigned coder, or a manager)"
+  response "response"
+  input_schema "coding_status_input"
+
+  node "user" {
+    uses "auth.require_session"
+    resource "sessions"
+    kind decision
+    provides [user_id]
+  }
+
+  node "id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" }
+  }
+
+  node "load" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [id]
+    provides [encounter_rows]
+    config {
+      statement "SELECT id, status, COALESCE(assigned_coder, '') AS assigned_coder FROM encounters WHERE id = $1"
+      args [id]
+      require_rows true
+      not_found_message "encounter not found"
+    }
+  }
+
+  node "encounter" {
+    uses "data.first"
+    requires [encounter_rows]
+    provides [encounter]
+    config { source_fact "encounter_rows" }
+  }
+
+  node "allowed" {
+    uses "validate.expression"
+    requires [encounter, input]
+    provides [allowed]
+    config {
+      expression "(encounter.status + '>' + input.status) in ['in_progress>coded', 'in_progress>on_hold', 'in_progress>void', 'on_hold>in_progress', 'on_hold>void', 'pending>void']"
+      message "invalid coding status transition"
+    }
+  }
+
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [allowed, input, encounter, user_id]
+    provides [updated]
+    authz {
+      condition "encounter.assigned_coder == user_id or principal.roles has_any ['manager', 'admin', 'super_admin']"
+      message "only the assigned coder or a manager can change this encounter"
+    }
+    config {
+      statement "UPDATE encounters SET status = $1, coded_by = CASE WHEN $1 = 'coded' THEN $2 ELSE coded_by END, updated_at = CURRENT_TIMESTAMP WHERE id = $3 AND status = $4"
+      args [input.status, user_id, encounter.id, encounter.status]
+      require_affected true
+      not_found_message "the encounter changed while you were editing it"
+    }
+  }
+
+  node "audit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [updated, user_id, encounter, input]
+    provides [audited]
+    config {
+      statement "INSERT INTO audit_log (action, actor_id, target_id, detail) VALUES ('encounter.status_changed', $1, $2, $3 || '->' || $4)"
+      args [user_id, encounter.id, encounter.status, input.status]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [updated, audited]
+    provides [response]
+  }
+}
+
+# ===========================================================================
+# Routes
+# ===========================================================================
+
+route "web.coding" {
+  method GET
+  path "/coding"
+  intent "encounters.queue"
+  template "pages/coding/index"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["coding:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.coding.preview" {
+  method POST
+  path "/api/v1/coding/encounters/preview"
+  intent "encounters.preview"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+  authz {
+    permissions ["coding:write"]
+    authorizer "authorization"
+  }
+}
+
+route "api.coding.create" {
+  method POST
+  path "/api/v1/coding/encounters"
+  intent "encounters.create"
+  session "sessions"
+  auth "session_auth"
+  status 201
+  cache_control "no-store"
+  authz {
+    permissions ["coding:write"]
+    authorizer "authorization"
+  }
+}
+
+route "api.coding.list" {
+  method GET
+  path "/api/v1/coding/encounters"
+  intent "encounters.list"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["coding:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.coding.lines" {
+  method GET
+  path "/api/v1/coding/encounters/:id/lines"
+  intent "encounters.lines"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["coding:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.coding.queue" {
+  method GET
+  path "/api/v1/coding/queue"
+  intent "encounters.queue"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz {
+    permissions ["coding:read"]
+    authorizer "authorization"
+  }
+}
+
+route "api.coding.claim" {
+  method POST
+  path "/api/v1/coding/encounters/:id/claim"
+  intent "encounters.claim"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+  authz {
+    permissions ["coding:write"]
+    authorizer "authorization"
+  }
+}
+
+route "api.coding.status" {
+  method POST
+  path "/api/v1/coding/encounters/:id/status"
+  intent "encounters.status"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+  authz {
+    permissions ["coding:write"]
+    authorizer "authorization"
+  }
+}

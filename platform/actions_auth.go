@@ -91,6 +91,7 @@ func registerAuthActions(r *Registry) {
 			{Name: "tenant_field", Type: "string", Summary: "Column carrying the user's tenant"},
 			{Name: "roles_field", Type: "string", Summary: "Column carrying the user's roles"},
 			{Name: "disabled_field", Type: "string", Summary: "When truthy on the record, the login is refused"},
+			{Name: "session_fields", Type: "[]string", Summary: "Record fields persisted in the session (e.g. org_units, department), readable as principal claims through auth.session's claims"},
 		},
 	})
 
@@ -321,6 +322,7 @@ type loginConfig struct {
 	tenantField   string
 	rolesField    string
 	disabledField string
+	sessionFields []string
 }
 
 var loginAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) (Action, error) {
@@ -341,6 +343,12 @@ var loginAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) (Act
 		tenantField:   configString(spec.Config, "tenant_field", ""),
 		rolesField:    configString(spec.Config, "roles_field", ""),
 		disabledField: configString(spec.Config, "disabled_field", ""),
+		sessionFields: configStrings(spec.Config, "session_fields"),
+	}
+	for _, field := range cfg.sessionFields {
+		if field == cfg.passwordField {
+			return nil, fmt.Errorf("node %q: session_fields must not include the password field", spec.Name)
+		}
 	}
 
 	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
@@ -407,6 +415,11 @@ var loginAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) (Act
 		}
 		if len(principal.Roles) > 0 {
 			sess.Set("roles", principal.Roles)
+		}
+		for _, field := range cfg.sessionFields {
+			if value, ok := record[field]; ok && value != nil {
+				sess.Set(field, value)
+			}
 		}
 		return singleOutput(spec, principal), nil
 	}), nil

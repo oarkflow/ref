@@ -28,7 +28,43 @@ resource "database" {
       "CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);",
       "INSERT OR IGNORE INTO users (id, email, name, password_hash, roles, status) VALUES ('usr_admin_01', 'admin@example.com', 'Alice Admin', '$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg', 'admin', 'active');",
       "INSERT OR IGNORE INTO users (id, email, name, password_hash, roles, status) VALUES ('usr_manager_01', 'manager@example.com', 'Bob Manager', '$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg', 'manager', 'active');",
-      "INSERT OR IGNORE INTO users (id, email, name, password_hash, roles, status) VALUES ('usr_user_01', 'user@example.com', 'Charlie User', '$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg', 'user', 'active');"
+      "INSERT OR IGNORE INTO users (id, email, name, password_hash, roles, status) VALUES ('usr_user_01', 'user@example.com', 'Charlie User', '$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg', 'user', 'active');",
+      "CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);",
+      "INSERT OR IGNORE INTO users (id, email, name, password_hash, roles, status) VALUES ('usr_officer_bagmati', 'officer.bagmati@example.com', 'Dina Officer (Bagmati)', '$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg', 'officer', 'active');",
+      "INSERT OR IGNORE INTO users (id, email, name, password_hash, roles, status) VALUES ('usr_officer_koshi', 'officer.koshi@example.com', 'Eli Officer (Koshi)', '$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg', 'officer', 'active');",
+      "INSERT OR IGNORE INTO users (id, email, name, password_hash, roles, status) VALUES ('usr_officer_ktm', 'officer.ktm@example.com', 'Farah Officer (Kathmandu)', '$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg', 'officer', 'active');",
+      "INSERT OR IGNORE INTO users (id, email, name, password_hash, roles, status) VALUES ('usr_coder_01', 'coder@example.com', 'Gita Coder', '$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg', 'coder', 'active');",
+      "INSERT OR IGNORE INTO users (id, email, name, password_hash, roles, status) VALUES ('usr_coder_02', 'coder2@example.com', 'Hari Coder', '$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg', 'coder', 'active');",
+
+      # --- Projects & tasks (bcl/12_projects.bcl) ---------------------------
+      "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', due_date TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);",
+      "CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner_id);",
+      "CREATE TABLE IF NOT EXISTS project_members (project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, user_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', added_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (project_id, user_id));",
+      "CREATE INDEX IF NOT EXISTS idx_project_members_user ON project_members(user_id);",
+      "CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', assignee_id TEXT NOT NULL, reporter_id TEXT NOT NULL, priority TEXT NOT NULL DEFAULT 'medium', status TEXT NOT NULL DEFAULT 'todo', due_date TEXT, overdue INTEGER NOT NULL DEFAULT 0, approval_run_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, completed_at TIMESTAMPTZ);",
+      "CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id, status);",
+      "CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_id, status);",
+      "CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due_date, status);",
+      "CREATE TABLE IF NOT EXISTS task_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, author_id TEXT NOT NULL, body TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);",
+      "CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id);",
+
+      # --- Government projects (bcl/13_gov_projects.bcl) ---------------------
+      "CREATE TABLE IF NOT EXISTS user_org_units (user_id TEXT PRIMARY KEY, org_unit_id TEXT NOT NULL, assigned_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);",
+      "INSERT OR IGNORE INTO user_org_units (user_id, org_unit_id) VALUES ('usr_manager_01', 'bagmati');",
+      "INSERT OR IGNORE INTO user_org_units (user_id, org_unit_id) VALUES ('usr_officer_bagmati', 'bagmati');",
+      "INSERT OR IGNORE INTO user_org_units (user_id, org_unit_id) VALUES ('usr_officer_koshi', 'koshi');",
+      "INSERT OR IGNORE INTO user_org_units (user_id, org_unit_id) VALUES ('usr_officer_ktm', 'ktm');",
+      "CREATE TABLE IF NOT EXISTS gov_projects (id INTEGER PRIMARY KEY AUTOINCREMENT, org_unit_id TEXT NOT NULL, org_path TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', budget_total REAL NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'proposed', start_date TEXT, end_date TEXT, created_by TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);",
+      "CREATE INDEX IF NOT EXISTS idx_gov_projects_path ON gov_projects(org_path);",
+      "CREATE TABLE IF NOT EXISTS gov_budget_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES gov_projects(id) ON DELETE CASCADE, code TEXT NOT NULL, amount REAL NOT NULL, note TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);",
+      "CREATE INDEX IF NOT EXISTS idx_gov_budget_lines_project ON gov_budget_lines(project_id);",
+
+      # --- Medical coding (bcl/14_medical_coding.bcl) ------------------------
+      "CREATE TABLE IF NOT EXISTS encounters (id INTEGER PRIMARY KEY AUTOINCREMENT, patient_id TEXT NOT NULL, provider_id TEXT NOT NULL, dos_from TEXT NOT NULL, dos_to TEXT NOT NULL, dos_kind TEXT NOT NULL, days INTEGER NOT NULL, place_of_service TEXT, status TEXT NOT NULL DEFAULT 'pending', assigned_coder TEXT, created_by TEXT NOT NULL, coded_by TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);",
+      "CREATE INDEX IF NOT EXISTS idx_encounters_patient ON encounters(patient_id, provider_id, dos_from);",
+      "CREATE INDEX IF NOT EXISTS idx_encounters_queue ON encounters(status, assigned_coder);",
+      "CREATE TABLE IF NOT EXISTS encounter_lines (id INTEGER PRIMARY KEY AUTOINCREMENT, encounter_id INTEGER NOT NULL REFERENCES encounters(id) ON DELETE CASCADE, line_no INTEGER NOT NULL, dos TEXT NOT NULL, cpt TEXT NOT NULL, modifier TEXT, icd TEXT NOT NULL, units REAL NOT NULL);",
+      "CREATE INDEX IF NOT EXISTS idx_encounter_lines_encounter ON encounter_lines(encounter_id, dos);"
     ]
   }
 }

@@ -1,0 +1,55 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div style="margin-bottom: 2rem;">
+    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
+      <span class="badge badge-user">Medical Coding</span>
+      <span class="badge" style="background: rgba(59, 130, 246, 0.15); color: #93C5FD;">Route: /coding</span>
+    </div>
+    <h1 style="font-size: 1.85rem; font-weight: 800; letter-spacing: -0.02em;">Coding Work Queue</h1>
+    <p style="color: var(--text-muted); font-size: 0.95rem;">
+      Unclaimed encounters plus the ones you are working. Single and multi date-of-service encounters are
+      stored with one claim line per day. JSON API: <code>/api/v1/coding/queue</code>, <code>/api/v1/coding/encounters</code>.
+    </p>
+  </div>
+
+  <div class="glass-card" style="margin-bottom: 1.5rem;">
+    <h3 style="font-size: 1.1rem; font-weight: 700; margin-bottom: 0.75rem;">Coding Status</h3>
+    <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+      @for(s in status_counts) {
+        <span class="badge-perm">${s.status}: ${s.count}</span>
+      }
+    </div>
+  </div>
+
+  <div class="glass-card">
+    <div class="table-container">
+      <table class="custom-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Patient</th>
+            <th>Provider</th>
+            <th>DOS</th>
+            <th>Days</th>
+            <th>Lines</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for(e in queue) {
+            <tr>
+              <td class="font-mono" style="color: #A5B4FC;">${e.id}</td>
+              <td>${e.patient_id}</td>
+              <td>${e.provider_id}</td>
+              <td class="font-mono">${e.dos_from} → ${e.dos_to}</td>
+              <td>${e.days}</td>
+              <td>${e.line_count}</td>
+              <td><span class="badge badge-user">${e.status}</span></td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+}

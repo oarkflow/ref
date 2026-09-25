@@ -113,6 +113,16 @@ type NodeSpec struct {
 	// records and error messages redact them, and the debug introspection
 	// surface reports the fact name without its value.
 	Sensitive bool `bcl:"sensitive"`
+
+	// hiddenRequires are ordering-only dependencies the compiler adds (the
+	// authorization gate, effects the response must wait for). They sequence
+	// the plan but never reach the action's inputs, so a collect response
+	// does not grow synthetic keys and an action's arity checks are unchanged.
+	hiddenRequires []string
+	// keepAlive is a synthetic fact this node publishes after it runs, so
+	// the response can depend on an effect or decision that nothing else
+	// consumes. Without it the demand-driven planner would drop the node.
+	keepAlive string
 }
 
 // RetrySpec is one retry policy, shared by intent nodes and process steps.

@@ -1,5 +1,7 @@
 package platform
 
+import "github.com/oarkflow/ref/pipeline"
+
 // Document is the whole BCL application model: one file (or one directory of
 // imported files) describes an entire deployable system.
 //
@@ -31,6 +33,15 @@ type Document struct {
 	Workers   []WorkerSpec   `bcl:"worker,block"`
 	Schedules []ScheduleSpec `bcl:"schedule,block"`
 	Triggers  []TriggerSpec  `bcl:"trigger,block"`
+
+	// Pipelines are multi-stage data verification workflows (application →
+	// review → approval → certificate), run by a pipeline.cases resource.
+	Pipelines []pipeline.Definition `bcl:"pipeline,block"`
+
+	// Entities are declarative data resources: a migrated table plus a
+	// validated REST API with filters, search, export, aggregates, access
+	// rules and hooks (see entity.go).
+	Entities []EntitySpec `bcl:"entity,block"`
 }
 
 // SecretSpec resolves one named secret at load time, from the environment or a

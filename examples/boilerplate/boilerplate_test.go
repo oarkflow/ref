@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -441,6 +442,7 @@ func TestSPLTemplateRendering(t *testing.T) {
 // ===========================================================================
 
 func TestBCLLoadDirAndMount(t *testing.T) {
+	useTempState(t)
 	ctx := context.Background()
 	opts := platform.DefaultLoadOptions()
 
@@ -475,12 +477,12 @@ func TestBCLLoadDirAndMount(t *testing.T) {
 
 	// Verify key routes were registered from BCL
 	expectedRoutes := map[string]string{
-		"/login":                  "POST",
-		"/register":               "POST",
-		"/dashboard":              "GET",
-		"/dashboard/admin":        "GET",
-		"/api/v1/auth/login":      "POST",
-		"/api/v1/auth/register":   "POST",
+		"/login":                "POST",
+		"/register":             "POST",
+		"/dashboard":            "GET",
+		"/dashboard/admin":      "GET",
+		"/api/v1/auth/login":    "POST",
+		"/api/v1/auth/register": "POST",
 	}
 
 	for expectedPath, expectedMethod := range expectedRoutes {
@@ -497,12 +499,23 @@ func TestBCLLoadDirAndMount(t *testing.T) {
 	}
 }
 
+// useTempState points the database, sessions and uploads at a temporary
+// directory, so a test run never rewrites the checked-in .data/boilerplate.db.
+func useTempState(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("DATABASE_URL", "file:"+filepath.Join(dir, "app.db")+"?_pragma=busy_timeout(10000)")
+	t.Setenv("SESSION_DIR", filepath.Join(dir, "sessions"))
+	t.Setenv("UPLOAD_DIR", filepath.Join(dir, "uploads"))
+}
+
 // ===========================================================================
 // 5b. Observability & Health: platform.LoadOptions.Observers/HealthRegistry
 // wired into the REF engine, and /metrics, /livez, /readyz mounted on fh.
 // ===========================================================================
 
 func TestObservabilityHealthAndMetricsEndpoints(t *testing.T) {
+	useTempState(t)
 	ctx := context.Background()
 
 	promRegistry := prometheus.NewRegistry()
@@ -661,5 +674,3 @@ func TestTCPGuardBusinessAnomalyDetection(t *testing.T) {
 		t.Fatal("expected legitimate admin role promotion to manager to be allowed")
 	}
 }
-
-

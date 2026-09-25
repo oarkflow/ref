@@ -171,8 +171,10 @@ type Step struct {
 	Retry   *RetryPolicy
 	Timeout time.Duration
 
-	// Terminal marks a step after which the run completes successfully even if it
-	// has outgoing edges that do not traverse.
+	// Terminal marks a step that may end its branch: when none of its outgoing
+	// edges traverse, that is not a dead end. The run completes successfully once
+	// nothing else is outstanding — other branches of a fan-out still finish, and
+	// edges of the terminal step that do traverse are followed.
 	Terminal bool
 
 	SkipWhen   Guard
@@ -519,6 +521,15 @@ func Compile(d *Definition) error {
 			// a threshold edge. Counting only the first would report a perfectly
 			// reachable timeout handler as dead configuration.
 			targets := edge.allTargets()
+			if edge.Type == EdgeDynamicFanOut && len(targets) == 0 {
+				// A dynamic fan-out without static targets can dispatch to any
+				// declared step (dynamicTargets rejects undeclared names), so every
+				// step is reachable through it. Refusing to compile would make the
+				// catalog's own field set — targets_path alone — unusable.
+				for name := range d.Steps {
+					targets = append(targets, name)
+				}
+			}
 			if edge.OnTimeout != "" {
 				targets = append(targets, edge.OnTimeout)
 			}
@@ -574,8 +585,10 @@ func validateEdge(d *Definition, edge *Edge) error {
 			return fmt.Errorf("%s: source step %q is not declared", label, name)
 		}
 	}
-	// A cancel edge deliberately has no target: it ends the run.
-	if len(targets) == 0 && edge.Type != EdgeCancel {
+	// A cancel edge deliberately has no target: it ends the run. A dynamic
+	// fan-out may take all of its targets from targets_path at run time.
+	needsTargets := edge.Type != EdgeCancel && (edge.Type != EdgeDynamicFanOut || edge.TargetsPath == "")
+	if len(targets) == 0 && needsTargets {
 		return fmt.Errorf("%s: needs to or targets", label)
 	}
 	for _, name := range targets {
@@ -717,6 +730,18 @@ func (e *Edge) allTargets() []string {
 	}
 	if e.To != "" {
 		return []string{e.To}
+	}
+	// A threshold edge names its targets in its bands; the catalog gives it no
+	// to/targets field. Counting the bands here keeps validation, the incoming
+	// index and reachability honest for that documented shape.
+	if e.Type == EdgeThreshold && len(e.Thresholds) > 0 {
+		targets := make([]string, 0, len(e.Thresholds))
+		for _, band := range e.Thresholds {
+			if band.Target != "" && !slices.Contains(targets, band.Target) {
+				targets = append(targets, band.Target)
+			}
+		}
+		return targets
 	}
 	return nil
 }

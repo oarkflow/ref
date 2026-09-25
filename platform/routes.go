@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -816,6 +817,20 @@ func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute,
 		return nil
 	}
 
+	if raw, ok := value.(RawResponse); ok {
+		p.applyResponseHeaders(c, route)
+		c.Set("Content-Type", orDefault(raw.ContentType, "application/octet-stream"))
+		if raw.Filename != "" {
+			c.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", raw.Filename))
+		}
+		if err := p.completeIdempotency(ctx, route, idemLease, route.status, raw.Body); err != nil {
+			return projectFailure(c, unavailable("the response could not be committed for idempotent replay"))
+		}
+		*idemCompleted = true
+		p.audit(ctx, route, principal, tenant, body, nil, nil)
+		return c.Status(route.status).Send(raw.Body)
+	}
+
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return projectFailure(c, fmt.Errorf("the response could not be serialised: %w", err))
@@ -910,24 +925,89 @@ func (p *Platform) serveProcess(ctx context.Context, c fh.Ctx, route compiledRou
 // producing one event.
 func (p *Platform) serveStream(ctx context.Context, c fh.Ctx, route compiledRoute, body []byte, principal Principal, tenant, sessionID string, idemLease *idempotencyLease, idemCompleted *bool) error {
 	inv := p.buildInvocation(c, route, body, sessionID, principal, tenant)
-	result, err := p.Engine.Dispatch(ctx, inv)
-	if err != nil {
-		return projectFailure(c, err)
+	dispatchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	emitter := &streamEmitter{events: make(chan []byte, streamBuffer)}
+	done := make(chan dispatchOutcome, 1)
+	go func() {
+		result, err := p.Engine.Dispatch(withStreamEmitter(dispatchCtx, emitter), inv)
+		done <- dispatchOutcome{result: result, err: err}
+	}()
+
+	finalFrame := func(out dispatchOutcome) []byte {
+		if out.err != nil {
+			_, errBody := failureView(out.err)
+			encoded, _ := json.Marshal(map[string]any{"error": errBody})
+			return sseFrame("error", encoded)
+		}
+		encoded, err := json.Marshal(out.result.Value)
+		if err != nil {
+			_, errBody := failureView(err)
+			encoded, _ = json.Marshal(map[string]any{"error": errBody})
+			return sseFrame("error", encoded)
+		}
+		return []byte("event: result\ndata: " + string(encoded) + "\n\n")
 	}
-	defer runtime.ReleaseDispatchResult(result)
-	encoded, err := json.Marshal(result.Value)
-	if err != nil {
-		return projectFailure(c, err)
+
+	var first []byte
+	select {
+	case first = <-emitter.events:
+	case out := <-done:
+		// The intent finished before emitting anything that was picked up. A
+		// failure keeps its HTTP status, exactly as before streaming existed;
+		// anything emitted in the meantime still precedes the result.
+		var prefix bytes.Buffer
+		for drained := false; !drained; {
+			select {
+			case frame := <-emitter.events:
+				prefix.Write(frame)
+			default:
+				drained = true
+			}
+		}
+		if out.err != nil && prefix.Len() == 0 {
+			return projectFailure(c, out.err)
+		}
+		if out.result != nil {
+			defer runtime.ReleaseDispatchResult(out.result)
+		}
+		event := prefix.String() + string(finalFrame(out))
+		c.Set("Content-Type", "text/event-stream")
+		c.Set("Cache-Control", "no-cache")
+		c.Set("Connection", "keep-alive")
+		if out.err == nil {
+			if err := p.completeIdempotency(ctx, route, idemLease, 200, []byte(event)); err != nil {
+				return projectFailure(c, unavailable("the stream response could not be committed for idempotent replay"))
+			}
+			*idemCompleted = true
+		}
+		return c.Status(200).SendString(event)
 	}
+
+	// Streaming has begun: the status is committed, and a later failure is
+	// delivered as an `event: error` frame.
 	c.Set("Content-Type", "text/event-stream")
 	c.Set("Cache-Control", "no-cache")
 	c.Set("Connection", "keep-alive")
-	event := "event: result\ndata: " + string(encoded) + "\n\n"
-	if err := p.completeIdempotency(ctx, route, idemLease, 200, []byte(event)); err != nil {
-		return projectFailure(c, unavailable("the stream response could not be committed for idempotent replay"))
+	c.Set("X-Accel-Buffering", "no")
+	reader := &sseReader{first: first, events: emitter.events, done: done, onFinal: finalFrame}
+	sendErr := c.Status(200).SendStream(reader)
+	if reader.final == nil {
+		// The client went away mid-stream. Cancelling unblocks any node
+		// waiting in stream.emit; the dispatch then finishes promptly.
+		cancel()
+		out := <-done
+		reader.final = &out
 	}
-	*idemCompleted = true
-	return c.Status(200).SendString(event)
+	if reader.final.result != nil {
+		runtime.ReleaseDispatchResult(reader.final.result)
+	}
+	if sendErr == nil && reader.final.err == nil {
+		if err := p.completeIdempotency(ctx, route, idemLease, 200, reader.body.Bytes()); err == nil {
+			*idemCompleted = true
+		}
+	}
+	return sendErr
 }
 
 func (p *Platform) applyResponseHeaders(c fh.Ctx, route compiledRoute) {
@@ -1199,6 +1279,16 @@ func runView(run *process.Run) map[string]any {
 // error or an upstream response body in a 500 is an information leak, and the
 // detail belongs in the server's own logs.
 func projectFailure(c fh.Ctx, err error) error {
+	status, body := failureView(err)
+	if status == 401 {
+		c.Set("WWW-Authenticate", `Bearer realm="api"`)
+	}
+	return c.Status(status).JSON(map[string]any{"error": body})
+}
+
+// failureView maps a failure onto an HTTP status and the error body shared by
+// JSON responses and the error event of a stream that already started.
+func failureView(err error) (int, map[string]any) {
 	status, code, message := 500, "INTERNAL_ERROR", "internal error"
 	var failure intent.Failure
 	if errors.As(err, &failure) {
@@ -1224,8 +1314,14 @@ func projectFailure(c fh.Ctx, err error) error {
 			status = 500
 		}
 	}
-	if status == 401 {
-		c.Set("WWW-Authenticate", `Bearer realm="api"`)
+	body := map[string]any{"code": code, "message": message}
+	// A client error may carry structured details (e.g. every failed
+	// date-of-service rule) that the action put there deliberately for the
+	// caller. Server errors never do, for the reason above.
+	if status < 500 && failure.Meta != nil {
+		if details, ok := failure.Meta["details"]; ok {
+			body["details"] = details
+		}
 	}
-	return c.Status(status).JSON(map[string]any{"error": map[string]any{"code": code, "message": message}})
+	return status, body
 }

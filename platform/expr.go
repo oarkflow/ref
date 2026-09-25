@@ -73,7 +73,7 @@ func CompileExpr(raw string) (*Expression, error) {
 	if raw == "" {
 		return nil, nil
 	}
-	prog, err := bcl.CompileExpression(raw)
+	prog, err := bcl.CompileExpression(rewriteExpression(raw))
 	if err != nil {
 		return nil, fmt.Errorf("compile expression %q: %w", raw, err)
 	}

@@ -1,0 +1,45 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div style="margin-bottom: 2rem;">
+    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
+      <span class="badge badge-manager">Government Projects</span>
+      <span class="badge" style="background: rgba(59, 130, 246, 0.15); color: #93C5FD;">Jurisdiction: ${scope.name} (${scope.path})</span>
+    </div>
+    <h1 style="font-size: 1.85rem; font-weight: 800; letter-spacing: -0.02em;">Public Projects</h1>
+    <p style="color: var(--text-muted); font-size: 0.95rem;">
+      Projects executed within your organisational subtree (country → state → district → municipality).
+      Budget lines use budget heads inherited down the hierarchy.
+      JSON API: <code>/api/v1/gov/projects</code>, <code>/api/v1/gov/tree</code>, <code>/api/v1/gov/budget-heads</code>.
+    </p>
+  </div>
+
+  <div class="glass-card">
+    <div class="table-container">
+      <table class="custom-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Unit</th>
+            <th>Title</th>
+            <th>Status</th>
+            <th>Budget</th>
+            <th>Allocated</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for(p in projects) {
+            <tr>
+              <td class="font-mono" style="color: #A5B4FC;">${p.id}</td>
+              <td class="font-mono">${p.org_unit_id}</td>
+              <td style="font-weight: 600;">${p.title}</td>
+              <td><span class="badge badge-user">${p.status}</span></td>
+              <td>${p.budget_total}</td>
+              <td>${p.budget_allocated}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+}

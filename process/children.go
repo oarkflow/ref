@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 )
 
 // Child processes.
@@ -22,19 +23,18 @@ import (
 // namespaced so an application's own events cannot collide with it.
 const childCompletedEvent = "__child_completed__"
 
-// startChild launches a sub-run and parks the parent on its completion.
-func (e *Engine) startChild(ctx context.Context, run *Run, step *Step, frame Frame, input any) (*WaitState, error) {
+// startChild launches a sub-run and parks the parent on its completion. When
+// the child finishes within the call — which it does in synchronous mode, where
+// there is no queue and the child is advanced right here — the child's outcome is
+// returned instead of a park, and becomes the step's own result.
+func (e *Engine) startChild(ctx context.Context, run *Run, step *Step, frame Frame, input any) (*WaitState, map[string]any, error) {
 	if _, ok := e.Definition(step.Process); !ok {
-		return nil, fmt.Errorf("step %q calls process %q, which is not registered", step.Name, step.Process)
+		return nil, nil, fmt.Errorf("step %q calls process %q, which is not registered", step.Name, step.Process)
 	}
 
 	// The parent step's own resumption target is itself: when the child finishes,
 	// the parent re-enters at this step with the child's result, and the step's
 	// outgoing edges resolve off that.
-	targets := []string{step.Name}
-	for _, target := range targets {
-		_ = target
-	}
 
 	child, err := e.Start(ctx, step.Process, input, StartOptions{
 		// The child inherits identity so its own tenant-scoped steps and
@@ -52,11 +52,12 @@ func (e *Engine) startChild(ctx context.Context, run *Run, step *Step, frame Fra
 		DeferWake:      true,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("step %q could not start child process %q: %w", step.Name, step.Process, err)
+		return nil, nil, fmt.Errorf("step %q could not start child process %q: %w", step.Name, step.Process, err)
 	}
 
+	subscriptionID := "child:" + run.ID + ":" + frame.StateKey()
 	if err := e.store.Subscribe(ctx, &Subscription{
-		ID:          "child:" + run.ID + ":" + frame.StateKey(),
+		ID:          subscriptionID,
 		RunID:       run.ID,
 		Event:       childCompletedEvent,
 		Correlation: child.ID,
@@ -64,19 +65,37 @@ func (e *Engine) startChild(ctx context.Context, run *Run, step *Step, frame Fra
 		Key:         frame.StateKey(),
 		CreatedAt:   e.now(),
 	}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Advance the child now that the parent's subscription exists. Doing it in this
 	// order matters: a fast child that finished first would otherwise signal into
 	// nothing and strand the parent.
 	if err := e.advanceOrEnqueue(ctx, child.ID); err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+
+	// A child that already ended — in synchronous mode, inside the call above —
+	// could not signal this run: this run's lease is held by the very pass that is
+	// starting the child (signalParent sees that and stands down). Its outcome is
+	// read here instead. Parking would wait for a signal that is never coming;
+	// before this, the child's completion either missed the subscription or was
+	// consumed by a resume that could not take the lease, and the parent waited
+	// forever or completed without its child's result.
+	if latest, err := e.store.GetRun(ctx, child.ID); err == nil && latest.Status.Terminal() {
+		if err := e.store.DeleteSubscription(ctx, subscriptionID); err != nil {
+			return nil, nil, err
+		}
+		if !latest.ParentNotified {
+			latest.ParentNotified = true
+			_ = e.store.SaveRun(context.WithoutCancel(ctx), latest)
+		}
+		return nil, childPayload(latest), nil
 	}
 
 	return &WaitState{
 		Reason: "child", Step: step.Name,
 		Detail: fmt.Sprintf("waiting for child process %s (run %s)", step.Process, child.ID),
-	}, nil
+	}, nil, nil
 }
 
 // signalParent tells a waiting parent that this run has ended. It is called from
@@ -86,6 +105,36 @@ func (e *Engine) signalParent(ctx context.Context, run *Run) error {
 	if run.ParentRunID == "" || run.ParentNotified {
 		return nil
 	}
+	if leaseHeld(ctx, run.ParentRunID) {
+		// The parent is our caller: it is advancing right now and started (or is
+		// cancelling) this child inside that advance, so it reads the outcome
+		// itself (startChild). Signalling would try to resume a run whose lease this
+		// very call chain holds.
+		return nil
+	}
+	// The parent subscribed with the child's run id as the correlation, so that is
+	// what the signal carries. Signalling with the parent's id — as this did —
+	// matched no subscription at all, and every parent waited forever.
+	woken, err := e.Signal(ctx, childCompletedEvent, run.ID, childPayload(run))
+	if err != nil {
+		return err
+	}
+	if len(woken) == 0 {
+		// Nobody is subscribed. When the parent has already ended there is nothing
+		// to tell, and failing the child over it would be wrong — the child
+		// genuinely finished. When it is still active, RecoverStalled retries while
+		// ParentNotified stays false.
+		parent, err := e.store.GetRun(ctx, run.ParentRunID)
+		if err == nil && parent.Status.Active() {
+			return nil
+		}
+	}
+	run.ParentNotified = true
+	return e.store.SaveRun(context.WithoutCancel(ctx), run)
+}
+
+// childPayload is what a parent step receives as the result of a child run.
+func childPayload(run *Run) map[string]any {
 	var output any
 	if len(run.Output) > 0 {
 		_ = json.Unmarshal(run.Output, &output)
@@ -99,17 +148,7 @@ func (e *Engine) signalParent(ctx context.Context, run *Run) error {
 	if run.Error != "" {
 		payload["error"] = run.Error
 	}
-	// A failure to notify the parent is not worth failing the child over: the child
-	// genuinely finished. The parent's own timeout, if it set one, is the backstop.
-	woken, err := e.Signal(ctx, childCompletedEvent, run.ParentRunID, payload)
-	if err != nil {
-		return err
-	}
-	if len(woken) == 0 {
-		return ErrNoSubscribers
-	}
-	run.ParentNotified = true
-	return e.store.SaveRun(context.WithoutCancel(ctx), run)
+	return payload
 }
 
 // ChildFailurePolicy decides what a parent does when its child fails.
@@ -150,5 +189,14 @@ func (e *Engine) resumeAfterChild(ctx context.Context, subscription *Subscriptio
 	if stateKey == "" {
 		stateKey = subscription.Step
 	}
-	return e.continueFromStep(ctx, subscription.RunID, subscription.Step, stateKey, outcome, childOutcomeError(outcome))
+	// No advance here: deliver acknowledges the subscription first, so the advance
+	// that follows does not find it outstanding and park a finished run.
+	stillSubscribed := func(ctx context.Context) (bool, error) {
+		subscriptions, err := e.store.ListSubscriptions(ctx, subscription.RunID)
+		if err != nil {
+			return false, err
+		}
+		return slices.ContainsFunc(subscriptions, func(s *Subscription) bool { return s.ID == subscription.ID }), nil
+	}
+	return e.applyStepCompletion(ctx, subscription.RunID, subscription.Step, stateKey, outcome, childOutcomeError(outcome), stillSubscribed)
 }

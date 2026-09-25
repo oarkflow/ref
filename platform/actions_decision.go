@@ -103,7 +103,7 @@ var decisionExpressionAction = ActionFactoryFunc(func(_ BuildContext, spec NodeS
 		}
 		decision := &Decision{Allow: allow, Message: message}
 		if allow {
-			return ActionResult{Decision: decision}, nil
+			return allowResult(spec, decision), nil
 		}
 		return ActionResult{Decision: decision}, permissionDenied(message)
 	}), nil
@@ -266,7 +266,7 @@ var decisionAuthzAction = ActionFactoryFunc(func(build BuildContext, spec NodeSp
 			return ActionResult{Decision: &Decision{Allow: false, Message: message}}, err
 		}
 		if allowed {
-			return ActionResult{Decision: &Decision{Allow: true}}, nil
+			return allowResult(spec, &Decision{Allow: true}), nil
 		}
 		return ActionResult{Decision: &Decision{Allow: false, Message: message}}, permissionDenied(message)
 	}), nil
@@ -283,7 +283,7 @@ var decisionTenantAction = ActionFactoryFunc(func(_ BuildContext, spec NodeSpec)
 				permissionDenied("this operation requires a tenant, and none could be determined for the request")
 		}
 		if recordFact == "" {
-			return ActionResult{Decision: &Decision{Allow: true}}, nil
+			return allowResult(spec, &Decision{Allow: true}), nil
 		}
 		record, found := resolvePath(ctx.Inputs, recordFact)
 		if !found {
@@ -302,7 +302,7 @@ var decisionTenantAction = ActionFactoryFunc(func(_ BuildContext, spec NodeSpec)
 			// exists in another tenant is itself a cross-tenant disclosure.
 			return ActionResult{Decision: &Decision{Allow: false, Message: "not found"}}, notFoundOrMessage(message)
 		}
-		return ActionResult{Decision: &Decision{Allow: true}}, nil
+		return allowResult(spec, &Decision{Allow: true}), nil
 	}), nil
 })
 
@@ -488,4 +488,16 @@ func limitOutputs(spec NodeSpec, remaining int, resetAt time.Time) map[string]an
 		"remaining": remaining,
 		"reset_at":  resetAt,
 	}}
+}
+
+// allowResult is the result of a decision node that permits the request. It also
+// publishes true to the node's provided fact, if it declares one: a node that
+// requires the decision must be able to run after it, and a guard that nothing
+// requires would otherwise be pruned from the plan and never evaluated.
+func allowResult(spec NodeSpec, decision *Decision) ActionResult {
+	result := ActionResult{Decision: decision}
+	if len(spec.Provides) > 0 {
+		result.Outputs = map[string]any{spec.Provides[0]: true}
+	}
+	return result
 }

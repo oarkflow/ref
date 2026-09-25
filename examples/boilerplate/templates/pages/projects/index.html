@@ -1,0 +1,76 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div style="margin-bottom: 2rem;">
+    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
+      <span class="badge badge-user">Projects &amp; Tasks</span>
+      <span class="badge" style="background: rgba(59, 130, 246, 0.15); color: #93C5FD;">Route: /projects</span>
+    </div>
+    <h1 style="font-size: 1.85rem; font-weight: 800; letter-spacing: -0.02em;">Projects</h1>
+    <p style="color: var(--text-muted); font-size: 0.95rem;">
+      Projects you own or belong to. Tasks move <code>todo → in_progress → review</code>; a manager approves
+      <code>review → done</code> through the durable <code>task.approval</code> process.
+      JSON API: <code>/api/v1/projects</code>, <code>/api/v1/tasks/mine</code>, <code>/api/v1/tasks/overdue</code>.
+    </p>
+  </div>
+
+  <div class="glass-card" style="margin-bottom: 1.5rem;">
+    <h3 style="font-size: 1.2rem; font-weight: 700; margin-bottom: 1rem;">My Projects</h3>
+    <div class="table-container">
+      <table class="custom-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Status</th>
+            <th>My Role</th>
+            <th>Due</th>
+            <th>Progress</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for(p in projects) {
+            <tr>
+              <td class="font-mono" style="color: #A5B4FC;">${p.id}</td>
+              <td style="font-weight: 600;">${p.name}</td>
+              <td><span class="badge badge-user">${p.status}</span></td>
+              <td>${p.my_role}</td>
+              <td style="color: var(--text-muted);">${p.due_date}</td>
+              <td>${p.done_count} / ${p.task_count} done</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="glass-card">
+    <h3 style="font-size: 1.2rem; font-weight: 700; margin-bottom: 1rem;">My Open Tasks</h3>
+    <div class="table-container">
+      <table class="custom-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Project</th>
+            <th>Title</th>
+            <th>Priority</th>
+            <th>Status</th>
+            <th>Due</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for(t in my_tasks) {
+            <tr>
+              <td class="font-mono" style="color: #A5B4FC;">${t.id}</td>
+              <td>${t.project_name}</td>
+              <td style="font-weight: 600;">${t.title}</td>
+              <td><span class="badge badge-manager">${t.priority}</span></td>
+              <td><span class="badge badge-user">${t.status}</span></td>
+              <td style="color: var(--text-muted);">${t.due_date}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+}

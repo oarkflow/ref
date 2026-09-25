@@ -264,13 +264,19 @@ func (s *HTTPService) Do(ctx context.Context, request HTTPRequest) (HTTPResponse
 		method = http.MethodGet
 	}
 
-	var lastErr error
+	var (
+		lastErr      error
+		lastResponse HTTPResponse
+	)
 	for attempt := 1; attempt <= s.attempts; attempt++ {
 		response, err := s.attempt(ctx, method, target, request)
 		if err == nil {
 			return response, nil
 		}
-		lastErr = err
+		// Keep the upstream's answer: callers map its status onto a failure
+		// category (404 → not found, 409 → conflict, 429 → rate limited), which
+		// an empty response would collapse into a generic 503.
+		lastErr, lastResponse = err, response
 		// Only transport-level failures and 5xx are retried. Retrying a 4xx
 		// would repeat a request the peer has already told us is wrong.
 		if attempt == s.attempts || !retriableHTTP(err) {
@@ -282,7 +288,7 @@ func (s *HTTPService) Do(ctx context.Context, request HTTPRequest) (HTTPResponse
 		case <-time.After(s.backoff * time.Duration(attempt)):
 		}
 	}
-	return HTTPResponse{}, lastErr
+	return lastResponse, lastErr
 }
 
 func (s *HTTPService) attempt(ctx context.Context, method string, target *url.URL, request HTTPRequest) (HTTPResponse, error) {

@@ -1,0 +1,1009 @@
+####################################################################
+# Passport Request — a multi-stage public service pipeline.
+#
+#   application   public page: wizard of form groups the applicant fills
+#                 (anonymously with an access key, or signed in)
+#   verification  an officer verifies every submitted field, flags what is
+#                 wrong and returns the case; the applicant may then edit
+#                 ONLY the flagged fields, and resubmitting goes straight
+#                 back to verification
+#   biometrics    photo / fingerprints / signature captures, each a node
+#                 with its own status (skipped for simple renewals)
+#   approval      a supervisor signs off (four-eyes: never the verifier)
+#   issuance      a signed, verifiable certificate is issued automatically
+#
+# Cases belong to a district of the org hierarchy: the passport office list
+# is reference data resolved per district, and officers only see the queue
+# of the districts they are assigned to.
+####################################################################
+
+name "passport"
+version "1"
+
+resource "db" {
+  kind "database.sql"
+  description "Cases and certificates"
+  config {
+    driver "sqlite"
+    dsn env("PASSPORT_DSN", "file:.data/passport.db?_pragma=busy_timeout(5000)")
+    migrations [
+      "CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, case_number TEXT NOT NULL, stage TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+    ]
+  }
+}
+
+resource "jobs" {
+  kind "queue.sql"
+  description "Durable queue that fires schedules on exactly one replica"
+  config {
+    database "db"
+    table "passport_jobs"
+    workers 1
+    poll_interval 1s
+  }
+}
+
+resource "jwt" {
+  kind "auth.jwt"
+  description "Applicant and staff tokens (roles, org_units)"
+  config {
+    secret env.required("PASSPORT_JWT_SECRET")
+  }
+}
+
+resource "org" {
+  kind "org.hierarchy"
+  description "Districts and the passport offices serving them"
+  config {
+    levels ["country", "state", "district"]
+    assignment_claim "org_units"
+    global_roles ["admin"]
+    nodes [
+      { id "np" level "country" name "Nepal" },
+      { id "bagmati" parent "np" level "state" name "Bagmati Province" },
+      { id "koshi" parent "np" level "state" name "Koshi Province" },
+      { id "ktm" parent "bagmati" level "district" name "Kathmandu" },
+      { id "lalitpur" parent "bagmati" level "district" name "Lalitpur" },
+      { id "morang" parent "koshi" level "district" name "Morang" }
+    ]
+    lookups [
+      { set "passport_office" code "dop" label "Department of Passports, Tripureshwor" sort 1 },
+      { set "passport_office" code "ktm-dao" node "ktm" label "District Administration Office, Kathmandu" sort 2 },
+      { set "passport_office" code "ltp-dao" node "lalitpur" label "District Administration Office, Lalitpur" sort 2 },
+      { set "passport_office" code "mrg-dao" node "morang" label "District Administration Office, Morang" sort 2 },
+      { set "passport_office" code "dop" node "koshi" disabled true }
+    ]
+  }
+}
+
+resource "cases" {
+  kind "pipeline.cases"
+  description "Passport request cases"
+  config {
+    pipelines ["passport"]
+    database "db"
+    org_resource "org"
+    allow_anonymous true
+    signing_secret env.required("PASSPORT_SIGNING_SECRET")
+  }
+}
+
+####################################################################
+# The pipeline
+####################################################################
+
+pipeline "passport" {
+  title "Passport Request"
+  description "Apply for a new passport or renew an existing one"
+  number_format "PP-{year}-{seq:6}"
+  reveal_roles ["supervisor"]
+  # The data subject, for right-to-erasure requests; pii inputs are removed
+  # when a case is anonymised.
+  subject ["applicant.citizenship_no", "contact.email"]
+
+  # Office hours: SLAs and escalations count working time only.
+  calendar "dop_office" {
+    timezone "Asia/Kathmandu"
+    hours "sun-thu 10:00-17:00; fri 10:00-15:00"
+    holidays ["01-11", "05-29", "2026-10-20", "2026-10-21"]
+  }
+
+  # Who work can be routed to (a host directory can add more).
+  worker "officer-1" {
+    roles ["officer"]
+    org_units ["ktm"]
+    capacity 25
+  }
+  worker "officer-2" {
+    roles ["officer"]
+    org_units ["ktm", "lalitpur"]
+    capacity 25
+  }
+  worker "officer-9" {
+    roles ["officer"]
+    org_units ["morang"]
+  }
+  worker "senior-1" {
+    roles ["senior_officer"]
+    org_units ["bagmati"]
+  }
+
+  notes {
+    applicant_may_write true
+  }
+
+  # Finished cases are anonymised after ten years.
+  retention {
+    after "3650d"
+    action anonymize
+  }
+
+  # Notifications: every hook runs after the change is saved.
+  on "sla.*" {
+    hook "passport.notify"
+  }
+  on "case.returned" {
+    hook "passport.notify"
+  }
+  on "case.completed" {
+    hook "passport.notify"
+  }
+  on "link.submitted" {
+    hook "passport.notify"
+  }
+
+  # ---------------------------------------------------------------
+  # Shared field catalog: forms list these by name.
+  # ---------------------------------------------------------------
+  input "full_name" {
+    label "Full name (as on citizenship)"
+    pii true
+    kind text
+    required true
+    min_length 3
+    max_length 120
+  }
+  input "dob" {
+    label "Date of birth"
+    pii true
+    kind date
+    required true
+    max "2026-01-01"
+  }
+  input "gender" {
+    label "Gender"
+    kind radio
+    required true
+    options ["female", "male", "other"]
+  }
+  input "citizenship_no" {
+    label "Citizenship certificate number"
+    pii true
+    kind text
+    required true
+    pattern "^[0-9-]{6,20}$"
+    sensitive true
+  }
+  input "email" {
+    label "Email"
+    kind email
+    required true
+  }
+  input "phone" {
+    label "Mobile number"
+    pii true
+    kind phone
+    required true
+  }
+
+  # ---------------------------------------------------------------
+  # Forms (snippets) — composed into stage pages.
+  # ---------------------------------------------------------------
+  form "applicant" {
+    title "Applicant"
+    fields ["full_name", "dob", "gender", "citizenship_no"]
+    columns 2
+  }
+
+  form "contact" {
+    title "Contact"
+    fields ["email", "phone"]
+    columns 2
+  }
+
+  form "addresses" {
+    title "Addresses"
+    description "Permanent address first; add a temporary address if different"
+    repeatable true
+    min_items 1
+    max_items 2
+    input "kind" {
+      label "Address type"
+      kind select
+      required true
+      options ["permanent", "temporary"]
+    }
+    input "line" {
+      label "Street / tole"
+      kind text
+      required true
+    }
+    input "municipality" {
+      label "Municipality"
+      kind text
+      required true
+    }
+  }
+
+  form "request" {
+    title "Passport request"
+    input "kind" {
+      label "Request type"
+      kind select
+      required true
+      options ["new", "renewal"]
+    }
+    input "old_passport" {
+      label "Current passport number"
+      kind text
+      required_if "request.kind == 'renewal'"
+      visible_if "request.kind == 'renewal'"
+      pattern "^[A-Z0-9]{7,9}$"
+    }
+    input "pages" {
+      label "Pages"
+      kind select
+      required true
+      options ["34", "66"]
+      default "34"
+    }
+    input "service" {
+      label "Service"
+      kind select
+      required true
+      options ["regular", "fast_track"]
+      default "regular"
+    }
+    input "office" {
+      label "Collection office"
+      kind select
+      required true
+      lookup "passport_office"
+    }
+    input "fee" {
+      label "Fee (NPR)"
+      kind number
+      compute "(request.pages == '66' ? 10000 : 5000) * (request.service == 'fast_track' ? 2 : 1)"
+    }
+    rule "fast_track_office" {
+      check "request.service != 'fast_track' or request.office == 'dop'"
+      message "Fast track is only available at the Department of Passports"
+      path "request.office"
+    }
+  }
+
+  # Filled by the ward office through a signed external link.
+  form "ward_recommendation" {
+    title "Ward recommendation"
+    input "recommended" {
+      label "The ward recommends this applicant"
+      kind boolean
+      required true
+    }
+    input "ward_officer" {
+      label "Recommending officer"
+      kind text
+      required true
+    }
+  }
+
+  form "documents" {
+    title "Documents"
+    input "photo" {
+      label "Passport photo"
+      kind file
+      required true
+      accept ["image/jpeg", "image/png"]
+    }
+    input "citizenship_scan" {
+      label "Citizenship certificate (both sides)"
+      kind file
+      required true
+      accept ["application/pdf", "image/jpeg"]
+    }
+  }
+
+  form "declaration" {
+    title "Declaration"
+    input "agree" {
+      label "I declare that the information given is true"
+      kind boolean
+      required true
+    }
+  }
+
+  # ---------------------------------------------------------------
+  # Stage 1: the public application page.
+  # ---------------------------------------------------------------
+  stage "application" {
+    title "Application"
+    kind submission
+    public true
+    page {
+      title "Apply for a passport"
+      layout wizard
+      submit_label "Submit application"
+      group "you" {
+        title "About you"
+        forms ["applicant", "contact"]
+      }
+      group "where" {
+        title "Addresses"
+        forms ["addresses"]
+      }
+      group "what" {
+        title "Your request"
+        layout tabbed
+        forms ["request", "documents"]
+      }
+      group "review" {
+        title "Review"
+        mode summary
+        forms ["applicant", "contact", "addresses", "request"]
+      }
+      group "declare" {
+        title "Declaration"
+        forms ["declaration"]
+      }
+    }
+    action "submit" {
+      label "Submit application"
+      outcome advance
+    }
+    action "withdraw" {
+      label "Withdraw"
+      outcome withdraw
+      confirm "Withdraw this application?"
+    }
+  }
+
+  # ---------------------------------------------------------------
+  # Stage 2: document verification by an officer.
+  # ---------------------------------------------------------------
+  stage "verification" {
+    title "Document verification"
+    kind review
+    roles ["officer", "senior_officer"]
+    view_roles ["supervisor"]
+    assign_roles ["supervisor"]
+    suspend_roles ["officer", "senior_officer"]
+    external_roles ["officer", "senior_officer"]
+    # Work goes to the least-loaded officer covering the case's district;
+    # a correction comes back to the same officer.
+    routing {
+      strategy least_loaded
+      roles ["officer"]
+      same_org_unit true
+      sticky true
+    }
+    # Two working days; a warning half a day before; on breach the case is
+    # re-routed, and a day later it escalates to a senior officer.
+    sla {
+      duration "2d"
+      warn_before "4h"
+      calendar "dop_office"
+      on_breach "reassign"
+      escalate "senior" {
+        after "1d"
+        assign_roles ["senior_officer"]
+        notify ["dop-director"]
+      }
+    }
+    form "officer_check" {
+      title "Officer notes"
+      input "documents_seen" {
+        label "Original documents seen"
+        kind boolean
+      }
+      input "notes" {
+        label "Notes"
+        kind textarea
+        max_length 2000
+      }
+    }
+    page {
+      title "Verify the application"
+      layout tabbed
+      group "submitted" {
+        title "Submitted"
+        mode readonly
+        layout accordion
+        forms ["applicant", "contact", "addresses", "request", "documents"]
+      }
+      group "notes" {
+        title "Officer notes"
+        forms ["officer_check"]
+      }
+      group "ward" {
+        title "Ward recommendation"
+        mode readonly
+        forms ["ward_recommendation"]
+      }
+    }
+    node "review_identity" {
+      title "Verify identity"
+      kind review
+      forms ["applicant"]
+    }
+    node "review_request" {
+      title "Verify request and documents"
+      kind review
+      forms ["request", "documents"]
+    }
+    node "adult_or_guardian" {
+      title "Age recorded"
+      kind check
+      check "applicant.dob != ''"
+    }
+    node "watchlist" {
+      title "Watchlist screening"
+      kind automated
+      hook "passport.watchlist"
+    }
+    action "accept" {
+      label "Accept"
+      outcome advance
+    }
+    action "return" {
+      label "Return for correction"
+      outcome return
+      return_to "application"
+      comment_required true
+    }
+    action "reject" {
+      label "Reject"
+      outcome reject
+      comment_required true
+    }
+    assign "decision.verified_by" {
+      value "actor.id"
+    }
+  }
+
+  # ---------------------------------------------------------------
+  # Stage 3: biometrics — one node per capture.
+  # ---------------------------------------------------------------
+  stage "biometrics" {
+    title "Biometrics"
+    kind processing
+    roles ["officer"]
+    skip_if "request.kind == 'renewal'"
+    auto_advance true
+    form "capture" {
+      title "Capture"
+      input "station" {
+        label "Capture station"
+        kind text
+      }
+    }
+    page {
+      title "Capture biometrics"
+      layout accordion
+      group "applicant" {
+        title "Applicant"
+        mode summary
+        forms ["applicant"]
+      }
+      group "capture" {
+        title "Capture"
+        forms ["capture"]
+      }
+    }
+    node "photo" {
+      title "Live photo"
+      kind task
+    }
+    node "fingerprints" {
+      title "Fingerprints"
+      kind task
+    }
+    node "signature" {
+      title "Signature"
+      kind task
+      optional true
+    }
+  }
+
+  # ---------------------------------------------------------------
+  # Stage 4: supervisor approval (four-eyes).
+  # ---------------------------------------------------------------
+  stage "approval" {
+    title "Approval"
+    kind approval
+    roles ["supervisor"]
+    on_enter "passport.announce"
+    page {
+      title "Approve the passport"
+      layout stacked
+      group "summary" {
+        title "Application"
+        mode summary
+        forms ["applicant", "request"]
+      }
+      group "verification" {
+        title "Verification"
+        mode readonly
+        forms ["officer_check"]
+      }
+    }
+    node "sign_off" {
+      title "Supervisor sign-off"
+      kind approval
+      approvals 1
+      distinct_from ["review_identity", "review_request", "applicant"]
+    }
+    action "approve" {
+      label "Approve"
+      outcome advance
+    }
+    action "reject" {
+      label "Reject"
+      outcome reject
+      comment_required true
+    }
+    action "return" {
+      label "Back to verification"
+      outcome return
+      return_to "verification"
+      comment_required true
+    }
+  }
+
+  # ---------------------------------------------------------------
+  # Stage 5: issuance — a signed certificate, no human needed.
+  # ---------------------------------------------------------------
+  stage "issuance" {
+    title "Issuance"
+    kind issuance
+    roles ["officer"]
+    auto_advance true
+    node "issue" {
+      title "Issue approval certificate"
+      kind certificate
+      certificate "passport_approval"
+      auto true
+    }
+  }
+
+  certificate "passport_approval" {
+    title "Passport approval"
+    number_format "PPA-{year}-{seq:4}"
+    fields ["applicant.full_name", "applicant.dob", "request.kind", "request.pages", "request.office"]
+    validity "4380h"
+  }
+}
+
+####################################################################
+# Hooks run by the pipeline
+####################################################################
+
+# Automated node: screen the applicant. The intent's boolean result passes or
+# fails the node; a real deployment would call a screening service here.
+intent "passport.watchlist" {
+  response "clear"
+  node "clear" {
+    uses "expression"
+    requires [input]
+    provides [clear]
+    config {
+      expression "input.data.applicant.full_name != 'Blocked Person'"
+    }
+  }
+}
+
+# Stage hook: a case reached the approval queue.
+intent "passport.announce" {
+  response "sent"
+  node "sent" {
+    uses "constant"
+    provides [sent]
+    config {
+      value true
+    }
+  }
+}
+
+# Event hook (see the pipeline's `on` blocks): record the notification. A
+# real deployment would send email/SMS here (notify.send, service.smtp).
+intent "passport.notify" {
+  response "recorded"
+  node "recorded" {
+    uses "database.exec"
+    resource "db"
+    kind effect
+    requires [input]
+    provides [recorded]
+    config {
+      statement "INSERT INTO notifications (event, case_number, stage) VALUES (?, ?, ?)"
+      args ["input.event.name", "input.case.number", "input.event.stage"]
+    }
+  }
+}
+
+intent "passport.notifications" {
+  response "rows"
+  node "rows" {
+    uses "database.query"
+    resource "db"
+    provides [rows]
+    config {
+      statement "SELECT event, case_number, stage FROM notifications ORDER BY id"
+    }
+  }
+}
+
+####################################################################
+# API intents
+####################################################################
+
+intent "passport.describe" {
+  response "pipeline"
+  node "pipeline" {
+    uses "pipeline.describe"
+    resource "cases"
+    provides [pipeline]
+  }
+}
+
+intent "passport.start" {
+  response "case"
+  node "case" {
+    uses "pipeline.start"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [case]
+  }
+}
+
+intent "passport.list" {
+  response "cases"
+  node "cases" {
+    uses "pipeline.list"
+    resource "cases"
+    provides [cases]
+  }
+}
+
+intent "passport.view" {
+  response "view"
+  node "view" {
+    uses "pipeline.view"
+    resource "cases"
+    provides [view]
+  }
+}
+
+intent "passport.get" {
+  response "case"
+  node "case" {
+    uses "pipeline.get"
+    resource "cases"
+    provides [case]
+  }
+}
+
+intent "passport.save" {
+  response "view"
+  node "view" {
+    uses "pipeline.save"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "passport.act" {
+  response "view"
+  node "view" {
+    uses "pipeline.act"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "passport.node" {
+  response "view"
+  node "view" {
+    uses "pipeline.node"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "passport.verify" {
+  response "result"
+  node "result" {
+    uses "pipeline.verify"
+    resource "cases"
+    provides [result]
+  }
+}
+
+intent "passport.work" {
+  response "view"
+  node "view" {
+    uses "pipeline.work"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "passport.note" {
+  response "view"
+  node "view" {
+    uses "pipeline.note"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "passport.link" {
+  response "view"
+  node "view" {
+    uses "pipeline.link"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "passport.link_view" {
+  response "view"
+  node "view" {
+    uses "pipeline.link_view"
+    resource "cases"
+    provides [view]
+  }
+}
+
+intent "passport.link_submit" {
+  response "result"
+  node "result" {
+    uses "pipeline.link_submit"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [result]
+  }
+}
+
+intent "passport.hold" {
+  response "view"
+  node "view" {
+    uses "pipeline.hold"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+    config {
+      roles ["supervisor", "dpo"]
+    }
+  }
+}
+
+intent "passport.erase" {
+  response "result"
+  node "result" {
+    uses "pipeline.erase"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [result]
+    config {
+      roles ["dpo"]
+    }
+  }
+}
+
+intent "passport.sweep" {
+  response "result"
+  node "result" {
+    uses "pipeline.sweep"
+    resource "cases"
+    kind effect
+    provides [result]
+  }
+}
+
+intent "passport.analytics" {
+  response "report"
+  node "report" {
+    uses "pipeline.analytics"
+    resource "cases"
+    provides [report]
+    config {
+      roles ["supervisor", "admin"]
+    }
+  }
+}
+
+intent "passport.bulk" {
+  response "result"
+  node "result" {
+    uses "pipeline.bulk"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [result]
+  }
+}
+
+####################################################################
+# Routes: the public page and certificate check are anonymous-friendly;
+# staff routes need a token.
+####################################################################
+
+route "describe" {
+  method GET
+  path "/api/passport"
+  intent "passport.describe"
+  auth "jwt"
+  allow_anonymous true
+}
+route "start" {
+  method POST
+  path "/api/passport/cases"
+  intent "passport.start"
+  auth "jwt"
+  allow_anonymous true
+  status 201
+}
+route "list" {
+  method GET
+  path "/api/passport/cases"
+  intent "passport.list"
+  auth "jwt"
+}
+route "view" {
+  method GET
+  path "/api/passport/cases/:id"
+  intent "passport.view"
+  auth "jwt"
+  allow_anonymous true
+}
+route "view_stage" {
+  method GET
+  path "/api/passport/cases/:id/stages/:stage"
+  intent "passport.view"
+  auth "jwt"
+  allow_anonymous true
+}
+route "history" {
+  method GET
+  path "/api/passport/cases/:id/history"
+  intent "passport.get"
+  auth "jwt"
+  allow_anonymous true
+}
+route "save" {
+  method PUT
+  path "/api/passport/cases/:id/stages/:stage"
+  intent "passport.save"
+  auth "jwt"
+  allow_anonymous true
+}
+route "act" {
+  method POST
+  path "/api/passport/cases/:id/stages/:stage/actions/:action"
+  intent "passport.act"
+  auth "jwt"
+  allow_anonymous true
+}
+route "node" {
+  method POST
+  path "/api/passport/cases/:id/stages/:stage/nodes/:node/:verb"
+  intent "passport.node"
+  auth "jwt"
+}
+route "verify" {
+  method GET
+  path "/api/passport/certificates/:key"
+  intent "passport.verify"
+  allow_anonymous true
+}
+
+route "work" {
+  method POST
+  path "/api/passport/cases/:id/stages/:stage/work/:op"
+  intent "passport.work"
+  auth "jwt"
+  allow_anonymous true
+}
+route "note" {
+  method POST
+  path "/api/passport/cases/:id/notes"
+  intent "passport.note"
+  auth "jwt"
+  allow_anonymous true
+}
+route "link" {
+  method POST
+  path "/api/passport/cases/:id/stages/:stage/links"
+  intent "passport.link"
+  auth "jwt"
+}
+route "link_view" {
+  method GET
+  path "/api/passport/links/:token"
+  intent "passport.link_view"
+  allow_anonymous true
+}
+route "link_submit" {
+  method POST
+  path "/api/passport/links/:token"
+  intent "passport.link_submit"
+  allow_anonymous true
+}
+route "hold" {
+  method POST
+  path "/api/passport/cases/:id/hold/:op"
+  intent "passport.hold"
+  auth "jwt"
+}
+route "erase" {
+  method POST
+  path "/api/passport/erasure"
+  intent "passport.erase"
+  auth "jwt"
+}
+route "sweep" {
+  method POST
+  path "/api/passport/sweep"
+  intent "passport.sweep"
+  auth "jwt"
+}
+route "analytics" {
+  method GET
+  path "/api/passport/analytics"
+  intent "passport.analytics"
+  auth "jwt"
+}
+route "bulk" {
+  method POST
+  path "/api/passport/bulk"
+  intent "passport.bulk"
+  auth "jwt"
+}
+route "notifications" {
+  method GET
+  path "/api/passport/notifications"
+  intent "passport.notifications"
+  auth "jwt"
+}
+
+# The SLA clock: warnings, breaches, escalations, hold expiry, retention.
+# The sweep is idempotent, so any signed-in caller may also trigger it.
+schedule "passport_sweep" {
+  every 1m
+  queue "jobs"
+  intent "passport.sweep"
+  payload {
+    reason "schedule"
+  }
+}
+
+static "ui" {
+  prefix "/"
+  root "static"
+}

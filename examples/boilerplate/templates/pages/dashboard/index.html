@@ -82,6 +82,40 @@
     </div>
   </div>
 
+  <!-- Business Modules (bcl/12_projects.bcl … bcl/15_activity.bcl) -->
+  <div class="glass-card" style="margin-bottom: 2rem;">
+    <span style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.05em;">Business Modules</span>
+    <h3 style="font-size: 1.2rem; font-weight: 700; margin-top: 0.2rem; margin-bottom: 1.25rem;">Applications</h3>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem;">
+      <a href="/projects" class="btn btn-secondary" style="justify-content: flex-start;">
+        <div style="text-align: left;">
+          <div style="font-size: 0.85rem; font-weight: 600;">Projects &amp; Tasks</div>
+          <div style="font-size: 0.75rem; color: var(--text-dim);">Owners, members, task workflow, approvals</div>
+        </div>
+      </a>
+      <a href="/gov" class="btn btn-secondary" style="justify-content: flex-start;">
+        <div style="text-align: left;">
+          <div style="font-size: 0.85rem; font-weight: 600;">Government Projects</div>
+          <div style="font-size: 0.75rem; color: var(--text-dim);">Hierarchy-scoped public projects and budgets</div>
+        </div>
+      </a>
+      <a href="/coding" class="btn btn-secondary" style="justify-content: flex-start;">
+        <div style="text-align: left;">
+          <div style="font-size: 0.85rem; font-weight: 600;">Medical Coding</div>
+          <div style="font-size: 0.75rem; color: var(--text-dim);">Encounters, dates of service, coder queue</div>
+        </div>
+      </a>
+      @if(isManager) {
+        <a href="/activity" class="btn btn-secondary" style="justify-content: flex-start;">
+          <div style="text-align: left;">
+            <div style="font-size: 0.85rem; font-weight: 600;">User Activity</div>
+            <div style="font-size: 0.75rem; color: var(--text-dim);">Who did what, per-user summary</div>
+          </div>
+        </a>
+      }
+    </div>
+  </div>
+
   <!-- RBAC Effective Permissions Breakdown -->
   <div class="glass-card">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
