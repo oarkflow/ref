@@ -31,6 +31,25 @@ A production-grade, high-performance web and API platform built with the **REF P
 7. **Real-Time Anomaly Detection & Threat Mitigation (`github.com/oarkflow/tcpguard`)**:
    - Intercepts requests to detect business and transport anomalies: brute-force velocity, credential stuffing, suspicious headers, and sensitive endpoint abuse.
    - Business anomaly rules: blocks unauthorized self-promotion to `super_admin` and prevents unauthorized primary admin account demotion.
+8. **Observability: Prometheus, OpenTelemetry & Structured Logging (`ref/observer/*`)**:
+   - `cmd/server/main.go` wires `promobserver.New`, `otelobserver.New`, and `slogobserver.New` into `platform.LoadOptions.Observers`, so every REF node execution, decision, effect commit, and intent completion compiled from BCL is observed with zero Go code inside any BCL-compiled node.
+   - `/metrics` serves Prometheus text exposition (`promhttp.HandlerFor`), scoped to a dedicated `prometheus.Registry` rather than the global default.
+   - The OTel observer is wired with a no-op tracer — wiring a real exporter (Jaeger, Tempo, an OTLP collector, …) is a deployment concern intentionally left unfabricated in a reference example; swap it for a real `sdktrace.TracerProvider` when deploying.
+9. **Health Checks (`ref/health`)**:
+   - A `*health.Registry` is attached via `platform.LoadOptions.HealthRegistry` and reachable through `p.Engine.Health()`.
+   - `/livez` reports process liveness; `/readyz` additionally runs a readiness check that pings the primary `database` resource (`bcl/03_resources.bcl`) via `platform.Database.PingContext`, so a load balancer stops routing traffic here before requests that touch the database would fail.
+   - fh's `Ctx` has no native `net/http.Handler` adapter, so `internal/web.WrapHTTPHandler` bridges `health.LivenessHandler`/`health.ReadinessHandler`/`promhttp.Handler` (all stdlib `http.Handler`s) onto `*fh.App` routes.
+10. **Resilience — known limitation**: `ref/execution` enforces `capability.Resilience` (`WithTimeout`/`WithRetry`/`WithBulkhead`) on any `capability.Registration` built in Go, and the platform compiler's own node-level `timeout`/`retry` BCL fields (see `bcl/04_intents_auth.bcl`) already cover the common case for BCL-declared intents. Per-intent **bulkhead** concurrency limits, however, are a Go-level `capability.Option` with no BCL surface yet — BCL's declarative schema does not currently expose a way to attach one to a compiled intent node. Extending the BCL grammar for this was out of scope here; if you need it, attach `capability.WithBulkhead` to a `capability.Registration` you register directly against `p.Engine.Capabilities()` in Go, or open an issue against `platform/platform.go`'s node compiler. See `docs/runtime-execution-fabric.md` at the repo root for the execution model this sits on.
+11. **Circuit Breaker — available, not wired**: none of this boilerplate's resources (`bcl/03_resources.bcl`) model a genuinely external, flaky dependency — `database.sql`, `cache.sql`, `queue.sql`, and `storage.fs` are all local/embedded — so nothing here plausibly needs one, and none is wired in to avoid a fabricated dependency. `capability.NewInMemoryCircuitBreakerCapability` (no extra infrastructure) and `capability.NewRedisCircuitBreakerCapability` (distributed, needs Redis) are both available in `github.com/oarkflow/ref/capability` for an application that does call out to a real external service:
+    ```go
+    reg, breaker := capability.NewInMemoryCircuitBreakerCapability(
+        "payments-api",
+        capability.DefaultInMemoryCircuitBreakerConfig(),
+    )
+    _ = p.Engine.Capabilities().Register(reg)
+    // breaker.State("payments-api") feeds health.FromCircuitBreaker for /readyz.
+    ```
+12. **Configuration — `ref/config` available as an alternative**: `config/config.go` in this example is a small, working, env-var-driven `Config` loader. `github.com/oarkflow/ref/config`'s `Load[T]` offers layered sources (env/file/override), struct tags, a `Validate()` hook, and hot-reload, and is a reasonable drop-in for an application that outgrows a hand-rolled loader — but rewriting a working, low-risk loader just to "use everything" wasn't judged worth the churn here, so it was left as-is.
 
 ---
 

@@ -3,10 +3,14 @@ package boilerplate_test
 import (
 	"bytes"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	_ "modernc.org/sqlite"
 
 	"github.com/oarkflow/fh"
@@ -16,6 +20,9 @@ import (
 	"github.com/oarkflow/ref/examples/boilerplate/internal/security"
 	"github.com/oarkflow/ref/examples/boilerplate/internal/telemetry"
 	"github.com/oarkflow/ref/examples/boilerplate/internal/web"
+	"github.com/oarkflow/ref/health"
+	"github.com/oarkflow/ref/observer"
+	promobserver "github.com/oarkflow/ref/observer/prometheus"
 	"github.com/oarkflow/ref/platform"
 	"github.com/oarkflow/zlog"
 )
@@ -486,6 +493,103 @@ func TestBCLLoadDirAndMount(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("expected route %s %s to be mounted from BCL", expectedMethod, expectedPath)
+		}
+	}
+}
+
+// ===========================================================================
+// 5b. Observability & Health: platform.LoadOptions.Observers/HealthRegistry
+// wired into the REF engine, and /metrics, /livez, /readyz mounted on fh.
+// ===========================================================================
+
+func TestObservabilityHealthAndMetricsEndpoints(t *testing.T) {
+	ctx := context.Background()
+
+	promRegistry := prometheus.NewRegistry()
+	promObs, err := promobserver.New(promRegistry)
+	if err != nil {
+		t.Fatalf("promobserver.New failed: %v", err)
+	}
+	healthRegistry := health.NewRegistry()
+
+	opts := platform.DefaultLoadOptions()
+	opts.Observers = []observer.Observer{promObs}
+	opts.HealthRegistry = healthRegistry
+
+	p, err := platform.LoadDir(ctx, "bcl", opts)
+	if err != nil {
+		t.Fatalf("platform.LoadDir failed on bcl directory: %v", err)
+	}
+	defer p.Close()
+
+	// The health registry passed through LoadOptions must be the same one
+	// reachable via Engine.Health() — this is exactly the platform.go fix
+	// under test: LoadOptions.HealthRegistry now actually reaches the
+	// runtime.Engine instead of being silently dropped.
+	if p.Engine.Health() != healthRegistry {
+		t.Fatal("expected p.Engine.Health() to return the *health.Registry passed via LoadOptions.HealthRegistry")
+	}
+
+	if res, ok := p.Resource("database"); ok {
+		if db, ok := res.(*platform.Database); ok {
+			healthRegistry.Register("database", health.Simple(func(ctx context.Context) error {
+				return db.PingContext(ctx)
+			}))
+		}
+	}
+
+	splRenderer, err := web.NewSPLRenderer(web.RendererConfig{
+		TemplatesDir: "templates",
+		IsDev:        true,
+		AppName:      "Test Observability App",
+	})
+	if err != nil {
+		t.Fatalf("NewSPLRenderer failed: %v", err)
+	}
+	app := fh.NewFast(fh.WithTemplateEngine(splRenderer))
+	if err := p.Mount(app); err != nil {
+		t.Fatalf("platform.Mount onto fh.App failed: %v", err)
+	}
+	metricsHandler := web.WrapHTTPHandler(promhttp.HandlerFor(promRegistry, promhttp.HandlerOpts{}))
+	livezHandler := web.WrapHTTPHandler(health.LivenessHandler(healthRegistry))
+	readyzHandler := web.WrapHTTPHandler(health.ReadinessHandler(healthRegistry))
+	app.Get("/metrics", metricsHandler)
+	app.Get("/livez", livezHandler)
+	app.Get("/readyz", readyzHandler)
+
+	// The routes must be mounted on the fh.App, matching how
+	// TestBCLLoadDirAndMount verifies BCL-declared routes above.
+	routes := app.Routes()
+	for _, expected := range []string{"/metrics", "/livez", "/readyz"} {
+		found := false
+		for _, r := range routes {
+			if r.Path == expected && r.Method == http.MethodGet {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected route GET %s to be mounted", expected)
+		}
+	}
+
+	// Exercise the wrapped handlers directly through the same
+	// httptest.ResponseRecorder path web.WrapHTTPHandler drives internally.
+	// (fh's own app.Test() helper hangs when called more than once against
+	// the same *App instance within one test — an unrelated quirk in
+	// github.com/oarkflow/fh's in-memory test client, not something this
+	// change introduced — so response behavior is verified at this layer
+	// instead of by round-tripping through app.Test repeatedly.)
+	for name, h := range map[string]http.Handler{
+		"/metrics": promhttp.HandlerFor(promRegistry, promhttp.HandlerOpts{}),
+		"/livez":   health.LivenessHandler(healthRegistry),
+		"/readyz":  health.ReadinessHandler(healthRegistry),
+	} {
+		req := httptest.NewRequest(http.MethodGet, name, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected 200 from %s, got %d (body: %s)", name, rec.Code, rec.Body.String())
 		}
 	}
 }
