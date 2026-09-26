@@ -642,9 +642,8 @@ process "ticket.approval" {
 
   edge "small" {
     kind branch
-    from "record"
-    to "finish"
-    condition "result.amount <= 100"
+    from "record" to "finish"
+    when "result.amount <= 100"
   }
   edge "large" {
     kind branch

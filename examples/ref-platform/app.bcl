@@ -1119,8 +1119,8 @@ process "order.fulfil" {
   # -- edges --------------------------------------------------------
   #
   # Every edge evaluates its condition before it traverses, whatever
-  # its kind. BCL reserves `when` as a parser keyword, so the guard is
-  # always spelled `condition`.
+  # its kind. The guard is spelled `condition` (`when` is accepted as an
+  # alias).
 
   edge "small-order" {
     kind branch

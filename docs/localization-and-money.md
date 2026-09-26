@@ -113,7 +113,7 @@ node "npr" {
 }
 ```
 
-Write `from` and `to` on separate lines. BCL does not parse `from "USD" to "NPR"` on a single line.
+`from "USD" to "NPR"` may share a line (BCL v0.0.34 and later).
 
 ### Expression functions
 

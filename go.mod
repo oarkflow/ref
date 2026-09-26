@@ -7,7 +7,7 @@ require (
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/oarkflow/authz v0.0.6
-	github.com/oarkflow/bcl v0.0.33
+	github.com/oarkflow/bcl v0.0.34
 	github.com/oarkflow/fh v0.0.26
 	github.com/oarkflow/rules v0.0.5
 	github.com/oarkflow/tcpguard v0.0.16

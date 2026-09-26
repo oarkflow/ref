@@ -263,7 +263,7 @@ type DataTransformSpec struct {
 	Op   string `bcl:"op,ident"`
 	Arg  string `bcl:"arg"`
 	// OnlyIf gates the transform on an expression, so one spec can shape
-	// conditionally without a branch node. (BCL reserves `when`.)
+	// conditionally without a branch node.
 	OnlyIf string `bcl:"only_if"`
 }
 

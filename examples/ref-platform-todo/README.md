@@ -348,15 +348,10 @@ route "auth.login" {
 }
 ```
 
-Two authoring rules worth knowing before you edit anything, because breaking them
-fails *silently* in BCL v0.0.31 (all of them are listed in
-[`bclcompat.go`](../../ref/platform/bclcompat.go)):
-
-- **Never use `when` as a key** — it derails the parse and everything after it is
-  lost. Guards are spelled `condition`.
-- **One key per line inside a nested block.** A single-line `config { … }` with
-  several nested blocks in it can bind partially. Simple one-line blocks of plain
-  key/value pairs — as the `route` blocks here are — are fine.
+BCL's remaining naming constraints are listed in
+[`bclcompat.go`](../../ref/platform/bclcompat.go). Since BCL v0.0.34, `when` binds
+like any other key (guards accept `condition` or `when`), and several keys may share
+a line, including `from "a" to "b"`.
 
 ---
 

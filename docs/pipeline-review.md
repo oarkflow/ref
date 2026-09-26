@@ -39,7 +39,7 @@ stage "screen" {
 }
 ```
 
-> **BCL spelling:** `when` is a BCL keyword, so conditions are written `condition`.
+> **Spelling:** conditions are written `condition`; `when` is accepted as an alias (BCL v0.0.34 and later). Setting both differently is a compile error.
 
 Staff see a stage's review state in the view, under `review`: `{modes, diff, gate, triage, sampling, reviewed_revision}`. The applicant never sees it.
 

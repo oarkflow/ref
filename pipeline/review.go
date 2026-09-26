@@ -156,6 +156,62 @@ func withGateNodes(def *Definition) *Definition {
 	return out
 }
 
+// withWhenAliases folds `when` into `condition` on triage buckets and notify
+// rules (BCL binds `when` since v0.0.34). Setting both differently is an
+// error rather than a silent choice. def is copied before any change.
+func withWhenAliases(def *Definition) (*Definition, error) {
+	merge := func(where, cond, when string) (string, error) {
+		if when == "" || when == cond {
+			return cond, nil
+		}
+		if cond != "" {
+			return "", fmt.Errorf("pipeline %s: %s sets both condition and when; use one", def.Name, where)
+		}
+		return when, nil
+	}
+	d := *def
+	changed := false
+	for i, st := range def.Stages {
+		for j, r := range st.Reviews {
+			for k, b := range r.Buckets {
+				if b.When == "" {
+					continue
+				}
+				cond, err := merge(fmt.Sprintf("stage %s triage bucket %s", st.Name, b.Name), b.Condition, b.When)
+				if err != nil {
+					return nil, err
+				}
+				if !changed {
+					d.Stages, changed = slices.Clone(def.Stages), true
+				}
+				reviews := slices.Clone(d.Stages[i].Reviews)
+				buckets := slices.Clone(reviews[j].Buckets)
+				buckets[k].Condition, buckets[k].When = cond, ""
+				reviews[j].Buckets = buckets
+				d.Stages[i].Reviews = reviews
+			}
+		}
+	}
+	notifyCloned := false
+	for i, n := range def.Notify {
+		if n.When == "" {
+			continue
+		}
+		cond, err := merge(fmt.Sprintf("notify %s", n.Event), n.Condition, n.When)
+		if err != nil {
+			return nil, err
+		}
+		if !notifyCloned {
+			d.Notify, notifyCloned, changed = slices.Clone(def.Notify), true, true
+		}
+		d.Notify[i].Condition, d.Notify[i].When = cond, ""
+	}
+	if !changed {
+		return def, nil
+	}
+	return &d, nil
+}
+
 func (c *Compiled) checkReviews(st Stage) error {
 	seen := map[string]bool{}
 	for _, r := range st.Reviews {

@@ -487,8 +487,9 @@ type Review struct {
 type TriageBucket struct {
 	Name string `bcl:",id" json:"name"`
 	// Condition classifies a case into the bucket (empty matches every
-	// case). ("when" is a BCL keyword.)
+	// case). When is an alias of it.
 	Condition string `bcl:"condition" json:"condition,omitempty"`
+	When      string `bcl:"when" json:"-"`
 	// Priority orders work lists: 1 is the most urgent.
 	Priority int    `bcl:"priority" json:"priority"`
 	Queue    string `bcl:"queue" json:"queue,omitempty"`
@@ -524,8 +525,9 @@ type NotifyRule struct {
 	Body    string `bcl:"body" json:"body,omitempty"`
 	Stage   string `bcl:"stage" json:"stage,omitempty"`
 	// Condition must hold for the rule to fire; the environment is the case
-	// plus event {name, stage, actor, detail}.
+	// plus event {name, stage, actor, detail}. When is an alias of it.
 	Condition string `bcl:"condition" json:"condition,omitempty"`
+	When      string `bcl:"when" json:"-"`
 }
 
 // Node kinds.

@@ -39,6 +39,10 @@ func Compile(def *Definition) (*Compiled, error) {
 		return nil, fmt.Errorf("pipeline: a pipeline needs a name")
 	}
 	def = withGateNodes(def)
+	def, err := withWhenAliases(def)
+	if err != nil {
+		return nil, err
+	}
 	c := &Compiled{
 		Def:          def,
 		forms:        map[string]*compiledForm{},

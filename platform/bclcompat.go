@@ -8,14 +8,15 @@ import (
 
 // What BCL can and cannot express, and how this package works with it.
 //
-// BCL v0.0.31 has seven behaviours a spec has to be designed around. Every one of
-// them fails *silently* — a field stays empty, a timeout becomes zero, a whole
-// block vanishes — which is why they are written down here and asserted by
-// bcl_test.go rather than rediscovered one incident at a time.
+// BCL has behaviours a spec has to be designed around. Most of them fail
+// *silently* — a field stays empty, a timeout becomes zero, a whole block
+// vanishes — which is why they are written down here and asserted by
+// bcl_test.go rather than rediscovered one incident at a time. As of v0.0.34:
 //
-//  1. `when` and `const` are parser keywords. A field or config key with either
-//     name does not merely fail to bind: it derails the parse and swallows the rest
-//     of the document. This package therefore spells every guard `condition`.
+//  1. `const` is a parser keyword: a field or config key named `const` is a
+//     parse error. (`when` was one too until v0.0.34, and derailed the parse;
+//     it now binds like any key, so guards accept `when` as an alias of
+//     `condition`.)
 //
 //  2. `type`, `map`, `import` and `include` never bind to a struct field. A
 //     `bcl:"type"` field silently stays empty. This package spells the node and
@@ -34,20 +35,16 @@ import (
 //  5. A bare identifier only binds to a field tagged `,ident`. Enum-ish fields
 //     carry that tag so `kind effect` and `kind "effect"` both work.
 //
-//  6. Inside a block, put one key per line. Several keys on one line bind
-//     unreliably — `from` and `to` in particular never bind inline, because BCL
-//     reads `from X to Y` as a range expression. The examples are written one key
-//     per line throughout, which is also how they read best.
+//  6. Several keys may share a line. Until v0.0.34 BCL read `from X to Y` as
+//     one expression and dropped `to`; bcl_test.go now guards the fix. The
+//     examples are still written one key per line, which is how they read best.
 //
 //  7. audit is BCL schema metadata, not a route field. Route audit policy is
 //     named route_audit so its nested settings reach the platform spec.
 //
 // reservedBCLNames is asserted by a test, so a future BCL release that changes any
 // of this is caught here rather than in somebody's deployment.
-var reservedBCLNames = []string{"when", "const", "type", "map", "import", "include", "schema", "field", "audit"}
-
-// inlineUnsafeBCLNames are keys that bind only on a line of their own.
-var inlineUnsafeBCLNames = []string{"from", "to"}
+var reservedBCLNames = []string{"const", "type", "map", "import", "include", "schema", "field", "audit"}
 
 // Duration is a configured duration: a string in the document, a time.Duration
 // once parsed.

@@ -400,3 +400,28 @@ func TestReviewCompileErrors(t *testing.T) {
 		}
 	}
 }
+
+// `when` is an alias of `condition` on triage buckets and notify rules; the
+// caller's definition is not modified, and conflicting values are refused.
+func TestWhenAliasesCondition(t *testing.T) {
+	def := triageDef()
+	def.Stages[1].Reviews[0].Buckets[0].When, def.Stages[1].Reviews[0].Buckets[0].Condition = "claim.amount > 1000", ""
+	def.Notify = []NotifyRule{{Event: "triaged", To: []string{"applicant"}, When: "case.status == 'open'"}}
+	c, err := Compile(def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := c.Def.Stages[1].Reviews[0].Buckets[0]
+	if b.Condition != "claim.amount > 1000" || b.When != "" || c.Def.Notify[0].Condition != "case.status == 'open'" {
+		t.Fatalf("aliases not folded: %+v %+v", b, c.Def.Notify[0])
+	}
+	if def.Stages[1].Reviews[0].Buckets[0].When == "" || def.Notify[0].When == "" {
+		t.Fatal("the caller's definition was modified")
+	}
+
+	clash := triageDef()
+	clash.Stages[1].Reviews[0].Buckets[0].When = "claim.amount > 5"
+	if _, err := Compile(clash); err == nil || !strings.Contains(err.Error(), "both condition and when") {
+		t.Fatalf("conflicting condition and when: %v", err)
+	}
+}
