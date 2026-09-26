@@ -24,6 +24,10 @@ type Supervisor struct {
 	// Poll is how often the store is checked for a newly active revision
 	// (default 2s). Notify triggers an immediate check.
 	Poll time.Duration
+	// Grace is how long the old generation keeps serving after a swap
+	// before it drains (default 2s): connections handed to it just before
+	// the swap are served, not closed as idle.
+	Grace time.Duration
 	// Drain bounds how long an old generation may take to finish in-flight
 	// requests (default 30s).
 	Drain time.Duration
@@ -109,7 +113,7 @@ func (s *Supervisor) Serve(ctx context.Context, ln net.Listener) error {
 			s.mu.Lock()
 			last := s.current
 			s.mu.Unlock()
-			s.stop(last)
+			s.stop(last, 0)
 			<-acceptErr
 			return nil
 		case err := <-acceptErr:
@@ -143,7 +147,11 @@ func (s *Supervisor) reconcile(ctx context.Context, addr net.Addr) {
 	s.current = next
 	s.mu.Unlock()
 	s.logf("swapped %s from revision %d to %d", s.Manager.App, cur.rev.Seq, active.Seq)
-	go s.stop(cur)
+	grace := s.Grace
+	if grace <= 0 {
+		grace = 2 * time.Second
+	}
+	go s.stop(cur, grace)
 }
 
 func (s *Supervisor) start(ctx context.Context, rev *Revision, addr net.Addr) (*generation, error) {
@@ -154,7 +162,9 @@ func (s *Supervisor) start(ctx context.Context, rev *Revision, addr net.Addr) (*
 	if err != nil {
 		return nil, err
 	}
-	app := fh.NewFast(fh.WithStartupBannerDisabled(true))
+	// Graceful mode: at a swap, in-flight requests finish and answer
+	// "Connection: close" so clients reconnect to the new generation.
+	app := fh.New(fh.WithStartupBannerDisabled(true))
 	if err := p.Mount(app); err != nil {
 		_ = p.Close()
 		return nil, err
@@ -167,12 +177,14 @@ func (s *Supervisor) start(ctx context.Context, rev *Revision, addr net.Addr) (*
 	return gen, nil
 }
 
-// stop drains a generation: no new connections reach it, in-flight
-// requests finish (bounded by Drain), then its resources close.
-func (s *Supervisor) stop(g *generation) {
+// stop drains a generation: no new connections reach it; after grace, the
+// in-flight requests finish (bounded by Drain) answering "Connection:
+// close", then its resources close.
+func (s *Supervisor) stop(g *generation, grace time.Duration) {
 	if g == nil {
 		return
 	}
+	time.Sleep(grace)
 	drain := s.Drain
 	if drain <= 0 {
 		drain = 30 * time.Second

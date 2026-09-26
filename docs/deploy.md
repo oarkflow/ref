@@ -68,9 +68,12 @@ go sup.Serve(ctx, ln)
 The supervisor owns the listener. Each accepted connection is handed to the current generation. On activation (checked every `Poll`, or immediately via `Notify`), the swap works like this:
 1. The new revision is built.
 2. New connections go to it.
-3. The old generation finishes its in-flight requests (bounded by `Drain`), and then its resources close.
+3. The old generation keeps serving for `Grace` (default 2s), so connections handed to it just before the swap are answered rather than closed as idle.
+4. It then drains: in-flight requests finish (bounded by `Drain`, default 30s) and answer `Connection: close`, so clients reconnect to the new generation. Its resources close last.
 
-If the build fails, the supervisor marks the revision `failed` with the error, restores the previous revision as active, and keeps serving it. In the test suite, more than 2,000 concurrent requests cross a swap with no failure.
+If the build fails, the supervisor marks the revision `failed` with the error, restores the previous revision as active, and keeps serving it.
+
+In the test suite, thousands of concurrent requests cross a swap. Requests on fresh connections never fail. As with any HTTP server that shuts down, a keep-alive client can occasionally send a request on an idle connection at the moment the old generation closes it. Standard clients retry idempotent requests in that case, and the test does the same (one retry).
 
 ## Admin API
 

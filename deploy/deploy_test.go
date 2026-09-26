@@ -139,7 +139,7 @@ func TestRevisionLifecycleWithHotSwap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sup := &Supervisor{Manager: m, Poll: 50 * time.Millisecond, Drain: 2 * time.Second,
+	sup := &Supervisor{Manager: m, Poll: 50 * time.Millisecond, Grace: 300 * time.Millisecond, Drain: 2 * time.Second,
 		Build: func(ctx context.Context, src []byte) (*platform.Platform, error) {
 			return platform.Compile(ctx, src, ".", platform.DefaultLoadOptions())
 		}}
@@ -184,38 +184,60 @@ func TestRevisionLifecycleWithHotSwap(t *testing.T) {
 		t.Fatalf("approve: %d", status)
 	}
 
-	// Hammer the app during the swap: no request may fail.
-	var failures, total atomic.Int64
+	// Hammer the app during the swap. New connections must never fail: the
+	// listener is never closed and in-flight requests finish. Keep-alive
+	// clients may race the old generation closing an idle connection (as
+	// with any HTTP server shutting down), so they retry an idempotent GET
+	// once — what browsers and most HTTP clients do.
+	fresh := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	var failures, retried, total atomic.Int64
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-				}
-				total.Add(1)
-				if _, err := get(t, app+"/hello"); err != nil {
-					failures.Add(1)
-				}
+	hammer := func(keepAlive bool) {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
 			}
-		}()
+			total.Add(1)
+			if keepAlive {
+				if _, err := get(t, app+"/hello"); err != nil {
+					retried.Add(1)
+					if _, err := get(t, app+"/hello"); err != nil {
+						failures.Add(1)
+						t.Logf("keep-alive request failed after a retry: %v", err)
+					}
+				}
+				continue
+			}
+			resp, err := fresh.Get(app + "/hello")
+			if err != nil || resp.StatusCode != 200 {
+				failures.Add(1)
+				t.Logf("fresh-connection request failed: %v", err)
+			}
+			if resp != nil {
+				resp.Body.Close()
+			}
+		}
+	}
+	for i := 0; i < 4; i++ {
+		wg.Add(2)
+		go hammer(true)
+		go hammer(false)
 	}
 	if status, _ := c.do("POST", "/revisions/"+v2+"/activate", bob, map[string]any{}); status != 200 {
 		t.Fatalf("activate: %d", status)
 	}
 	waitFor(t, func() bool { s, _ := get(t, app+"/hello"); return s == "hello from v2" })
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(600 * time.Millisecond) // past the grace period: the old generation drains under load
 	close(stop)
 	wg.Wait()
 	if failures.Load() != 0 || total.Load() < 20 {
 		t.Fatalf("%d of %d requests failed during the swap", failures.Load(), total.Load())
 	}
-	t.Logf("%d requests across the swap, none failed", total.Load())
+	t.Logf("%d requests across the swap, none failed (%d keep-alive retries)", total.Load(), retried.Load())
 
 	// v3 validates but does not build: marked failed, v2 keeps serving.
 	status, body = c.do("POST", "/revisions", alice, map[string]any{"source": buildsButFailsToOpen})
