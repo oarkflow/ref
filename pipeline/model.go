@@ -61,6 +61,9 @@ type Definition struct {
 	Subject []string `bcl:"subject" json:"subject,omitempty"`
 	// Notes configures case notes.
 	Notes *NotesPolicy `bcl:"notes" json:"notes,omitempty"`
+	// Notify turns pipeline events into notifications for people, delivered
+	// over the host's channels under each recipient's preferences.
+	Notify []NotifyRule `bcl:"notify,block" json:"notify,omitempty"`
 }
 
 // Calendar is working time: weekly hours, holidays and a timezone.
@@ -436,6 +439,35 @@ type TriageBucket struct {
 	// Roles narrow routing of the bucket's cases (e.g. senior officers for
 	// urgent work) when the stage routes automatically.
 	Roles []string `bcl:"roles" json:"roles,omitempty"`
+}
+
+// Notification severities. Urgent and critical notifications bypass quiet
+// hours and digests.
+const (
+	SeverityInfo     = "info"
+	SeverityWarning  = "warning"
+	SeverityUrgent   = "urgent"
+	SeverityCritical = "critical"
+)
+
+// NotifyRule sends a notification to people when an event happens.
+type NotifyRule struct {
+	// Event is an event name, a prefix pattern ("sla.*") or "*".
+	Event string `bcl:",id" json:"event"`
+	// To names recipients: assignee, previous_assignee, applicant, actor,
+	// role:<role> (every directory worker holding it) or a user id.
+	To []string `bcl:"to" json:"to"`
+	// Channels are delivered by default; a recipient may opt out of them, or
+	// into the host's other channels, per event.
+	Channels []string `bcl:"channels" json:"channels,omitempty"`
+	// Severity: info (default), warning, urgent or critical.
+	Severity string `bcl:"severity,ident" json:"severity,omitempty"`
+	// Subject and Body are templates: {event}, {stage}, {actor},
+	// {case.number}, {case.id}, {case.status} and {data.<form>.<input>}.
+	Subject string `bcl:"subject" json:"subject,omitempty"`
+	Body    string `bcl:"body" json:"body,omitempty"`
+	Stage   string `bcl:"stage" json:"stage,omitempty"`
+	When    string `bcl:"when" json:"when,omitempty"`
 }
 
 // Node kinds.

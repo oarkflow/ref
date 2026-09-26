@@ -388,8 +388,10 @@ func TestReviewCompileErrors(t *testing.T) {
 		"zero priority": func(d *Definition) {
 			d.Stages[1].Reviews = []Review{{Mode: ReviewTriage, Buckets: []TriageBucket{{Name: "a"}}}}
 		},
-		"bad against":    func(d *Definition) { d.Stages[1].Reviews = []Review{{Mode: ReviewDiff, Against: "yesterday"}} },
-		"gate on a task": func(d *Definition) { d.Stages[1].Reviews = []Review{{Mode: ReviewGate, Node: "look"}} },
+		"bad against":     func(d *Definition) { d.Stages[1].Reviews = []Review{{Mode: ReviewDiff, Against: "yesterday"}} },
+		"gate on a task":  func(d *Definition) { d.Stages[1].Reviews = []Review{{Mode: ReviewGate, Node: "look"}} },
+		"notify severity": func(d *Definition) { d.Notify = []NotifyRule{{Event: "*", To: []string{"applicant"}, Severity: "meh"}} },
+		"notify no to":    func(d *Definition) { d.Notify = []NotifyRule{{Event: "*"}} },
 	} {
 		d := samplingDef(10)
 		mutate(d)

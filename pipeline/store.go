@@ -174,6 +174,8 @@ type MemoryStore struct {
 	seq    map[string]int64
 	outbox []*OutboxEvent
 	leases map[string]time.Time
+	// notices holds notification preferences and pending notifications.
+	notices *memoryNotify
 	// Record selects the events written to the outbox with each change
 	// (nil records none).
 	Record func(Event) bool
@@ -361,6 +363,16 @@ func (s *SQLStore) Migrate(ctx context.Context) error {
 			attempts INTEGER NOT NULL DEFAULT 0, next_at BIGINT NOT NULL, lease_token %[1]s NOT NULL DEFAULT '',
 			lease_until BIGINT NOT NULL DEFAULT 0, dead INTEGER NOT NULL DEFAULT 0, last_error %[2]s, created_at BIGINT NOT NULL)`, key, text),
 		`CREATE INDEX IF NOT EXISTS {p}outbox_due_idx ON {p}outbox (dead, next_at)`,
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS {p}notify_prefs (
+			tenant_id %[1]s NOT NULL, user_id %[1]s NOT NULL, doc %[2]s NOT NULL, updated_at BIGINT NOT NULL,
+			PRIMARY KEY (tenant_id, user_id))`, key, text),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS {p}notifications (
+			id %[1]s PRIMARY KEY, tenant_id %[1]s NOT NULL DEFAULT '', user_id %[1]s NOT NULL, channel %[1]s NOT NULL,
+			digest %[1]s NOT NULL DEFAULT '', deliver_at BIGINT NOT NULL, doc %[2]s NOT NULL,
+			attempts INTEGER NOT NULL DEFAULT 0, lease_token %[1]s NOT NULL DEFAULT '', lease_until BIGINT NOT NULL DEFAULT 0,
+			dead INTEGER NOT NULL DEFAULT 0, last_error %[2]s, created_at BIGINT NOT NULL)`, key, text),
+		`CREATE INDEX IF NOT EXISTS {p}notifications_due_idx ON {p}notifications (dead, deliver_at)`,
+		`CREATE INDEX IF NOT EXISTS {p}notifications_user_idx ON {p}notifications (tenant_id, user_id)`,
 	}
 	if s.dialect == "mysql" {
 		// MySQL has no CREATE INDEX IF NOT EXISTS; the tables' creation above is

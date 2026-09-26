@@ -182,6 +182,7 @@ func TestMemoryStoreConformance(t *testing.T) {
 	s := NewMemoryStore()
 	s.Record = recordAll
 	storeConformance(t, s)
+	notifyConformance(t, s)
 }
 
 func TestSQLiteStoreConformance(t *testing.T) {
@@ -202,6 +203,7 @@ func TestSQLiteStoreConformance(t *testing.T) {
 		t.Fatalf("migrate twice: %v", err)
 	}
 	storeConformance(t, s)
+	notifyConformance(t, s)
 }
 
 // TestPostgresStoreConformance runs against a real PostgreSQL when
@@ -230,9 +232,10 @@ func TestPostgresStoreConformance(t *testing.T) {
 		t.Fatalf("migrate twice: %v", err)
 	}
 	t.Cleanup(func() {
-		for _, table := range []string{"cases", "certificates", "sequences", "outbox"} {
+		for _, table := range []string{"cases", "certificates", "sequences", "outbox", "notify_prefs", "notifications"} {
 			_, _ = db.Exec("DROP TABLE IF EXISTS " + prefix + table)
 		}
 	})
 	storeConformance(t, s)
+	notifyConformance(t, s)
 }

@@ -193,7 +193,11 @@ func Compile(def *Definition) (*Compiled, error) {
 			return nil, fmt.Errorf("%s: on %q names unknown stage %q", where, h.Event, h.Stage)
 		}
 	}
-
+	for _, rule := range def.Notify {
+		if err := checkNotifyRule(rule, def); err != nil {
+			return nil, fmt.Errorf("%s: notify %q: %w", where, rule.Event, err)
+		}
+	}
 	if r := def.Retention; r != nil {
 		if sp, err := ParseSpan(r.After); err != nil || sp.Zero() {
 			return nil, fmt.Errorf("%s: retention after must be a duration like \"8760h\" or \"365d\"", where)
@@ -532,6 +536,9 @@ func (c *Compiled) Expressions() map[string]string {
 	}
 	for i, h := range c.Def.On {
 		add(fmt.Sprintf("on[%d] %s when", i, h.Event), h.When)
+	}
+	for i, n := range c.Def.Notify {
+		add(fmt.Sprintf("notify[%d] %s when", i, n.Event), n.When)
 	}
 	return out
 }
