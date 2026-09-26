@@ -62,6 +62,7 @@ func registerPipelineResources(r *Registry) {
 			{Name: "table_prefix", Type: "string", Default: "pipeline_"},
 			{Name: "migrate", Type: "bool", Default: "true", Summary: "Create the tables at startup"},
 			{Name: "signing_secret", Type: "string", Summary: "HMAC key that signs issued certificates and external links (use env.required(...)); without it certificates carry a content hash only"},
+			{Name: "signer", Type: "resource", Summary: "crypto.signer that also signs certificates asymmetrically (Ed25519/RSA), verifiable offline against its JWKS"},
 			{Name: "seal_secret", Type: "string", Summary: "Key that encrypts sealed inputs (AES-256-GCM); required when a pipeline declares sealed inputs"},
 			{Name: "org_resource", Type: "string", Summary: "org.hierarchy resource: resolves `lookup` inputs and scopes work queues to the caller's jurisdiction"},
 			{Name: "allow_anonymous", Type: "bool", Default: "false", Summary: "Let anonymous callers start public pipelines; they get an access key to return to their case"},
@@ -73,7 +74,7 @@ func registerPipelineResources(r *Registry) {
 
 func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("pipeline.cases", spec.Config,
-		"pipelines", "database", "table_prefix", "migrate", "signing_secret", "seal_secret", "org_resource", "allow_anonymous",
+		"pipelines", "database", "table_prefix", "migrate", "signing_secret", "signer", "seal_secret", "org_resource", "allow_anonymous",
 		"event_max_attempts", "event_retry_base",
 		pipelineDefinitionsKey); err != nil {
 		return nil, nil, err
@@ -115,6 +116,10 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 		p.org = org
 	}
 	key := []byte(configString(spec.Config, "signing_secret", ""))
+	signer, err := requireSigner(spec, "signer")
+	if err != nil {
+		return nil, nil, err
+	}
 	sealKey := []byte(configString(spec.Config, "seal_secret", ""))
 	for _, name := range names {
 		def, ok := byName[name]
@@ -142,6 +147,9 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 		engine.Automation = pipelineAutomation{}
 		engine.StageHook = pipelineStageHook
 		engine.SigningKey = key
+		if signer != nil {
+			engine.Signer = signer.keys
+		}
 		engine.SealKey = sealKey
 		engine.Workload = p.workload
 		if p.org != nil {

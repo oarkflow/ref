@@ -755,6 +755,13 @@ func (h *pipelineHandler) verify(ctx *ActionContext) (ActionResult, error) {
 		"number": cert.Number, "title": cert.Title, "code": cert.Code, "subject": cert.Subject,
 		"issued_at": cert.IssuedAt, "expires_at": cert.ExpiresAt, "case_number": cert.CaseNumber,
 	}}
+	if cert.KeySignature != nil {
+		// Everything the signature covers, so the holder can verify it
+		// offline against the published JWKS (pipeline.VerifyCertificateSignature).
+		view := out["certificate"].(map[string]any)
+		view["id"], view["name"], view["case_id"], view["pipeline"] = cert.ID, cert.Name, cert.CaseID, cert.Pipeline
+		view["hash"], view["key_signature"] = cert.Hash, cert.KeySignature
+	}
 	if status.Reason != "" {
 		out["reason"] = status.Reason
 	}

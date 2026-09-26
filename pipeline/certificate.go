@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/oarkflow/ref/signing"
 )
 
 // Certificate is an issued document: a passport approval, a licence, a
@@ -31,10 +33,20 @@ type Certificate struct {
 	// over the hash with the engine's signing key.
 	Hash      string `json:"hash"`
 	Signature string `json:"signature,omitempty"`
+	// KeySignature is an asymmetric signature (Ed25519 or RSA) over the
+	// canonical content, made with the engine's Signer. Anyone holding the
+	// issuer's public keys (its JWKS) can verify it offline — no call back to
+	// the issuer, no shared secret.
+	KeySignature *signing.Signature `json:"key_signature,omitempty"`
 	// Code is a short verification code printed on the document.
 	Code    string     `json:"code"`
 	Revoked *time.Time `json:"revoked_at,omitempty"`
 }
+
+// Canonical returns the signed content: the certificate's identifying fields
+// and subject as JSON with sorted keys. It is what Hash digests and what
+// KeySignature signs, so an offline verifier recomputes exactly this.
+func (c Certificate) Canonical() []byte { return c.canonical() }
 
 // canonical renders the signed content deterministically (sorted keys).
 func (c Certificate) canonical() []byte {
@@ -88,13 +100,15 @@ func (e *Engine) issue(c *Case, name string, actor Actor) (*Certificate, error) 
 		exp := cert.IssuedAt.Add(d)
 		cert.ExpiresAt = &exp
 	}
-	e.seal(&cert)
+	if err := e.seal(&cert); err != nil {
+		return nil, err
+	}
 	c.Certificates = append(c.Certificates, cert)
 	c.History = append(c.History, Entry{At: now, Actor: actor.ID, Stage: c.Stage, Action: "certificate_issued", To: cert.Number})
 	return &cert, nil
 }
 
-func (e *Engine) seal(cert *Certificate) {
+func (e *Engine) seal(cert *Certificate) error {
 	sum := sha256.Sum256(cert.canonical())
 	cert.Hash = hex.EncodeToString(sum[:])
 	if len(e.SigningKey) > 0 {
@@ -102,7 +116,35 @@ func (e *Engine) seal(cert *Certificate) {
 		mac.Write(sum[:])
 		cert.Signature = hex.EncodeToString(mac.Sum(nil))
 	}
+	if e.Signer != nil && e.Signer.Active() != nil {
+		sig, err := e.Signer.Sign(cert.canonical())
+		if err != nil {
+			return fmt.Errorf("sign certificate: %w", err)
+		}
+		cert.KeySignature = &sig
+	}
 	cert.Code = strings.ToUpper(cert.Hash[:4] + "-" + cert.Hash[4:8] + "-" + cert.Hash[8:12])
+	return nil
+}
+
+// Verifier checks an asymmetric signature; *signing.KeySet (for example one
+// parsed from the issuer's published JWKS) is one.
+type Verifier interface {
+	Verify(payload []byte, sig signing.Signature) error
+}
+
+// VerifyCertificateSignature checks a certificate offline: its content must
+// match its hash and its key signature must verify under keys. It does not
+// consult revocation or expiry, which only the issuer knows.
+func VerifyCertificateSignature(cert Certificate, keys Verifier) error {
+	sum := sha256.Sum256(cert.canonical())
+	if hex.EncodeToString(sum[:]) != cert.Hash {
+		return fmt.Errorf("the certificate content has been altered")
+	}
+	if cert.KeySignature == nil {
+		return fmt.Errorf("the certificate carries no key signature")
+	}
+	return keys.Verify(cert.canonical(), *cert.KeySignature)
 }
 
 // CertificateStatus is the outcome of a verification.
@@ -119,6 +161,14 @@ func (e *Engine) Verify(cert Certificate) CertificateStatus {
 	if hex.EncodeToString(sum[:]) != cert.Hash {
 		return CertificateStatus{Reason: "the certificate content has been altered"}
 	}
+	// A key signature, when present, must verify. The HMAC is still checked
+	// whenever a secret is configured, so certificates issued before a signer
+	// was added keep verifying exactly as they did.
+	if cert.KeySignature != nil {
+		if e.Signer == nil || e.Signer.Verify(cert.canonical(), *cert.KeySignature) != nil {
+			return CertificateStatus{Reason: "the signature is not valid"}
+		}
+	}
 	if len(e.SigningKey) > 0 {
 		mac := hmac.New(sha256.New, e.SigningKey)
 		mac.Write(sum[:])
@@ -126,6 +176,10 @@ func (e *Engine) Verify(cert Certificate) CertificateStatus {
 		if !hmac.Equal([]byte(expected), []byte(cert.Signature)) {
 			return CertificateStatus{Reason: "the signature is not valid"}
 		}
+	} else if e.Signer != nil && cert.KeySignature == nil {
+		// Without a secret, an unsigned certificate is only a hash anyone
+		// could have computed.
+		return CertificateStatus{Reason: "the certificate is not signed"}
 	}
 	if cert.Revoked != nil {
 		return CertificateStatus{Reason: "the certificate was revoked", Revoked: true}
