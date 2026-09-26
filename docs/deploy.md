@@ -45,6 +45,8 @@ m := &deploy.Manager{
 }
 ```
 
+`deploy.NewSQLStore` takes the dialect `"postgres"`, `"mysql"` or `"sqlite"`. Its tests run on SQLite and on MariaDB 10.11 for the `mysql` dialect; MySQL 8 itself has not been run.
+
 - **Propose** validates the document and refuses an invalid one, returning the full report. It records:
   - the source and its SHA-256 checksum;
   - an HMAC signature (with `Secret`) and an Ed25519 or RSA key signature (with `Signer`);

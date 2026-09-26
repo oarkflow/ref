@@ -138,8 +138,10 @@ func (o *entityEvents) claim(ctx context.Context, limit int, lease time.Duration
 	token := newPrefixedID("lease")
 	t := entityEventsTable
 	stmt := fmt.Sprintf(`UPDATE %s SET lease_token = $1, lease_until = $2 WHERE id IN (SELECT id FROM (SELECT id FROM %s
-		WHERE dead = 0 AND next_at <= $3 AND lease_until <= $3 ORDER BY created_at, id LIMIT $4) due)`, t, t)
-	if _, err := o.db.ExecContext(ctx, rebind(o.db.Dialect, stmt), token, now.Add(lease).UnixNano(), now.UnixNano(), limit); err != nil {
+		WHERE dead = 0 AND next_at <= $3 AND lease_until <= $4 ORDER BY created_at, id LIMIT $5) due)`, t, t)
+	// Each placeholder is used once: rebind turns $n into MySQL's positional
+	// ?, so a repeated $n would need its argument repeated too.
+	if _, err := o.db.ExecContext(ctx, rebind(o.db.Dialect, stmt), token, now.Add(lease).UnixNano(), now.UnixNano(), now.UnixNano(), limit); err != nil {
 		return nil, err
 	}
 	rows, err := o.db.QueryContext(ctx, rebind(o.db.Dialect, fmt.Sprintf(

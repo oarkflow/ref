@@ -202,7 +202,7 @@ Rules the directory enforces, inside the transaction that makes the change:
 
 ## Limitations
 
-- MySQL is supported by the DDL and statements but is not exercised by the test suite. SQLite and PostgreSQL are.
+- MySQL is supported by the DDL and statements but is not verified: the test suite runs the directory on SQLite and PostgreSQL only.
 - There is no built-in MFA enrolment or recovery-code flow; the columns and the sign-in check are in place.
 - Password reset by email is not part of `identity.users` yet. Compose it from `auth.reset_token` and your own table for now.
 - Revoking a signing key means removing it from the set. Anything it signed stops verifying immediately, which is usually the point.

@@ -484,4 +484,4 @@ c, ref, _, err := e.Attach(ctx, c, applicant, "application", "documents.photo", 
 review, err := e.Preview(ctx, c, applicant, "application", "submit", in)   // confirm_submit, step 1
 ```
 
-Every operation takes a case and returns a new one. The input case is never mutated, so a failed operation leaves nothing half-applied. Persist the result with a `pipeline.Store`: `MemoryStore`, or `SQLStore` for PostgreSQL, MySQL or SQLite.
+Every operation takes a case and returns a new one. The input case is never mutated, so a failed operation leaves nothing half-applied. Persist the result with a `pipeline.Store`: `MemoryStore`, or `SQLStore` for PostgreSQL, MySQL or SQLite. Its conformance suite, the outbox included, runs on SQLite, PostgreSQL 16 and MariaDB 10.11 (the `mysql` dialect; MySQL 8 itself has not been run).
