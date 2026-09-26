@@ -54,8 +54,8 @@ m := &deploy.Manager{
   - the diff against the active revision.
 - **Approve** records a reviewer. The author can't approve their own revision unless `AllowSelfApproval` is set, the same reviewer can't approve twice, and `Approvals` distinct reviewers are required.
 - **Reject** needs a reason.
-- **Activate** applies only to an approved revision, after verifying its checksum and signature (see [Signing revisions](#signing-revisions)). A source edited directly in the store can't be activated. The previously active revision becomes `superseded`.
-- **Rollback** re-activates a superseded revision: the one named, or the most recent.
+- **Activate** applies only to an approved revision, after verifying its checksum, its signature and its signed approvals (see [Signing revisions](#signing-revisions)). A source edited directly in the store can't be activated. The previously active revision becomes `superseded`.
+- **Rollback** re-activates a superseded revision: the one named, or the most recent. Its approval signature is verified too (see [Signed approvals](#signed-approvals)).
 - Every step is recorded in the revision's `history`.
 
 ## Signing revisions
@@ -81,6 +81,14 @@ Verification rules:
 - Otherwise, a valid key signature **or** a valid HMAC is required. Revisions signed before a key was added keep verifying through their HMAC, so a key can be introduced without re-signing history.
 - A tampered source, a dropped signature or a signature by another key fails with `ErrTampered`.
 - When `Verifier` is nil and `Signer` can verify (a `*signing.KeySet` can), `Signer` is used.
+
+### Signed approvals
+
+The proposal signature does not cover `status` or `approvals`, so when a revision becomes approved (the last required approval, or at proposal when `Approvals` is 0) it is signed a second time, with the same `Secret` and `Signer`, over `deploy.ApprovalPayload(r)`: `ref-revision-approval/v1|app|seq|checksum|approved|["sorted","approvers"]`. The signatures are stored in `approval_signature` (HMAC) and `approval_key_signature`.
+
+`VerifyActivation` runs on `Activate`, `Rollback` and whenever the supervisor starts a revision. It runs `Verify`, then requires a valid approval signature (key or HMAC, by the same rules) and an approvals list of distinct approvers, none of them the author unless `AllowSelfApproval`, meeting the Manager's `Approvals` threshold. A status or approvals list edited in the store therefore fails with `ErrTampered`.
+
+**Upgrading:** revisions approved or activated before approval signatures existed have none and can no longer be activated, rolled back to or served. Re-propose the document and approve it again (pending revisions just need their approvals recorded as usual). Plan the upgrade so the supervisor restarts onto a re-approved revision.
 
 The key types, JWKS format and rotation are described in [identity-and-signing.md](identity-and-signing.md).
 
