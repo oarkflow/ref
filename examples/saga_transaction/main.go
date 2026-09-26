@@ -4,14 +4,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"time"
 
 	"github.com/oarkflow/ref/saga"
 )
 
 func main() {
-	fmt.Println("=== DISTRIBUTED SAGA TRANSACTION DEMO ===")
-	ctx := context.Background()
+	// The saga failing and compensating is the demonstrated outcome, and
+	// run has already reported it.
+	_ = run(context.Background(), os.Stdout)
+}
+
+// run executes the checkout saga, writing the demo report to out. The
+// third step always fails, so run returns the saga error after the first
+// two steps have been compensated in reverse order.
+func run(ctx context.Context, out io.Writer) error {
+	fmt.Fprintln(out, "=== DISTRIBUTED SAGA TRANSACTION DEMO ===")
 	orchestrator := saga.NewOrchestrator()
 
 	// 1. First Step: Deduct Inventory
@@ -20,11 +30,13 @@ func main() {
 		func(ctx context.Context) error {
 			time.Sleep(100 * time.Millisecond) // Simulate DB call
 			// Logic: UPDATE inventory SET count = count - 1
+			fmt.Fprintln(out, "inventory: deducted")
 			return nil
 		},
 		func(ctx context.Context) error {
 			time.Sleep(50 * time.Millisecond) // Simulate DB rollback
 			// Rollback Logic: UPDATE inventory SET count = count + 1
+			fmt.Fprintln(out, "inventory: restored")
 			return nil
 		},
 	)
@@ -35,11 +47,13 @@ func main() {
 		func(ctx context.Context) error {
 			time.Sleep(200 * time.Millisecond) // Simulate Stripe API call
 			// Logic: Stripe charge successful
+			fmt.Fprintln(out, "card: charged")
 			return nil
 		},
 		func(ctx context.Context) error {
 			time.Sleep(150 * time.Millisecond) // Simulate Stripe API refund
 			// Rollback Logic: Stripe refund
+			fmt.Fprintln(out, "card: refunded")
 			return nil
 		},
 	)
@@ -56,19 +70,21 @@ func main() {
 		},
 		func(ctx context.Context) error {
 			// This won't run because the action failed.
+			fmt.Fprintln(out, "server: deprovisioned")
 			return nil
 		},
 	)
 
 	// Execute the Saga Workflow
-	fmt.Println("Starting Order Checkout Workflow...")
+	fmt.Fprintln(out, "Starting Order Checkout Workflow...")
 	err := orchestrator.Execute(ctx)
 
-	fmt.Println("\n=== FINAL RESULT ===")
+	fmt.Fprintln(out, "\n=== FINAL RESULT ===")
 	if err != nil {
-		fmt.Printf("Workflow Failed Gracefully: %v\n", err)
-		fmt.Println("Status: Eventual Consistency Maintained (No orphaned charges or missing inventory).")
+		fmt.Fprintf(out, "Workflow Failed Gracefully: %v\n", err)
+		fmt.Fprintln(out, "Status: Eventual Consistency Maintained (No orphaned charges or missing inventory).")
 	} else {
-		fmt.Println("Workflow Succeeded.")
+		fmt.Fprintln(out, "Workflow Succeeded.")
 	}
+	return err
 }
