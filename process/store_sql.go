@@ -1229,7 +1229,7 @@ func (s *sqlStore) SaveJoinAndRun(ctx context.Context, join *Join, run *Run) err
 		frames, visits, run.Steps, compensating, waiting,
 		next, run.UpdatedAt, run.StartedAt, run.CompletedAt,
 		run.DeadlineAt, run.SLATargetAt, run.SLABreachAt, boolInt(run.SLABreached), run.Version,
-		run.ID, run.Revision)
+		null(run.ParentRunID), boolInt(run.ParentNotified), run.ID, run.Revision)
 	if err != nil {
 		return err
 	}
