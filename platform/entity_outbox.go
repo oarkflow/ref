@@ -137,8 +137,11 @@ func scanEntityEvents(rows *sql.Rows) ([]EntityEvent, error) {
 func (o *entityEvents) claim(ctx context.Context, limit int, lease time.Duration, now time.Time) ([]EntityEvent, error) {
 	token := newPrefixedID("lease")
 	t := entityEventsTable
+	// The outer condition repeats the lease test: PostgreSQL re-checks it on
+	// a row another dispatcher leased meanwhile (the IN list alone is not),
+	// so two replicas never lease the same event.
 	stmt := fmt.Sprintf(`UPDATE %s SET lease_token = $1, lease_until = $2 WHERE id IN (SELECT id FROM (SELECT id FROM %s
-		WHERE dead = 0 AND next_at <= $3 AND lease_until <= $3 ORDER BY created_at, id LIMIT $4) due)`, t, t)
+		WHERE dead = 0 AND next_at <= $3 AND lease_until <= $3 ORDER BY created_at, id LIMIT $4) due) AND dead = 0 AND lease_until <= $3`, t, t)
 	if _, err := o.db.ExecContext(ctx, rebind(o.db.Dialect, stmt), token, now.Add(lease).UnixNano(), now.UnixNano(), limit); err != nil {
 		return nil, err
 	}

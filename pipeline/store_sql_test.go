@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -238,4 +239,82 @@ func TestPostgresStoreConformance(t *testing.T) {
 	})
 	storeConformance(t, s)
 	notifyConformance(t, s)
+}
+
+// TestPostgresConcurrentClaims races dispatchers on one outbox: each event
+// must be leased to exactly one of them (PostgreSQL re-checks only the outer
+// condition of the claiming UPDATE on a row leased meanwhile).
+func TestPostgresConcurrentClaims(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN not set")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	prefix := fmt.Sprintf("t%d_", time.Now().UnixNano())
+	s, err := NewSQLStore(db, "postgres", prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Record = recordAll
+	ctx := context.Background()
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, table := range []string{"cases", "certificates", "sequences", "outbox", "notify_prefs", "notifications"} {
+			_, _ = db.Exec("DROP TABLE IF EXISTS " + prefix + table)
+		}
+	})
+	at := time.Now().Add(-time.Minute).UTC()
+	const cases, perCase = 50, 4
+	for i := range cases {
+		c := &Case{ID: fmt.Sprintf("c%d", i), Number: fmt.Sprintf("N-%d", i), Pipeline: "p", Status: CaseInProgress, Stage: "s",
+			Stages: map[string]*StageState{"s": {Status: StageActive}}, CreatedAt: at, UpdatedAt: at}
+		for range perCase {
+			c.emit("stage.entered", "s", "", at, nil)
+		}
+		if err := s.Create(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var (
+		mu      sync.Mutex
+		claimed = map[string]int{}
+		wg      sync.WaitGroup
+	)
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idle := 0; idle < 3; {
+				events, err := s.ClaimEvents(ctx, 5, time.Minute, time.Now())
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if len(events) == 0 {
+					idle++
+					continue
+				}
+				mu.Lock()
+				for _, ev := range events {
+					claimed[ev.ID]++
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if len(claimed) != cases*perCase {
+		t.Fatalf("claimed %d distinct events, want %d", len(claimed), cases*perCase)
+	}
+	for id, n := range claimed {
+		if n != 1 {
+			t.Errorf("event %s leased %d times", id, n)
+		}
+	}
 }
