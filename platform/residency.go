@@ -445,17 +445,23 @@ func (r *residencyPlan) tenantRegion(principal Principal, tenant string) (home s
 // check refuses the node when the tenant's residency forbids it, and
 // otherwise returns the context carrying the outbound host constraints.
 func (g *residencyGuard) check(ctx *ActionContext) (context.Context, error) {
-	home, allowed, zoneHosts := g.plan.tenantRegion(ctx.Principal, ctx.TenantID)
+	tenant := ctx.TenantID
+	if tenant == "" {
+		// A durable hook or notification runs with no request identity; the
+		// tenant whose data it carries is recorded on the context instead.
+		tenant = residencyTenantFrom(ctx.Context)
+	}
+	home, allowed, zoneHosts := g.plan.tenantRegion(ctx.Principal, tenant)
 	if home != "" && (g.write || g.egress) {
 		switch {
 		case g.region == "" && g.plan.spec.RequireRegion:
-			return nil, g.refuse(ctx, home, fmt.Sprintf("data residency: tenant region %q requires every write to go to a resource with a declared region, and %q has none", home, g.resource))
+			return nil, g.refuse(ctx, tenant, home, fmt.Sprintf("data residency: tenant region %q requires every write to go to a resource with a declared region, and %q has none", home, g.resource))
 		case g.region != "" && !regionMatch(g.region, allowed):
 			verb := "write to"
 			if g.egress && !g.write {
 				verb = "send data to"
 			}
-			return nil, g.refuse(ctx, home, fmt.Sprintf("data residency: tenant region %q may not %s %q in region %q", home, verb, g.resource, g.region))
+			return nil, g.refuse(ctx, tenant, home, fmt.Sprintf("data residency: tenant region %q may not %s %q in region %q", home, verb, g.resource, g.region))
 		}
 	}
 	hosts := g.hosts
@@ -465,22 +471,22 @@ func (g *residencyGuard) check(ctx *ActionContext) (context.Context, error) {
 	if len(hosts) == 0 {
 		return ctx.Context, nil
 	}
-	return context.WithValue(ctx.Context, egressKey{}, &egressPolicy{hosts: hosts, guard: g, action: ctx, home: home}), nil
+	return context.WithValue(ctx.Context, egressKey{}, &egressPolicy{hosts: hosts, guard: g, action: ctx, tenant: tenant, home: home}), nil
 }
 
 // refuse records and reports one refusal.
-func (g *residencyGuard) refuse(ctx *ActionContext, home, message string) error {
+func (g *residencyGuard) refuse(ctx *ActionContext, tenant, home, message string) error {
 	slog.Warn("data residency refused an operation",
 		"audit", true, "intent", g.intent, "node", g.node, "resource", g.resource,
-		"resource_region", g.region, "tenant", ctx.TenantID, "tenant_region", home, "principal", ctx.Principal.ID)
+		"resource_region", g.region, "tenant", tenant, "tenant_region", home, "principal", ctx.Principal.ID)
 	if ctx.Node != nil {
 		ctx.Node.Decisions().RecordDeny("residency:"+g.node, message)
 	}
 	if g.plan.audit != nil {
 		if err := g.plan.audit.migrate(ctx.Context); err == nil {
 			_, err = g.plan.audit.append(ctx.Context, auditEntry{
-				ID: newPrefixedID("aud"), Stream: ctx.TenantID, RecordedAt: ctx.Now,
-				ActorID: ctx.Principal.ID, ActorName: ctx.Principal.Username, TenantID: ctx.TenantID,
+				ID: newPrefixedID("aud"), Stream: tenant, RecordedAt: ctx.Now,
+				ActorID: ctx.Principal.ID, ActorName: ctx.Principal.Username, TenantID: tenant,
 				Action: "residency.denied", Subject: g.intent + "/" + g.node, Outcome: "denied", Detail: message,
 			})
 			if err != nil {
@@ -495,12 +501,34 @@ func (g *residencyGuard) refuse(ctx *ActionContext, home, message string) error 
 
 type egressKey struct{}
 
+type residencyTenantKey struct{}
+
+// withResidencyTenant records, for a background delivery (an outbox hook or a
+// notification) that runs with no request identity, the tenant whose data it
+// carries, so residency is enforced against that tenant's home region rather
+// than skipped.
+func withResidencyTenant(ctx context.Context, tenant string) context.Context {
+	if tenant == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, residencyTenantKey{}, tenant)
+}
+
+func residencyTenantFrom(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	tenant, _ := ctx.Value(residencyTenantKey{}).(string)
+	return tenant
+}
+
 // egressPolicy travels in the request context to the HTTP client, which is
 // where the final destination host is known.
 type egressPolicy struct {
 	hosts  [][]string
 	guard  *residencyGuard
 	action *ActionContext
+	tenant string
 	home   string
 }
 
@@ -513,7 +541,7 @@ func checkEgress(ctx context.Context, host string) error {
 	}
 	for _, allowed := range policy.hosts {
 		if !hostMatch(host, allowed) {
-			return policy.guard.refuse(policy.action, policy.home,
+			return policy.guard.refuse(policy.action, policy.tenant, policy.home,
 				fmt.Sprintf("data residency: outbound host %q is not among the allowed destinations %s", host, strings.Join(allowed, ", ")))
 		}
 	}
