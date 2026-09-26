@@ -680,11 +680,14 @@ intent "inventory.reserve" {
       args [input.id]
     }
   }
+  # The step's result is the order itself: it is what the next step receives
+  # and what inventory.release is handed if the run is rolled back.
   node "response" {
     family response
     uses "collect"
     requires [input, reserved]
     provides [response]
+    output_data { source "input" }
   }
 }
 
@@ -742,7 +745,15 @@ intent "payment.charge" {
       args [input.id, charged.body.reference, input.total_cents]
     }
   }
-  node "response" { family response uses "collect" requires [input, charged, recorded] provides [response] }
+  # The result is the order, as for inventory.reserve: payment.refund is
+  # handed it on rollback and the fan-out steps receive it.
+  node "response" {
+    family response
+    uses "collect"
+    requires [input, charged, recorded]
+    provides [response]
+    output_data { source "input" }
+  }
 }
 
 intent "payment.refund" {
@@ -1094,8 +1105,36 @@ process "order.fulfil" {
     }
   }
 
-  step "record_approval" { intent "order.mark_approved" family database }
-  step "record_rejection" { intent "order.mark_rejected" family database terminal true }
+  # A step receives what the step before it returned. After the approval
+  # task that is the decision, and after a fan-in the joined results, so the
+  # steps that act on the order take it from the run's input explicitly.
+  step "record_approval" {
+    intent "order.mark_approved"
+    family database
+    input_data {
+      extract {
+        id "run.input.id"
+        customer_id "run.input.customer_id"
+        total_cents "run.input.total_cents"
+        currency "run.input.currency"
+        status "run.input.status"
+      }
+    }
+  }
+  step "record_rejection" {
+    intent "order.mark_rejected"
+    family database
+    terminal true
+    input_data {
+      extract {
+        id "run.input.id"
+        customer_id "run.input.customer_id"
+        total_cents "run.input.total_cents"
+        currency "run.input.currency"
+        status "run.input.status"
+      }
+    }
+  }
 
   step "charge" {
     description "Take the money. Compensated by refunding it."
@@ -1104,11 +1143,33 @@ process "order.fulfil" {
     family http
     timeout 45s
     retry { max_attempts 5 strategy exponential_jitter initial_delay 1s max_delay 60s }
+    input_data {
+      extract {
+        id "run.input.id"
+        customer_id "run.input.customer_id"
+        total_cents "run.input.total_cents"
+        currency "run.input.currency"
+        status "run.input.status"
+      }
+    }
   }
 
   step "fulfil"  { intent "order.fulfil_shipment" family database }
   step "notify"  { intent "order.notify" family notification }
-  step "invoice" { intent "order.invoice" family storage terminal true }
+  step "invoice" {
+    intent "order.invoice"
+    family storage
+    terminal true
+    input_data {
+      extract {
+        id "run.input.id"
+        customer_id "run.input.customer_id"
+        total_cents "run.input.total_cents"
+        currency "run.input.currency"
+        status "run.input.status"
+      }
+    }
+  }
 
   # -- edges --------------------------------------------------------
   #
@@ -1120,14 +1181,14 @@ process "order.fulfil" {
     kind branch
     from "reserve"
     to "charge"
-    condition "result.input.total_cents <= 50000"
+    condition "result.total_cents <= 50000"
   }
 
   edge "large-order" {
     kind branch
     from "reserve"
     to "approve"
-    condition "result.input.total_cents > 50000"
+    condition "result.total_cents > 50000"
   }
 
   edge "approved" {
