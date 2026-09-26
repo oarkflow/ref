@@ -82,6 +82,8 @@ type Case struct {
 	Hold *LegalHold `json:"legal_hold,omitempty"`
 	// Erased is set once personal data has been anonymised.
 	Erased *time.Time `json:"erased_at,omitempty"`
+	// Acknowledgements records every accepted page acknowledgement.
+	Acknowledgements []AckRecord `json:"acknowledgements,omitempty"`
 
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`

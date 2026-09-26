@@ -173,7 +173,8 @@ type EventHook struct {
 	// case.returned, case.rejected, case.withdrawn, case.completed,
 	// case.approved, assigned, claimed, released, delegated, queued,
 	// sla.warning, sla.breached, sla.escalated, suspended, resumed,
-	// note.added, sealed.opened, erased, retention.applied — or "*".
+	// note.added, file.uploaded, sealed.opened, erased, retention.applied —
+	// or "*".
 	Event string `bcl:",id" json:"event"`
 	Hook  string `bcl:"hook" json:"hook"`
 	// Stage limits the hook to one stage.
@@ -247,8 +248,16 @@ type Input struct {
 	Lookup  string `bcl:"lookup" json:"lookup,omitempty"`
 	Default string `bcl:"default" json:"default,omitempty"`
 	// Sensitive values are masked for everyone without a reveal role.
-	Sensitive bool     `bcl:"sensitive" json:"sensitive,omitempty"`
-	Accept    []string `bcl:"accept" json:"accept,omitempty"` // file types
+	Sensitive bool `bcl:"sensitive" json:"sensitive,omitempty"`
+	// Accept lists the content types a file input takes ("image/png",
+	// "image/*", ".pdf"). Uploads are checked by sniffing their bytes, never
+	// by trusting the declared type.
+	Accept []string `bcl:"accept" json:"accept,omitempty"`
+	// MaxBytes caps each uploaded file (default: the engine's
+	// MaxUploadBytes). MaxFiles is how many files the input holds; above 1
+	// its value is a list.
+	MaxBytes int64 `bcl:"max_bytes" json:"max_bytes,omitempty"`
+	MaxFiles int   `bcl:"max_files" json:"max_files,omitempty"`
 	// Span is the grid columns the input occupies (layout hint).
 	Span int `bcl:"span" json:"span,omitempty"`
 	// Compute makes the input derived: the expression is evaluated after
@@ -299,6 +308,48 @@ type Page struct {
 	Layout      string  `bcl:"layout,ident" json:"layout,omitempty"`
 	SubmitLabel string  `bcl:"submit_label" json:"submit_label,omitempty"`
 	Groups      []Group `bcl:"group,block" json:"groups"`
+	// Info blocks are informational content shown on the page (guidance,
+	// a privacy notice, fees).
+	Info []InfoBlock `bcl:"info,block" json:"info,omitempty"`
+	// Acknowledgements are statements the person submitting the stage must
+	// accept. Each acceptance is recorded with who, when and a SHA-256 of
+	// the exact wording.
+	Acknowledgements []AcknowledgementSpec `bcl:"acknowledge,block" json:"acknowledgements,omitempty"`
+}
+
+// Info block styles.
+const (
+	StyleInfo    = "info"
+	StyleWarning = "warning"
+	StyleSuccess = "success"
+	StyleDanger  = "danger"
+)
+
+// InfoBlock is informational content on a page.
+type InfoBlock struct {
+	Name  string `bcl:",id" json:"name"`
+	Title string `bcl:"title" json:"title,omitempty"`
+	Body  string `bcl:"body" json:"body"`
+	// Style is info (default), warning, success or danger.
+	Style string `bcl:"style,ident" json:"style,omitempty"`
+	// Before names the group the block is shown above (default: the top of
+	// the page).
+	Before    string   `bcl:"before" json:"before,omitempty"`
+	VisibleIf string   `bcl:"visible_if" json:"visible_if,omitempty"`
+	Roles     []string `bcl:"roles" json:"roles,omitempty"`
+}
+
+// AcknowledgementSpec is a statement that must be accepted before the stage
+// is submitted (advanced or approved).
+type AcknowledgementSpec struct {
+	Name  string `bcl:",id" json:"name"`
+	Title string `bcl:"title" json:"title,omitempty"`
+	// Text is the exact wording accepted; its SHA-256 is recorded.
+	Text string `bcl:"text" json:"text"`
+	// Before names the group the checkbox is shown above (default: the end
+	// of the page, next to the submit button).
+	Before    string `bcl:"before" json:"before,omitempty"`
+	VisibleIf string `bcl:"visible_if" json:"visible_if,omitempty"`
 }
 
 // Group is a section of a page holding one or more forms.
@@ -377,6 +428,10 @@ type Stage struct {
 	ExternalRoles []string `bcl:"external_roles" json:"external_roles,omitempty"`
 	// Rules are cross-field checks applied when the stage advances.
 	Rules []Rule `bcl:"rule,block" json:"rules,omitempty"`
+	// ConfirmSubmit makes the stage's advance and approve actions two-step:
+	// the first submit validates and returns a review with a confirmation
+	// token, the second (with the token) commits.
+	ConfirmSubmit bool `bcl:"confirm_submit" json:"confirm_submit,omitempty"`
 }
 
 // Node kinds.
@@ -455,9 +510,14 @@ type ActionSpec struct {
 	Next            string `bcl:"next" json:"next,omitempty"`
 	CommentRequired bool   `bcl:"comment_required" json:"comment_required,omitempty"`
 	// SkipNodes lets the action complete the stage with open nodes.
-	SkipNodes bool   `bcl:"skip_nodes" json:"skip_nodes,omitempty"`
-	Confirm   string `bcl:"confirm" json:"confirm,omitempty"`
-	Condition string `bcl:"condition" json:"condition,omitempty"`
+	SkipNodes bool `bcl:"skip_nodes" json:"skip_nodes,omitempty"`
+	// Confirm is the question a client asks before taking the action. With
+	// ConfirmSubmit the server enforces it: the first request returns a
+	// review and a confirmation token, and only a second request carrying
+	// the token takes the action.
+	Confirm       string `bcl:"confirm" json:"confirm,omitempty"`
+	ConfirmSubmit bool   `bcl:"confirm_submit" json:"confirm_submit,omitempty"`
+	Condition     string `bcl:"condition" json:"condition,omitempty"`
 }
 
 // Assignment sets a data path from an expression.
