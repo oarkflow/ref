@@ -56,8 +56,8 @@ func TestUnconsumedEffectsAndGuardsRun(t *testing.T) {
 		}
 	}
 	// The guard's second clause must be evaluated, not just the first.
-	if status, _ := h.call("POST", "/do", "", map[string]any{"amount": 50, "currency": "EUR"}); status != 403 {
-		t.Fatalf("guard not enforced: %d", status)
+	if status, body := h.call("POST", "/do", "", map[string]any{"amount": 50, "currency": "EUR"}); status != 403 || dig(body, "error", "message") != "limit exceeded" {
+		t.Fatalf("guard not enforced, or its message lost: %d %v", status, body)
 	}
 	_, counts := h.call("GET", "/count", "", nil)
 	if Stringify(dig(counts, 0, "c")) != "1" {

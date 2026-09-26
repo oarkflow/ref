@@ -193,6 +193,21 @@ func (ds *DecisionSet) Obligations() []Obligation {
 }
 
 // Reasons returns a copy of the decision audit log.
+// DenyReason is the message of the first deny with one ("" if none).
+func (ds *DecisionSet) DenyReason() string {
+	if ds == nil {
+		return ""
+	}
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	for _, r := range ds.reasons {
+		if r.Verdict == VerdictDeny && r.Message != "" {
+			return r.Message
+		}
+	}
+	return ""
+}
+
 func (ds *DecisionSet) Reasons() []Reason {
 	if ds == nil {
 		return nil

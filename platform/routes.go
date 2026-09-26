@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/url"
 	"slices"
 	"strconv"
@@ -1293,6 +1294,9 @@ func runView(run *process.Run) map[string]any {
 // detail belongs in the server's own logs.
 func projectFailure(c fh.Ctx, err error) error {
 	status, body := failureView(err)
+	if status >= 500 {
+		slog.Error("request failed", "method", c.Method(), "path", c.Path(), "status", status, "error", err)
+	}
 	if status == 401 {
 		c.Set("WWW-Authenticate", `Bearer realm="api"`)
 	}

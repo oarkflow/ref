@@ -655,10 +655,17 @@ func (e *Engine) dispatch(ctx context.Context, inv *invocation.Invocation, commi
 
 	switch outcome.State {
 	case execution.StateDenied:
+		// A decision node's denial message is written for the caller (a
+		// guard's configured message, a rule's reason); without one the
+		// denial stays generic.
+		message := outcome.DenyReason
+		if message == "" {
+			message = "access denied"
+		}
 		return nil, intent.Failure{
 			Code:     "PERMISSION_DENIED",
 			Category: intent.CategoryPermission,
-			Message:  "access denied",
+			Message:  message,
 		}
 
 	case execution.StateShortCircuited, execution.StateCompleted:

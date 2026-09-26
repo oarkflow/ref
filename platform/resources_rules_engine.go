@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/oarkflow/rules"
 	rulesStorage "github.com/oarkflow/rules/pkg/storage"
@@ -71,6 +72,7 @@ func registerRulesEngineResource(r *Registry) {
 			{Name: "strict_evaluation", Type: "bool", Default: "false", Summary: "Fail on undefined variables instead of treating as nil"},
 			{Name: "request_timeout", Type: "duration", Default: "5s", Summary: "Maximum time for a single rule evaluation"},
 			{Name: "max_request_bytes", Type: "int", Default: "1048576", Summary: "Maximum request body size"},
+			{Name: "definition", Type: "block", Summary: `Rule definitions published when the engine opens: definition "name" { version, source or path, tenant_id, run_tests }. An invalid one fails startup`},
 		},
 	})
 }
@@ -80,10 +82,10 @@ type rulesEngineWrapper struct {
 	service *rules.Service
 }
 
-func openRulesEngine(_ context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
+func openRulesEngine(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("rules.engine", spec.Config,
 		"environment", "default_tenant", "strict_validation", "strict_evaluation",
-		"request_timeout", "max_request_bytes"); err != nil {
+		"request_timeout", "max_request_bytes", "definition"); err != nil {
 		return nil, nil, err
 	}
 
@@ -107,6 +109,36 @@ func openRulesEngine(_ context.Context, spec ResourceSpec) (Resource, io.Closer,
 
 	store := rulesStorage.NewMemoryStore()
 	svc := rules.NewService(store, cfg)
+
+	// The store is in memory, so a definition the application depends on is
+	// published here, on every start, rather than by an intent someone has to
+	// remember to call.
+	for _, block := range configBlocks(spec.Config, "definition") {
+		name, body := Stringify(block["id"]), block
+		if inner, ok := block["body"].(map[string]any); ok {
+			body = inner
+		}
+		if name == "" {
+			name = configString(body, "name", "")
+		}
+		if name == "" {
+			return nil, nil, fmt.Errorf("resource %q: a definition needs a name", spec.Name)
+		}
+		req := rules.PublishRequest{
+			TenantID: configString(body, "tenant_id", cfg.DefaultTenant),
+			Name:     name,
+			Version:  configString(body, "version", "1"),
+			Source:   configString(body, "source", ""),
+			Path:     configString(body, "path", ""),
+			RunTests: configBool(body, "run_tests", true),
+		}
+		if req.Source == "" && req.Path == "" {
+			return nil, nil, fmt.Errorf("resource %q: definition %q needs a source or a path", spec.Name, name)
+		}
+		if _, err := svc.Publish(ctx, req); err != nil {
+			return nil, nil, fmt.Errorf("resource %q: definition %q: %w%s", spec.Name, name, err, rulesDiagnostics(ctx, svc, req))
+		}
+	}
 
 	wrapper := &rulesEngineWrapper{service: svc}
 	return wrapper, noopCloser{}, nil
@@ -224,7 +256,7 @@ var rulesEvaluateAction = ActionFactoryFunc(func(build BuildContext, spec NodeSp
 
 		result := ActionResult{
 			Decision: &Decision{Allow: allowed, Message: message},
-			Outputs:  map[string]any{"report": resp},
+			Outputs:  acknowledgement(spec, resp).Outputs,
 		}
 		return result, nil
 	}), nil
@@ -258,7 +290,7 @@ var rulesPublishAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpe
 			return ActionResult{}, fmt.Errorf("node %s: publish failed: %w", spec.Name, err)
 		}
 
-		return ActionResult{Outputs: map[string]any{"published": resp}}, nil
+		return acknowledgement(spec, resp), nil
 	}), nil
 })
 
@@ -310,7 +342,7 @@ var rulesChainAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec)
 
 		return ActionResult{
 			Decision: &Decision{Allow: allowed, Message: message},
-			Outputs:  map[string]any{"evaluation": resp},
+			Outputs:  acknowledgement(spec, resp).Outputs,
 		}, nil
 	}), nil
 })
@@ -318,3 +350,27 @@ var rulesChainAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec)
 type noopCloser struct{}
 
 func (noopCloser) Close() error { return nil }
+
+// rulesDiagnostics explains why a definition did not publish: the rules
+// service's error names the definition only, the reasons are in its
+// validation report.
+func rulesDiagnostics(ctx context.Context, svc *rules.Service, req rules.PublishRequest) string {
+	report, _ := svc.Validate(ctx, rules.ValidationRequest{TenantID: req.TenantID, Name: req.Name, Version: req.Version,
+		Path: req.Path, Source: req.Source, RunTests: req.RunTests})
+	if report == nil {
+		return ""
+	}
+	var reasons []string
+	for _, d := range report.Diagnostics {
+		reasons = append(reasons, d.Message)
+	}
+	if report.Tests != nil {
+		for _, d := range report.Tests.Diagnostics {
+			reasons = append(reasons, d.Message)
+		}
+	}
+	if len(reasons) == 0 {
+		return ""
+	}
+	return ": " + strings.Join(reasons, "; ")
+}

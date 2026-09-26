@@ -30,6 +30,18 @@ resource "delivery_queue" {
   }
 }
 
+resource "receiver" {
+  kind "service.http"
+  description "The webhook receiver accepted events are delivered to"
+  config {
+    allowed_hosts env.required("WEBHOOK_ALLOWED_HOST")
+    allow_private_networks env("WEBHOOK_ALLOW_PRIVATE", "false")
+    timeout 10s
+    retry_attempts 1
+    max_response_bytes 65536
+  }
+}
+
 resource "cache" {
   kind "cache.memory"
   description "Idempotency records and per-client rate-limit state"
@@ -95,49 +107,40 @@ resource "policy_engine" {
     default_tenant "default"
     strict_validation true
     request_timeout 5s
-  }
-}
-
-####################################################################
-# Publish business rules at startup
-####################################################################
-
-intent "rules.publish_webhook_policy" {
-  response "response"
-  timeout 10s
-  node "publish" {
-    uses "rules.publish"
-    resource "policy_engine"
-    kind effect
-    requires [input]
-    provides [published]
-    config {
-      name "webhook-policy"
+    # Published when the engine opens, on every start (the store is in
+    # memory); an invalid rule fails startup rather than the first event.
+    definition "webhook-policy" {
       version "1"
       source <<BCL
-        decision_table "webhook.event_policy" {
-          default allow
-          hit_policy first
-          row "event-type-empty" {
-            priority 100
-            when { input.event_type == nil }
-            then { outcome { decision deny reason "event_type is required" } }
+          bcl { version "1.0" }
+
+          decision_table "webhook.event_policy" {
+            default allow
+            hit_policy first
+            row "event-type-empty" {
+              priority 100
+              when { input.event_type == nil }
+              then { outcome { decision deny reason "event_type is required" } }
+            }
+            row "event-type-too-long" {
+              priority 90
+              when {
+                all {
+                  input.event_type != nil
+                  len(input.event_type) > 120
+                }
+              }
+              then { outcome { decision deny reason "event_type must not exceed 120 characters" } }
+            }
+            row "payload-missing" {
+              priority 80
+              when { input.data == nil }
+              then { outcome { decision deny reason "event data payload is required" } }
+            }
           }
-          row "event-type-too-long" {
-            priority 90
-            when { all { input.event_type != nil len(input.event_type) > 120 } }
-            then { outcome { decision deny reason "event_type must not exceed 120 characters" } }
-          }
-          row "payload-missing" {
-            priority 80
-            when { input.data == nil }
-            then { outcome { decision deny reason "event data payload is required" } }
-          }
-        }
 BCL
     }
   }
-  node "response" { uses "collect" requires [published] provides [response] }
 }
 
 role "publisher" {
@@ -317,7 +320,7 @@ route "webhook.accept" {
   auth "client_auth"
   authz {
     authorizer "authorization"
-    permissions ["publish"]
+    permissions ["publish:webhook:events"]
   }
   rate_limit {
     limiter "limits"
@@ -356,7 +359,7 @@ route "webhook.status" {
   auth "client_auth"
   authz {
     authorizer "authorization"
-    permissions ["read"]
+    permissions ["read:webhook:events"]
   }
   rate_limit {
     limiter "limits"

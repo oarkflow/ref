@@ -164,6 +164,9 @@ type ExecutionOutcome struct {
 	Err     error
 	Effects []any
 	Meta    any
+	// DenyReason is the message of the first deny (StateDenied), for the
+	// caller: a decision node's configured denial message.
+	DenyReason string
 }
 
 // NodeExecutor is the executable callback for a graph node.
@@ -300,6 +303,7 @@ func ReleaseOutcome(out *ExecutionOutcome) {
 	out.Err = nil
 	out.Effects = nil
 	out.Meta = nil
+	out.DenyReason = ""
 	outcomePool.Put(out)
 }
 
@@ -1059,6 +1063,7 @@ func (s *Scheduler) execute(
 				out := AcquireOutcome()
 				if es.decisions.Verdict() == VerdictDeny {
 					out.State = StateDenied
+					out.DenyReason = es.decisions.DenyReason()
 				} else {
 					out.State = StateFailed
 				}
@@ -1073,6 +1078,7 @@ func (s *Scheduler) execute(
 				es.reportFinish(nil)
 				out := AcquireOutcome()
 				out.State = StateDenied
+				out.DenyReason = es.decisions.DenyReason()
 				out.Effects = es.allEffects
 				return out, nil
 			}
@@ -1101,6 +1107,7 @@ finished:
 		out := AcquireOutcome()
 		if es.decisions.Verdict() == VerdictDeny {
 			out.State = StateDenied
+			out.DenyReason = es.decisions.DenyReason()
 		} else {
 			out.State = StateFailed
 		}
@@ -1116,6 +1123,7 @@ finished:
 	if stuckGated || es.decisions.Verdict() == VerdictDeny {
 		outcome := AcquireOutcome()
 		outcome.State = StateDenied
+		outcome.DenyReason = es.decisions.DenyReason()
 		outcome.Effects = es.allEffects
 		es.reportFinish(nil)
 		return outcome, nil

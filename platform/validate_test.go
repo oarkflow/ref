@@ -83,11 +83,34 @@ intent "check" {
 route "check" { method POST path "/check" intent "check" }
 `
 	r := Validate(context.Background(), []byte(src), ".", DefaultLoadOptions())
-	if joined := strings.Join(r.Errors, "\n"); !strings.Contains(joined, "syntax error") {
+	if joined := strings.Join(r.Errors, "\n"); !strings.Contains(joined, "expected ')'") {
 		t.Fatalf("malformed expression not reported: %v", r.Errors)
+	}
+	typo := strings.Replace(src, `"(input.amount > 100"`, `"abs_val(input.amount) > 100"`, 1)
+	if r := Validate(context.Background(), []byte(typo), ".", DefaultLoadOptions()); !strings.Contains(strings.Join(r.Errors, "\n"), `unknown function "abs_val"`) {
+		t.Fatalf("unknown function not reported: %v", r.Errors)
 	}
 	fixed := strings.Replace(src, `"(input.amount > 100"`, `"input.amount > 100"`, 1)
 	if r := Validate(context.Background(), []byte(fixed), ".", DefaultLoadOptions()); len(r.Errors) != 0 {
 		t.Fatalf("valid document rejected: %v", r.Errors)
+	}
+}
+
+// Every example application validates: a broken expression, an undeclared
+// resource or an unknown function in an example fails here, not in the hands
+// of whoever copies it.
+func TestExamplesValidate(t *testing.T) {
+	files, err := filepath.Glob("../examples/*/app.bcl")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no examples found: %v", err)
+	}
+	for _, f := range files {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r := Validate(context.Background(), src, filepath.Dir(f), DefaultLoadOptions()); len(r.Errors) != 0 {
+			t.Errorf("%s: %v", f, r.Errors)
+		}
 	}
 }

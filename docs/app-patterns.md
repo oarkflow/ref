@@ -167,3 +167,47 @@ A 4xx failure may now carry a `details` array next to its code and message, for 
              "details": [ { "rule": "future", "line": -1, "message": "…" },
                           { "rule": "line_outside_period", "line": 0, "message": "…" } ] } }
 ```
+
+A decision that denies a request answers `403 PERMISSION_DENIED` with the decision's own message, for example a `decision.expression` guard's `message` or a business rule's reason. A decision without a message answers "access denied".
+
+5xx responses never carry the cause. The server logs it instead, as `request failed method=… path=… status=… error=…`, so an operator can find it.
+
+## 4. Business rules
+
+A `rules.engine` resource evaluates decision tables and policies (`rules.evaluate`, `rules.chain`). Its store is in memory, so declare the definitions the application depends on in the resource. They are published every time the engine opens:
+
+```bcl
+resource "policy" {
+  kind "rules.engine"
+  config {
+    strict_validation true
+    definition "order-policy" {
+      version "1"
+      source <<BCL
+        bcl { version "1.0" }
+
+        decision_table "order.policy" {
+          default allow
+          hit_policy first
+          row "too-many" {
+            priority 90
+            when {
+              all {
+                input.items != nil
+                len(input.items) > 50
+              }
+            }
+            then { outcome { decision deny reason "at most 50 items" } }
+          }
+        }
+BCL
+    }
+  }
+}
+```
+
+- **Invalid definitions:** an invalid definition fails startup with the rules engine's diagnostics, instead of failing the first request that evaluates it.
+- **Strict validation:** with `strict_validation`, the source needs a `bcl { version "…" }` header.
+- **Conditions:** put each condition in an `all { }` or `any { }` block on its own line.
+- **Other options:** `path` loads the source from a file, `tenant_id` publishes the definition for one tenant, and `run_tests` runs the definition's embedded tests before activating it (default true).
+- **Outputs:** `rules.evaluate`, `rules.publish` and `rules.chain` publish their result under the fact the node declares in `provides`. A deny from `rules.evaluate` answers with the rule's reason.

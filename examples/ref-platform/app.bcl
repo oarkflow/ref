@@ -162,6 +162,46 @@ resource "policy_engine" {
     default_tenant "default"
     strict_validation true
     request_timeout 5s
+    # Published when the engine opens, on every start (the store is in
+    # memory); an invalid rule fails startup rather than the first order.
+    definition "order-policy" {
+      version "1"
+      source <<BCL
+          bcl { version "1.0" }
+
+          decision_table "order.placement_policy" {
+            default allow
+            hit_policy first
+            row "items-empty" {
+              priority 100
+              when { input.items == nil }
+              then { outcome { decision deny reason "order must contain at least one item" } }
+            }
+            row "too-many-items" {
+              priority 90
+              when {
+                all {
+                  input.items != nil
+                  len(input.items) > 50
+                }
+              }
+              then { outcome { decision deny reason "order cannot exceed 50 line items" } }
+            }
+            row "invalid-currency" {
+              priority 80
+              when {
+                all {
+                  input.currency != nil
+                  input.currency != "GBP"
+                  input.currency != "EUR"
+                  input.currency != "USD"
+                }
+              }
+              then { outcome { decision deny reason "unsupported currency" } }
+            }
+          }
+BCL
+    }
   }
 }
 
@@ -249,48 +289,6 @@ role "customer" { permissions [order:create, order:read:own] }
 role "agent"    { inherits [customer] permissions [order:read, order:list] }
 role "approver" { inherits [agent]    permissions [order:approve] }
 role "admin"    { inherits [approver] permissions [order:cancel, catalogue:write, process:read] }
-
-####################################################################
-# Publish business rules at startup
-####################################################################
-
-intent "rules.publish_order_policy" {
-  response "response"
-  timeout 10s
-  node "publish" {
-    uses "rules.publish"
-    resource "policy_engine"
-    kind effect
-    requires [input]
-    provides [published]
-    config {
-      name "order-policy"
-      version "1"
-      source <<BCL
-        decision_table "order.placement_policy" {
-          default allow
-          hit_policy first
-          row "items-empty" {
-            priority 100
-            when { input.items == nil }
-            then { outcome { decision deny reason "order must contain at least one item" } }
-          }
-          row "too-many-items" {
-            priority 90
-            when { all { input.items != nil len(input.items) > 50 } }
-            then { outcome { decision deny reason "order cannot exceed 50 line items" } }
-          }
-          row "invalid-currency" {
-            priority 80
-            when { all { input.currency != nil input.currency != "GBP" input.currency != "EUR" input.currency != "USD" } }
-            then { outcome { decision deny reason "unsupported currency" } }
-          }
-        }
-BCL
-    }
-  }
-  node "response" { uses "collect" requires [published] provides [response] }
-}
 
 ####################################################################
 # Identity
@@ -541,16 +539,9 @@ intent "order.place" {
     requires [skus]
     provides [products]
     config {
-      statement "SELECT sku,name,price_cents,stock FROM products WHERE sku = ANY($1) AND active=TRUE"
+      statement "SELECT sku,name,price_cents,stock FROM products WHERE sku IN (SELECT jsonb_array_elements_text($1::jsonb)) AND active=TRUE"
       args [skus]
     }
-  }
-  node "total" {
-    family transform
-    uses "expression"
-    requires [input, products]
-    provides [total_cents]
-    config { expression "sum(map(input.items, 'quantity')) * 0" }
   }
   node "order_id" {
     family transform
@@ -564,11 +555,14 @@ intent "order.place" {
     uses "database.query"
     resource "db"
     kind effect
-    requires [order_id, user_id, input, total_cents, products]
+    requires [order_id, user_id, input, products]
     provides [rows]
+    # The total is priced from live, active products in the same statement,
+    # never from the client; an order naming an unknown or inactive SKU
+    # inserts nothing, which "order" below reports.
     config {
-      statement "INSERT INTO orders (id,customer_id,total_cents,currency,items,status) VALUES ($1,$2,$3,COALESCE($4,'GBP'),$5,'placed') RETURNING id,customer_id,status,total_cents,currency,created_at"
-      args [order_id, user_id, total_cents, input.currency, input.items]
+      statement "INSERT INTO orders (id,customer_id,total_cents,currency,items,status) SELECT $1,$2,COALESCE(SUM(p.price_cents * (i.line->>'quantity')::bigint),0),COALESCE($3,'GBP'),$4,'placed' FROM jsonb_array_elements($4::jsonb) AS i(line) JOIN products p ON p.sku = i.line->>'sku' AND p.active HAVING COUNT(*) = jsonb_array_length($4::jsonb) RETURNING id,customer_id,status,total_cents,currency,created_at"
+      args [order_id, user_id, input.currency, input.items]
     }
   }
   node "order" {
