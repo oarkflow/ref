@@ -228,6 +228,12 @@ func buildIdentityAdmin(build BuildContext, spec NodeSpec) (Action, error) {
 		if err := d.Authorize(ctx.Context, ctx.Principal, tenant); err != nil {
 			return ActionResult{}, err
 		}
+		// The operations below consult the actor's global roles too; hand
+		// them only what the database still grants.
+		actor, err := d.VerifiedPrincipal(ctx.Context, ctx.Principal)
+		if err != nil {
+			return ActionResult{}, err
+		}
 		userID := optionalFact(ctx, userFact)
 		if userID == "" && userFact == "" {
 			for _, name := range []string{"user_id", "id"} {
@@ -248,7 +254,7 @@ func buildIdentityAdmin(build BuildContext, spec NodeSpec) (Action, error) {
 		var out any
 		switch operation {
 		case "invite":
-			inv, err := d.Invite(ctx.Context, ctx.Principal, tenant, Stringify(input["email"]), Stringify(input["name"]),
+			inv, err := d.Invite(ctx.Context, actor, tenant, Stringify(input["email"]), Stringify(input["name"]),
 				stringList(input["roles"]), strings.TrimSpace(Stringify(input["org_unit"])))
 			if err != nil {
 				return ActionResult{}, err
@@ -268,7 +274,7 @@ func buildIdentityAdmin(build BuildContext, spec NodeSpec) (Action, error) {
 				return ActionResult{}, err
 			}
 		case "get_user":
-			if out, err = d.GetMember(ctx.Context, ctx.Principal, tenant, userID); err != nil {
+			if out, err = d.GetMember(ctx.Context, actor, tenant, userID); err != nil {
 				return ActionResult{}, err
 			}
 		case "suspend", "reactivate":
@@ -276,11 +282,11 @@ func buildIdentityAdmin(build BuildContext, spec NodeSpec) (Action, error) {
 			if operation == "reactivate" {
 				status = UserActive
 			}
-			if out, err = d.SetStatus(ctx.Context, ctx.Principal, tenant, userID, status); err != nil {
+			if out, err = d.SetStatus(ctx.Context, actor, tenant, userID, status); err != nil {
 				return ActionResult{}, err
 			}
 		case "add_membership":
-			if out, err = d.AddMembership(ctx.Context, ctx.Principal, tenant, userID, Stringify(input["email"]),
+			if out, err = d.AddMembership(ctx.Context, actor, tenant, userID, Stringify(input["email"]),
 				stringList(input["roles"]), strings.TrimSpace(Stringify(input["org_unit"]))); err != nil {
 				return ActionResult{}, err
 			}
@@ -300,11 +306,11 @@ func buildIdentityAdmin(build BuildContext, spec NodeSpec) (Action, error) {
 			if roles == nil && orgUnit == nil {
 				return ActionResult{}, invalidInput("send roles, org_unit or both")
 			}
-			if out, err = d.ChangeMembership(ctx.Context, ctx.Principal, tenant, userID, roles, orgUnit); err != nil {
+			if out, err = d.ChangeMembership(ctx.Context, actor, tenant, userID, roles, orgUnit); err != nil {
 				return ActionResult{}, err
 			}
 		case "remove_membership":
-			if err := d.RemoveMembership(ctx.Context, ctx.Principal, tenant, userID); err != nil {
+			if err := d.RemoveMembership(ctx.Context, actor, tenant, userID); err != nil {
 				return ActionResult{}, err
 			}
 			out = map[string]any{"removed": true, "user_id": userID, "tenant_id": tenant}
