@@ -72,7 +72,7 @@ func (h *pipelineHandler) sweep(ctx *ActionContext, hookCtx context.Context) (Ac
 		e := h.res.engines[name]
 		// Purges wait until the scan is done: deleting mid-scan would shift
 		// the pages and skip cases.
-		var purge []string
+		var purge []*pipeline.Case
 		var fatal error
 		err := h.res.eachCase(ctx.Context, pipeline.Query{Pipeline: name, TenantID: ctx.TenantID}, func(c *pipeline.Case) bool {
 			if c.Terminal() && (e.C.Def.Retention == nil || c.Erased != nil || c.Hold != nil) {
@@ -85,7 +85,7 @@ func (h *pipelineHandler) sweep(ctx *ActionContext, hookCtx context.Context) (Ac
 				failed++
 				return true
 			case res.Purge:
-				purge = append(purge, c.ID)
+				purge = append(purge, c)
 				return true
 			case !res.Changed:
 				return true
@@ -99,6 +99,7 @@ func (h *pipelineHandler) sweep(ctx *ActionContext, hookCtx context.Context) (Ac
 				return false
 			}
 			h.res.dispatch(hookCtx, e, next)
+			h.res.dropFiles(ctx.Context, e, c, next)
 			changed++
 			return true
 		})
@@ -108,8 +109,9 @@ func (h *pipelineHandler) sweep(ctx *ActionContext, hookCtx context.Context) (Ac
 		if err != nil {
 			return ActionResult{}, pipelineFailure(err)
 		}
-		for _, id := range purge {
-			if err := h.res.store.Delete(ctx.Context, id); err == nil {
+		for _, c := range purge {
+			if err := h.res.store.Delete(ctx.Context, c.ID); err == nil {
+				h.res.dropFiles(ctx.Context, e, c, nil)
 				purged++
 			}
 		}
@@ -225,6 +227,7 @@ func (h *pipelineHandler) erase(ctx *ActionContext, hookCtx context.Context) (Ac
 				receipt["outcome"], receipt["reason"] = "failed", err.Error()
 			} else {
 				receipt["outcome"] = "purged"
+				h.res.dropFiles(ctx.Context, e, c, nil)
 			}
 		default:
 			next, err := e.Anonymize(hookCtx, c, actor, reason)
@@ -236,6 +239,7 @@ func (h *pipelineHandler) erase(ctx *ActionContext, hookCtx context.Context) (Ac
 			} else {
 				receipt["outcome"] = "anonymized"
 				h.res.dispatch(hookCtx, e, next)
+				h.res.dropFiles(ctx.Context, e, c, next)
 			}
 		}
 		receipts = append(receipts, receipt)

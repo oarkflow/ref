@@ -425,7 +425,7 @@ func (p *Platform) Secret(name string) (string, bool) {
 var resourceDependencyKeys = []string{
 	"database", "cache", "queue", "store", "lock", "rate_limit", "limiter",
 	"authorizer", "mailer", "index", "outbox", "session", "circuit_breaker", "service",
-	"org_resource",
+	"org_resource", "storage",
 }
 
 // openResources opens every resource in dependency order.

@@ -171,6 +171,20 @@ func registerPipelineActions(r *Registry) {
 		Provides: "The analytics report",
 		Config:   with(roles),
 	})
+	pathParam := ConfigField{Name: "path_fact", Type: "fact", Summary: "Fact path of the file input's data path, e.g. documents.photo (default: :path, ?path= or input.path)"}
+	mustAction(r, "pipeline.upload", pipelineAction("upload"), ActionInfo{
+		Family: "workflow", Kind: "effect",
+		Summary: "Upload a file (or several) for a file input of the stage (multipart/form-data, or input.file as {filename, content_base64}); " +
+			"it is size- and type-checked by its magic bytes, checksummed, stored in the resource's storage and recorded on the case",
+		Provides: "The updated view with the recorded files",
+		Config:   with(caseParam, stageParam, pathParam, ConfigField{Name: "file_fact", Type: "fact", Default: "input.file"}),
+	})
+	mustAction(r, "pipeline.file", pipelineAction("file"), ActionInfo{
+		Family: "workflow", Kind: "read",
+		Summary:  "Download an uploaded file of a case, for callers who may see its input; its SHA-256 is verified against the case first",
+		Provides: "The file download",
+		Config:   with(caseParam, pathParam, ConfigField{Name: "file_id_fact", Type: "fact", Summary: "Fact path of the file id of a multi-file input (default: :file_id, ?file_id=)"}),
+	})
 	mustAction(r, "pipeline.bulk", pipelineAction("bulk"), ActionInfo{
 		Family: "workflow", Kind: "effect",
 		Summary:  "Apply one operation (act, node, work, note, hold) to many cases ({ids, op, stage, ...}); each case is authorised and saved on its own",
@@ -184,6 +198,7 @@ var pipelineConfigKeys = []string{
 	"verb", "verb_fact", "org_unit_fact", "data_fact", "scope", "scope_fact", "limit", "key", "key_fact",
 	"access_key_fact", "op", "op_fact", "roles", "max_items", "token", "token_fact",
 	"number", "number_fact", "verify_url", "event_id", "event_id_fact",
+	"path", "path_fact", "file_fact", "file_id", "file_id_fact",
 }
 
 func pipelineAction(op string) ActionFactory {
@@ -207,6 +222,9 @@ func pipelineAction(op string) ActionFactory {
 		maxItems, err := configInt(spec.Config, "max_items", 200)
 		if err != nil {
 			return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+		}
+		if (op == "upload" || op == "file") && res.files == nil {
+			return nil, fmt.Errorf("node %q: pipeline.%s needs a storage resource: set storage on resource %q", spec.Name, op, spec.Resource)
 		}
 		h := &pipelineHandler{res: res, spec: spec, op: op, limit: limit, maxItems: maxItems, roles: configStrings(spec.Config, "roles")}
 		return ActionFunc(h.run), nil
@@ -373,6 +391,9 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 	if h.op == "get" {
 		return h.get(c, e, actor)
 	}
+	if h.op == "file" {
+		return h.download(ctx, c, e, actor)
+	}
 
 	// Mutations: a client that sends the revision it rendered gets a clean
 	// conflict instead of acting on a case that moved under it.
@@ -384,6 +405,14 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 	stage := h.param(ctx, "stage")
 	if stage == "" {
 		stage = c.Stage
+	}
+	switch h.op {
+	case "upload":
+		return h.upload(ctx, hookCtx, c, e, actor, stage)
+	case "act":
+		if review, ok, err := h.review(ctx, hookCtx, c, e, actor, stage); ok || err != nil {
+			return review, err
+		}
 	}
 	next, extra, err := h.apply(ctx, hookCtx, c, e, actor, stage, h.op, h.body(ctx, "", "input"))
 	if err != nil {
@@ -731,6 +760,7 @@ func (h *pipelineHandler) get(c *pipeline.Case, e *pipeline.Engine, actor pipeli
 		"org_unit": c.OrgUnit, "created_by": c.CreatedBy, "revision": c.Revision,
 		"created_at": c.CreatedAt, "updated_at": c.UpdatedAt,
 		"stages": stages, "history": c.History, "certificates": c.Certificates,
+		"acknowledgements": c.Acknowledgements,
 	})
 }
 
@@ -817,6 +847,12 @@ func pipelineFailure(err error) error {
 		return intent.Failure{Code: "INVALID_STATE", Category: intent.CategoryConflict, Message: message}
 	case errors.Is(err, pipeline.ErrNotFound):
 		return notFoundOrMessage(message)
+	case errors.Is(err, pipeline.ErrConfirmation):
+		return intent.Failure{Code: "CONFIRMATION_INVALID", Category: intent.CategoryConflict,
+			Message: strings.TrimPrefix(message, pipeline.ErrConfirmation.Error()+": ")}
+	case errors.Is(err, pipeline.ErrIntegrity):
+		return intent.Failure{Code: "INTEGRITY_FAILED", Category: intent.CategoryInternal,
+			Message: "the stored file failed its integrity check and was not served"}
 	case errors.Is(err, pipeline.ErrConflict):
 		return intent.Failure{Code: "CONFLICT", Category: intent.CategoryConflict, Message: "the case was changed by someone else; reload and try again"}
 	}

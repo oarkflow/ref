@@ -18,6 +18,7 @@ import (
 
 	"github.com/oarkflow/ref/hierarchy"
 	"github.com/oarkflow/ref/pipeline"
+	"github.com/oarkflow/ref/platform/spi"
 )
 
 // PipelineCases is the pipeline.cases resource: it runs the document's
@@ -45,6 +46,11 @@ type PipelineCases struct {
 	order          []string
 	org            *OrgHierarchy
 	allowAnonymous bool
+	// files stores uploads of file inputs (nil: file inputs take plain
+	// references and pipeline.upload / pipeline.file are unavailable);
+	// filePrefix prefixes every object key.
+	files      spi.ObjectStore
+	filePrefix string
 }
 
 // pipelineDefinitionsKey is the config key the compiler injects the
@@ -67,6 +73,10 @@ func registerPipelineResources(r *Registry) {
 			{Name: "allow_anonymous", Type: "bool", Default: "false", Summary: "Let anonymous callers start public pipelines; they get an access key to return to their case"},
 			{Name: "event_max_attempts", Type: "int", Default: "10", Summary: "Attempts before an event hook is dead-lettered"},
 			{Name: "event_retry_base", Type: "duration", Default: "2s", Summary: "First retry delay of a failed event hook (doubles, at most 10m)"},
+			{Name: "storage", Type: "resource", Summary: "storage.* resource that holds uploads of file inputs; with it, file inputs take uploads only (pipeline.upload) and are served checksum-verified (pipeline.file)"},
+			{Name: "storage_prefix", Type: "string", Default: "pipeline/", Summary: "Prefix of every upload's object key"},
+			{Name: "max_upload_bytes", Type: "int", Default: "10485760", Summary: "Largest upload for a file input without its own max_bytes"},
+			{Name: "confirm_ttl", Type: "duration", Default: "30m", Summary: "How long a confirm_submit review token stays valid"},
 		},
 	})
 }
@@ -74,7 +84,7 @@ func registerPipelineResources(r *Registry) {
 func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("pipeline.cases", spec.Config,
 		"pipelines", "database", "table_prefix", "migrate", "signing_secret", "seal_secret", "org_resource", "allow_anonymous",
-		"event_max_attempts", "event_retry_base",
+		"event_max_attempts", "event_retry_base", "storage", "storage_prefix", "max_upload_bytes", "confirm_ttl",
 		pipelineDefinitionsKey); err != nil {
 		return nil, nil, err
 	}
@@ -114,6 +124,21 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 		}
 		p.org = org
 	}
+	if storeName := configString(spec.Config, "storage", ""); storeName != "" {
+		files, ok := spec.resolved[storeName].(spi.ObjectStore)
+		if !ok {
+			return nil, nil, fmt.Errorf("pipeline.cases %q: storage %q is not a storage resource", spec.Name, storeName)
+		}
+		p.files, p.filePrefix = files, configString(spec.Config, "storage_prefix", "pipeline/")
+	}
+	maxUpload, err := configInt64(spec.Config, "max_upload_bytes", pipeline.DefaultMaxUploadBytes)
+	if err != nil {
+		return nil, nil, err
+	}
+	confirmTTL, err := configDuration(spec.Config, "confirm_ttl", 30*time.Minute)
+	if err != nil {
+		return nil, nil, err
+	}
 	key := []byte(configString(spec.Config, "signing_secret", ""))
 	sealKey := []byte(configString(spec.Config, "seal_secret", ""))
 	for _, name := range names {
@@ -144,6 +169,14 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 		engine.SigningKey = key
 		engine.SealKey = sealKey
 		engine.Workload = p.workload
+		engine.MaxUploadBytes = maxUpload
+		engine.ConfirmTTL = confirmTTL
+		if p.files != nil {
+			engine.ManagedFiles = true
+			if form, input := repeatableFileInput(&def); form != "" {
+				return nil, nil, fmt.Errorf("pipeline.cases %q: pipeline %q: form %q is repeatable and has file input %q; uploads need a non-repeatable form", spec.Name, name, form, input)
+			}
+		}
 		if p.org != nil {
 			engine.Lookup = p.lookup
 			engine.OrgCovers = p.orgCovers
@@ -327,6 +360,33 @@ func (p *PipelineCases) lookup(set string, c *pipeline.Case) []pipeline.Option {
 		out[i] = pipeline.Option{Value: it.Code, Label: orDefaultString(it.Label, it.Code)}
 	}
 	return out
+}
+
+// repeatableFileInput names a file input of a repeatable form, if any.
+func repeatableFileInput(def *pipeline.Definition) (string, string) {
+	catalog := map[string]pipeline.Input{}
+	for _, in := range def.Inputs {
+		catalog[in.Name] = in
+	}
+	forms := slices.Clone(def.Forms)
+	for _, st := range def.Stages {
+		forms = append(forms, st.Forms...)
+	}
+	for _, f := range forms {
+		if !f.Repeatable {
+			continue
+		}
+		inputs := slices.Clone(f.Inputs)
+		for _, name := range f.Fields {
+			inputs = append(inputs, catalog[name])
+		}
+		for _, in := range inputs {
+			if in.Kind == pipeline.KindFile {
+				return f.Name, in.Name
+			}
+		}
+	}
+	return "", ""
 }
 
 func hasSealed(def *pipeline.Definition) bool {
