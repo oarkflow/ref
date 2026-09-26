@@ -251,8 +251,8 @@ func triageDef() *Definition {
 			{Name: "apply", Public: true, Page: &Page{Groups: []Group{{Name: "g", Forms: []string{"claim"}}}}},
 			{Name: "assess", Roles: []string{"officer", "senior"}, Routing: &Routing{Strategy: RouteLeastLoaded, Roles: []string{"officer"}},
 				Reviews: []Review{{Mode: ReviewTriage, DefaultQueue: "standard", Buckets: []TriageBucket{
-					{Name: "urgent", When: "claim.amount > 1000", Priority: 1, Queue: "urgent", Roles: []string{"senior"}},
-					{Name: "normal", When: "claim.amount > 100", Priority: 2, Queue: "standard"},
+					{Name: "urgent", Condition: "claim.amount > 1000", Priority: 1, Queue: "urgent", Roles: []string{"senior"}},
+					{Name: "normal", Condition: "claim.amount > 100", Priority: 2, Queue: "standard"},
 				}}}},
 		},
 	}

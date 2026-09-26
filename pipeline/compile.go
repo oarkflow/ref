@@ -518,7 +518,7 @@ func (c *Compiled) Expressions() map[string]string {
 		}
 		for _, r := range st.Reviews {
 			for _, b := range r.Buckets {
-				add(where+" review triage bucket "+b.Name+" when", b.When)
+				add(where+" review triage bucket "+b.Name+" condition", b.Condition)
 			}
 			add(where+" review sampling sample_if", r.SampleIf)
 			for i, expr := range r.AlwaysReviewIf {
@@ -538,7 +538,7 @@ func (c *Compiled) Expressions() map[string]string {
 		add(fmt.Sprintf("on[%d] %s when", i, h.Event), h.When)
 	}
 	for i, n := range c.Def.Notify {
-		add(fmt.Sprintf("notify[%d] %s when", i, n.Event), n.When)
+		add(fmt.Sprintf("notify[%d] %s condition", i, n.Event), n.Condition)
 	}
 	return out
 }

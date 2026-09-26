@@ -397,7 +397,7 @@ const (
 //
 //	review "diff"     { against approved }                  what changed since the last submission or approval
 //	review "gate"     { approvals 2  roles ["senior"] }     N distinct approvals before the case can advance
-//	review "triage"   { bucket "urgent" { when "..."  priority 1  queue "urgent" } }
+//	review "triage"   { bucket "urgent" { condition "..."  priority 1  queue "urgent" } }
 //	review "sampling" { percent 20  always_review_if ["..."] }
 type Review struct {
 	Mode string `bcl:",id" json:"mode"`
@@ -431,8 +431,9 @@ type Review struct {
 // TriageBucket is one priority/queue class of a triage review.
 type TriageBucket struct {
 	Name string `bcl:",id" json:"name"`
-	// When classifies a case into the bucket (empty matches every case).
-	When string `bcl:"when" json:"when,omitempty"`
+	// Condition classifies a case into the bucket (empty matches every
+	// case). ("when" is a BCL keyword.)
+	Condition string `bcl:"condition" json:"condition,omitempty"`
 	// Priority orders work lists: 1 is the most urgent.
 	Priority int    `bcl:"priority" json:"priority"`
 	Queue    string `bcl:"queue" json:"queue,omitempty"`
@@ -467,7 +468,9 @@ type NotifyRule struct {
 	Subject string `bcl:"subject" json:"subject,omitempty"`
 	Body    string `bcl:"body" json:"body,omitempty"`
 	Stage   string `bcl:"stage" json:"stage,omitempty"`
-	When    string `bcl:"when" json:"when,omitempty"`
+	// Condition must hold for the rule to fire; the environment is the case
+	// plus event {name, stage, actor, detail}.
+	Condition string `bcl:"condition" json:"condition,omitempty"`
 }
 
 // Node kinds.

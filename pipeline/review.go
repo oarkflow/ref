@@ -267,7 +267,7 @@ func (e *Engine) enterReviews(ctx context.Context, c *Case, st *Stage, ss *Stage
 func (e *Engine) triage(c *Case, st *Stage, r *Review, env map[string]any, now time.Time) (*Triage, []string, error) {
 	lowest := 0
 	for _, b := range r.Buckets {
-		ok, err := e.cond(b.When, env)
+		ok, err := e.cond(b.Condition, env)
 		if err != nil {
 			return nil, nil, fmt.Errorf("pipeline: stage %q triage bucket %q: %w", st.Name, b.Name, err)
 		}

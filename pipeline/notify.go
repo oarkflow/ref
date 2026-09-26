@@ -198,7 +198,7 @@ func (p *NotifyPreferences) nextWindow(t time.Time) time.Time {
 func (p *NotifyPreferences) Schedule(severity string, now time.Time) (deliverAt time.Time, digest bool, reason string) {
 	if severity == SeverityUrgent || severity == SeverityCritical {
 		if _, quiet := p.QuietUntil(now); quiet {
-			return now, false, "delivered in quiet hours: " + severity
+			return now, false, "bypassed quiet hours: " + severity
 		}
 		return now, false, ""
 	}
@@ -309,10 +309,10 @@ func (e *Engine) PlanNotifications(ctx context.Context, c *Case, eventID string,
 		if !EventMatches(rule.Event, ev.Name) || (rule.Stage != "" && rule.Stage != ev.Stage) {
 			continue
 		}
-		if rule.When != "" {
+		if rule.Condition != "" {
 			env := e.Env(c, Actor{ID: ev.Actor})
 			env["event"] = map[string]any{"name": ev.Name, "stage": ev.Stage, "actor": ev.Actor, "detail": ev.Detail}
-			ok, err := e.cond(rule.When, env)
+			ok, err := e.cond(rule.Condition, env)
 			if err != nil || !ok {
 				continue
 			}

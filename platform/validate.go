@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 
 	"github.com/oarkflow/bcl"
@@ -108,6 +109,7 @@ func Validate(ctx context.Context, src []byte, baseDir string, opts LoadOptions)
 			}
 		}
 	}
+	r.Errors = append(r.Errors, validateNotifyChannels(doc)...)
 	flagDoc := doc
 	flagDoc.FlagStore = "" // the store is a resource: checked when it opens
 	_, err = compileFlags(flagDoc, nil)
@@ -119,6 +121,39 @@ func Validate(ctx context.Context, src []byte, baseDir string, opts LoadOptions)
 	r.Document = &doc
 	_ = ctx
 	return r
+}
+
+// validateNotifyChannels checks every pipeline.cases resource delivers the
+// channels its pipelines' notify rules use, through intents that exist.
+func validateNotifyChannels(doc Document) []string {
+	var errs []string
+	intents := map[string]bool{}
+	for _, in := range doc.Intents {
+		intents[in.Name] = true
+	}
+	for _, res := range doc.Resources {
+		if res.Kind != "pipeline.cases" {
+			continue
+		}
+		channels := map[string]string{}
+		for name, v := range configMap(res.Config, "notify_channels") {
+			channels[name] = Stringify(v)
+			if !intents[Stringify(v)] {
+				errs = append(errs, fmt.Sprintf("resource %q: notify_channels.%s names undeclared intent %q", res.Name, name, Stringify(v)))
+			}
+		}
+		names := configStrings(res.Config, "pipelines")
+		for i := range doc.Pipelines {
+			def := &doc.Pipelines[i]
+			if len(names) > 0 && !slices.Contains(names, def.Name) {
+				continue
+			}
+			if err := checkNotifyChannels(def.Name, def, channels); err != nil {
+				errs = append(errs, fmt.Sprintf("resource %q: %v", res.Name, err))
+			}
+		}
+	}
+	return errs
 }
 
 func summarize(doc Document) DocumentSummary {

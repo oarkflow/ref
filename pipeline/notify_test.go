@@ -66,7 +66,7 @@ func TestNotifyPreferencesChannelsQuietHoursAndDigest(t *testing.T) {
 		t.Fatalf("info in quiet hours: %v %v %q", at, digest, reason)
 	}
 	at, _, reason = p.Schedule(SeverityCritical, late)
-	if !at.Equal(late) || !strings.Contains(reason, "critical") {
+	if !at.Equal(late) || reason != "bypassed quiet hours: critical" {
 		t.Fatalf("critical: %v %q", at, reason)
 	}
 	if at, _, reason := p.Schedule(SeverityInfo, mustTime(t, "2026-05-01T06:15:00Z")); reason != "" || at.Hour() != 6 {
@@ -110,7 +110,7 @@ func notifyDef() *Definition {
 		Notify: []NotifyRule{
 			{Event: "stage.entered", Stage: "assess", To: []string{"applicant", "role:supervisor"}, Channels: []string{"email"},
 				Subject: "{case.number} ({data.claim.title}) is at {stage}"},
-			{Event: "note.added", To: []string{"applicant"}, Channels: []string{"email"}, Severity: SeverityCritical, When: "event.actor != case.created_by"},
+			{Event: "note.added", To: []string{"applicant"}, Channels: []string{"email"}, Severity: SeverityCritical, Condition: "event.actor != case.created_by"},
 		},
 	}
 }
