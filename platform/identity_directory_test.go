@@ -128,3 +128,46 @@ func TestLoginUnknownUserCostsAVerification(t *testing.T) {
 		t.Fatalf("unknown user took %v, known user %v: the unknown path skips the hash", unknown, known)
 	}
 }
+
+// A tenant administrator must not be able to hand out a global role: the
+// membership's roles become the token's roles at the next sign-in, and a
+// global role administers every tenant.
+func TestTenantAdminCannotGrantGlobalRole(t *testing.T) {
+	d := openTestDirectory(t)
+	ctx := context.Background()
+	root, _ := d.UserByEmail(ctx, "root@x.test")
+	admin := Principal{ID: root.ID, TenantID: "t1", Roles: []string{"admin"}}
+	if _, err := d.Invite(ctx, admin, "t1", "mallory@x.test", "", []string{"platform_admin"}, ""); failureCode(err) != "PERMISSION_DENIED" {
+		t.Fatalf("invite with a global role: %v", err)
+	}
+	if _, err := d.ChangeMembership(ctx, admin, "t1", root.ID, []string{"admin", "platform_admin"}, nil); failureCode(err) != "PERMISSION_DENIED" {
+		t.Fatalf("self-grant of a global role: %v", err)
+	}
+	if _, err := d.AddMembership(ctx, admin, "t2", root.ID, "", []string{" platform_admin"}, ""); failureCode(err) != "PERMISSION_DENIED" {
+		t.Fatalf("add_membership with a global role: %v", err)
+	}
+	res, err := d.Login(ctx, "root@x.test", "root password 123", "t1", "")
+	if err != nil || d.isGlobal(res.Principal) {
+		t.Fatalf("the tenant admin became global: %v %+v", err, res)
+	}
+	// A global administrator still can.
+	if _, err := d.Invite(ctx, Principal{ID: "op", Roles: []string{"platform_admin"}}, "t1", "ops@x.test", "", []string{"platform_admin"}, ""); err != nil {
+		t.Fatalf("global admin granting a global role: %v", err)
+	}
+}
+
+// Failed attempts that all read the account before any of them records a
+// failure (parallel guesses) must still add up to a lock.
+func TestLockoutCountsParallelFailures(t *testing.T) {
+	d := openTestDirectory(t)
+	ctx := context.Background()
+	stale, _ := d.UserByEmail(ctx, "root@x.test")
+	now := time.Now()
+	for range 3 {
+		d.recordFailure(ctx, stale, now) // every call carries FailedLogins == 0
+	}
+	user, _ := d.UserByEmail(ctx, "root@x.test")
+	if user.LockedUntil <= now.UnixMilli() {
+		t.Fatalf("three failures from stale reads did not lock the account: failed=%d locked_until=%d", user.FailedLogins, user.LockedUntil)
+	}
+}
