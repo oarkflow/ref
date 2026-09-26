@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 const entityApp = `
@@ -16,9 +18,9 @@ name "entities"
 resource "db" {
   kind "database.sql"
   config {
-    driver "sqlite"
+    driver env("ENT_DRIVER", "sqlite")
     dsn env("ENT_DSN")
-    migrations ["CREATE TABLE IF NOT EXISTS hook_log (id INTEGER PRIMARY KEY AUTOINCREMENT, entity TEXT, event TEXT, name TEXT)"]
+    migrations ["CREATE TABLE IF NOT EXISTS hook_log (entity TEXT, event TEXT, name TEXT)"]
   }
 }
 
@@ -121,7 +123,7 @@ intent "log.hook" {
     requires [input]
     provides [n]
     config {
-      statement "INSERT INTO hook_log (entity, event, name) VALUES (?, ?, ?)"
+      statement "INSERT INTO hook_log (entity, event, name) VALUES ($1, $2, $3)"
       args ["input.entity", "input.event", "input.record.name"]
     }
   }
@@ -134,7 +136,7 @@ intent "log.list" {
     resource "db"
     provides [rows]
     config {
-      statement "SELECT entity, event, name FROM hook_log ORDER BY id"
+      statement "SELECT entity, event, name FROM hook_log"
     }
   }
 }
@@ -149,12 +151,28 @@ route "log" {
 
 func TestEntitiesEndToEnd(t *testing.T) {
 	dir := t.TempDir()
+	runEntities(t, "sqlite", "file:"+filepath.Join(dir, "e.db")+"?_pragma=busy_timeout(5000)")
+}
+
+// TestEntitiesPostgres runs the same journey on PostgreSQL when
+// TEST_POSTGRES_DSN is set; the database should be empty (a fresh one per run).
+func TestEntitiesPostgres(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN not set")
+	}
+	runEntities(t, "pgx", dsn)
+}
+
+func runEntities(t *testing.T, driver, dsn string) {
+	dir := t.TempDir()
 	path := filepath.Join(dir, "app.bcl")
 	if err := os.WriteFile(path, []byte(entityApp), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	h := newAppHarness(t, path, map[string]string{
-		"ENT_DSN":        "file:" + filepath.Join(dir, "e.db") + "?_pragma=busy_timeout(5000)",
+		"ENT_DRIVER":     driver,
+		"ENT_DSN":        dsn,
 		"ENT_JWT_SECRET": "entity-test-secret-0123456789abcdef-xyz",
 	})
 	staff := h.token("jwt", "u1", []string{"staff"}, map[string]any{"tenant_id": "acme"})

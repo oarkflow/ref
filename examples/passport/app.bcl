@@ -24,10 +24,11 @@ resource "db" {
   kind "database.sql"
   description "Cases and certificates"
   config {
-    driver "sqlite"
+    # sqlite by default; PASSPORT_DB_DRIVER=pgx with a postgres:// DSN runs on PostgreSQL.
+    driver env("PASSPORT_DB_DRIVER", "sqlite")
     dsn env("PASSPORT_DSN", "file:.data/passport.db?_pragma=busy_timeout(5000)")
     migrations [
-      "CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, case_number TEXT NOT NULL, stage TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+      "CREATE TABLE IF NOT EXISTS notifications (event TEXT NOT NULL, case_number TEXT NOT NULL, stage TEXT NOT NULL DEFAULT '')"
     ]
   }
 }
@@ -41,6 +42,12 @@ resource "jobs" {
     workers 1
     poll_interval 1s
   }
+}
+
+# Throttles the public, anonymous-friendly endpoints (per IP when anonymous,
+# per user when signed in).
+resource "limits" {
+  kind "ratelimit.memory"
 }
 
 resource "jwt" {
@@ -624,7 +631,7 @@ intent "passport.notify" {
     requires [input]
     provides [recorded]
     config {
-      statement "INSERT INTO notifications (event, case_number, stage) VALUES (?, ?, ?)"
+      statement "INSERT INTO notifications (event, case_number, stage) VALUES ($1, $2, $3)"
       args ["input.event.name", "input.case.number", "input.event.stage"]
     }
   }
@@ -637,7 +644,7 @@ intent "passport.notifications" {
     resource "db"
     provides [rows]
     config {
-      statement "SELECT event, case_number, stage FROM notifications ORDER BY id"
+      statement "SELECT event, case_number, stage FROM notifications"
     }
   }
 }
@@ -881,6 +888,12 @@ route "start" {
   auth "jwt"
   allow_anonymous true
   status 201
+  rate_limit {
+    limiter "limits"
+    limit 20
+    window "1m"
+    message "Too many applications started; try again in a minute"
+  }
 }
 route "list" {
   method GET
@@ -934,6 +947,11 @@ route "verify" {
   path "/api/passport/certificates/:key"
   intent "passport.verify"
   allow_anonymous true
+  rate_limit {
+    limiter "limits"
+    limit 60
+    window "1m"
+  }
 }
 
 route "certificate_pdf" {

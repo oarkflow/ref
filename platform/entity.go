@@ -699,7 +699,7 @@ func (rt *entityRuntime) filters(ctx *ActionContext, args []any, reserved ...str
 				if err != nil {
 					return nil, nil, invalidInput("filter %s: %v", key, err)
 				}
-				args = append(args, v)
+				args = append(args, sqlValue(rt.db.Dialect, v))
 				ph = append(ph, fmt.Sprintf("$%d", len(args)))
 			}
 			conds = append(conds, fmt.Sprintf("%s IN (%s)", col, strings.Join(ph, ", ")))
@@ -721,7 +721,7 @@ func (rt *entityRuntime) filters(ctx *ActionContext, args []any, reserved ...str
 			if err != nil {
 				return nil, nil, invalidInput("filter %s: %v", key, err)
 			}
-			args = append(args, v)
+			args = append(args, sqlValue(rt.db.Dialect, v))
 			conds = append(conds, fmt.Sprintf("%s %s $%d", col, sqlOp, len(args)))
 		}
 	}
@@ -737,14 +737,7 @@ func filterValue(kind string, scale int, raw string) (any, error) {
 	case "number":
 		return strconv.ParseFloat(raw, 64)
 	case "boolean":
-		b, err := strconv.ParseBool(raw)
-		if err != nil {
-			return nil, err
-		}
-		if b {
-			return 1, nil
-		}
-		return 0, nil
+		return strconv.ParseBool(raw)
 	}
 	return raw, nil
 }

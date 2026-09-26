@@ -99,6 +99,12 @@ func registerPipelineActions(r *Registry) {
 		Config:   with(ConfigField{Name: "key_fact", Type: "fact", Summary: "Fact path of the number or code (default: :key, ?key= or input.key)"}),
 	})
 	roles := ConfigField{Name: "roles", Type: "[]string", Summary: "Only principals holding one of these roles may call it"}
+	mustAction(r, "pipeline.events", pipelineAction("events"), ActionInfo{
+		Family: "workflow", Kind: "effect",
+		Summary:  "Operate the event outbox: list dead-lettered hook events, or requeue one (:event_id) for immediate delivery",
+		Provides: "{dead: [...]} or {requeued: id}",
+		Config:   with(roles, ConfigField{Name: "op", Type: "string", Summary: "dead (default) | requeue"}),
+	})
 	mustAction(r, "pipeline.certificate_pdf", pipelineAction("certificate_pdf"), ActionInfo{
 		Family: "workflow", Kind: "read",
 		Summary:  "Render an issued certificate of a case as a PDF with its verification code (:number, default the first valid one)",
@@ -177,7 +183,7 @@ var pipelineConfigKeys = []string{
 	"pipeline", "id", "id_fact", "stage", "stage_fact", "action", "action_fact", "node", "node_fact",
 	"verb", "verb_fact", "org_unit_fact", "data_fact", "scope", "scope_fact", "limit", "key", "key_fact",
 	"access_key_fact", "op", "op_fact", "roles", "max_items", "token", "token_fact",
-	"number", "number_fact", "verify_url",
+	"number", "number_fact", "verify_url", "event_id", "event_id_fact",
 }
 
 func pipelineAction(op string) ActionFactory {
@@ -329,6 +335,8 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 		return h.link(ctx, hookCtx)
 	case "certificate_pdf":
 		return h.certificatePDF(ctx)
+	case "events":
+		return h.events(ctx)
 	case "sweep":
 		return h.sweep(ctx, hookCtx)
 	case "analytics":

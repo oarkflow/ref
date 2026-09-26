@@ -1712,12 +1712,32 @@ func (p *Platform) runWorkerJob(ctx context.Context, worker WorkerSpec, job *fh.
 // ---------------------------------------------------------------------------
 
 // startBackground launches the process engine's ticker and the schedule loop.
+// backgroundResource is a resource with its own background loop (a pipeline
+// outbox dispatcher). It starts once the generation is fully built and stops
+// when it closes.
+type backgroundResource interface {
+	runBackground(ctx context.Context, p *Platform)
+}
+
 func (p *Platform) startBackground() {
-	if len(p.engines) == 0 && len(p.schedules) == 0 {
+	var loops []backgroundResource
+	for _, r := range p.resources {
+		if b, ok := r.(backgroundResource); ok {
+			loops = append(loops, b)
+		}
+	}
+	if len(p.engines) == 0 && len(p.schedules) == 0 && len(loops) == 0 {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p.background = cancel
+	for _, b := range loops {
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			b.runBackground(ctx, p)
+		}()
+	}
 
 	if len(p.engines) > 0 {
 		p.wg.Add(1)

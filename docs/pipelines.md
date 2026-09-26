@@ -271,7 +271,17 @@ Every operation emits events. The names are:
 - **SLA:** `sla.warning`, `sla.breached`, `sla.escalated`
 - **Other:** `note.added`, `link.issued`, `link.submitted`, `sealed.opened`, `erased`, `retention.applied`
 
-Hooks run **after the change is saved**, receiving `{case, data, stage, event}`, so a notification never announces something that was rolled back. A failing hook is logged; it never undoes the change.
+**Delivery is durable.** Events that some hook listens to are written to an outbox in the **same transaction** as the case change. An event exists exactly when its change was committed.
+
+A background dispatcher (one per replica; leases stop two replicas delivering the same event) does the following:
+1. Claims due events.
+2. Runs their hooks with `{case, data, stage, event}`, where `event.attempt` counts attempts.
+3. Acknowledges the event once every hook succeeds.
+4. On failure, retries with exponential backoff. By default the first retry is after 2s, the delay doubles up to 10 minutes, and the event is **dead-lettered** after 10 attempts. `event_retry_base` and `event_max_attempts` on the resource change these defaults.
+
+Because a hook may run again after a partial failure, **hooks should be idempotent**. `event.id` is stable across retries, which makes a good deduplication key.
+
+`pipeline.events` lists dead-lettered events and requeues one for immediate delivery, once its cause is fixed.
 
 ### Analytics
 
@@ -321,7 +331,9 @@ resource "cases" {
 }
 ```
 
-The resource compiles each pipeline and every expression in it at load time, so a typo stops the deployment. With a database, it creates `<prefix>cases`, `<prefix>certificates` and `<prefix>sequences`.
+The resource compiles each pipeline and every expression in it at load time, so a typo stops the deployment. With a database, it creates `<prefix>cases`, `<prefix>certificates`, `<prefix>sequences` and `<prefix>outbox`.
+
+The stores are verified by one conformance suite against memory, SQLite and PostgreSQL. To include PostgreSQL, set `TEST_POSTGRES_DSN`; the Passport example also runs end to end on it when that variable is set. Routing reads each worker's workload with a single indexed `GROUP BY` rather than loading every open case. Sweeps, analytics and erasure page through all cases, and analytics folds them one at a time, so no scan is capped or holds every case in memory.
 
 | Action | Parameters | Result |
 |---|---|---|

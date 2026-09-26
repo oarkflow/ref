@@ -66,99 +66,123 @@ type AssigneeAnalytics struct {
 	DwellHours Stat   `json:"dwell_hours"`
 }
 
-// Analyze computes analytics over cases as of now.
-func (e *Engine) Analyze(cases []*Case, now time.Time) Analytics {
-	a := Analytics{Pipeline: e.C.Def.Name, AsOf: now, ByStatus: map[string]int{}}
-	stageIdx := map[string]int{}
-	dwell := map[string][]float64{}
+// Analyzer accumulates analytics one case at a time, so a report over
+// millions of cases never holds them all in memory (only per-visit dwell
+// times, for exact percentiles).
+type Analyzer struct {
+	e           *Engine
+	now         time.Time
+	a           Analytics
+	stageIdx    map[string]int
+	dwell       map[string][]float64
+	people      map[string]*AssigneeAnalytics
+	personDwell map[string][]float64
+	cycles      []float64
+	days        map[string]*Bucket
+}
+
+// NewAnalyzer starts a report as of now.
+func (e *Engine) NewAnalyzer(now time.Time) *Analyzer {
+	z := &Analyzer{e: e, now: now, a: Analytics{Pipeline: e.C.Def.Name, AsOf: now, ByStatus: map[string]int{}},
+		stageIdx: map[string]int{}, dwell: map[string][]float64{}, people: map[string]*AssigneeAnalytics{},
+		personDwell: map[string][]float64{}, days: map[string]*Bucket{}}
 	for i, st := range e.C.Def.Stages {
-		stageIdx[st.Name] = i
-		a.Stages = append(a.Stages, StageAnalytics{Stage: st.Name, Title: st.Title})
+		z.stageIdx[st.Name] = i
+		z.a.Stages = append(z.a.Stages, StageAnalytics{Stage: st.Name, Title: st.Title})
 	}
-	people := map[string]*AssigneeAnalytics{}
-	personDwell := map[string][]float64{}
-	person := func(id string) *AssigneeAnalytics {
-		if people[id] == nil {
-			people[id] = &AssigneeAnalytics{Assignee: id}
-		}
-		return people[id]
+	return z
+}
+
+func (z *Analyzer) person(id string) *AssigneeAnalytics {
+	if z.people[id] == nil {
+		z.people[id] = &AssigneeAnalytics{Assignee: id}
 	}
-	var cycles []float64
-	days := map[string]*Bucket{}
-	day := func(t time.Time) *Bucket {
-		k := t.UTC().Format("2006-01-02")
-		if days[k] == nil {
-			days[k] = &Bucket{Day: k}
-		}
-		return days[k]
+	return z.people[id]
+}
+
+func (z *Analyzer) day(t time.Time) *Bucket {
+	k := t.UTC().Format("2006-01-02")
+	if z.days[k] == nil {
+		z.days[k] = &Bucket{Day: k}
 	}
-	for _, c := range cases {
-		a.Cases++
-		a.ByStatus[c.Status]++
-		day(c.CreatedAt).Opened++
-		if c.Terminal() {
-			end := c.UpdatedAt
-			if c.ClosedAt != nil {
-				end = *c.ClosedAt
-			}
-			cycles = append(cycles, end.Sub(c.CreatedAt).Hours())
-			day(end).Closed++
-		} else {
-			a.Open++
-			if i, ok := stageIdx[c.Stage]; ok {
-				s := &a.Stages[i]
-				s.OpenNow++
-				if ss := c.Stages[c.Stage]; ss != nil {
-					if ss.Suspended != nil {
-						s.OnHold++
-					}
-					if ss.Assignee == "" {
-						s.Unassigned++
-					} else {
-						person(ss.Assignee).Open++
-					}
-					if ss.SLA != nil && (ss.SLA.Status == SLAWarning || (ss.SLA.Status != SLABreached && ss.SLA.WarnAt != nil && !now.Before(*ss.SLA.WarnAt))) {
-						s.AtRisk++
-					}
-				}
-			}
+	return z.days[k]
+}
+
+// Add folds one case into the report.
+func (z *Analyzer) Add(c *Case) {
+	a, e, now, stageIdx := &z.a, z.e, z.now, z.stageIdx
+	dwell, personDwell := z.dwell, z.personDwell
+	person, day := z.person, z.day
+	a.Cases++
+	a.ByStatus[c.Status]++
+	day(c.CreatedAt).Opened++
+	if c.Terminal() {
+		end := c.UpdatedAt
+		if c.ClosedAt != nil {
+			end = *c.ClosedAt
 		}
-		for _, v := range c.Timeline {
-			i, ok := stageIdx[v.Stage]
-			if !ok {
-				continue
-			}
+		z.cycles = append(z.cycles, end.Sub(c.CreatedAt).Hours())
+		day(end).Closed++
+	} else {
+		a.Open++
+		if i, ok := stageIdx[c.Stage]; ok {
 			s := &a.Stages[i]
-			s.Visits++
-			switch v.Outcome {
-			case "completed", "approved":
-				s.Completed++
-			case "returned":
-				s.Returned++
-			case "skipped":
-				s.Skipped++
-			}
-			if v.LeftAt == nil || v.Outcome == "skipped" {
-				continue
-			}
-			h := v.LeftAt.Sub(v.EnteredAt).Hours() - float64(v.SuspendedSeconds)/3600
-			if h < 0 {
-				h = 0
-			}
-			dwell[v.Stage] = append(dwell[v.Stage], h)
-			if v.Assignee != "" {
-				person(v.Assignee).Completed++
-				personDwell[v.Assignee] = append(personDwell[v.Assignee], h)
-			}
-			if e.C.Def.Stages[i].SLA != nil {
-				if v.Breached {
-					s.SLABreached++
+			s.OpenNow++
+			if ss := c.Stages[c.Stage]; ss != nil {
+				if ss.Suspended != nil {
+					s.OnHold++
+				}
+				if ss.Assignee == "" {
+					s.Unassigned++
 				} else {
-					s.SLAMet++
+					person(ss.Assignee).Open++
+				}
+				if ss.SLA != nil && (ss.SLA.Status == SLAWarning || (ss.SLA.Status != SLABreached && ss.SLA.WarnAt != nil && !now.Before(*ss.SLA.WarnAt))) {
+					s.AtRisk++
 				}
 			}
 		}
 	}
+	for _, v := range c.Timeline {
+		i, ok := stageIdx[v.Stage]
+		if !ok {
+			continue
+		}
+		s := &a.Stages[i]
+		s.Visits++
+		switch v.Outcome {
+		case "completed", "approved":
+			s.Completed++
+		case "returned":
+			s.Returned++
+		case "skipped":
+			s.Skipped++
+		}
+		if v.LeftAt == nil || v.Outcome == "skipped" {
+			continue
+		}
+		h := v.LeftAt.Sub(v.EnteredAt).Hours() - float64(v.SuspendedSeconds)/3600
+		if h < 0 {
+			h = 0
+		}
+		dwell[v.Stage] = append(dwell[v.Stage], h)
+		if v.Assignee != "" {
+			person(v.Assignee).Completed++
+			personDwell[v.Assignee] = append(personDwell[v.Assignee], h)
+		}
+		if e.C.Def.Stages[i].SLA != nil {
+			if v.Breached {
+				s.SLABreached++
+			} else {
+				s.SLAMet++
+			}
+		}
+	}
+}
+
+// Report finishes the report.
+func (z *Analyzer) Report() Analytics {
+	a, dwell, people, personDwell, cycles, days := &z.a, z.dwell, z.people, z.personDwell, z.cycles, z.days
 	a.CycleHours = stat(cycles)
 	type rank struct {
 		stage string
@@ -191,7 +215,16 @@ func (e *Engine) Analyze(cases []*Case, now time.Time) Analytics {
 		a.Assignees = append(a.Assignees, *p)
 	}
 	sort.Slice(a.Assignees, func(i, j int) bool { return a.Assignees[i].Assignee < a.Assignees[j].Assignee })
-	return a
+	return *a
+}
+
+// Analyze computes analytics over cases as of now.
+func (e *Engine) Analyze(cases []*Case, now time.Time) Analytics {
+	z := e.NewAnalyzer(now)
+	for _, c := range cases {
+		z.Add(c)
+	}
+	return z.Report()
 }
 
 func stat(xs []float64) Stat {
