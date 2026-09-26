@@ -1,7 +1,7 @@
 # Entities: declarative data resources
 
 An `entity` block declares a table and gets a complete, validated REST API. There is no intent or route to write. It is DAGFlow's `resource` (CRUD) block, extended with the following:
-- filters and full-text-style search;
+- filters and full-text-style search, with an optional token index;
 - sorting, pagination and totals;
 - optimistic versioning;
 - per-operation access rules with row conditions;
@@ -23,6 +23,7 @@ entity "project" {
   soft_delete true              # delete stamps deleted_at
   versioned true                # updates must send the version they read (409 otherwise)
   search ["name", "code"]       # ?q=
+  search_index true             # ?q= by word prefix through a token index
   default_sort "name"
   export true                   # GET /api/projects/-/export  (CSV)
   aggregate true                # GET /api/projects/-/aggregate
@@ -75,9 +76,47 @@ Writes are validated as a whole. Every problem is reported at once as a `422` wi
 
 List and export take these query parameters:
 - **Filters** by column: `col=v`, `col__ne`, `__gt`, `__gte`, `__lt`, `__lte`, `__in=a,b`, `__like` (substring) and `__null=true|false`. Unknown filters are a `422`, so a mistyped filter never silently returns everything.
-- **Search:** `q=` searches the `search` columns.
+- **Search:** `q=` searches the `search` columns: a case-insensitive substring match, or a word-prefix match with `search_index true` (see [Search index](#search-index)).
 - **Sorting:** `sort=-budget,name`.
 - **Paging:** `limit`, `offset`.
+
+## Search index
+
+Without an index, `q=` scans the `search` columns with `LOWER(col) LIKE '%q%'`, which reads every row. Add `search_index true` to keep a token index instead:
+
+```bcl
+entity "place" {
+  search ["name", "city"]
+  search_index true
+  ...
+}
+```
+
+- The migration adds a `<table>_search (record_id, token)` table with an index on `token`.
+- Each create, update and delete rewrites the record's tokens **in the same transaction as the change**, so the index never disagrees with a committed record. A soft delete drops the tokens.
+- A token is a word of the search columns: compatibility-decomposed, accents dropped, lower-cased (`ß` becomes `ss`), split on anything that is not a letter or digit. Words are cut at 64 characters, and a record indexes at most 512 distinct words.
+- `q=` is tokenised the same way (at most 8 words). **Every** query word must be the prefix of some word of the row: `q=bri rep` finds "Bridge repair", `q=zurich` finds "Zürich", and `q=ridge` finds nothing. A query with no letters or digits does not filter.
+- The match is an indexed `token LIKE 'word%'` on SQLite, PostgreSQL and MySQL.
+
+When the application starts and a token table is empty (because the index was just turned on for an existing table, for example), every live record is indexed in the background. To rebuild on demand, for example after rows were changed with raw SQL, use an `entity.reindex` node:
+
+```bcl
+intent "places.reindex" {
+  response "r"
+  node "r" {
+    uses "entity.reindex"
+    resource "db"          # the entity's database
+    kind effect
+    provides [r]
+    config {
+      entity "place"
+      roles ["ops"]        # optional: only these roles may call it
+    }
+  }
+}
+```
+
+It re-derives the tokens of every live record, a page per transaction, drops tokens of deleted records and returns `{entity, indexed}`.
 
 ## Access and scoping
 

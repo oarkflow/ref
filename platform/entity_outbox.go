@@ -208,10 +208,12 @@ func (o *entityEvents) requeue(ctx context.Context, entity, id string) (bool, er
 	return n > 0, nil
 }
 
-// runBackground delivers the database's durable entity hooks until ctx ends:
-// woken by commits, and polling so retries and other replicas' events are
-// picked up. A database without durable hooks returns at once.
+// runBackground backfills empty entity search indexes and delivers the
+// database's durable entity hooks until ctx ends: woken by commits, and
+// polling so retries and other replicas' events are picked up. A database
+// without either returns at once.
 func (d *Database) runBackground(ctx context.Context, p *Platform) {
+	defer d.backfillSearchIndexes(ctx)()
 	d.eventsMu.Lock()
 	o := d.events
 	d.eventsMu.Unlock()
@@ -293,57 +295,114 @@ func (rt *entityRuntime) durable(event string) []EntityHook {
 	return out
 }
 
-// write runs a change statement and returns the rows it affected and the
-// record afterwards (reload(q) reads it on the same connection or
-// transaction). When durable hooks match the event, the change, the reload
-// and the hook events commit together.
-func (rt *entityRuntime) write(ctx *ActionContext, event, stmt string, args []any, previous map[string]any,
-	reload func(q execer) (map[string]any, error)) (int64, map[string]any, error) {
-	hooks := rt.durable(event)
-	var q execer = rt.db.DB
-	var tx *sql.Tx
-	if len(hooks) > 0 {
-		var err error
-		if tx, err = rt.db.BeginTx(ctx.Context, nil); err != nil {
-			return 0, nil, databaseFailure(err)
+// entityChange is one prepared create, update or delete: its statement and
+// what applying it needs.
+type entityChange struct {
+	event string // created, updated or deleted
+	id    string
+	stmt  string
+	args  []any
+	prev  map[string]any // the record before an update or delete
+}
+
+// needsTx reports whether a change of this event must run in a transaction:
+// its durable hooks and search tokens commit with it.
+func (rt *entityRuntime) needsTx(event string) bool {
+	return rt.plan.spec.SearchIndex || len(rt.durable(event)) > 0
+}
+
+// transact runs fn on a transaction (or the pool when useTx is false) and
+// commits it together with the durable hook events fn returns.
+func (rt *entityRuntime) transact(ctx *ActionContext, useTx bool, fn func(q execer) ([]EntityEvent, error)) error {
+	if !useTx {
+		_, err := fn(rt.db.DB)
+		return err
+	}
+	tx, err := rt.db.BeginTx(ctx.Context, nil)
+	if err != nil {
+		return databaseFailure(err)
+	}
+	defer tx.Rollback() //nolint:errcheck // a no-op after commit
+	events, err := fn(tx)
+	if err != nil {
+		return err
+	}
+	var o *entityEvents
+	if len(events) > 0 {
+		o = rt.db.enableEntityEvents()
+		if err := o.record(ctx.Context, tx, events); err != nil {
+			return databaseFailure(err)
 		}
-		defer tx.Rollback() //nolint:errcheck // a no-op after commit
-		q = tx
 	}
-	res, err := q.ExecContext(ctx.Context, rebind(rt.db.Dialect, stmt), args...)
+	if err := tx.Commit(); err != nil {
+		return databaseFailure(err)
+	}
+	if o != nil {
+		o.poke()
+	}
+	return nil
+}
+
+// apply runs a prepared change on q (the pool or a transaction) and returns
+// the record afterwards (read on q), having rewritten its search tokens, and
+// the durable hook events the change triggers, for transact to record.
+func (rt *entityRuntime) apply(ctx *ActionContext, q execer, ch entityChange) (map[string]any, []EntityEvent, error) {
+	p := rt.plan
+	res, err := q.ExecContext(ctx.Context, rebind(rt.db.Dialect, ch.stmt), ch.args...)
 	if err != nil {
-		return 0, nil, databaseFailure(err)
+		return nil, nil, databaseFailure(err)
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return 0, nil, nil
+	if n, _ := res.RowsAffected(); n == 0 {
+		if ch.event == "updated" && p.spec.Versioned {
+			return nil, nil, conflict("%s %s was changed by someone else; reload and try again", p.spec.Name, ch.id)
+		}
+		return nil, nil, notFound(p.spec.Name, ch.id)
 	}
-	record, err := reload(q)
-	if err != nil {
-		return 0, nil, err
+	record := ch.prev
+	if ch.event != "deleted" {
+		if record, err = rt.loadOn(ctx, q, ch.id); err != nil {
+			return nil, nil, err
+		}
 	}
-	if tx == nil {
-		return n, record, nil
+	if p.spec.SearchIndex {
+		if err := p.reindexRow(ctx.Context, q, ch.id, ch.event == "deleted"); err != nil {
+			return nil, nil, databaseFailure(err)
+		}
 	}
-	input := map[string]any{"entity": rt.plan.spec.Name, "event": event, "record": record,
+	hooks := rt.durable(ch.event)
+	if len(hooks) == 0 {
+		return record, nil, nil
+	}
+	input := map[string]any{"entity": p.spec.Name, "event": ch.event, "record": record,
 		"actor": ctx.Principal.ID, "tenant_id": ctx.TenantID}
-	if previous != nil {
-		input["previous"] = previous
+	if ch.prev != nil {
+		input["previous"] = ch.prev
 	}
 	events := make([]EntityEvent, len(hooks))
 	for i, h := range hooks {
-		events[i] = EntityEvent{ID: newPrefixedID("evt"), Entity: rt.plan.spec.Name, Event: event, Hook: h.Hook,
+		events[i] = EntityEvent{ID: newPrefixedID("evt"), Entity: p.spec.Name, Event: ch.event, Hook: h.Hook,
 			Input: input, MaxAttempts: h.MaxAttempts, retryBase: h.retryBase}
 	}
-	o := rt.db.enableEntityEvents()
-	if err := o.record(ctx.Context, tx, events); err != nil {
-		return 0, nil, databaseFailure(err)
+	return record, events, nil
+}
+
+// commitOne applies one change in its own transaction when it needs one,
+// then runs the plain (non-durable) hooks.
+func (rt *entityRuntime) commitOne(ctx *ActionContext, ch entityChange) (map[string]any, error) {
+	var record map[string]any
+	err := rt.transact(ctx, rt.needsTx(ch.event), func(q execer) ([]EntityEvent, error) {
+		var (
+			events []EntityEvent
+			err    error
+		)
+		record, events, err = rt.apply(ctx, q, ch)
+		return events, err
+	})
+	if err != nil {
+		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
-		return 0, nil, databaseFailure(err)
-	}
-	o.poke()
-	return n, record, nil
+	rt.fire(ctx, ch.event, record, ch.prev)
+	return record, nil
 }
 
 // loadOn reads a record by id through q (the pool or a transaction), without

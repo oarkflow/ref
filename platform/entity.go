@@ -76,12 +76,16 @@ type EntitySpec struct {
 	// read and get 409 when it moved.
 	Versioned bool `bcl:"versioned"`
 	// Search lists text columns ?q= matches (case-insensitive substring).
-	Search      []string `bcl:"search"`
-	DefaultSort string   `bcl:"default_sort"` // e.g. "-created_at"
-	Limit       int      `bcl:"limit"`
-	MaxLimit    int      `bcl:"max_limit"`
-	Export      bool     `bcl:"export"`
-	Aggregate   bool     `bcl:"aggregate"`
+	Search []string `bcl:"search"`
+	// SearchIndex keeps a token index of the Search columns (lower-cased,
+	// accent-folded words in <table>_search), written in each change's
+	// transaction; ?q= then matches every query word as a word prefix.
+	SearchIndex bool   `bcl:"search_index"`
+	DefaultSort string `bcl:"default_sort"` // e.g. "-created_at"
+	Limit       int    `bcl:"limit"`
+	MaxLimit    int    `bcl:"max_limit"`
+	Export      bool   `bcl:"export"`
+	Aggregate   bool   `bcl:"aggregate"`
 	// Migrate creates the table and indexes at startup (default true).
 	Migrate *bool `bcl:"migrate"`
 
@@ -225,6 +229,9 @@ func compileEntity(spec EntitySpec, dialect string) (*entityPlan, error) {
 			return nil, fmt.Errorf("%s: search column %q must be a text column", where, s)
 		}
 	}
+	if spec.SearchIndex && len(spec.Search) == 0 {
+		return nil, fmt.Errorf("%s: search_index needs search columns", where)
+	}
 	if spec.OrgResource != "" && p.columns[spec.OrgColumn] == nil {
 		return nil, fmt.Errorf("%s: org_column %q must be a declared column", where, spec.OrgColumn)
 	}
@@ -350,6 +357,9 @@ func (p *entityPlan) ddl() []string {
 	if p.spec.TenantScoped {
 		index(false, "tenant_id", "created_at")
 	}
+	if p.spec.SearchIndex {
+		stmts = append(stmts, p.searchDDL()...)
+	}
 	return stmts
 }
 
@@ -433,6 +443,7 @@ func expandEntities(doc Document) (Document, error) {
 		if spec.Aggregate {
 			ops = append(ops, opRoute{"aggregate", "GET", base + "/-/aggregate", 200, false})
 		}
+
 		for _, o := range ops {
 			intent := "entity." + spec.Name + "." + o.op
 			if !intents[intent] {
@@ -508,6 +519,9 @@ func buildEntityOp(build BuildContext, spec NodeSpec) (Action, error) {
 	if slices.ContainsFunc(plan.spec.On, func(h EntityHook) bool { return h.Durable }) {
 		db.enableEntityEvents() // before the background loops start
 	}
+	if plan.spec.SearchIndex {
+		db.registerSearchIndex(plan)
+	}
 	if es.OrgResource != "" {
 		res, ok := build.Resource(es.OrgResource)
 		if !ok {
@@ -540,7 +554,7 @@ func (rt *entityRuntime) run(ctx *ActionContext) (ActionResult, error) {
 	case "list":
 		out, err = rt.list(ctx)
 	case "get":
-		out, err = rt.getOne(ctx, rt.id(ctx), true)
+		out, err = rt.getOne(ctx, rt.db.Reader(), rt.id(ctx), true)
 	case "create":
 		out, err = rt.create(ctx)
 	case "update":
@@ -712,9 +726,16 @@ func (rt *entityRuntime) filters(ctx *ActionContext, args []any, reserved ...str
 			if len(p.spec.Search) == 0 || strings.TrimSpace(raw) == "" {
 				continue
 			}
-			args = append(args, "%"+strings.ToLower(strings.TrimSpace(raw))+"%")
+			if p.spec.SearchIndex {
+				var more []string
+				more, args = p.searchCondition(raw, args)
+				conds = append(conds, more...)
+				continue
+			}
 			var ors []string
 			for _, col := range p.spec.Search {
+				// A placeholder each: MySQL's are positional.
+				args = append(args, "%"+strings.ToLower(strings.TrimSpace(raw))+"%")
 				ors = append(ors, fmt.Sprintf("LOWER(%s) LIKE $%d", col, len(args)))
 			}
 			conds = append(conds, "("+strings.Join(ors, " OR ")+")")
@@ -859,8 +880,8 @@ func (rt *entityRuntime) list(ctx *ActionContext) (any, error) {
 	return map[string]any{"items": items, "total": int(total), "limit": limit, "offset": offset}, nil
 }
 
-// load reads one row within scope (nil, nil when absent).
-func (rt *entityRuntime) load(ctx *ActionContext, id string, columns string) (map[string]any, error) {
+// load reads one row within scope through q (nil, nil when absent).
+func (rt *entityRuntime) load(ctx *ActionContext, q execer, id string, columns string) (map[string]any, error) {
 	if id == "" {
 		return nil, invalidInput("a record id is required")
 	}
@@ -869,7 +890,7 @@ func (rt *entityRuntime) load(ctx *ActionContext, id string, columns string) (ma
 		return nil, err
 	}
 	stmt := fmt.Sprintf("SELECT %s FROM %s WHERE %s", columns, rt.plan.table, strings.Join(append([]string{"id = $1"}, conds...), " AND "))
-	rows, err := queryRows(ctx.Context, rt.db.Reader(), rebind(rt.db.Dialect, stmt), args)
+	rows, err := queryRows(ctx.Context, q, rebind(rt.db.Dialect, stmt), args)
 	if err != nil {
 		return nil, databaseFailure(err)
 	}
@@ -879,8 +900,8 @@ func (rt *entityRuntime) load(ctx *ActionContext, id string, columns string) (ma
 	return rt.decode(rows[0]), nil
 }
 
-func (rt *entityRuntime) getOne(ctx *ActionContext, id string, check bool) (map[string]any, error) {
-	rec, err := rt.load(ctx, id, rt.selectList())
+func (rt *entityRuntime) getOne(ctx *ActionContext, q execer, id string, check bool) (map[string]any, error) {
+	rec, err := rt.load(ctx, q, id, rt.selectList())
 	if err != nil {
 		return nil, err
 	}
@@ -1150,21 +1171,30 @@ func (rt *entityRuntime) create(ctx *ActionContext) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	rec, err := rt.validate(body, true)
+	ch, err := rt.prepareCreate(ctx, body)
 	if err != nil {
 		return nil, err
 	}
+	return rt.commitOne(ctx, ch)
+}
+
+// prepareCreate validates a submitted record and builds its insert.
+func (rt *entityRuntime) prepareCreate(ctx *ActionContext, body map[string]any) (entityChange, error) {
+	rec, err := rt.validate(body, true)
+	if err != nil {
+		return entityChange{}, err
+	}
 	if err := rt.checkOrg(ctx, rec); err != nil {
-		return nil, err
+		return entityChange{}, err
 	}
 	if rt.hasRowConditions("create") {
 		if err := rt.allowed(ctx, "create", rec); err != nil {
-			return nil, err
+			return entityChange{}, err
 		}
 	}
 	p := rt.plan
 	if p.spec.TenantScoped && ctx.TenantID == "" {
-		return nil, permissionDenied("this data is tenant-scoped but no tenant could be determined for the request")
+		return entityChange{}, permissionDenied("this data is tenant-scoped but no tenant could be determined for the request")
 	}
 	now := ctx.Now.UTC().Format(time.RFC3339Nano)
 	if ctx.Now.IsZero() {
@@ -1189,35 +1219,40 @@ func (rt *entityRuntime) create(ctx *ActionContext) (any, error) {
 		ph[i] = fmt.Sprintf("$%d", i+1)
 	}
 	stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", p.table, strings.Join(cols, ", "), strings.Join(ph, ", "))
-	_, created, err := rt.write(ctx, "created", stmt, args, nil, func(q execer) (map[string]any, error) { return rt.loadOn(ctx, q, id) })
-	if err != nil {
-		return nil, err
-	}
-	rt.fire(ctx, "created", created, nil)
-	return created, nil
+	return entityChange{event: "created", id: id, stmt: stmt, args: args}, nil
 }
 
 func (rt *entityRuntime) update(ctx *ActionContext) (any, error) {
-	id := rt.id(ctx)
 	body, err := rt.body(ctx)
 	if err != nil {
 		return nil, err
 	}
-	prev, err := rt.getOne(ctx, id, false)
+	ch, err := rt.prepareUpdate(ctx, rt.db.Reader(), rt.id(ctx), body)
 	if err != nil {
 		return nil, err
 	}
+	return rt.commitOne(ctx, ch)
+}
+
+// prepareUpdate reads the record through q, checks the caller may change it,
+// validates the changes and builds the update. A versioned update matches
+// the version the caller read, so a concurrent change affects no row.
+func (rt *entityRuntime) prepareUpdate(ctx *ActionContext, q execer, id string, body map[string]any) (entityChange, error) {
+	prev, err := rt.getOne(ctx, q, id, false)
+	if err != nil {
+		return entityChange{}, err
+	}
 	if rt.hasRowConditions("update") {
 		if err := rt.allowed(ctx, "update", prev); err != nil {
-			return nil, err
+			return entityChange{}, err
 		}
 	}
 	changes, err := rt.validate(body, false)
 	if err != nil {
-		return nil, err
+		return entityChange{}, err
 	}
 	if err := rt.checkOrg(ctx, changes); err != nil {
-		return nil, err
+		return entityChange{}, err
 	}
 	p := rt.plan
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -1234,7 +1269,7 @@ func (rt *entityRuntime) update(ctx *ActionContext) (any, error) {
 	if p.spec.Versioned {
 		want, ok := ToFloat(body["version"])
 		if !ok {
-			return nil, entityInvalid("version is required", []any{map[string]any{"path": "version", "rule": "required", "message": "send the version you read"}})
+			return entityChange{}, entityInvalid("version is required", []any{map[string]any{"path": "version", "rule": "required", "message": "send the version you read"}})
 		}
 		sets = append(sets, "version = version + 1")
 		args = append(args, int64(want))
@@ -1242,33 +1277,35 @@ func (rt *entityRuntime) update(ctx *ActionContext) (any, error) {
 	}
 	scoped, args, err := rt.scope(ctx, args)
 	if err != nil {
-		return nil, err
+		return entityChange{}, err
 	}
 	conds = append(conds, scoped...)
 	stmt := fmt.Sprintf("UPDATE %s SET %s WHERE %s", p.table, strings.Join(sets, ", "), strings.Join(conds, " AND "))
-	n, updated, err := rt.write(ctx, "updated", stmt, args, prev, func(q execer) (map[string]any, error) { return rt.loadOn(ctx, q, id) })
-	if err != nil {
-		return nil, err
-	}
-	if n == 0 {
-		if p.spec.Versioned {
-			return nil, conflict("%s %s was changed by someone else; reload and try again", p.spec.Name, id)
-		}
-		return nil, notFound(p.spec.Name, id)
-	}
-	rt.fire(ctx, "updated", updated, prev)
-	return updated, nil
+	return entityChange{event: "updated", id: id, stmt: stmt, args: args, prev: prev}, nil
 }
 
 func (rt *entityRuntime) delete(ctx *ActionContext) (any, error) {
 	id := rt.id(ctx)
-	prev, err := rt.getOne(ctx, id, false)
+	ch, err := rt.prepareDelete(ctx, rt.db.Reader(), id)
 	if err != nil {
 		return nil, err
 	}
+	if _, err := rt.commitOne(ctx, ch); err != nil {
+		return nil, err
+	}
+	return map[string]any{"deleted": true, "id": id}, nil
+}
+
+// prepareDelete reads the record through q, checks the caller may delete it
+// and builds the (soft or hard) delete.
+func (rt *entityRuntime) prepareDelete(ctx *ActionContext, q execer, id string) (entityChange, error) {
+	prev, err := rt.getOne(ctx, q, id, false)
+	if err != nil {
+		return entityChange{}, err
+	}
 	if rt.hasRowConditions("delete") {
 		if err := rt.allowed(ctx, "delete", prev); err != nil {
-			return nil, err
+			return entityChange{}, err
 		}
 	}
 	p := rt.plan
@@ -1280,20 +1317,12 @@ func (rt *entityRuntime) delete(ctx *ActionContext) (any, error) {
 	}
 	scoped, args, err := rt.scope(ctx, args)
 	if err != nil {
-		return nil, err
+		return entityChange{}, err
 	}
 	if len(scoped) > 0 {
 		stmt += " AND " + strings.Join(scoped, " AND ")
 	}
-	n, _, err := rt.write(ctx, "deleted", stmt, args, prev, func(execer) (map[string]any, error) { return prev, nil })
-	if err != nil {
-		return nil, err
-	}
-	if n == 0 {
-		return nil, notFound(p.spec.Name, id)
-	}
-	rt.fire(ctx, "deleted", prev, prev)
-	return map[string]any{"deleted": true, "id": id}, nil
+	return entityChange{event: "deleted", id: id, stmt: stmt, args: args, prev: prev}, nil
 }
 
 // export returns the filtered rows as CSV (up to 10000).
