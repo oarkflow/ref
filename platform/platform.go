@@ -27,6 +27,7 @@ import (
 	"github.com/oarkflow/ref/health"
 	"github.com/oarkflow/ref/intent"
 	"github.com/oarkflow/ref/invocation"
+	"github.com/oarkflow/ref/money"
 	"github.com/oarkflow/ref/observer"
 	"github.com/oarkflow/ref/process"
 	"github.com/oarkflow/ref/runtime"
@@ -123,6 +124,12 @@ type Platform struct {
 	static []compiledStatic
 
 	flags *flagRegistry
+
+	// currencies is the built-in ISO registry plus the document's currency
+	// blocks; residency is the compiled data-residency policy, nil when the
+	// document declares none.
+	currencies *money.Registry
+	residency  *residencyPlan
 
 	background context.CancelFunc
 	wg         sync.WaitGroup
@@ -268,6 +275,12 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 	if err := validateRoles(doc.Roles); err != nil {
 		return nil, err
 	}
+	if p.currencies, err = compileCurrencies(doc); err != nil {
+		return nil, err
+	}
+	if doc, err = resolveEntityCurrencies(doc, p.currencies); err != nil {
+		return nil, err
+	}
 	doc = applyFamilyDefaults(doc, opts.Registry)
 	if doc, err = expandEntities(doc); err != nil {
 		return nil, err
@@ -275,12 +288,16 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 	if err := validateDocument(doc, opts.Registry); err != nil {
 		return nil, err
 	}
+	publishCurrencies(doc, p.currencies)
 	// The model is published here, before anything compiles against it, because a
 	// composite node (flow.branch, a process step) has to resolve a cross-reference
 	// to another intent while it is being built. Publishing it at the end would
 	// leave every such lookup reading an empty document.
 	p.Document = publicDocument(doc)
 	if err := p.openResources(ctx, doc, opts.Registry); err != nil {
+		return nil, err
+	}
+	if p.residency, err = compileResidency(doc, p.resources); err != nil {
 		return nil, err
 	}
 	if p.flags, err = compileFlags(doc, p.resources); err != nil {
@@ -826,6 +843,7 @@ func (p *Platform) compileNode(registry *Registry, build BuildContext, spec Inte
 	if err != nil {
 		return err
 	}
+	residency := p.residency.guardFor(spec.Name, nodeSpec, registry)
 
 	onError := strings.ToLower(strings.TrimSpace(nodeSpec.OnError))
 	switch onError {
@@ -914,6 +932,9 @@ func (p *Platform) compileNode(registry *Registry, build BuildContext, spec Inte
 			nc.Decisions().RecordAllow(reg.Name, nil)
 		}
 
+		if err := p.residencyCheck(residency, actionCtx); err != nil {
+			return err
+		}
 		result, err := p.runNodeAction(actionCtx, action, node, retry, nodeTimeout)
 		if err != nil {
 			if onError == "continue" {
@@ -1200,6 +1221,9 @@ func validateDocument(doc Document, registry *Registry) error {
 		}
 	}
 
+	if err := validateResidency(doc, resources, intents); err != nil {
+		return err
+	}
 	if err := validateRouteSpecs(doc, resources, intents, processes); err != nil {
 		return err
 	}

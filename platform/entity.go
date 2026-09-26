@@ -127,6 +127,14 @@ type EntityColumn struct {
 	ReadOnly  bool `bcl:"read_only"`
 	Immutable bool `bcl:"immutable"`
 	Hidden    bool `bcl:"hidden"`
+
+	// Currency makes a decimal column a money column: its scale is the
+	// currency's minor units (2 for NPR, 0 for JPY, 3 for KWD). The kind
+	// defaults to decimal.
+	Currency string `bcl:"currency"`
+	// currencyResolved records that Scale was set from the document's
+	// currency registry, which may define currencies the built-in one lacks.
+	currencyResolved bool
 }
 
 // EntityAccess allows an operation: list, get, create, update, delete,
@@ -211,6 +219,11 @@ func compileEntity(spec EntitySpec, dialect string) (*entityPlan, error) {
 		if !identRe.MatchString(col.Name) || slices.Contains(p.system, col.Name) || p.columns[col.Name] != nil {
 			return nil, fmt.Errorf("%s: column %q: invalid, reserved or duplicate name", where, col.Name)
 		}
+		if col.Currency != "" {
+			if err := resolveColumnCurrency(col); err != nil {
+				return nil, fmt.Errorf("%s: column %q: %w", where, col.Name, err)
+			}
+		}
 		if col.Kind == "" {
 			col.Kind = "text"
 		}
@@ -218,7 +231,7 @@ func compileEntity(spec EntitySpec, dialect string) (*entityPlan, error) {
 			return nil, fmt.Errorf("%s: column %q: kind %q is not text, integer, number, decimal, boolean, date, datetime, email or json", where, col.Name, col.Kind)
 		}
 		if col.Kind == "decimal" {
-			if col.Scale == 0 {
+			if col.Scale == 0 && col.Currency == "" {
 				col.Scale = 2
 			}
 			if col.Scale < 0 || col.Scale > 8 {

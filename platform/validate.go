@@ -85,6 +85,15 @@ func Validate(ctx context.Context, src []byte, baseDir string, opts LoadOptions)
 	_, err := compileSchemas(doc.Shapes)
 	fail(err)
 	fail(validateRoles(doc.Roles))
+	if currencies, err := compileCurrencies(doc); err != nil {
+		fail(err)
+	} else {
+		resolved, err := resolveEntityCurrencies(doc, currencies)
+		fail(err)
+		if err == nil {
+			doc = resolved
+		}
+	}
 	doc = applyFamilyDefaults(doc, opts.Registry)
 	expanded, err := expandEntities(doc)
 	fail(err)
