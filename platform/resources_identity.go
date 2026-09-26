@@ -425,6 +425,54 @@ func (d *IdentityDirectory) isGlobal(p Principal) bool {
 	return false
 }
 
+// globalInDatabase reports whether actor is a global administrator according
+// to the database: the token claims a global role, the account is active and
+// the membership the token was issued for (any membership when the token names
+// no tenant) still holds a global role.
+func (d *IdentityDirectory) globalInDatabase(ctx context.Context, actor Principal) (bool, error) {
+	if actor.ID == "" || !d.isGlobal(actor) {
+		return false, nil
+	}
+	user, err := d.UserByID(ctx, actor.ID)
+	if err != nil || user == nil || user.Status != UserActive {
+		return false, err
+	}
+	memberships, err := d.Memberships(ctx, d.db.DB, actor.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, m := range memberships {
+		if actor.TenantID != "" && m.TenantID != actor.TenantID {
+			continue
+		}
+		for _, r := range m.Roles {
+			if slices.Contains(d.globalRoles, r) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// VerifiedPrincipal returns actor with its global roles removed unless the
+// database still grants one, so the operations that follow Authorize never
+// act on a stale global claim.
+func (d *IdentityDirectory) VerifiedPrincipal(ctx context.Context, actor Principal) (Principal, error) {
+	if !d.isGlobal(actor) {
+		return actor, nil
+	}
+	global, err := d.globalInDatabase(ctx, actor)
+	if err != nil {
+		return actor, databaseFailure(err)
+	}
+	if global {
+		return actor, nil
+	}
+	out := actor
+	out.Roles = slices.DeleteFunc(slices.Clone(actor.Roles), func(r string) bool { return slices.Contains(d.globalRoles, r) })
+	return out, nil
+}
+
 const identityUserColumns = "id, email, name, password_hash, status, mfa_enabled, mfa_secret, failed_logins, locked_until, created_at, updated_at, last_login"
 
 func userFromRow(row map[string]any) *IdentityUser {
@@ -711,11 +759,19 @@ func (d *IdentityDirectory) ChangePassword(ctx context.Context, userID, current,
 // Authorize checks that actor administers tenant: a global role, or an admin
 // role in the actor's current membership of that tenant (read from the
 // database, so a demotion takes effect immediately).
+//
+// A global role counts only while the database still backs it: the token's
+// roles are a snapshot from sign-in, so a demoted or suspended operator would
+// otherwise keep administering every tenant until the token expired.
 func (d *IdentityDirectory) Authorize(ctx context.Context, actor Principal, tenant string) error {
 	if actor.ID == "" {
 		return errUnauthenticated
 	}
-	if d.isGlobal(actor) {
+	global, err := d.globalInDatabase(ctx, actor)
+	if err != nil {
+		return databaseFailure(err)
+	}
+	if global {
 		return nil
 	}
 	if tenant == "" {

@@ -13,10 +13,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/smtp"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/oarkflow/ref/intent"
@@ -179,7 +182,7 @@ func openHTTPService(_ context.Context, spec ResourceSpec) (Resource, io.Closer,
 		service.signSecret = []byte(secret)
 	}
 
-	transport, err := buildTransport(spec)
+	transport, err := buildTransport(spec, service.allowPrivate)
 	if err != nil {
 		return nil, nil, fmt.Errorf("resource %q: %w", spec.Name, err)
 	}
@@ -205,7 +208,7 @@ func openHTTPService(_ context.Context, spec ResourceSpec) (Resource, io.Closer,
 	return service, nil, nil
 }
 
-func buildTransport(spec ResourceSpec) (http.RoundTripper, error) {
+func buildTransport(spec ResourceSpec, allowPrivate bool) (http.RoundTripper, error) {
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 	configured := false
 
@@ -237,12 +240,101 @@ func buildTransport(spec ResourceSpec) (http.RoundTripper, error) {
 		tlsConfig.InsecureSkipVerify = true
 		configured = true
 	}
-	if !configured {
-		return http.DefaultTransport, nil
-	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = tlsConfig
+	if configured {
+		transport.TLSClientConfig = tlsConfig
+	}
+	if !allowPrivate {
+		guardDialer(transport)
+	}
 	return transport, nil
+}
+
+// guardDialer makes the private-network check part of the connection itself.
+// checkHost resolves the name before the request, but the transport resolves
+// it again when it dials, so a DNS record that changes in between (DNS
+// rebinding) would slip a private address past a check made only up front.
+// The dialer's Control hook sees the exact address being connected to, after
+// resolution, and refuses a private one.
+//
+// A proxy the operator configured (HTTP_PROXY and friends) is exempt: the
+// connection goes to the proxy, which may well sit on a private network, and
+// the destination name was already checked against the allowlist.
+func guardDialer(transport *http.Transport) {
+	var proxies sync.Map // "host:port" of every proxy the transport picked
+	if proxy := transport.Proxy; proxy != nil {
+		transport.Proxy = func(req *http.Request) (*url.URL, error) {
+			u, err := proxy(req)
+			if err == nil && u != nil {
+				proxies.Store(proxyAddress(u), struct{}{})
+			}
+			return u, err
+		}
+	}
+	open := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	guarded := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second, Control: refusePrivateDial}
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if _, isProxy := proxies.Load(addr); isProxy {
+			return open.DialContext(ctx, network, addr)
+		}
+		return guarded.DialContext(ctx, network, addr)
+	}
+}
+
+func proxyAddress(u *url.URL) string {
+	if u.Port() != "" {
+		return u.Host
+	}
+	port := "80"
+	switch u.Scheme {
+	case "https":
+		port = "443"
+	case "socks5", "socks5h":
+		port = "1080"
+	}
+	return net.JoinHostPort(u.Hostname(), port)
+}
+
+// refusePrivateDial is a net.Dialer Control hook: address is the resolved
+// IP:port about to be connected to.
+func refusePrivateDial(network, address string, _ syscall.RawConn) error {
+	addrPort, err := netip.ParseAddrPort(address)
+	if err != nil {
+		return fmt.Errorf("refusing to dial %q: %w", address, err)
+	}
+	if privateAddress(addrPort.Addr()) {
+		return fmt.Errorf("refusing to dial the private address %s; set allow_private_networks to permit this", addrPort.Addr())
+	}
+	return nil
+}
+
+// nonPublicPrefixes are the ranges netip's predicates do not already cover.
+var nonPublicPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),     // "this network"
+	netip.MustParsePrefix("100.64.0.0/10"), // carrier-grade NAT (RFC 6598)
+	netip.MustParsePrefix("192.0.0.0/24"),  // IETF protocol assignments
+	netip.MustParsePrefix("198.18.0.0/15"), // benchmarking
+	netip.MustParsePrefix("240.0.0.0/4"),   // reserved, and broadcast
+	netip.MustParsePrefix("::/96"),         // IPv4-compatible (deprecated)
+	netip.MustParsePrefix("fec0::/10"),     // site-local (deprecated)
+}
+
+// privateAddress reports whether ip is anything but a public unicast address:
+// loopback, RFC 1918 and unique-local, link-local, multicast, unspecified,
+// CGNAT and reserved ranges. An IPv4-mapped IPv6 address (::ffff:127.0.0.1)
+// is judged as the IPv4 address it carries.
+func privateAddress(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	if !ip.IsValid() || ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() || ip.IsMulticast() {
+		return true
+	}
+	for _, prefix := range nonPublicPrefixes {
+		if prefix.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // Do performs one request, applying the allowlist, retries and size limit.
@@ -381,7 +473,8 @@ func (s *HTTPService) resolve(raw string) (*url.URL, error) {
 }
 
 // checkHost enforces the allowlist and, unless explicitly permitted, refuses
-// private and loopback destinations.
+// private and loopback destinations. This is the early, friendly refusal; the
+// dialer (guardDialer) enforces the same rule on the address actually dialed.
 //
 // The address check matters as much as the name check: an allowlisted hostname
 // whose DNS record points at 169.254.169.254 would otherwise reach a cloud
@@ -399,7 +492,7 @@ func (s *HTTPService) checkHost(target *url.URL) error {
 		return fmt.Errorf("resolve %q: %w", host, err)
 	}
 	for _, address := range addresses {
-		if address.IsLoopback() || address.IsPrivate() || address.IsLinkLocalUnicast() || address.IsUnspecified() {
+		if ip, ok := netip.AddrFromSlice(address); !ok || privateAddress(ip) {
 			return fmt.Errorf("host %q resolves to the private address %s; set allow_private_networks to permit this", host, address)
 		}
 	}
