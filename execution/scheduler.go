@@ -71,6 +71,14 @@ func (c *execCancelCtx) Done() <-chan struct{} {
 	return done
 }
 
+// observed reports whether Done was called, i.e. whether something may
+// still be watching this context.
+func (c *execCancelCtx) observed() bool {
+	c.doneMu.Lock()
+	defer c.doneMu.Unlock()
+	return c.doneCtx != nil
+}
+
 func (c *execCancelCtx) cancelExecution() {
 	c.doneMu.Lock()
 	canceled := c.canceled.Swap(true)
@@ -156,6 +164,9 @@ type ExecutionOutcome struct {
 	Err     error
 	Effects []any
 	Meta    any
+	// DenyReason is the message of the first deny (StateDenied), for the
+	// caller: a decision node's configured denial message.
+	DenyReason string
 }
 
 // NodeExecutor is the executable callback for a graph node.
@@ -292,6 +303,7 @@ func ReleaseOutcome(out *ExecutionOutcome) {
 	out.Err = nil
 	out.Effects = nil
 	out.Meta = nil
+	out.DenyReason = ""
 	outcomePool.Put(out)
 }
 
@@ -888,8 +900,17 @@ func (s *Scheduler) execute(
 		}
 		fact.ReleaseStore(es.facts)
 		ReleaseDecisionSet(es.decisions)
+		// A context derived from specCtx during the execution (database/sql
+		// and net/http create them) keeps a goroutine that, once Done fires,
+		// reads specCtx.Err. Reused for another execution, specCtx would
+		// report that execution's live parent (nil) and the goroutine panics
+		// with "missing cancel error". So once Done was handed out, es is
+		// left to the garbage collector instead of the pool.
+		observed := es.specCtx.observed()
 		es.reset()
-		execStatePool.Put(es)
+		if !observed {
+			execStatePool.Put(es)
+		}
 	}()
 
 	// Acquire pooled nodeState slice
@@ -1042,6 +1063,7 @@ func (s *Scheduler) execute(
 				out := AcquireOutcome()
 				if es.decisions.Verdict() == VerdictDeny {
 					out.State = StateDenied
+					out.DenyReason = es.decisions.DenyReason()
 				} else {
 					out.State = StateFailed
 				}
@@ -1056,6 +1078,7 @@ func (s *Scheduler) execute(
 				es.reportFinish(nil)
 				out := AcquireOutcome()
 				out.State = StateDenied
+				out.DenyReason = es.decisions.DenyReason()
 				out.Effects = es.allEffects
 				return out, nil
 			}
@@ -1084,6 +1107,7 @@ finished:
 		out := AcquireOutcome()
 		if es.decisions.Verdict() == VerdictDeny {
 			out.State = StateDenied
+			out.DenyReason = es.decisions.DenyReason()
 		} else {
 			out.State = StateFailed
 		}
@@ -1099,6 +1123,7 @@ finished:
 	if stuckGated || es.decisions.Verdict() == VerdictDeny {
 		outcome := AcquireOutcome()
 		outcome.State = StateDenied
+		outcome.DenyReason = es.decisions.DenyReason()
 		outcome.Effects = es.allEffects
 		es.reportFinish(nil)
 		return outcome, nil

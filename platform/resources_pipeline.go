@@ -14,10 +14,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/oarkflow/ref/hierarchy"
 	"github.com/oarkflow/ref/pipeline"
+	"github.com/oarkflow/ref/platform/spi"
 )
 
 // PipelineCases is the pipeline.cases resource: it runs the document's
@@ -31,12 +33,37 @@ import (
 // the expression language, intents as automation hooks, org.hierarchy lookups
 // as field options, jurisdiction-scoped work queues, and signed certificates.
 type PipelineCases struct {
-	name           string
-	store          pipeline.Store
+	name  string
+	store pipeline.Store
+	// outbox is the store's durable event outbox when any pipeline declares
+	// event hooks; nudge wakes the dispatcher after a commit.
+	outbox pipeline.Outbox
+	nudge  chan struct{}
+	// maxAttempts and retryBase tune hook retries (default 10 attempts,
+	// backoff 2s doubling to at most 10 minutes).
+	maxAttempts    int
+	retryBase      time.Duration
 	engines        map[string]*pipeline.Engine
 	order          []string
 	org            *OrgHierarchy
 	allowAnonymous bool
+	// notify stores notification preferences and planned notifications when
+	// any pipeline declares notify rules; channels maps each notification
+	// channel to the intent that delivers it.
+	notify   pipeline.NotifyStore
+	channels map[string]string
+	// skew shifts the resource's clock (tests of quiet hours and digests).
+	skew atomic.Int64
+	// files stores uploads of file inputs (nil: file inputs take plain
+	// references and pipeline.upload / pipeline.file are unavailable);
+	// filePrefix prefixes every object key.
+	files      spi.ObjectStore
+	filePrefix string
+}
+
+// now is the resource's clock.
+func (p *PipelineCases) now() time.Time {
+	return time.Now().Add(time.Duration(p.skew.Load())).UTC()
 }
 
 // pipelineDefinitionsKey is the config key the compiler injects the
@@ -54,16 +81,25 @@ func registerPipelineResources(r *Registry) {
 			{Name: "table_prefix", Type: "string", Default: "pipeline_"},
 			{Name: "migrate", Type: "bool", Default: "true", Summary: "Create the tables at startup"},
 			{Name: "signing_secret", Type: "string", Summary: "HMAC key that signs issued certificates and external links (use env.required(...)); without it certificates carry a content hash only"},
+			{Name: "signer", Type: "resource", Summary: "crypto.signer that also signs certificates asymmetrically (Ed25519/RSA), verifiable offline against its JWKS"},
 			{Name: "seal_secret", Type: "string", Summary: "Key that encrypts sealed inputs (AES-256-GCM); required when a pipeline declares sealed inputs"},
 			{Name: "org_resource", Type: "string", Summary: "org.hierarchy resource: resolves `lookup` inputs and scopes work queues to the caller's jurisdiction"},
 			{Name: "allow_anonymous", Type: "bool", Default: "false", Summary: "Let anonymous callers start public pipelines; they get an access key to return to their case"},
+			{Name: "event_max_attempts", Type: "int", Default: "10", Summary: "Attempts before an event hook is dead-lettered"},
+			{Name: "event_retry_base", Type: "duration", Default: "2s", Summary: "First retry delay of a failed event hook (doubles, at most 10m)"},
+			{Name: "notify_channels", Type: "map", Summary: "Notification channels of the pipelines' notify rules: channel name -> intent that delivers a message ({channel, user, subject, body, digest, items})"},
+			{Name: "storage", Type: "resource", Summary: "storage.* resource that holds uploads of file inputs; with it, file inputs take uploads only (pipeline.upload) and are served checksum-verified (pipeline.file)"},
+			{Name: "storage_prefix", Type: "string", Default: "pipeline/", Summary: "Prefix of every upload's object key"},
+			{Name: "max_upload_bytes", Type: "int", Default: "10485760", Summary: "Largest upload for a file input without its own max_bytes"},
+			{Name: "confirm_ttl", Type: "duration", Default: "30m", Summary: "How long a confirm_submit review token stays valid"},
 		},
 	})
 }
 
 func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("pipeline.cases", spec.Config,
-		"pipelines", "database", "table_prefix", "migrate", "signing_secret", "seal_secret", "org_resource", "allow_anonymous",
+		"pipelines", "database", "table_prefix", "migrate", "signing_secret", "signer", "seal_secret", "org_resource", "allow_anonymous",
+		"event_max_attempts", "event_retry_base", "notify_channels", "storage", "storage_prefix", "max_upload_bytes", "confirm_ttl",
 		pipelineDefinitionsKey); err != nil {
 		return nil, nil, err
 	}
@@ -81,7 +117,17 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 	if len(names) == 0 {
 		return nil, nil, fmt.Errorf("pipeline.cases %q: the document declares no pipeline blocks", spec.Name)
 	}
+	maxAttempts, err := configInt(spec.Config, "event_max_attempts", pipeline.MaxAttempts)
+	if err != nil {
+		return nil, nil, err
+	}
+	retryBase, err := configDuration(spec.Config, "event_retry_base", 2*time.Second)
+	if err != nil {
+		return nil, nil, err
+	}
 	p := &PipelineCases{
+		maxAttempts:    max(1, maxAttempts),
+		retryBase:      retryBase,
 		name:           spec.Name,
 		engines:        make(map[string]*pipeline.Engine, len(names)),
 		allowAnonymous: configBool(spec.Config, "allow_anonymous", false),
@@ -93,7 +139,26 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 		}
 		p.org = org
 	}
+	if storeName := configString(spec.Config, "storage", ""); storeName != "" {
+		files, ok := spec.resolved[storeName].(spi.ObjectStore)
+		if !ok {
+			return nil, nil, fmt.Errorf("pipeline.cases %q: storage %q is not a storage resource", spec.Name, storeName)
+		}
+		p.files, p.filePrefix = files, configString(spec.Config, "storage_prefix", "pipeline/")
+	}
+	maxUpload, err := configInt64(spec.Config, "max_upload_bytes", pipeline.DefaultMaxUploadBytes)
+	if err != nil {
+		return nil, nil, err
+	}
+	confirmTTL, err := configDuration(spec.Config, "confirm_ttl", 30*time.Minute)
+	if err != nil {
+		return nil, nil, err
+	}
 	key := []byte(configString(spec.Config, "signing_secret", ""))
+	signer, err := requireSigner(spec, "signer")
+	if err != nil {
+		return nil, nil, err
+	}
 	sealKey := []byte(configString(spec.Config, "seal_secret", ""))
 	for _, name := range names {
 		def, ok := byName[name]
@@ -121,8 +186,19 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 		engine.Automation = pipelineAutomation{}
 		engine.StageHook = pipelineStageHook
 		engine.SigningKey = key
+		if signer != nil {
+			engine.Signer = signer.keys
+		}
 		engine.SealKey = sealKey
 		engine.Workload = p.workload
+		engine.MaxUploadBytes = maxUpload
+		engine.ConfirmTTL = confirmTTL
+		if p.files != nil {
+			engine.ManagedFiles = true
+			if form, input := repeatableFileInput(&def); form != "" {
+				return nil, nil, fmt.Errorf("pipeline.cases %q: pipeline %q: form %q is repeatable and has file input %q; uploads need a non-repeatable form", spec.Name, name, form, input)
+			}
+		}
 		if p.org != nil {
 			engine.Lookup = p.lookup
 			engine.OrgCovers = p.orgCovers
@@ -133,9 +209,16 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 		p.engines[name] = engine
 		p.order = append(p.order, name)
 	}
+	if err := p.configureChannels(spec); err != nil {
+		return nil, nil, err
+	}
 
 	if configString(spec.Config, "database", "") == "" {
-		p.store = pipeline.NewMemoryStore()
+		mem := pipeline.NewMemoryStore()
+		mem.Record = p.recordFilter()
+		p.store = mem
+		p.useOutbox(mem, mem.Record != nil)
+		p.useNotify(mem)
 		return p, nil, nil
 	}
 	db, err := requireSQLHandle(spec, "database")
@@ -151,8 +234,154 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 			return nil, nil, fmt.Errorf("pipeline.cases %q: migrate: %w", spec.Name, err)
 		}
 	}
+	store.Record = p.recordFilter()
 	p.store = store
+	p.useOutbox(store, store.Record != nil)
+	p.useNotify(store)
 	return p, nil, nil
+}
+
+// recordFilter selects the events some pipeline hook listens to (nil when no
+// pipeline declares hooks, so nothing is written to the outbox).
+func (p *PipelineCases) recordFilter() func(pipeline.Event) bool {
+	var patterns []string
+	for _, name := range p.order {
+		for _, h := range p.engines[name].C.Def.On {
+			patterns = append(patterns, h.Event)
+		}
+		for _, n := range p.engines[name].C.Def.Notify {
+			patterns = append(patterns, n.Event)
+		}
+	}
+	if len(patterns) == 0 {
+		return nil
+	}
+	return func(ev pipeline.Event) bool {
+		return slices.ContainsFunc(patterns, func(pat string) bool { return eventMatches(pat, ev.Name) })
+	}
+}
+
+func (p *PipelineCases) useOutbox(o pipeline.Outbox, enabled bool) {
+	if enabled {
+		p.outbox = o
+		p.nudge = make(chan struct{}, 1)
+	}
+}
+
+// runBackground delivers outbox events until ctx ends: woken by commits,
+// and polling so retries and other replicas' events are picked up.
+func (p *PipelineCases) runBackground(ctx context.Context, platform *Platform) {
+	if p.outbox == nil && p.notify == nil {
+		return
+	}
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		for p.outbox != nil && p.deliver(ctx, platform) > 0 {
+		}
+		if p.notify != nil {
+			p.flushNotifications(ctx, platform)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		case <-p.nudge:
+		}
+	}
+}
+
+// deliver runs one batch of due events and returns how many it claimed.
+func (p *PipelineCases) deliver(ctx context.Context, platform *Platform) int {
+	now := time.Now()
+	events, err := p.outbox.ClaimEvents(ctx, 50, time.Minute, now)
+	if err != nil {
+		if ctx.Err() == nil { // shutting down is not a failure
+			slog.Warn("pipeline outbox claim failed", "resource", p.name, "error", err)
+		}
+		return 0
+	}
+	for _, ev := range events {
+		if ctx.Err() != nil {
+			break // shutting down: the lease lapses and another dispatcher takes the rest
+		}
+		err := p.deliverOne(ctx, platform, ev)
+		if err != nil && ctx.Err() != nil {
+			break // interrupted by shutdown, not a failed attempt
+		}
+		// Record the outcome even when shutdown began meanwhile: hooks that
+		// ran must be acknowledged, or they run again after the lease.
+		sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		switch {
+		case err == nil:
+			err = p.outbox.AckEvent(sctx, ev.ID)
+		case ev.Attempts+1 >= p.maxAttempts:
+			slog.Error("pipeline event dead-lettered", "resource", p.name, "event", ev.Event.Name, "case", ev.CaseID, "error", err)
+			err = p.outbox.RetryEvent(sctx, ev.ID, now, true, err.Error())
+		default:
+			err = p.outbox.RetryEvent(sctx, ev.ID, now.Add(p.backoff(ev.Attempts+1)), false, err.Error())
+		}
+		scancel()
+		if err != nil {
+			slog.Warn("pipeline outbox update failed", "resource", p.name, "event", ev.ID, "error", err)
+		}
+	}
+	return len(events)
+}
+
+// backoff is the delay before retry n: retryBase doubling, at most 10m.
+func (p *PipelineCases) backoff(n int) time.Duration {
+	d := p.retryBase
+	for i := 1; i < n && d < 10*time.Minute; i++ {
+		d *= 2
+	}
+	return min(d, 10*time.Minute)
+}
+
+// deliverOne runs the hooks of one event against the case's current state.
+// Every matching hook must succeed for the event to be acknowledged, so a
+// hook should be idempotent (it may run again after a partial failure).
+func (p *PipelineCases) deliverOne(ctx context.Context, platform *Platform, ev pipeline.OutboxEvent) error {
+	e, ok := p.engines[ev.Pipeline]
+	if !ok {
+		return nil // pipeline removed: nothing to do
+	}
+	c, err := p.store.Get(ctx, ev.CaseID)
+	if errors.Is(err, pipeline.ErrNotFound) {
+		return nil // case purged
+	}
+	if err != nil {
+		return err
+	}
+	// Notifications are planned first: storing them is idempotent, so a
+	// retry after a failing hook never duplicates them.
+	if err := p.planNotifications(ctx, e, c, ev); err != nil {
+		return fmt.Errorf("notifications: %w", err)
+	}
+	for _, hook := range e.C.Def.On {
+		if !eventMatches(hook.Event, ev.Event.Name) || (hook.Stage != "" && hook.Stage != ev.Event.Stage) {
+			continue
+		}
+		input := hookInput(c, ev.Event.Stage, "")
+		input["event"] = map[string]any{"id": ev.ID, "name": ev.Event.Name, "stage": ev.Event.Stage, "actor": ev.Event.Actor,
+			"at": ev.Event.At.Format(time.RFC3339), "detail": ev.Event.Detail, "attempt": ev.Attempts + 1}
+		if hook.When != "" {
+			env := map[string]any{}
+			maps.Copy(env, c.Data)
+			maps.Copy(env, input)
+			ok, err := e.Eval.Eval(hook.When, env)
+			if err != nil || !Truthy(ok) {
+				continue
+			}
+		}
+		hctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		_, err := platform.CallIntent(hctx, hook.Hook, input, nil)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("hook %s: %w", hook.Hook, err)
+		}
+	}
+	return nil
 }
 
 // Engine returns the engine for a pipeline ("" = the only/first one).
@@ -181,6 +410,33 @@ func (p *PipelineCases) lookup(set string, c *pipeline.Case) []pipeline.Option {
 	return out
 }
 
+// repeatableFileInput names a file input of a repeatable form, if any.
+func repeatableFileInput(def *pipeline.Definition) (string, string) {
+	catalog := map[string]pipeline.Input{}
+	for _, in := range def.Inputs {
+		catalog[in.Name] = in
+	}
+	forms := slices.Clone(def.Forms)
+	for _, st := range def.Stages {
+		forms = append(forms, st.Forms...)
+	}
+	for _, f := range forms {
+		if !f.Repeatable {
+			continue
+		}
+		inputs := slices.Clone(f.Inputs)
+		for _, name := range f.Fields {
+			inputs = append(inputs, catalog[name])
+		}
+		for _, in := range inputs {
+			if in.Kind == pipeline.KindFile {
+				return f.Name, in.Name
+			}
+		}
+	}
+	return "", ""
+}
+
 func hasSealed(def *pipeline.Definition) bool {
 	check := func(inputs []pipeline.Input) bool {
 		return slices.ContainsFunc(inputs, func(in pipeline.Input) bool { return in.Sealed })
@@ -206,12 +462,11 @@ func hasSealed(def *pipeline.Definition) bool {
 // workload counts each worker's open assignments across the pipeline's open
 // cases, from the store — so capacity holds across replicas.
 func (p *PipelineCases) workload(ctx context.Context, name string) (map[string]pipeline.Load, error) {
-	cases, err := p.store.List(ctx, pipeline.Query{Pipeline: name, Statuses: []string{pipeline.CaseDraft, pipeline.CaseInProgress, pipeline.CaseReturned}, Limit: 5000})
-	if err != nil {
-		return nil, err
+	if counter, ok := p.store.(pipeline.WorkloadCounter); ok {
+		return counter.Workload(ctx, name)
 	}
 	out := map[string]pipeline.Load{}
-	for _, c := range cases {
+	err := p.eachCase(ctx, pipeline.Query{Pipeline: name, Statuses: []string{pipeline.CaseDraft, pipeline.CaseInProgress, pipeline.CaseReturned}}, func(c *pipeline.Case) bool {
 		for _, ss := range c.Stages {
 			if ss.Assignee == "" || ss.AssignedAt == nil {
 				continue
@@ -223,6 +478,10 @@ func (p *PipelineCases) workload(ctx context.Context, name string) (map[string]p
 			}
 			out[ss.Assignee] = l
 		}
+		return true
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -238,7 +497,15 @@ func (p *PipelineCases) orgCovers(units []string, unit string) bool {
 // never undoes the change.
 func (p *PipelineCases) dispatch(ctx context.Context, e *pipeline.Engine, c *pipeline.Case) {
 	hooks := e.C.Def.On
-	if len(hooks) == 0 {
+	if len(hooks) == 0 && len(e.C.Def.Notify) == 0 {
+		return
+	}
+	if p.outbox != nil {
+		// The events were written with the change; wake the dispatcher.
+		select {
+		case p.nudge <- struct{}{}:
+		default:
+		}
 		return
 	}
 	caller, ok := pipelineCaller(ctx)
@@ -274,6 +541,28 @@ func eventMatches(pattern, name string) bool {
 		return true
 	}
 	return strings.HasSuffix(pattern, ".*") && strings.HasPrefix(name, strings.TrimSuffix(pattern, "*"))
+}
+
+// eachCase calls fn for every case matching q, a page at a time, so scans
+// (sweep, analytics, erasure) are not capped. fn returning false stops.
+func (p *PipelineCases) eachCase(ctx context.Context, q pipeline.Query, fn func(*pipeline.Case) bool) error {
+	const page = 500
+	q.Limit = page
+	for offset := 0; ; offset += page {
+		q.Offset = offset
+		cases, err := p.store.List(ctx, q)
+		if err != nil {
+			return err
+		}
+		for _, c := range cases {
+			if !fn(c) {
+				return nil
+			}
+		}
+		if len(cases) < page {
+			return nil
+		}
+	}
 }
 
 // jurisdiction returns the org units a principal's queue covers, or nil for

@@ -7,7 +7,7 @@ require (
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/oarkflow/authz v0.0.6
-	github.com/oarkflow/bcl v0.0.32
+	github.com/oarkflow/bcl v0.0.36
 	github.com/oarkflow/fh v0.0.26
 	github.com/oarkflow/rules v0.0.5
 	github.com/oarkflow/tcpguard v0.0.16
@@ -19,6 +19,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
 	golang.org/x/crypto v0.57.0
+	golang.org/x/text v0.42.0
 	modernc.org/sqlite v1.59.0
 )
 
@@ -53,7 +54,6 @@ require (
 	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	modernc.org/libc v1.77.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

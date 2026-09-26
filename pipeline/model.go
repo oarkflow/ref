@@ -61,6 +61,9 @@ type Definition struct {
 	Subject []string `bcl:"subject" json:"subject,omitempty"`
 	// Notes configures case notes.
 	Notes *NotesPolicy `bcl:"notes" json:"notes,omitempty"`
+	// Notify turns pipeline events into notifications for people, delivered
+	// over the host's channels under each recipient's preferences.
+	Notify []NotifyRule `bcl:"notify,block" json:"notify,omitempty"`
 }
 
 // Calendar is working time: weekly hours, holidays and a timezone.
@@ -173,7 +176,8 @@ type EventHook struct {
 	// case.returned, case.rejected, case.withdrawn, case.completed,
 	// case.approved, assigned, claimed, released, delegated, queued,
 	// sla.warning, sla.breached, sla.escalated, suspended, resumed,
-	// note.added, sealed.opened, erased, retention.applied — or "*".
+	// note.added, file.uploaded, sealed.opened, erased, retention.applied —
+	// or "*".
 	Event string `bcl:",id" json:"event"`
 	Hook  string `bcl:"hook" json:"hook"`
 	// Stage limits the hook to one stage.
@@ -247,8 +251,16 @@ type Input struct {
 	Lookup  string `bcl:"lookup" json:"lookup,omitempty"`
 	Default string `bcl:"default" json:"default,omitempty"`
 	// Sensitive values are masked for everyone without a reveal role.
-	Sensitive bool     `bcl:"sensitive" json:"sensitive,omitempty"`
-	Accept    []string `bcl:"accept" json:"accept,omitempty"` // file types
+	Sensitive bool `bcl:"sensitive" json:"sensitive,omitempty"`
+	// Accept lists the content types a file input takes ("image/png",
+	// "image/*", ".pdf"). Uploads are checked by sniffing their bytes, never
+	// by trusting the declared type.
+	Accept []string `bcl:"accept" json:"accept,omitempty"`
+	// MaxBytes caps each uploaded file (default: the engine's
+	// MaxUploadBytes). MaxFiles is how many files the input holds; above 1
+	// its value is a list.
+	MaxBytes int64 `bcl:"max_bytes" json:"max_bytes,omitempty"`
+	MaxFiles int   `bcl:"max_files" json:"max_files,omitempty"`
 	// Span is the grid columns the input occupies (layout hint).
 	Span int `bcl:"span" json:"span,omitempty"`
 	// Compute makes the input derived: the expression is evaluated after
@@ -299,6 +311,48 @@ type Page struct {
 	Layout      string  `bcl:"layout,ident" json:"layout,omitempty"`
 	SubmitLabel string  `bcl:"submit_label" json:"submit_label,omitempty"`
 	Groups      []Group `bcl:"group,block" json:"groups"`
+	// Info blocks are informational content shown on the page (guidance,
+	// a privacy notice, fees).
+	Info []InfoBlock `bcl:"info,block" json:"info,omitempty"`
+	// Acknowledgements are statements the person submitting the stage must
+	// accept. Each acceptance is recorded with who, when and a SHA-256 of
+	// the exact wording.
+	Acknowledgements []AcknowledgementSpec `bcl:"acknowledge,block" json:"acknowledgements,omitempty"`
+}
+
+// Info block styles.
+const (
+	StyleInfo    = "info"
+	StyleWarning = "warning"
+	StyleSuccess = "success"
+	StyleDanger  = "danger"
+)
+
+// InfoBlock is informational content on a page.
+type InfoBlock struct {
+	Name  string `bcl:",id" json:"name"`
+	Title string `bcl:"title" json:"title,omitempty"`
+	Body  string `bcl:"body" json:"body"`
+	// Style is info (default), warning, success or danger.
+	Style string `bcl:"style,ident" json:"style,omitempty"`
+	// Before names the group the block is shown above (default: the top of
+	// the page).
+	Before    string   `bcl:"before" json:"before,omitempty"`
+	VisibleIf string   `bcl:"visible_if" json:"visible_if,omitempty"`
+	Roles     []string `bcl:"roles" json:"roles,omitempty"`
+}
+
+// AcknowledgementSpec is a statement that must be accepted before the stage
+// is submitted (advanced or approved).
+type AcknowledgementSpec struct {
+	Name  string `bcl:",id" json:"name"`
+	Title string `bcl:"title" json:"title,omitempty"`
+	// Text is the exact wording accepted; its SHA-256 is recorded.
+	Text string `bcl:"text" json:"text"`
+	// Before names the group the checkbox is shown above (default: the end
+	// of the page, next to the submit button).
+	Before    string `bcl:"before" json:"before,omitempty"`
+	VisibleIf string `bcl:"visible_if" json:"visible_if,omitempty"`
 }
 
 // Group is a section of a page holding one or more forms.
@@ -377,6 +431,103 @@ type Stage struct {
 	ExternalRoles []string `bcl:"external_roles" json:"external_roles,omitempty"`
 	// Rules are cross-field checks applied when the stage advances.
 	Rules []Rule `bcl:"rule,block" json:"rules,omitempty"`
+	// Reviews are human-in-the-loop review modes of the stage (diff, gate,
+	// triage, sampling); several may be combined.
+	Reviews []Review `bcl:"review,block" json:"reviews,omitempty"`
+	// ConfirmSubmit makes the stage's advance and approve actions two-step:
+	// the first submit validates and returns a review with a confirmation
+	// token, the second (with the token) commits.
+	ConfirmSubmit bool `bcl:"confirm_submit" json:"confirm_submit,omitempty"`
+}
+
+// Review modes.
+const (
+	ReviewDiff     = "diff"
+	ReviewGate     = "gate"
+	ReviewTriage   = "triage"
+	ReviewSampling = "sampling"
+)
+
+// Review is one human-in-the-loop review mode of a stage, named by its mode:
+//
+//	review "diff"     { against approved }                  what changed since the last submission or approval
+//	review "gate"     { approvals 2  roles ["senior"] }     N distinct approvals before the case can advance
+//	review "triage"   { bucket "urgent" { condition "..."  priority 1  queue "urgent" } }
+//	review "sampling" { percent 20  always_review_if ["..."] }
+type Review struct {
+	Mode string `bcl:",id" json:"mode"`
+
+	// Against (diff) is the baseline: submission (the previous submission,
+	// the default) or approved (the last approved version).
+	Against string `bcl:"against,ident" json:"against,omitempty"`
+
+	// Approvals (gate) is how many distinct reviewers must approve; Roles
+	// restricts who counts. Node names the gate node (default "gate").
+	Approvals int      `bcl:"approvals" json:"approvals,omitempty"`
+	Roles     []string `bcl:"roles" json:"roles,omitempty"`
+	Node      string   `bcl:"node" json:"node,omitempty"`
+
+	// Buckets (triage) classify a case on arrival, first match wins; a case
+	// matching none gets DefaultPriority and DefaultQueue.
+	Buckets         []TriageBucket `bcl:"bucket,block" json:"buckets,omitempty"`
+	DefaultPriority int            `bcl:"default_priority" json:"default_priority,omitempty"`
+	DefaultQueue    string         `bcl:"default_queue" json:"default_queue,omitempty"`
+
+	// Percent (sampling) of cases, chosen deterministically from a hash of
+	// the case id (and Salt), require human review; so do cases matching
+	// SampleIf and, whatever the sample, AlwaysReviewIf. The rest pass
+	// without review.
+	Percent        float64  `bcl:"percent" json:"percent,omitempty"`
+	SampleIf       string   `bcl:"sample_if" json:"sample_if,omitempty"`
+	AlwaysReviewIf []string `bcl:"always_review_if" json:"always_review_if,omitempty"`
+	Salt           string   `bcl:"salt" json:"salt,omitempty"`
+}
+
+// TriageBucket is one priority/queue class of a triage review.
+type TriageBucket struct {
+	Name string `bcl:",id" json:"name"`
+	// Condition classifies a case into the bucket (empty matches every
+	// case). When is an alias of it.
+	Condition string `bcl:"condition" json:"condition,omitempty"`
+	When      string `bcl:"when" json:"-"`
+	// Priority orders work lists: 1 is the most urgent.
+	Priority int    `bcl:"priority" json:"priority"`
+	Queue    string `bcl:"queue" json:"queue,omitempty"`
+	// Roles narrow routing of the bucket's cases (e.g. senior officers for
+	// urgent work) when the stage routes automatically.
+	Roles []string `bcl:"roles" json:"roles,omitempty"`
+}
+
+// Notification severities. Urgent and critical notifications bypass quiet
+// hours and digests.
+const (
+	SeverityInfo     = "info"
+	SeverityWarning  = "warning"
+	SeverityUrgent   = "urgent"
+	SeverityCritical = "critical"
+)
+
+// NotifyRule sends a notification to people when an event happens.
+type NotifyRule struct {
+	// Event is an event name, a prefix pattern ("sla.*") or "*".
+	Event string `bcl:",id" json:"event"`
+	// To names recipients: assignee, previous_assignee, applicant, actor,
+	// role:<role> (every directory worker holding it) or a user id.
+	To []string `bcl:"to" json:"to"`
+	// Channels are delivered by default; a recipient may opt out of them, or
+	// into the host's other channels, per event.
+	Channels []string `bcl:"channels" json:"channels,omitempty"`
+	// Severity: info (default), warning, urgent or critical.
+	Severity string `bcl:"severity,ident" json:"severity,omitempty"`
+	// Subject and Body are templates: {event}, {stage}, {actor},
+	// {case.number}, {case.id}, {case.status} and {data.<form>.<input>}.
+	Subject string `bcl:"subject" json:"subject,omitempty"`
+	Body    string `bcl:"body" json:"body,omitempty"`
+	Stage   string `bcl:"stage" json:"stage,omitempty"`
+	// Condition must hold for the rule to fire; the environment is the case
+	// plus event {name, stage, actor, detail}. When is an alias of it.
+	Condition string `bcl:"condition" json:"condition,omitempty"`
+	When      string `bcl:"when" json:"-"`
 }
 
 // Node kinds.
@@ -389,6 +540,9 @@ const (
 	NodeCertificate = "certificate"
 	NodeTask        = "task"
 	NodeVote        = "vote"
+	// NodeGate is a review gate: the stage cannot advance until enough
+	// distinct reviewers approve. A review "gate" block declares one.
+	NodeGate = "gate"
 )
 
 // Consensus policies of a vote node.
@@ -455,9 +609,14 @@ type ActionSpec struct {
 	Next            string `bcl:"next" json:"next,omitempty"`
 	CommentRequired bool   `bcl:"comment_required" json:"comment_required,omitempty"`
 	// SkipNodes lets the action complete the stage with open nodes.
-	SkipNodes bool   `bcl:"skip_nodes" json:"skip_nodes,omitempty"`
-	Confirm   string `bcl:"confirm" json:"confirm,omitempty"`
-	Condition string `bcl:"condition" json:"condition,omitempty"`
+	SkipNodes bool `bcl:"skip_nodes" json:"skip_nodes,omitempty"`
+	// Confirm is the question a client asks before taking the action. With
+	// ConfirmSubmit the server enforces it: the first request returns a
+	// review and a confirmation token, and only a second request carrying
+	// the token takes the action.
+	Confirm       string `bcl:"confirm" json:"confirm,omitempty"`
+	ConfirmSubmit bool   `bcl:"confirm_submit" json:"confirm_submit,omitempty"`
+	Condition     string `bcl:"condition" json:"condition,omitempty"`
 }
 
 // Assignment sets a data path from an expression.

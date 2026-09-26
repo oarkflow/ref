@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Work management over HTTP on the Passport example: routing, personal
@@ -177,9 +178,17 @@ func TestPassportWorkManagement(t *testing.T) {
 		t.Fatalf("receipt leaks the subject: %v", body)
 	}
 
-	// Event hooks recorded notifications after each committed change.
-	status, body = h.call("GET", "/api/passport/notifications", o1, nil)
-	if status != 200 || !strings.Contains(fmt.Sprint(body), "link.submitted") {
-		t.Fatalf("notifications: %d %v", status, body)
+	// Event hooks recorded notifications after each committed change. They
+	// are delivered from the durable outbox, asynchronously.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		status, body = h.call("GET", "/api/passport/notifications", o1, nil)
+		if status == 200 && strings.Contains(fmt.Sprint(body), "link.submitted") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("notifications: %d %v", status, body)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

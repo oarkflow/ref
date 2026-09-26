@@ -501,7 +501,14 @@ func (p *Platform) compileEdge(label string, spec EdgeSpec) (*process.Edge, erro
 	if !process.KnownEdgeType(string(edge.Type)) {
 		return nil, fmt.Errorf("%s: unknown edge kind %q", what, spec.Kind)
 	}
-	if edge.Guard, err = compileGuard(what+" condition", spec.Condition); err != nil {
+	condition := spec.Condition
+	if spec.When != "" && spec.When != condition {
+		if condition != "" {
+			return nil, fmt.Errorf("%s: sets both condition and when; use one", what)
+		}
+		condition = spec.When
+	}
+	if edge.Guard, err = compileGuard(what+" condition", condition); err != nil {
 		return nil, err
 	}
 	if edge.Correlation, err = compileValuer(what+" correlation", spec.Correlation); err != nil {

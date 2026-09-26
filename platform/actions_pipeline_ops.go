@@ -70,37 +70,50 @@ func (h *pipelineHandler) sweep(ctx *ActionContext, hookCtx context.Context) (Ac
 			continue
 		}
 		e := h.res.engines[name]
-		cases, err := h.res.store.List(ctx.Context, pipeline.Query{Pipeline: name, TenantID: ctx.TenantID, Limit: 5000})
-		if err != nil {
-			return ActionResult{}, pipelineFailure(err)
-		}
-		for _, c := range cases {
+		// Purges wait until the scan is done: deleting mid-scan would shift
+		// the pages and skip cases.
+		var purge []*pipeline.Case
+		var fatal error
+		err := h.res.eachCase(ctx.Context, pipeline.Query{Pipeline: name, TenantID: ctx.TenantID}, func(c *pipeline.Case) bool {
 			if c.Terminal() && (e.C.Def.Retention == nil || c.Erased != nil || c.Hold != nil) {
-				continue
+				return true
 			}
 			scanned++
 			next, res, err := e.Sweep(hookCtx, c)
 			switch {
 			case err != nil:
 				failed++
-				continue
+				return true
 			case res.Purge:
-				if err := h.res.store.Delete(ctx.Context, c.ID); err == nil {
-					purged++
-				}
-				continue
+				purge = append(purge, c)
+				return true
 			case !res.Changed:
-				continue
+				return true
 			}
 			if err := h.res.store.Update(ctx.Context, next); err != nil {
 				if errors.Is(err, pipeline.ErrConflict) {
 					conflicts++
-					continue
+					return true
 				}
-				return ActionResult{}, pipelineFailure(err)
+				fatal = err
+				return false
 			}
 			h.res.dispatch(hookCtx, e, next)
+			h.res.dropFiles(ctx.Context, e, c, next)
 			changed++
+			return true
+		})
+		if err == nil {
+			err = fatal
+		}
+		if err != nil {
+			return ActionResult{}, pipelineFailure(err)
+		}
+		for _, c := range purge {
+			if err := h.res.store.Delete(ctx.Context, c.ID); err == nil {
+				h.res.dropFiles(ctx.Context, e, c, nil)
+				purged++
+			}
 		}
 	}
 	return h.out(map[string]any{"scanned": scanned, "changed": changed, "purged": purged, "conflicts": conflicts, "failed": failed})
@@ -113,16 +126,12 @@ func (h *pipelineHandler) analytics(ctx *ActionContext) (ActionResult, error) {
 	if err != nil {
 		return ActionResult{}, err
 	}
-	q := pipeline.Query{Pipeline: e.C.Def.Name, TenantID: ctx.TenantID, Limit: 5000}
+	q := pipeline.Query{Pipeline: e.C.Def.Name, TenantID: ctx.TenantID}
 	units, ok := h.res.jurisdiction(ctx.TenantID, ctx.Principal)
 	if !ok {
 		return ActionResult{}, permissionDenied("you are not assigned to any organisational unit")
 	}
 	q.OrgUnits = units
-	cases, err := h.res.store.List(ctx.Context, q)
-	if err != nil {
-		return ActionResult{}, pipelineFailure(err)
-	}
 	var from, to time.Time
 	if s := h.param(ctx, "from"); s != "" {
 		if from, err = time.Parse(time.RFC3339, s); err != nil {
@@ -134,14 +143,18 @@ func (h *pipelineHandler) analytics(ctx *ActionContext) (ActionResult, error) {
 			return ActionResult{}, invalidInput("to must be an RFC 3339 time")
 		}
 	}
-	kept := cases[:0]
-	for _, c := range cases {
+	report := e.NewAnalyzer(time.Now())
+	err = h.res.eachCase(ctx.Context, q, func(c *pipeline.Case) bool {
 		if (!from.IsZero() && c.CreatedAt.Before(from)) || (!to.IsZero() && !c.CreatedAt.Before(to)) {
-			continue
+			return true
 		}
-		kept = append(kept, c)
+		report.Add(c)
+		return true
+	})
+	if err != nil {
+		return ActionResult{}, pipelineFailure(err)
 	}
-	return h.out(e.Analyze(kept, time.Now()))
+	return h.out(report.Report())
 }
 
 // erase handles a right-to-erasure request: {identifiers: {path: value},
@@ -176,7 +189,24 @@ func (h *pipelineHandler) erase(ctx *ActionContext, hookCtx context.Context) (Ac
 	if reason == "" || reason == "<nil>" {
 		reason = "erasure request"
 	}
-	cases, err := h.res.store.List(ctx.Context, pipeline.Query{Pipeline: e.C.Def.Name, TenantID: ctx.TenantID, Limit: 5000})
+	// Find the subject's cases first (a full, paged scan), then act on them:
+	// purging while scanning would shift the pages.
+	var cases []*pipeline.Case
+	var matchErr error
+	err = h.res.eachCase(ctx.Context, pipeline.Query{Pipeline: e.C.Def.Name, TenantID: ctx.TenantID}, func(c *pipeline.Case) bool {
+		ok, err := e.MatchesSubject(c, ids)
+		if err != nil {
+			matchErr = err
+			return false
+		}
+		if ok {
+			cases = append(cases, c)
+		}
+		return true
+	})
+	if err == nil {
+		err = matchErr
+	}
 	if err != nil {
 		return ActionResult{}, pipelineFailure(err)
 	}
@@ -184,13 +214,6 @@ func (h *pipelineHandler) erase(ctx *ActionContext, hookCtx context.Context) (Ac
 	var receipts []any
 	matched := 0
 	for _, c := range cases {
-		ok, err := e.MatchesSubject(c, ids)
-		if err != nil {
-			return ActionResult{}, pipelineFailure(err)
-		}
-		if !ok {
-			continue
-		}
 		matched++
 		receipt := map[string]any{"case_number": c.Number, "status": c.Status}
 		switch {
@@ -204,6 +227,7 @@ func (h *pipelineHandler) erase(ctx *ActionContext, hookCtx context.Context) (Ac
 				receipt["outcome"], receipt["reason"] = "failed", err.Error()
 			} else {
 				receipt["outcome"] = "purged"
+				h.res.dropFiles(ctx.Context, e, c, nil)
 			}
 		default:
 			next, err := e.Anonymize(hookCtx, c, actor, reason)
@@ -215,6 +239,7 @@ func (h *pipelineHandler) erase(ctx *ActionContext, hookCtx context.Context) (Ac
 			} else {
 				receipt["outcome"] = "anonymized"
 				h.res.dispatch(hookCtx, e, next)
+				h.res.dropFiles(ctx.Context, e, c, next)
 			}
 		}
 		receipts = append(receipts, receipt)
@@ -304,4 +329,33 @@ func (h *pipelineHandler) bulkOne(ctx *ActionContext, hookCtx context.Context, i
 		return nil, err
 	}
 	return next, nil
+}
+
+// events lists dead-lettered outbox events or requeues one.
+func (h *pipelineHandler) events(ctx *ActionContext) (ActionResult, error) {
+	if h.res.outbox == nil {
+		return h.out(map[string]any{"dead": []any{}, "outbox": false})
+	}
+	if h.param(ctx, "op") == "requeue" {
+		id := h.param(ctx, "event_id")
+		if id == "" {
+			return ActionResult{}, invalidInput("an event_id is required")
+		}
+		if err := h.res.outbox.RequeueEvent(ctx.Context, id); err != nil {
+			return ActionResult{}, pipelineFailure(err)
+		}
+		select {
+		case h.res.nudge <- struct{}{}:
+		default:
+		}
+		return h.out(map[string]any{"requeued": id})
+	}
+	dead, err := h.res.outbox.DeadEvents(ctx.Context, h.limit)
+	if err != nil {
+		return ActionResult{}, pipelineFailure(err)
+	}
+	if dead == nil {
+		dead = []pipeline.OutboxEvent{}
+	}
+	return h.out(map[string]any{"dead": dead, "outbox": true})
 }

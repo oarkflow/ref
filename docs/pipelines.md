@@ -52,7 +52,8 @@ Forms are shared across stages. Two stages that show the `applicant` form show t
 | `pattern`, `min_length`, `max_length`, `min`, `max` | Constraints. `min` and `max` are numbers, or dates for date kinds. |
 | `options` / `lookup` | Fixed choices, or a reference-data set. With `org_resource` set, the set is resolved from `org.hierarchy` lookups for the case's org unit, so a district can add, relabel or disable choices. |
 | `sensitive` | Masked (`••••1234`) for everyone except the applicant and the pipeline's `reveal_roles`. |
-| `default`, `placeholder`, `help`, `span`, `accept` | Presentation hints. |
+| `default`, `placeholder`, `help`, `span` | Presentation hints. |
+| `accept`, `max_bytes`, `max_files` | For `file` inputs: allowed content types, the size limit of each file and how many files the input holds. See [File uploads](#file-uploads). |
 
 Every submitted field is validated before anything is written. Errors come back all at once, as `422` with `details: [{path, rule, message}]`.
 
@@ -66,6 +67,8 @@ A stage's `page` lists `group`s. Each group shows one or more forms.
 | group `layout` (how the forms inside a group are arranged) | same as above |
 | group `mode` | `editable` (the default), `readonly`, `summary`, `hidden` |
 | group `roles`, `visible_if`, `collapsed` | Who sees the group, when it is shown, and whether it starts collapsed. |
+| page `info` blocks | Informational content. See [Info blocks and acknowledgements](#info-blocks-and-acknowledgements). |
+| page `acknowledge` blocks | Statements the submitter must accept. |
 
 An input is editable only if all of these hold:
 - its group is `editable`,
@@ -74,6 +77,58 @@ An input is editable only if all of these hold:
 - while the case is returned for correction, the input was flagged.
 
 The **view** (`pipeline.view`) resolves all of this for the caller. It returns groups with their effective modes, inputs with `editable`, `value` (masked where needed), `choices`, `flag` and `verdict`, plus nodes with their allowed operations and the caller's actions. A UI renders it generically; [`examples/passport/static/index.html`](../examples/passport/static/index.html) is such a renderer.
+
+### File uploads
+
+```bcl
+resource "files" { kind "storage.fs"  config { dir ".data/uploads" } }
+resource "cases" { kind "pipeline.cases"  config { database "db"  storage "files" } }
+
+form "documents" {
+  input "photo"    { kind file  required true  accept ["image/jpeg", "image/png"]  max_bytes 2097152 }
+  input "evidence" { kind file  accept [".pdf", "image/*"]  max_files 3 }
+}
+```
+
+When the `pipeline.cases` resource names a `storage` resource (`storage.fs`, `storage.sql`, or any `ObjectStore`), its file inputs take **uploads only**:
+
+- **Upload** (`pipeline.upload`, e.g. `POST …/stages/:stage/files/:path` with `:path` = `documents.photo`). The body is `multipart/form-data` with a file part named `file`, or JSON `{"file": {"filename", "content_base64"}}`. Several files may be sent at once (a list, or repeated parts); they are all-or-nothing.
+- **Checks.** The caller must be able to edit the input at the stage, as for a save. The file must be non-empty and at most `max_bytes` (default: the resource's `max_upload_bytes`, 10 MiB). Its type is **sniffed from its magic bytes**; the declared `Content-Type` and the file name are ignored. `accept` lists types (`image/png`), wildcards (`image/*`) or extensions (`.pdf`, meaning the type such content sniffs as). A multi-file input refuses a file beyond `max_files`; a single-file input replaces its file. A file whose SHA-256 is already on the case, at any input, is refused as a duplicate. Failures are `422` with rule `content_type`, `max_bytes`, `max_files`, `duplicate` or `required`.
+- **Recorded on the case.** The input's value is the file's metadata (a list when `max_files` > 1): `{id, name, size, content_type, sha256, key, uploaded_by, uploaded_at}`. Expressions can read it (`documents.photo.content_type`). The content is stored under `storage_prefix` + `key`. The history records an `upload` entry, and a `file.uploaded` event is emitted.
+- **Saves cannot forge files.** A save may clear a file input, keep it as it is, or drop some files of a multi-file input (matched by `id`; the recorded metadata is kept). Anything else is refused with rule `upload`. Files cannot be uploaded into repeatable forms.
+- **Download** (`pipeline.file`, e.g. `GET …/files/:path`, with `?file_id=` for one file of a multi-file input). Only callers who can see the input may download: the applicant, or someone who may view a stage whose page (in a group they can see) or review nodes show the form. A sensitive input also needs a reveal role. The stored bytes are **checked against the recorded size and SHA-256 before anything is sent**. A mismatch or a missing object is `500` with code `INTEGRITY_FAILED` and is logged.
+- **Clean-up.** A replaced file's object is deleted once the case is saved. Objects are written before the case is saved and removed again if the save fails. Erasure and retention delete the objects of files they purge or anonymise.
+
+Without `storage`, a file input holds a plain reference (a string, or an object with an `id`), as before.
+
+### Info blocks and acknowledgements
+
+```bcl
+page {
+  info "privacy" { title "Your data"  body "We keep your documents for five years."  style warning  before "docs" }
+  acknowledge "truthful" { title "Declaration"  text "I declare that the information I have given is true." }
+  group "docs" { forms ["documents"] }
+}
+```
+
+- **`info`** is content to show: `title`, `body`, `style` (`info`, `warning`, `success` or `danger`), and optionally `before` (the group it is shown above; default the top of the page), `visible_if` and `roles`. The view lists it under `page.info`.
+- **`acknowledge`** is a statement the person submitting the stage must accept. It has `text`, and optionally `title`, `before` and `visible_if`. The view lists it under `page.acknowledgements` with the `sha256` of the exact wording and the latest acceptance of that wording.
+- **Accepting.** An `advance` or `approve` action sends `acknowledgements`: a list of names, or an object of names to `true` or to the `sha256` the client displayed. A missing acknowledgement fails with `422` at `acknowledgements.<name>` (rule `acknowledgement`). A hash that no longer matches the wording fails with rule `wording_changed`, so nobody accepts text they were not shown.
+- **Recorded.** Each acceptance is stored on the case as `{stage, name, text, sha256, by, at, revision}`. `pipeline.get` returns them as `acknowledgements`, so the exact wording accepted can be proven later. Actions taken by the system (an SLA breach) need no acknowledgement.
+
+### Confirm before submit
+
+`confirm` on an action is a question for the client to ask. `confirm_submit true` makes the server enforce it. Set it on a stage (for its `advance` and `approve` actions) or on a single action.
+
+1. **Review.** The first request (no `confirm_token`) runs every check the action would: permission, the data sent, required inputs, acknowledgements, rules and nodes. It saves nothing and returns `{confirmation_required: true, confirm_token, review}`. The review holds:
+   - the case header and the action;
+   - the `confirm` text, as `prompt`;
+   - the changed paths;
+   - every answered field (`path`, `label`, `group`, masked `value`);
+   - the accepted acknowledgements.
+2. **Commit.** The same request again, with `confirm_token`, takes the action.
+
+The token is HMAC-signed with the resource's `signing_secret` (or a per-process key without one). It is bound to the case, stage, action, caller, **case revision** and a **SHA-256 of the submission** (`data`, `comment`, `flags` and `acknowledgements`), and expires after `confirm_ttl` (default 30m). Any change to the case since the review, or different data in the commit, makes it invalid: `409` with code `CONFIRMATION_INVALID`, and the client reviews again. Once the action commits the revision moves on, so a token cannot be replayed. A confirm-submit action cannot be applied through `pipeline.bulk`.
 
 ### Stages
 
@@ -86,11 +141,13 @@ The **view** (`pipeline.view`) resolves all of this for the caller. It returns g
 | `node` blocks | Units of work, each with its own status (see below). |
 | `complete` | `all` (the default), `any` or `quorum` (with `quorum N`) nodes must be satisfied. |
 | `auto_advance` | Complete the stage as soon as its nodes are satisfied. |
-| `action` blocks | The buttons: `outcome` is `advance`, `return` (`return_to`), `reject`, `approve`, `withdraw` or `hold`. An action can also set `roles`, `comment_required`, `condition`, `confirm`, `skip_nodes` and `next`. A stage without actions gets a default `submit`. |
+| `action` blocks | The buttons: `outcome` is `advance`, `return` (`return_to`), `reject`, `approve`, `withdraw` or `hold`. An action can also set `roles`, `comment_required`, `condition`, `confirm`, `confirm_submit`, `skip_nodes` and `next`. A stage without actions gets a default `submit`. |
+| `confirm_submit` | Makes the stage's `advance` and `approve` actions two-step. See [Confirm before submit](#confirm-before-submit). |
 | `assign` | `path { value "expr" }` sets data when the stage completes. |
 | `certificate` | Issues a certificate when the stage completes. |
 | `due` | The SLA (e.g. `"72h"`). Queue rows carry `due_at` and `overdue`. |
 | `on_enter`, `on_complete` | Intents run as hooks. A failing hook aborts the operation, so nothing is saved. |
+| `review` blocks | Human-in-the-loop review modes: `diff`, `gate`, `triage` and `sampling`. See [Review modes](#review-modes). |
 
 Stage statuses are `pending`, `active`, `returned`, `completed`, `rejected` and `skipped`. Case statuses are `draft`, `in_progress`, `returned`, `approved`, `rejected`, `withdrawn` and `completed`.
 
@@ -105,6 +162,7 @@ Stage statuses are `pending`, `active`, `returned`, `completed`, `rejected` and 
 | `task` | `complete`, `fail` | Someone completed it (with an optional `result`). |
 | `form` | `complete` | Its forms validate. |
 | `certificate` | `issue` | The certificate was issued. With `auto true` this happens on stage entry. |
+| `gate` | `approve`, `reject` | `approvals` distinct reviewers approved. A `review "gate"` block declares it. See [Review modes](#review-modes). |
 | any | `waive` (for `waive_roles`) | — |
 
 Node statuses are `pending`, `passed`, `failed`, `waived` and `skipped` (`applies_if` false). `optional` nodes never block their stage.
@@ -120,9 +178,9 @@ Node statuses are `pending`, `passed`, `failed`, `waived` and `skipped` (`applie
 
 A `certificate` block names the data paths copied into the certificate, its number format (`PPA-{year}-{seq:4}`, `{case}`) and its `validity`.
 
-An issued certificate is canonicalised and SHA-256 hashed. With the resource's `signing_secret`, it is also HMAC-signed. It carries a short verification code.
+An issued certificate is canonicalised and SHA-256 hashed. With the resource's `signing_secret`, it is also HMAC-signed. With a `signer` (a `crypto.signer` resource), it also carries a `key_signature` (`{alg, kid, sig}`, Ed25519 or RSA) over the same canonical content. That signature can be verified offline by anyone holding the published JWKS: `pipeline.VerifyCertificateSignature(cert, keys)` with `keys` from `signing.ParseJWKS`. The HMAC stays for backward compatibility: certificates issued before the signer was added keep verifying. Every certificate carries a short verification code.
 
-`pipeline.verify` checks the hash, the signature, expiry and revocation for a given number or code. Any edit to the content is detected.
+`pipeline.verify` checks the hash, the signatures, expiry and revocation for a given number or code. Any edit to the content is detected. For a key-signed certificate, the response also includes everything the signature covers, so the holder can re-verify it offline.
 
 ### Concurrency
 
@@ -269,9 +327,49 @@ Every operation emits events. The names are:
 - **Stage:** `stage.entered`, `stage.completed`, `stage.skipped`
 - **Work:** `assigned`, `queued`, `claimed`, `released`, `delegated`, `suspended`, `resumed`
 - **SLA:** `sla.warning`, `sla.breached`, `sla.escalated`
-- **Other:** `note.added`, `link.issued`, `link.submitted`, `sealed.opened`, `erased`, `retention.applied`
+- **Review:** `triaged`, `review.sampled`, `review.not_sampled`, `review.approved`, `review.rejected`, `review.gate_opened`
+- **Other:** `note.added`, `file.uploaded`, `link.issued`, `link.submitted`, `sealed.opened`, `erased`, `retention.applied`
 
-Hooks run **after the change is saved**, receiving `{case, data, stage, event}`, so a notification never announces something that was rolled back. A failing hook is logged; it never undoes the change.
+**Delivery is durable.** Events that some hook listens to are written to an outbox in the **same transaction** as the case change. An event exists exactly when its change was committed.
+
+A background dispatcher (one per replica; leases stop two replicas delivering the same event) does the following:
+1. Claims due events.
+2. Runs their hooks with `{case, data, stage, event}`, where `event.attempt` counts attempts.
+3. Acknowledges the event once every hook succeeds.
+4. On failure, retries with exponential backoff. By default the first retry is after 2s, the delay doubles up to 10 minutes, and the event is **dead-lettered** after 10 attempts. `event_retry_base` and `event_max_attempts` on the resource change these defaults.
+
+Because a hook may run again after a partial failure, **hooks should be idempotent**. `event.id` is stable across retries, which makes a good deduplication key.
+
+`pipeline.events` lists dead-lettered events and requeues one for immediate delivery, once its cause is fixed.
+
+### Review modes
+
+A stage's `review` blocks add human-in-the-loop policies. A stage may combine several:
+
+```bcl
+review "diff"     { against submission }                 # or approved
+review "gate"     { approvals 2  roles ["senior"] }
+review "triage"   { bucket "urgent" { condition "claim.amount > 1000"  priority 1  queue "urgent" } }
+review "sampling" { percent 10  always_review_if ["claim.amount > 10000"] }
+```
+
+| Mode | Effect |
+|---|---|
+| `diff` | The view shows field-level changes since the previous submission or the last approved version. Approval records the revision reviewed. |
+| `gate` | A hard gate: the case cannot advance until N distinct reviewers (optionally with given roles) approve. Rejections are recorded. |
+| `triage` | Buckets classify a case on arrival into a priority and queue. Work lists are ordered by priority. |
+| `sampling` | Only a deterministic percentage (by a hash of the case id), or cases matching a condition, are reviewed. The rest pass with a `not_sampled` audit record. |
+
+See [Review modes and notifications](pipeline-review.md) for the details.
+
+### Notifications
+
+`notify "event" { to [...]  channels [...]  severity …  subject "…" }` rules send notifications to people. Delivery goes through channel intents that are named in the resource's `notify_channels`. Each person's preferences decide what reaches them:
+- channel opt-in and opt-out, per event pattern;
+- quiet hours in their time zone (urgent and critical notifications bypass them);
+- hourly or daily digests.
+
+Preferences and pending notifications are stored durably and flushed by the resource's background loop. See [Review modes and notifications](pipeline-review.md#notifications).
 
 ### Analytics
 
@@ -316,12 +414,18 @@ resource "cases" {
     org_resource "org"              # lookups + jurisdiction-scoped queues
     allow_anonymous true            # public stages without an account
     signing_secret env.required("PASSPORT_SIGNING_SECRET")
+    signer "keys"                   # optional crypto.signer: asymmetric certificate signatures
     seal_secret env("PASSPORT_SEAL_SECRET", "")   # required only with sealed inputs
+    notify_channels { email "passport.send_email" }  # required only with notify rules
+    storage "files"                 # storage resource for file uploads (optional)
+    # storage_prefix "pipeline/"  max_upload_bytes 10485760  confirm_ttl "30m"
   }
 }
 ```
 
-The resource compiles each pipeline and every expression in it at load time, so a typo stops the deployment. With a database, it creates `<prefix>cases`, `<prefix>certificates` and `<prefix>sequences`.
+The resource compiles each pipeline and every expression in it at load time, so a typo stops the deployment. With a database, it creates `<prefix>cases`, `<prefix>certificates`, `<prefix>sequences`, `<prefix>outbox`, `<prefix>notify_prefs` and `<prefix>notifications`.
+
+The stores are verified by one conformance suite against memory, SQLite and PostgreSQL. To include PostgreSQL, set `TEST_POSTGRES_DSN`; the Passport example also runs end to end on it when that variable is set. Routing reads each worker's workload with a single indexed `GROUP BY` rather than loading every open case. Sweeps, analytics and erasure page through all cases, and analytics folds them one at a time, so no scan is capped or holds every case in memory.
 
 | Action | Parameters | Result |
 |---|---|---|
@@ -329,11 +433,15 @@ The resource compiles each pipeline and every expression in it at load time, so 
 | `pipeline.start` | `input.org_unit`, `input.data` | The view, plus `access_key` for anonymous callers |
 | `pipeline.view` | `id`, `stage?` | The view |
 | `pipeline.save` | `id`, `stage`, `input.data` | The view |
-| `pipeline.act` | `id`, `stage`, `action`, body `{comment, data, flags, revision}` | The view |
+| `pipeline.act` | `id`, `stage`, `action`, body `{comment, data, flags, acknowledgements, confirm_token, revision}` | The view, or `{confirmation_required, confirm_token, review}` for the first step of a `confirm_submit` action |
 | `pipeline.node` | `id`, `stage`, `node`, `verb`, body `{comment, verdicts, result}` | The view |
-| `pipeline.list` | `scope` = `queue` \| `mine` \| `all`, `status`, `stage`, `limit`, `offset` | Case rows |
+| `pipeline.list` | `scope` = `queue` \| `mine` \| `assigned` \| `all`, `status`, `stage`, `queue`, `order` (`priority` \| `newest`), `limit`, `offset` | Case rows |
 | `pipeline.get` | `id` | Header, stage states, history and certificates |
 | `pipeline.verify` | `key` (a number or code) | `{valid, reason, certificate}` |
+| `pipeline.notify_prefs` | — | The caller's notification preferences and pending notifications |
+| `pipeline.notify_prefs_set` | body: the preferences | The same, after replacing them |
+| `pipeline.upload` | `id`, `stage`, `path`, body `file` (multipart or base64 JSON) | The view, plus `files` |
+| `pipeline.file` | `id`, `path`, `file_id?` | The file, checksum-verified |
 
 Each action looks for a parameter such as `id` in this order, so routes need no plumbing nodes:
 1. `config.id_fact` (a fact path)
@@ -352,6 +460,8 @@ Failures map to HTTP statuses as follows:
 | Wrong state | `409` |
 | Unknown case, or out of jurisdiction | `404` |
 | Stale revision | `409` |
+| Invalid or stale confirmation token | `409`, code `CONFIRMATION_INVALID` |
+| Stored file fails its checksum | `500`, code `INTEGRITY_FAILED` |
 | Invalid fields | `422`, with `details` |
 
 **Access.** When an org resource is configured, officers see only cases in their jurisdiction. A case outside it reads as not found, so its existence is not disclosed. An anonymous applicant returns to their case with the access key in the `X-Access-Key` header. Only a SHA-256 hash of the key is stored.
@@ -365,10 +475,13 @@ compiled, err := pipeline.Compile(&def)
 e := pipeline.NewEngine(compiled)
 e.Eval = myEvaluator          // expressions
 e.Automation = myAutomation   // automated nodes
-e.SigningKey = key            // certificates
+e.SigningKey = key            // certificates (HMAC)
+e.Signer = keySet             // certificates (Ed25519/RSA, a *signing.KeySet)
 c, _ := e.Start(ctx, applicant, pipeline.StartOptions{Number: "PP-1"})
 c, err = e.Act(ctx, c, applicant, "application", "submit", pipeline.ActInput{Data: data})
 v, _ := e.View(c, officer, "")
+c, ref, _, err := e.Attach(ctx, c, applicant, "application", "documents.photo", pipeline.Upload{Name: "me.jpg", Content: b})
+review, err := e.Preview(ctx, c, applicant, "application", "submit", in)   // confirm_submit, step 1
 ```
 
 Every operation takes a case and returns a new one. The input case is never mutated, so a failed operation leaves nothing half-applied. Persist the result with a `pipeline.Store`: `MemoryStore`, or `SQLStore` for PostgreSQL, MySQL or SQLite.

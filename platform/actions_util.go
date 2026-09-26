@@ -2,7 +2,6 @@ package platform
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -316,7 +315,7 @@ func (c cacheHandle) delete(ctx context.Context, key string) error {
 // []byte, which would JSON-encode as base64 and surprise every author who
 // looked at the response. Whatever else a driver hands back is passed through
 // untouched.
-func queryRows(ctx context.Context, db *sql.DB, statement string, args []any) ([]map[string]any, error) {
+func queryRows(ctx context.Context, db execer, statement string, args []any) ([]map[string]any, error) {
 	rows, err := db.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, err

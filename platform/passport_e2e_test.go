@@ -3,13 +3,17 @@ package platform
 import (
 	"bytes"
 	"compress/zlib"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The Passport Request example end to end over HTTP: an anonymous applicant
@@ -17,12 +21,43 @@ import (
 // applicant corrects only that field, biometrics, four-eyes approval, and a
 // certificate anyone can verify.
 
+// newPassportApp runs the example on SQLite, or — when TEST_POSTGRES_DSN is
+// set — on a fresh PostgreSQL database created (and dropped) for the test.
 func newPassportApp(t *testing.T) *appHarness {
-	return newAppHarness(t, "../examples/passport/app.bcl", map[string]string{
+	env := map[string]string{
+		"PASSPORT_DB_DRIVER":      "sqlite",
 		"PASSPORT_DSN":            "file:" + t.TempDir() + "/passport.db?_pragma=busy_timeout(5000)",
 		"PASSPORT_JWT_SECRET":     "passport-test-jwt-secret-0123456789abcdef",
 		"PASSPORT_SIGNING_SECRET": "passport-test-signing-secret-0123456789",
+	}
+	if admin := os.Getenv("TEST_POSTGRES_DSN"); admin != "" {
+		env["PASSPORT_DB_DRIVER"], env["PASSPORT_DSN"] = "pgx", freshPostgres(t, admin)
+	}
+	return newAppHarness(t, "../examples/passport/app.bcl", env)
+}
+
+// freshPostgres creates an empty database on the server adminDSN points at
+// and returns its DSN; the database is dropped when the test ends.
+func freshPostgres(t *testing.T, adminDSN string) string {
+	t.Helper()
+	admin, err := sql.Open("pgx", adminDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf("reftest_%d", time.Now().UnixNano())
+	if _, err := admin.Exec("CREATE DATABASE " + name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = admin.Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)")
+		admin.Close()
 	})
+	u, err := url.Parse(adminDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Path = "/" + name
+	return u.String()
 }
 
 // callKey is call with the anonymous applicant's access key.
@@ -105,6 +140,9 @@ func TestPassportPipelineEndToEnd(t *testing.T) {
 	groups := dig(started, "page", "groups").([]any)
 	if len(groups) != 5 || dig(groups, 2, "layout") != "tabbed" || dig(groups, 3, "mode") != "summary" {
 		t.Fatalf("groups: %v", groups)
+	}
+	if dig(started, "page", "info", 0, "name") != "fees" || dig(started, "page", "info", 0, "before") != "what" {
+		t.Fatalf("info blocks: %v", dig(started, "page", "info"))
 	}
 	// The office list is reference data resolved for the case's district.
 	choices := fmt.Sprint(inputsOf(started)["request.office"]["choices"])
@@ -364,6 +402,16 @@ func TestPassportRenewalRejectAndSignedInApplicant(t *testing.T) {
 	status, body = h.call("GET", base+"/history", citizen, nil)
 	if status != 200 || dig(body, "status") != "rejected" {
 		t.Fatalf("history: %d %v", status, body)
+	}
+
+	// The anonymous start endpoint is rate limited per client.
+	throttled := false
+	for i := 0; i < 25 && !throttled; i++ {
+		status, _ := h.callKey("POST", "/api/passport/cases", "", map[string]any{"org_unit": "ktm"})
+		throttled = status == 429
+	}
+	if !throttled {
+		t.Fatal("25 anonymous starts in a minute were not throttled")
 	}
 }
 

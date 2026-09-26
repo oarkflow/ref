@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/url"
 	"slices"
 	"strconv"
@@ -473,6 +474,13 @@ func (p *Platform) serve(c fh.Ctx, route compiledRoute) error {
 				body = jsonBytes
 			}
 		}
+	}
+	if strings.HasPrefix(strings.ToLower(ct), "multipart/form-data") && len(body) > 0 {
+		converted, err := multipartToJSON(body, ct)
+		if err != nil {
+			return projectFailure(c, err)
+		}
+		body = converted
 	}
 	if route.requestPipeline != nil {
 		shaped, err := p.shapeRequest(route, body, env)
@@ -1286,6 +1294,9 @@ func runView(run *process.Run) map[string]any {
 // detail belongs in the server's own logs.
 func projectFailure(c fh.Ctx, err error) error {
 	status, body := failureView(err)
+	if status >= 500 {
+		slog.Error("request failed", "method", c.Method(), "path", c.Path(), "status", status, "error", err)
+	}
 	if status == 401 {
 		c.Set("WWW-Authenticate", `Bearer realm="api"`)
 	}

@@ -10,7 +10,7 @@ flag "new_checkout" {
   default false
   rule "staff" { roles ["staff"]  value true }
   rule "pilot" { tenants ["acme"]  rollout 25 }          # 25% of acme's users, sticky per user
-  rule "big"   { condition "input.amount != nil and input.amount > 1000" }
+  rule "big"   { condition "input.amount > 1000" }
 }
 
 flag "pricing" {                     # an experiment
@@ -39,7 +39,7 @@ When no rule matches, weighted `variant`s split callers the same stable way; oth
 - **On routes:** `route "beta" { … flag "new_checkout" }` answers 404 while the flag is off for that caller.
 - **At run time:** `flag.set` overrides a flag for everyone. It takes `{flag, value}` to force a value, `{flag, off: true}` as a kill switch, or `{flag, clear: true}` to remove the override, with an optional `ttl` and `reason`, and is restricted by `roles`. With `flag_store`, overrides live in that cache resource and every replica reloads them every few seconds.
 
-> **Expression caveat (bcl v0.0.32):** `>`, `>=`, `<` and `<=` treat a missing value as greater than any number. For example, `nil > 1000` is true. Guard optional values with `x != nil and x > 1000`.
+Ordering comparisons with a missing value are false (bcl v0.0.33 and later), so `input.amount > 1000` never matches when `amount` is absent.
 
 ## PDF documents
 

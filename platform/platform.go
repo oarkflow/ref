@@ -27,6 +27,7 @@ import (
 	"github.com/oarkflow/ref/health"
 	"github.com/oarkflow/ref/intent"
 	"github.com/oarkflow/ref/invocation"
+	"github.com/oarkflow/ref/money"
 	"github.com/oarkflow/ref/observer"
 	"github.com/oarkflow/ref/process"
 	"github.com/oarkflow/ref/runtime"
@@ -123,6 +124,12 @@ type Platform struct {
 	static []compiledStatic
 
 	flags *flagRegistry
+
+	// currencies is the built-in ISO registry plus the document's currency
+	// blocks; residency is the compiled data-residency policy, nil when the
+	// document declares none.
+	currencies *money.Registry
+	residency  *residencyPlan
 
 	background context.CancelFunc
 	wg         sync.WaitGroup
@@ -268,6 +275,12 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 	if err := validateRoles(doc.Roles); err != nil {
 		return nil, err
 	}
+	if p.currencies, err = compileCurrencies(doc); err != nil {
+		return nil, err
+	}
+	if doc, err = resolveEntityCurrencies(doc, p.currencies); err != nil {
+		return nil, err
+	}
 	doc = applyFamilyDefaults(doc, opts.Registry)
 	if doc, err = expandEntities(doc); err != nil {
 		return nil, err
@@ -275,12 +288,16 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 	if err := validateDocument(doc, opts.Registry); err != nil {
 		return nil, err
 	}
+	publishCurrencies(doc, p.currencies)
 	// The model is published here, before anything compiles against it, because a
 	// composite node (flow.branch, a process step) has to resolve a cross-reference
 	// to another intent while it is being built. Publishing it at the end would
 	// leave every such lookup reading an empty document.
 	p.Document = publicDocument(doc)
 	if err := p.openResources(ctx, doc, opts.Registry); err != nil {
+		return nil, err
+	}
+	if p.residency, err = compileResidency(doc, p.resources); err != nil {
 		return nil, err
 	}
 	if p.flags, err = compileFlags(doc, p.resources); err != nil {
@@ -425,7 +442,7 @@ func (p *Platform) Secret(name string) (string, bool) {
 var resourceDependencyKeys = []string{
 	"database", "cache", "queue", "store", "lock", "rate_limit", "limiter",
 	"authorizer", "mailer", "index", "outbox", "session", "circuit_breaker", "service",
-	"org_resource",
+	"org_resource", "signer", "token_issuer", "storage",
 }
 
 // openResources opens every resource in dependency order.
@@ -826,6 +843,7 @@ func (p *Platform) compileNode(registry *Registry, build BuildContext, spec Inte
 	if err != nil {
 		return err
 	}
+	residency := p.residency.guardFor(spec.Name, nodeSpec, registry)
 
 	onError := strings.ToLower(strings.TrimSpace(nodeSpec.OnError))
 	switch onError {
@@ -861,7 +879,13 @@ func (p *Platform) compileNode(registry *Registry, build BuildContext, spec Inte
 		aliveKey = key(nodeSpec.keepAlive)
 		provides = append(provides, aliveKey.Any())
 	}
-	kind, err := nodeKind(nodeSpec.Kind)
+	declared := nodeSpec.Kind
+	if declared == "" && registry.actionKind(nodeSpec.Uses) == "decision" {
+		// A guard is a decision whether or not the author said so: as a pure
+		// node it would race the intent's effects instead of gating them.
+		declared = "decision"
+	}
+	kind, err := nodeKind(declared)
 	if err != nil {
 		return fmt.Errorf("ref/platform: %s: %w", what, err)
 	}
@@ -914,6 +938,9 @@ func (p *Platform) compileNode(registry *Registry, build BuildContext, spec Inte
 			nc.Decisions().RecordAllow(reg.Name, nil)
 		}
 
+		if err := p.residencyCheck(residency, actionCtx); err != nil {
+			return err
+		}
 		result, err := p.runNodeAction(actionCtx, action, node, retry, nodeTimeout)
 		if err != nil {
 			if onError == "continue" {
@@ -1200,6 +1227,9 @@ func validateDocument(doc Document, registry *Registry) error {
 		}
 	}
 
+	if err := validateResidency(doc, resources, intents); err != nil {
+		return err
+	}
 	if err := validateRouteSpecs(doc, resources, intents, processes); err != nil {
 		return err
 	}
@@ -1712,12 +1742,32 @@ func (p *Platform) runWorkerJob(ctx context.Context, worker WorkerSpec, job *fh.
 // ---------------------------------------------------------------------------
 
 // startBackground launches the process engine's ticker and the schedule loop.
+// backgroundResource is a resource with its own background loop (a pipeline
+// outbox dispatcher). It starts once the generation is fully built and stops
+// when it closes.
+type backgroundResource interface {
+	runBackground(ctx context.Context, p *Platform)
+}
+
 func (p *Platform) startBackground() {
-	if len(p.engines) == 0 && len(p.schedules) == 0 {
+	var loops []backgroundResource
+	for _, r := range p.resources {
+		if b, ok := r.(backgroundResource); ok {
+			loops = append(loops, b)
+		}
+	}
+	if len(p.engines) == 0 && len(p.schedules) == 0 && len(loops) == 0 {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p.background = cancel
+	for _, b := range loops {
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			b.runBackground(ctx, p)
+		}()
+	}
 
 	if len(p.engines) > 0 {
 		p.wg.Add(1)

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Query filters a case listing.
@@ -26,8 +27,13 @@ type Query struct {
 	// Assignees keeps cases whose current stage is assigned to one of these
 	// ("" in the list matches unassigned work).
 	Assignees []string
-	Limit     int
-	Offset    int
+	// Queues keeps cases triaged into one of these queues.
+	Queues []string
+	// Order is "" (newest first) or "priority": triage priority (1 first,
+	// untriaged last), then oldest first.
+	Order  string
+	Limit  int
+	Offset int
 }
 
 // Store persists cases. Update must fail with ErrConflict when the stored
@@ -45,6 +51,68 @@ type Store interface {
 	Delete(ctx context.Context, id string) error
 }
 
+func (c *Case) currentAssignedAt() int64 {
+	if ss := c.Stages[c.Stage]; ss != nil && !c.Terminal() && ss.Assignee != "" && ss.AssignedAt != nil {
+		return ss.AssignedAt.UnixNano()
+	}
+	return 0
+}
+
+// WorkloadCounter is implemented by stores that count open assignments
+// themselves (one indexed query instead of loading every open case).
+type WorkloadCounter interface {
+	Workload(ctx context.Context, pipeline string) (map[string]Load, error)
+}
+
+// Workload counts open assignments per person from the denormalised
+// assignee columns.
+func (s *SQLStore) Workload(ctx context.Context, pipeline string) (map[string]Load, error) {
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT assignee, COUNT(*), MAX(assigned_at) FROM {p}cases
+		WHERE pipeline = ? AND assignee <> '' AND status IN (?, ?, ?) GROUP BY assignee`),
+		pipeline, CaseDraft, CaseInProgress, CaseReturned)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]Load{}
+	for rows.Next() {
+		var (
+			who  string
+			n    int
+			last int64
+		)
+		if err := rows.Scan(&who, &n, &last); err != nil {
+			return nil, err
+		}
+		l := Load{Open: n}
+		if last > 0 {
+			l.LastAssigned = time.Unix(0, last).UTC()
+		}
+		out[who] = l
+	}
+	return out, rows.Err()
+}
+
+// Workload counts open assignments per person.
+func (s *MemoryStore) Workload(_ context.Context, pipeline string) (map[string]Load, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]Load{}
+	for _, c := range s.cases {
+		who := c.CurrentAssignee()
+		if c.Pipeline != pipeline || who == "" {
+			continue
+		}
+		l := out[who]
+		l.Open++
+		if at := c.currentAssignedAt(); at > 0 && time.Unix(0, at).After(l.LastAssigned) {
+			l.LastAssigned = time.Unix(0, at).UTC()
+		}
+		out[who] = l
+	}
+	return out, nil
+}
+
 // CurrentAssignee is who holds the case's current stage ("" if nobody).
 func (c *Case) CurrentAssignee() string {
 	if ss := c.Stages[c.Stage]; ss != nil && !c.Terminal() {
@@ -60,7 +128,39 @@ func (q Query) matches(c *Case) bool {
 		(len(q.Stages) == 0 || slices.Contains(q.Stages, c.Stage)) &&
 		(len(q.Statuses) == 0 || slices.Contains(q.Statuses, c.Status)) &&
 		(len(q.OrgUnits) == 0 || slices.Contains(q.OrgUnits, c.OrgUnit)) &&
-		(len(q.Assignees) == 0 || slices.Contains(q.Assignees, c.CurrentAssignee()))
+		(len(q.Assignees) == 0 || slices.Contains(q.Assignees, c.CurrentAssignee())) &&
+		(len(q.Queues) == 0 || slices.Contains(q.Queues, c.TriageQueue()))
+}
+
+// OrderPriority orders a listing by triage priority.
+const OrderPriority = "priority"
+
+// TriagePriority is the case's triage priority (0 = untriaged).
+func (c *Case) TriagePriority() int {
+	if c.Triage == nil {
+		return 0
+	}
+	return c.Triage.Priority
+}
+
+// TriageQueue is the case's triage queue ("" = none).
+func (c *Case) TriageQueue() string {
+	if c.Triage == nil {
+		return ""
+	}
+	return c.Triage.Queue
+}
+
+// byPriority reports whether a lists before b in priority order.
+func byPriority(a, b *Case) bool {
+	pa, pb := a.TriagePriority(), b.TriagePriority()
+	if (pa == 0) != (pb == 0) {
+		return pb == 0
+	}
+	if pa != pb {
+		return pa < pb
+	}
+	return a.CreatedAt.Before(b.CreatedAt)
 }
 
 // ---------------------------------------------------------------------------
@@ -69,9 +169,16 @@ func (q Query) matches(c *Case) bool {
 
 // MemoryStore keeps cases in memory, for tests and single-process demos.
 type MemoryStore struct {
-	mu    sync.Mutex
-	cases map[string]*Case
-	seq   map[string]int64
+	mu     sync.Mutex
+	cases  map[string]*Case
+	seq    map[string]int64
+	outbox []*OutboxEvent
+	leases map[string]time.Time
+	// notices holds notification preferences and pending notifications.
+	notices *memoryNotify
+	// Record selects the events written to the outbox with each change
+	// (nil records none).
+	Record func(Event) bool
 }
 
 // NewMemoryStore returns an empty store.
@@ -87,6 +194,8 @@ func (s *MemoryStore) Create(_ context.Context, c *Case) error {
 	}
 	c.Revision = 1
 	s.cases[c.ID] = c.Clone()
+	s.enqueue(c)
+	s.clearEvents(c)
 	return nil
 }
 
@@ -112,6 +221,8 @@ func (s *MemoryStore) Update(_ context.Context, c *Case) error {
 	}
 	c.Revision++
 	s.cases[c.ID] = c.Clone()
+	s.enqueue(c)
+	s.clearEvents(c)
 	return nil
 }
 
@@ -125,6 +236,9 @@ func (s *MemoryStore) List(_ context.Context, q Query) ([]*Case, error) {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if q.Order == OrderPriority {
+		sort.SliceStable(out, func(i, j int) bool { return byPriority(out[i], out[j]) })
+	}
 	return page(out, q), nil
 }
 
@@ -183,6 +297,9 @@ type SQLStore struct {
 	db      *sql.DB
 	dialect string // postgres, mysql or sqlite
 	prefix  string
+	// Record selects the events written to the outbox in the same
+	// transaction as each change (nil records none).
+	Record func(Event) bool
 }
 
 var identRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -241,6 +358,21 @@ func (s *SQLStore) Migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS {p}certificates_number_idx ON {p}certificates (number)`,
 		`CREATE INDEX IF NOT EXISTS {p}certificates_code_idx ON {p}certificates (code)`,
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS {p}sequences (pipeline %s PRIMARY KEY, seq BIGINT NOT NULL)`, key),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS {p}outbox (
+			id %[1]s PRIMARY KEY, case_id %[1]s NOT NULL, pipeline %[1]s NOT NULL, event %[2]s NOT NULL,
+			attempts INTEGER NOT NULL DEFAULT 0, next_at BIGINT NOT NULL, lease_token %[1]s NOT NULL DEFAULT '',
+			lease_until BIGINT NOT NULL DEFAULT 0, dead INTEGER NOT NULL DEFAULT 0, last_error %[2]s, created_at BIGINT NOT NULL)`, key, text),
+		`CREATE INDEX IF NOT EXISTS {p}outbox_due_idx ON {p}outbox (dead, next_at)`,
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS {p}notify_prefs (
+			tenant_id %[1]s NOT NULL, user_id %[1]s NOT NULL, doc %[2]s NOT NULL, updated_at BIGINT NOT NULL,
+			PRIMARY KEY (tenant_id, user_id))`, key, text),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS {p}notifications (
+			id %[1]s PRIMARY KEY, tenant_id %[1]s NOT NULL DEFAULT '', user_id %[1]s NOT NULL, channel %[1]s NOT NULL,
+			digest %[1]s NOT NULL DEFAULT '', deliver_at BIGINT NOT NULL, doc %[2]s NOT NULL,
+			attempts INTEGER NOT NULL DEFAULT 0, lease_token %[1]s NOT NULL DEFAULT '', lease_until BIGINT NOT NULL DEFAULT 0,
+			dead INTEGER NOT NULL DEFAULT 0, last_error %[2]s, created_at BIGINT NOT NULL)`, key, text),
+		`CREATE INDEX IF NOT EXISTS {p}notifications_due_idx ON {p}notifications (dead, deliver_at)`,
+		`CREATE INDEX IF NOT EXISTS {p}notifications_user_idx ON {p}notifications (tenant_id, user_id)`,
 	}
 	if s.dialect == "mysql" {
 		// MySQL has no CREATE INDEX IF NOT EXISTS; the tables' creation above is
@@ -257,15 +389,18 @@ func (s *SQLStore) Migrate(ctx context.Context) error {
 			return err
 		}
 	}
-	// Tables created before the assignee column existed get it added; a
-	// "duplicate column" error means it is already there.
-	if _, err := s.db.ExecContext(ctx, s.q(fmt.Sprintf(`ALTER TABLE {p}cases ADD COLUMN assignee %s NOT NULL DEFAULT ''`, key))); err != nil {
-		msg := strings.ToLower(err.Error())
-		if !strings.Contains(msg, "duplicate") && !strings.Contains(msg, "already exists") {
-			return err
+	// Tables created before a column existed get it added; a "duplicate
+	// column" error means it is already there.
+	for _, col := range []string{fmt.Sprintf("assignee %s NOT NULL DEFAULT ''", key), "assigned_at BIGINT NOT NULL DEFAULT 0",
+		"priority INTEGER NOT NULL DEFAULT 0", fmt.Sprintf("queue %s NOT NULL DEFAULT ''", key)} {
+		if _, err := s.db.ExecContext(ctx, s.q(`ALTER TABLE {p}cases ADD COLUMN `+col)); err != nil {
+			msg := strings.ToLower(err.Error())
+			if !strings.Contains(msg, "duplicate") && !strings.Contains(msg, "already exists") {
+				return err
+			}
 		}
 	}
-	index := `CREATE INDEX IF NOT EXISTS {p}cases_assignee_idx ON {p}cases (assignee)`
+	index := `CREATE INDEX IF NOT EXISTS {p}cases_assignee_idx ON {p}cases (pipeline, assignee, status)`
 	if s.dialect == "mysql" {
 		index = strings.Replace(index, "IF NOT EXISTS ", "", 1)
 	}
@@ -305,16 +440,23 @@ func (s *SQLStore) Create(ctx context.Context, c *Case) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO {p}cases (id, pipeline, number, tenant_id, org_unit, status, stage, created_by, assignee, revision, doc, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		c.ID, c.Pipeline, c.Number, c.TenantID, c.OrgUnit, c.Status, c.Stage, c.CreatedBy, c.CurrentAssignee(), c.Revision, string(doc),
+	if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO {p}cases (id, pipeline, number, tenant_id, org_unit, status, stage, created_by, assignee, assigned_at, priority, queue, revision, doc, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		c.ID, c.Pipeline, c.Number, c.TenantID, c.OrgUnit, c.Status, c.Stage, c.CreatedBy, c.CurrentAssignee(), c.currentAssignedAt(), c.TriagePriority(), c.TriageQueue(), c.Revision, string(doc),
 		c.CreatedAt.UnixNano(), c.UpdatedAt.UnixNano()); err != nil {
 		return err
 	}
 	if err := s.syncCertificates(ctx, tx, c); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := s.enqueue(ctx, tx, c); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.clearEvents(c)
+	return nil
 }
 
 func (s *SQLStore) Get(ctx context.Context, id string) (*Case, error) {
@@ -347,9 +489,9 @@ func (s *SQLStore) Update(ctx context.Context, c *Case) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, s.q(`UPDATE {p}cases SET status = ?, stage = ?, org_unit = ?, assignee = ?, revision = ?, doc = ?, updated_at = ?
+	res, err := tx.ExecContext(ctx, s.q(`UPDATE {p}cases SET status = ?, stage = ?, org_unit = ?, assignee = ?, assigned_at = ?, priority = ?, queue = ?, revision = ?, doc = ?, updated_at = ?
 		WHERE id = ? AND revision = ?`),
-		c.Status, c.Stage, c.OrgUnit, c.CurrentAssignee(), c.Revision, string(doc), c.UpdatedAt.UnixNano(), c.ID, expected)
+		c.Status, c.Stage, c.OrgUnit, c.CurrentAssignee(), c.currentAssignedAt(), c.TriagePriority(), c.TriageQueue(), c.Revision, string(doc), c.UpdatedAt.UnixNano(), c.ID, expected)
 	if err != nil {
 		c.Revision = expected
 		return err
@@ -365,10 +507,15 @@ func (s *SQLStore) Update(ctx context.Context, c *Case) error {
 		c.Revision = expected
 		return err
 	}
+	if err := s.enqueue(ctx, tx, c); err != nil {
+		c.Revision = expected
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		c.Revision = expected
 		return err
 	}
+	s.clearEvents(c)
 	return nil
 }
 
@@ -412,11 +559,17 @@ func (s *SQLStore) List(ctx context.Context, q Query) ([]*Case, error) {
 	add("status", q.Statuses)
 	add("org_unit", q.OrgUnits)
 	add("assignee", q.Assignees)
+	add("queue", q.Queues)
 	limit := q.Limit
 	if limit <= 0 || limit > 5000 {
 		limit = 100
 	}
-	statement := "SELECT doc FROM {p}cases WHERE " + strings.Join(where, " AND ") + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	order := "created_at DESC"
+	if q.Order == OrderPriority {
+		// Untriaged cases (priority 0) last, then the most urgent, oldest first.
+		order = "CASE WHEN priority = 0 THEN 1 ELSE 0 END, priority, created_at"
+	}
+	statement := "SELECT doc FROM {p}cases WHERE " + strings.Join(where, " AND ") + " ORDER BY " + order + " LIMIT ? OFFSET ?"
 	args = append(args, limit, max(0, q.Offset))
 	rows, err := s.db.QueryContext(ctx, s.q(statement), args...)
 	if err != nil {

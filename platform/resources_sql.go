@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -37,6 +38,13 @@ type Database struct {
 	// permits. It is a defence in depth for a deployment that lets less-trusted
 	// authors write BCL: the connection itself refuses anything unlisted.
 	allowlist []string
+
+	// events is the durable entity hook outbox, when an entity declares one.
+	eventsMu sync.Mutex
+	events   *entityEvents
+	// searchIndexes are the entity search indexes the startup backfill checks,
+	// by table (guarded by eventsMu).
+	searchIndexes map[string]*entitySearchIndex
 }
 
 // Reader returns the pool a read-only query should use, falling back to the

@@ -82,6 +82,13 @@ type Case struct {
 	Hold *LegalHold `json:"legal_hold,omitempty"`
 	// Erased is set once personal data has been anonymised.
 	Erased *time.Time `json:"erased_at,omitempty"`
+	// Triage is the case's priority/queue classification (triage review).
+	Triage *Triage `json:"triage,omitempty"`
+	// Snapshots are versions of the data kept for diff reviews: each
+	// submission to a diff-reviewed stage and each approval there.
+	Snapshots []Snapshot `json:"snapshots,omitempty"`
+	// Acknowledgements records every accepted page acknowledgement.
+	Acknowledgements []AckRecord `json:"acknowledgements,omitempty"`
 
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
@@ -164,6 +171,9 @@ type StageState struct {
 	Routing          *RoutingDecision `json:"routing,omitempty"`
 	SLA              *SLAState        `json:"sla,omitempty"`
 	Suspended        *Suspension      `json:"suspended,omitempty"`
+	// Review records review-mode decisions of the current visit: the
+	// sampling decision and, for diff reviews, the revision approved.
+	Review *ReviewState `json:"review,omitempty"`
 }
 
 // RoutingDecision explains an assignment: who was considered and why.
@@ -231,12 +241,14 @@ type NodeState struct {
 	UpdatedAt *time.Time         `json:"updated_at,omitempty"`
 }
 
-// Approval is one approver's decision. Votes carry a Decision.
+// Approval is one approver's decision. Votes and gate reviews carry a
+// Decision. Revision is the case revision the approver saw.
 type Approval struct {
 	By       string    `json:"by"`
 	At       time.Time `json:"at"`
 	Comment  string    `json:"comment,omitempty"`
 	Decision string    `json:"decision,omitempty"`
+	Revision int64     `json:"revision,omitempty"`
 }
 
 // Verdict is a reviewer's decision on one input.
@@ -258,6 +270,8 @@ type Entry struct {
 	Changes []string  `json:"changes,omitempty"`
 	From    string    `json:"from,omitempty"`
 	To      string    `json:"to,omitempty"`
+	// Revision is the case revision a review decision was taken on.
+	Revision int64 `json:"revision,omitempty"`
 }
 
 // Actor is whoever is acting on a case.

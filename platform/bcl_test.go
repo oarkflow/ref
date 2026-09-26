@@ -96,7 +96,7 @@ func TestBCLReservedNamesStillBehaveAsDocumented(t *testing.T) {
 		}
 	})
 
-	t.Run("from and to bind only on their own line", func(t *testing.T) {
+	t.Run("from and to bind inline and on their own lines", func(t *testing.T) {
 		type edge struct {
 			Name string `bcl:",id"`
 			From string `bcl:"from"`
@@ -115,18 +115,44 @@ func TestBCLReservedNamesStillBehaveAsDocumented(t *testing.T) {
 		if len(split.Edges) != 1 || split.Edges[0].From != "x" || split.Edges[0].To != "y" {
 			t.Fatalf("one key per line did not bind: %+v", split.Edges)
 		}
-		if len(inline.Edges) == 1 && inline.Edges[0].From == "x" && inline.Edges[0].To == "y" {
-			t.Fatal("`from`/`to` now bind inline — the one-key-per-line rule could be relaxed")
+		// Fixed in v0.0.34: before, `to` was read as a range operator and lost.
+		if len(inline.Edges) != 1 || inline.Edges[0].From != "x" || inline.Edges[0].To != "y" {
+			t.Fatalf("`from`/`to` no longer bind inline (BCL regression): %+v", inline.Edges)
 		}
 	})
 
-	t.Run("when derails the parse", func(t *testing.T) {
-		var parsed doc
-		source := "probe \"p\" {\n  when \"x\"\n  condition \"z\"\n}\n"
-		err := bcl.UnmarshalWithOptions([]byte(source), &parsed, &bcl.Options{})
-		bound := err == nil && len(parsed.Probes) == 1 && parsed.Probes[0].Fine == "z"
-		if bound {
-			t.Fatal("`when` no longer derails the parse — the spec could accept it as a guard alias again")
+	t.Run("when binds like any key", func(t *testing.T) {
+		type guarded struct {
+			Name string `bcl:",id"`
+			When string `bcl:"when"`
+			Fine string `bcl:"condition"`
+		}
+		var parsed struct {
+			Probes []guarded `bcl:"probe,block"`
+		}
+		// Fixed in v0.0.34: before, `when "x"` opened a conditional block and
+		// swallowed the rest of the document.
+		source := "probe \"p\" {\n  when \"x\"\n  condition \"z\"\n}\nprobe \"q\" { when \"a and b\" condition \"w\" }\n"
+		if err := bcl.UnmarshalWithOptions([]byte(source), &parsed, &bcl.Options{}); err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if len(parsed.Probes) != 2 || parsed.Probes[0].When != "x" || parsed.Probes[0].Fine != "z" ||
+			parsed.Probes[1].When != "a and b" || parsed.Probes[1].Fine != "w" {
+			t.Fatalf("`when` no longer binds (BCL regression): %+v", parsed.Probes)
+		}
+	})
+
+	t.Run("const binds inside a block", func(t *testing.T) {
+		var parsed struct {
+			Probes []struct {
+				Name  string `bcl:",id"`
+				Const string `bcl:"const"`
+			} `bcl:"probe,block"`
+		}
+		// Fixed in v0.0.35: before, `const` inside a block was a parse error.
+		source := "probe \"p\" {\n  const \"x\"\n}\n"
+		if err := bcl.UnmarshalWithOptions([]byte(source), &parsed, &bcl.Options{}); err != nil || len(parsed.Probes) != 1 || parsed.Probes[0].Const != "x" {
+			t.Fatalf("`const` no longer binds as a key (BCL regression): %v %+v", err, parsed.Probes)
 		}
 	})
 }
@@ -559,15 +585,8 @@ func childIntentNames(config map[string]any) []string {
 // up.
 func TestCatalogNeverAdvertisesAReservedName(t *testing.T) {
 	catalog := NewRegistry().Catalog()
-	reserved := append(append([]string{}, reservedBCLNames...), inlineUnsafeBCLNames...)
-
 	check := func(where, field string) {
-		// from/to are endpoints an edge must name; they are unsafe only inline, which
-		// is a formatting rule, not a naming one.
-		if field == "from" || field == "to" {
-			return
-		}
-		if slices.Contains(reserved, field) {
+		if slices.Contains(reservedBCLNames, field) {
 			t.Errorf("%s advertises %q, which BCL cannot bind", where, field)
 		}
 	}
@@ -585,5 +604,22 @@ func TestCatalogNeverAdvertisesAReservedName(t *testing.T) {
 		for _, field := range kind.Config {
 			check("resource kind "+kind.Name, field.Name)
 		}
+	}
+}
+
+// The pipeline hook example in docs/pipelines.md: `when` on one line with other
+// keys (it failed to parse before BCL v0.0.34).
+func TestPipelineHookWhenParses(t *testing.T) {
+	source := "pipeline \"p\" {\n  on \"case.completed\" { hook \"passport.notify\"  stage \"issuance\"  when \"request.service == 'fast_track'\" }\n}\n"
+	var doc Document
+	if err := bcl.UnmarshalWithOptions([]byte(source), &doc, &bcl.Options{}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(doc.Pipelines) != 1 || len(doc.Pipelines[0].On) != 1 {
+		t.Fatalf("pipeline or hook missing: %+v", doc.Pipelines)
+	}
+	h := doc.Pipelines[0].On[0]
+	if h.Hook != "passport.notify" || h.Stage != "issuance" || h.When != "request.service == 'fast_track'" {
+		t.Fatalf("hook: %+v", h)
 	}
 }

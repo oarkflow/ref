@@ -550,6 +550,20 @@ intent "ticket.decide" {
   }
 }
 
+intent "ticket.analytics" {
+  description "Run counts by status and step, and durations"
+  response "stats"
+  node "stats" {
+    family process
+    uses "process.analytics"
+    kind read
+    provides [stats]
+    config {
+      process "ticket.approval"
+    }
+  }
+}
+
 intent "ticket.status" {
   description "A run's state, with its step history"
   response "response"
@@ -628,9 +642,8 @@ process "ticket.approval" {
 
   edge "small" {
     kind branch
-    from "record"
-    to "finish"
-    condition "result.amount <= 100"
+    from "record" to "finish"
+    when "result.amount <= 100"
   }
   edge "large" {
     kind branch
@@ -754,6 +767,13 @@ route "ticket.decide" {
   authz {
     permissions [ticket:approve]
   }
+}
+
+route "ticket.analytics" {
+  method GET
+  path "/ops/analytics"
+  intent "ticket.analytics"
+  session "sessions"
 }
 
 route "ticket.status" {
@@ -1191,6 +1211,41 @@ func TestE2ESmallTicketSkipsTheApproval(t *testing.T) {
 		if object, ok := entry.(map[string]any); ok && object["step"] == "approve" {
 			t.Fatal("a small ticket opened an approval task")
 		}
+	}
+}
+
+func TestE2EProcessAnalytics(t *testing.T) {
+	h := newE2E(t)
+	h.login("kim", "requester")
+	for _, amount := range []int{20, 900, 30} {
+		if status, _, raw := h.do(http.MethodPost, "/tickets", map[string]any{"subject": fmt.Sprint("expense ", amount), "amount": amount}); status != 201 {
+			t.Fatalf("start = %d %s", status, raw)
+		}
+	}
+	status, body, raw := h.do(http.MethodGet, "/ops/analytics", nil)
+	if status != 200 {
+		t.Fatalf("analytics = %d %s", status, raw)
+	}
+	byStatus, _ := body["by_status"].(map[string]any)
+	active, _ := body["active_by_step"].(map[string]any)
+	if body["runs"] != float64(3) || byStatus["completed"] != float64(2) || byStatus["waiting"] != float64(1) ||
+		active["approve"] != float64(1) || body["scanned"] != float64(3) || body["truncated"] != false {
+		t.Fatalf("analytics: %s", raw)
+	}
+	completed, _ := dig(body, "durations", "completed").(map[string]any)
+	if completed["count"] != float64(2) {
+		t.Fatalf("durations: %s", raw)
+	}
+	steps := map[string]map[string]any{}
+	for _, s := range body["steps"].([]any) {
+		m := s.(map[string]any)
+		steps[fmt.Sprint(m["step"])] = m
+	}
+	if steps["record"]["executions"] != float64(3) || steps["record"]["completed"] != float64(3) || steps["finish"]["completed"] != float64(2) {
+		t.Fatalf("steps: %s", raw)
+	}
+	if _, ok := steps["record"]["avg_seconds"].(float64); !ok {
+		t.Fatalf("step durations: %s", raw)
 	}
 }
 

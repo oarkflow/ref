@@ -25,3 +25,23 @@ func TestExecCancelCtxSafeAfterReset(t *testing.T) {
 		t.Fatal("cleared context must report canceled")
 	}
 }
+
+// Once Done was handed out, a derived context may watch it after the
+// execution ends, so the execution must not be recycled into the pool.
+func TestExecCancelCtxObserved(t *testing.T) {
+	var c execCancelCtx
+	c.reset(context.Background())
+	if c.observed() {
+		t.Fatal("fresh context reported observed")
+	}
+	child, cancel := context.WithCancel(&c)
+	defer cancel()
+	if !c.observed() {
+		t.Fatal("deriving a child did not mark the context observed")
+	}
+	c.cancelExecution()
+	<-child.Done()
+	if child.Err() == nil {
+		t.Fatal("child not cancelled")
+	}
+}

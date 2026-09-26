@@ -230,9 +230,9 @@ type EdgeSpec struct {
 	Targets []string `bcl:"targets"`
 
 	// Condition must hold for the edge to traverse. Every edge type evaluates it,
-	// without exception. BCL reserves `when` as a parser keyword, so `condition`
-	// is the only spelling.
+	// without exception. When is an alias of it (BCL binds `when` since v0.0.34).
 	Condition string `bcl:"condition"`
+	When      string `bcl:"when"`
 
 	// Strategy selects the completion rule for fan-in, join and quorum edges:
 	// "all" (default), "any", "quorum", "partial_success" or "best_score".

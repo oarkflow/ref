@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oarkflow/bcl"
@@ -63,6 +64,12 @@ var evalOptions = &bcl.EvalOptions{
 	AllowHash:     true,
 	AllowEncoding: true,
 	AllowTime:     true,
+	// StrictFunctions makes a call to an unknown function an error rather
+	// than bcl's legacy "return the argument" (v0.0.36).
+	StrictFunctions: true,
+	// Functions adds the money, Bikram Sambat and fiscal-year helpers (see
+	// expr_locale.go).
+	Functions: exprFunctions,
 }
 
 // CompileExpr compiles one expression. An empty string compiles to nil, which
@@ -73,12 +80,110 @@ func CompileExpr(raw string) (*Expression, error) {
 	if raw == "" {
 		return nil, nil
 	}
-	prog, err := bcl.CompileExpression(rewriteExpression(raw))
+	prog, err := bcl.CompileExpression(raw)
 	if err != nil {
+		return nil, fmt.Errorf("compile expression %q: %w", raw, err)
+	}
+	if err := checkFunctions(raw); err != nil {
 		return nil, fmt.Errorf("compile expression %q: %w", raw, err)
 	}
 	return &Expression{raw: raw, prog: prog}, nil
 }
+
+// knownFunctions caches whether a function name resolves (name -> bool).
+var knownFunctions sync.Map
+
+// checkFunctions rejects a call to a function that does not exist, so a typo
+// such as `uper(name)` fails when the document is validated. Evaluation is
+// strict too (evalOptions.StrictFunctions), but bcl (v0.0.36) checks syntax
+// in CompileExpression without options, so it cannot tell a registered
+// function from a typo there. Each called name is probed once instead:
+// `name()` evaluated in strict mode fails with "unknown function" only when
+// nothing by that name exists (a real function fails on its arguments, or
+// not at all).
+func checkFunctions(raw string) error {
+	for _, name := range calledNames(raw) {
+		known, ok := knownFunctions.Load(name)
+		if !ok {
+			known = probeFunction(name)
+			knownFunctions.Store(name, known)
+		}
+		if !known.(bool) {
+			return fmt.Errorf("unknown function %q", name)
+		}
+	}
+	return nil
+}
+
+func probeFunction(name string) (known bool) {
+	defer func() {
+		if recover() != nil {
+			known = true // it ran (and panicked on no arguments): it exists
+		}
+	}()
+	prog, err := bcl.CompileExpression(name + "()")
+	if err != nil {
+		return true // not a plain call; leave it to evaluation
+	}
+	opts := *evalOptions
+	opts.Variables = Env{}
+	_, err = prog.Eval(Env{}, &opts)
+	return err == nil || !strings.HasPrefix(err.Error(), "unknown function")
+}
+
+// calledNames returns the names used as functions in an expression: an
+// identifier (possibly dotted) followed by "(", outside string literals.
+func calledNames(src string) []string {
+	var names []string
+	seen := map[string]bool{}
+	quote := byte(0)
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		if quote != 0 {
+			if c == '\\' {
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		if c == '"' || c == '\'' || c == '`' {
+			quote = c
+			continue
+		}
+		if !isIdentStart(c) || (i > 0 && (isIdentPart(src[i-1]) || src[i-1] == '.')) {
+			continue
+		}
+		j := i
+		for j < len(src) && (isIdentPart(src[j]) || src[j] == '.') {
+			j++
+		}
+		k := j
+		for k < len(src) && (src[k] == ' ' || src[k] == '\t') {
+			k++
+		}
+		if k < len(src) && src[k] == '(' {
+			if name := src[i:j]; !seen[name] && !exprKeywords[name] {
+				seen[name] = true
+				names = append(names, name)
+			}
+		}
+		i = j - 1
+	}
+	return names
+}
+
+// exprKeywords may precede "(" without being a call: `a and (b)`, `x in (..)`.
+var exprKeywords = map[string]bool{"and": true, "or": true, "not": true, "in": true, "not_in": true, "match": true,
+	"contains": true, "starts_with": true, "ends_with": true, "matches": true, "has": true, "has_any": true,
+	"has_all": true, "between": true, "exists": true, "empty": true, "equals": true, "greater_than": true,
+	"less_than": true, "greater_or_equal": true, "less_or_equal": true, "true": true, "false": true, "nil": true, "null": true}
+
+func isIdentStart(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func isIdentPart(c byte) bool { return isIdentStart(c) || (c >= '0' && c <= '9') }
 
 // MustCompileExpr is CompileExpr for expressions built by this package itself,
 // where a failure is a bug rather than bad configuration.

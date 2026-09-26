@@ -82,7 +82,7 @@ func registerPipelineActions(r *Registry) {
 		Summary:  "List cases: the caller's own (mine), their work queue (queue) or everything they may view (all), scoped to their jurisdiction",
 		Provides: "The case summaries",
 		Config: with(
-			ConfigField{Name: "scope", Type: "string", Default: "queue", Summary: "mine | queue | all (or ?scope=)"},
+			ConfigField{Name: "scope", Type: "string", Default: "queue", Summary: "mine | queue | all (or ?scope=); ?queue= filters by triage queue, ?order=priority|newest (priority is the default for work lists of triaged pipelines)"},
 			ConfigField{Name: "limit", Type: "int", Default: "50"},
 		),
 	})
@@ -99,6 +99,12 @@ func registerPipelineActions(r *Registry) {
 		Config:   with(ConfigField{Name: "key_fact", Type: "fact", Summary: "Fact path of the number or code (default: :key, ?key= or input.key)"}),
 	})
 	roles := ConfigField{Name: "roles", Type: "[]string", Summary: "Only principals holding one of these roles may call it"}
+	mustAction(r, "pipeline.events", pipelineAction("events"), ActionInfo{
+		Family: "workflow", Kind: "effect",
+		Summary:  "Operate the event outbox: list dead-lettered hook events, or requeue one (:event_id) for immediate delivery",
+		Provides: "{dead: [...]} or {requeued: id}",
+		Config:   with(roles, ConfigField{Name: "op", Type: "string", Summary: "dead (default) | requeue"}),
+	})
 	mustAction(r, "pipeline.certificate_pdf", pipelineAction("certificate_pdf"), ActionInfo{
 		Family: "workflow", Kind: "read",
 		Summary:  "Render an issued certificate of a case as a PDF with its verification code (:number, default the first valid one)",
@@ -165,6 +171,32 @@ func registerPipelineActions(r *Registry) {
 		Provides: "The analytics report",
 		Config:   with(roles),
 	})
+	mustAction(r, "pipeline.notify_prefs", pipelineAction("notify_prefs"), ActionInfo{
+		Family: "workflow", Kind: "read",
+		Summary:  "Read the caller's notification preferences, the channels and events they can choose from, and their pending (deferred or digested) notifications",
+		Provides: "{preferences, channels, events, pending}",
+		Config:   common,
+	})
+	mustAction(r, "pipeline.notify_prefs_set", pipelineAction("notify_prefs_set"), ActionInfo{
+		Family: "workflow", Kind: "effect",
+		Summary:  "Replace the caller's notification preferences: {channels, events, timezone, quiet_hours {start, end}, digest immediate|hourly|daily, digest_at}",
+		Provides: "{preferences, channels, events, pending}",
+		Config:   common,
+	})
+	pathParam := ConfigField{Name: "path_fact", Type: "fact", Summary: "Fact path of the file input's data path, e.g. documents.photo (default: :path, ?path= or input.path)"}
+	mustAction(r, "pipeline.upload", pipelineAction("upload"), ActionInfo{
+		Family: "workflow", Kind: "effect",
+		Summary: "Upload a file (or several) for a file input of the stage (multipart/form-data, or input.file as {filename, content_base64}); " +
+			"it is size- and type-checked by its magic bytes, checksummed, stored in the resource's storage and recorded on the case",
+		Provides: "The updated view with the recorded files",
+		Config:   with(caseParam, stageParam, pathParam, ConfigField{Name: "file_fact", Type: "fact", Default: "input.file"}),
+	})
+	mustAction(r, "pipeline.file", pipelineAction("file"), ActionInfo{
+		Family: "workflow", Kind: "read",
+		Summary:  "Download an uploaded file of a case, for callers who may see its input; its SHA-256 is verified against the case first",
+		Provides: "The file download",
+		Config:   with(caseParam, pathParam, ConfigField{Name: "file_id_fact", Type: "fact", Summary: "Fact path of the file id of a multi-file input (default: :file_id, ?file_id=)"}),
+	})
 	mustAction(r, "pipeline.bulk", pipelineAction("bulk"), ActionInfo{
 		Family: "workflow", Kind: "effect",
 		Summary:  "Apply one operation (act, node, work, note, hold) to many cases ({ids, op, stage, ...}); each case is authorised and saved on its own",
@@ -177,7 +209,8 @@ var pipelineConfigKeys = []string{
 	"pipeline", "id", "id_fact", "stage", "stage_fact", "action", "action_fact", "node", "node_fact",
 	"verb", "verb_fact", "org_unit_fact", "data_fact", "scope", "scope_fact", "limit", "key", "key_fact",
 	"access_key_fact", "op", "op_fact", "roles", "max_items", "token", "token_fact",
-	"number", "number_fact", "verify_url",
+	"number", "number_fact", "verify_url", "event_id", "event_id_fact",
+	"path", "path_fact", "file_fact", "file_id", "file_id_fact",
 }
 
 func pipelineAction(op string) ActionFactory {
@@ -201,6 +234,9 @@ func pipelineAction(op string) ActionFactory {
 		maxItems, err := configInt(spec.Config, "max_items", 200)
 		if err != nil {
 			return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+		}
+		if (op == "upload" || op == "file") && res.files == nil {
+			return nil, fmt.Errorf("node %q: pipeline.%s needs a storage resource: set storage on resource %q", spec.Name, op, spec.Resource)
 		}
 		h := &pipelineHandler{res: res, spec: spec, op: op, limit: limit, maxItems: maxItems, roles: configStrings(spec.Config, "roles")}
 		return ActionFunc(h.run), nil
@@ -329,6 +365,8 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 		return h.link(ctx, hookCtx)
 	case "certificate_pdf":
 		return h.certificatePDF(ctx)
+	case "events":
+		return h.events(ctx)
 	case "sweep":
 		return h.sweep(ctx, hookCtx)
 	case "analytics":
@@ -337,6 +375,8 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 		return h.erase(ctx, hookCtx)
 	case "bulk":
 		return h.bulk(ctx, hookCtx)
+	case "notify_prefs", "notify_prefs_set":
+		return h.notifyPrefs(ctx)
 	case "describe":
 		e, err := h.engine("")
 		if err != nil {
@@ -365,6 +405,9 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 	if h.op == "get" {
 		return h.get(c, e, actor)
 	}
+	if h.op == "file" {
+		return h.download(ctx, c, e, actor)
+	}
 
 	// Mutations: a client that sends the revision it rendered gets a clean
 	// conflict instead of acting on a case that moved under it.
@@ -376,6 +419,14 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 	stage := h.param(ctx, "stage")
 	if stage == "" {
 		stage = c.Stage
+	}
+	switch h.op {
+	case "upload":
+		return h.upload(ctx, hookCtx, c, e, actor, stage)
+	case "act":
+		if review, ok, err := h.review(ctx, hookCtx, c, e, actor, stage); ok || err != nil {
+			return review, err
+		}
 	}
 	next, extra, err := h.apply(ctx, hookCtx, c, e, actor, stage, h.op, h.body(ctx, "", "input"))
 	if err != nil {
@@ -612,6 +663,20 @@ func (h *pipelineHandler) list(ctx *ActionContext) (ActionResult, error) {
 	if s := h.param(ctx, "status"); s != "" {
 		q.Statuses = []string{s}
 	}
+	if s := h.param(ctx, "queue"); s != "" {
+		q.Queues = []string{s}
+	}
+	switch order := h.param(ctx, "order"); order {
+	case "priority":
+		q.Order = pipeline.OrderPriority
+	case "", "newest":
+		// Work lists of a pipeline with triage are ordered by priority.
+		if order == "" && scope != "mine" && scope != "all" && hasTriage(e.C.Def) {
+			q.Order = pipeline.OrderPriority
+		}
+	default:
+		return ActionResult{}, invalidInput("order must be priority or newest")
+	}
 	switch scope {
 	case "mine":
 		if actor.ID == "" {
@@ -701,6 +766,9 @@ func (h *pipelineHandler) list(ctx *ActionContext) (ActionResult, error) {
 				row["on_hold"] = ss.Suspended.Reason
 			}
 		}
+		if c.Triage != nil {
+			row["priority"], row["queue"], row["triage_bucket"] = c.Triage.Priority, c.Triage.Queue, c.Triage.Bucket
+		}
 		out = append(out, row)
 	}
 	return h.out(out)
@@ -722,7 +790,8 @@ func (h *pipelineHandler) get(c *pipeline.Case, e *pipeline.Engine, actor pipeli
 		"id": c.ID, "number": c.Number, "pipeline": c.Pipeline, "status": c.Status, "stage": c.Stage,
 		"org_unit": c.OrgUnit, "created_by": c.CreatedBy, "revision": c.Revision,
 		"created_at": c.CreatedAt, "updated_at": c.UpdatedAt,
-		"stages": stages, "history": c.History, "certificates": c.Certificates,
+		"stages": stages, "history": c.History, "certificates": c.Certificates, "triage": c.Triage,
+		"acknowledgements": c.Acknowledgements,
 	})
 }
 
@@ -747,6 +816,13 @@ func (h *pipelineHandler) verify(ctx *ActionContext) (ActionResult, error) {
 		"number": cert.Number, "title": cert.Title, "code": cert.Code, "subject": cert.Subject,
 		"issued_at": cert.IssuedAt, "expires_at": cert.ExpiresAt, "case_number": cert.CaseNumber,
 	}}
+	if cert.KeySignature != nil {
+		// Everything the signature covers, so the holder can verify it
+		// offline against the published JWKS (pipeline.VerifyCertificateSignature).
+		view := out["certificate"].(map[string]any)
+		view["id"], view["name"], view["case_id"], view["pipeline"] = cert.ID, cert.Name, cert.CaseID, cert.Pipeline
+		view["hash"], view["key_signature"] = cert.Hash, cert.KeySignature
+	}
 	if status.Reason != "" {
 		out["reason"] = status.Reason
 	}
@@ -809,8 +885,25 @@ func pipelineFailure(err error) error {
 		return intent.Failure{Code: "INVALID_STATE", Category: intent.CategoryConflict, Message: message}
 	case errors.Is(err, pipeline.ErrNotFound):
 		return notFoundOrMessage(message)
+	case errors.Is(err, pipeline.ErrConfirmation):
+		return intent.Failure{Code: "CONFIRMATION_INVALID", Category: intent.CategoryConflict,
+			Message: strings.TrimPrefix(message, pipeline.ErrConfirmation.Error()+": ")}
+	case errors.Is(err, pipeline.ErrIntegrity):
+		return intent.Failure{Code: "INTEGRITY_FAILED", Category: intent.CategoryInternal,
+			Message: "the stored file failed its integrity check and was not served"}
 	case errors.Is(err, pipeline.ErrConflict):
 		return intent.Failure{Code: "CONFLICT", Category: intent.CategoryConflict, Message: "the case was changed by someone else; reload and try again"}
 	}
 	return databaseFailure(err)
+}
+
+func hasTriage(def *pipeline.Definition) bool {
+	for _, st := range def.Stages {
+		for _, r := range st.Reviews {
+			if r.Mode == pipeline.ReviewTriage {
+				return true
+			}
+		}
+	}
+	return false
 }

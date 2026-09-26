@@ -76,12 +76,24 @@ type EntitySpec struct {
 	// read and get 409 when it moved.
 	Versioned bool `bcl:"versioned"`
 	// Search lists text columns ?q= matches (case-insensitive substring).
-	Search      []string `bcl:"search"`
-	DefaultSort string   `bcl:"default_sort"` // e.g. "-created_at"
-	Limit       int      `bcl:"limit"`
-	MaxLimit    int      `bcl:"max_limit"`
-	Export      bool     `bcl:"export"`
-	Aggregate   bool     `bcl:"aggregate"`
+	Search []string `bcl:"search"`
+	// SearchIndex keeps a token index of the Search columns (lower-cased,
+	// accent-folded words in <table>_search), written in each change's
+	// transaction; ?q= then matches every query word as a word prefix.
+	SearchIndex bool   `bcl:"search_index"`
+	DefaultSort string `bcl:"default_sort"` // e.g. "-created_at"
+	Limit       int    `bcl:"limit"`
+	MaxLimit    int    `bcl:"max_limit"`
+	Export      bool   `bcl:"export"`
+	Aggregate   bool   `bcl:"aggregate"`
+	// Analytics enables GET {path}/-/analytics: several metrics, up to two
+	// group-by columns and a day/week/month time bucket in one call.
+	Analytics bool `bcl:"analytics"`
+	// Bulk enables POST {path}/-/bulk: many creates, updates and deletes in
+	// one request, all-or-nothing by default; BulkMax caps its items
+	// (default 500).
+	Bulk    bool `bcl:"bulk"`
+	BulkMax int  `bcl:"bulk_max"`
 	// Migrate creates the table and indexes at startup (default true).
 	Migrate *bool `bcl:"migrate"`
 
@@ -115,10 +127,18 @@ type EntityColumn struct {
 	ReadOnly  bool `bcl:"read_only"`
 	Immutable bool `bcl:"immutable"`
 	Hidden    bool `bcl:"hidden"`
+
+	// Currency makes a decimal column a money column: its scale is the
+	// currency's minor units (2 for NPR, 0 for JPY, 3 for KWD). The kind
+	// defaults to decimal.
+	Currency string `bcl:"currency"`
+	// currencyResolved records that Scale was set from the document's
+	// currency registry, which may define currencies the built-in one lacks.
+	currencyResolved bool
 }
 
 // EntityAccess allows an operation: list, get, create, update, delete,
-// export, aggregate or "*" (the default for ops without their own blocks —
+// export, aggregate, analytics or "*" (the default for ops without their own blocks —
 // an op's own blocks replace it). Roles restrict it to role holders; Condition is
 // checked against the record (and principal) for get/update/delete and
 // against the submitted record for create.
@@ -130,12 +150,26 @@ type EntityAccess struct {
 
 // EntityHook runs an intent after a committed change: created, updated,
 // deleted or "*".
+//
+// A durable hook is recorded in the same transaction as the change and
+// delivered by a background dispatcher with retries (MaxAttempts, default
+// 10; RetryBase doubling, default 2s) and dead-lettering, so it survives a
+// crash and a failing downstream. Delivery is at-least-once: its input
+// carries a stable event_id for idempotency.
 type EntityHook struct {
-	Event string `bcl:",id"`
-	Hook  string `bcl:"hook"`
+	Event       string `bcl:",id"`
+	Hook        string `bcl:"hook"`
+	Durable     bool   `bcl:"durable"`
+	MaxAttempts int    `bcl:"max_attempts"`
+	RetryBase   string `bcl:"retry_base"`
+
+	retryBase time.Duration
 }
 
-var entityOps = []string{"list", "get", "create", "update", "delete", "export", "aggregate"}
+// entityOps are the operations allow blocks govern. A bulk request is not
+// one of them: each of its items is checked as the create, update or delete
+// it is.
+var entityOps = []string{"list", "get", "create", "update", "delete", "export", "aggregate", "analytics"}
 
 // entityPlan is a compiled entity.
 type entityPlan struct {
@@ -185,6 +219,11 @@ func compileEntity(spec EntitySpec, dialect string) (*entityPlan, error) {
 		if !identRe.MatchString(col.Name) || slices.Contains(p.system, col.Name) || p.columns[col.Name] != nil {
 			return nil, fmt.Errorf("%s: column %q: invalid, reserved or duplicate name", where, col.Name)
 		}
+		if col.Currency != "" {
+			if err := resolveColumnCurrency(col); err != nil {
+				return nil, fmt.Errorf("%s: column %q: %w", where, col.Name, err)
+			}
+		}
 		if col.Kind == "" {
 			col.Kind = "text"
 		}
@@ -192,7 +231,7 @@ func compileEntity(spec EntitySpec, dialect string) (*entityPlan, error) {
 			return nil, fmt.Errorf("%s: column %q: kind %q is not text, integer, number, decimal, boolean, date, datetime, email or json", where, col.Name, col.Kind)
 		}
 		if col.Kind == "decimal" {
-			if col.Scale == 0 {
+			if col.Scale == 0 && col.Currency == "" {
 				col.Scale = 2
 			}
 			if col.Scale < 0 || col.Scale > 8 {
@@ -214,6 +253,9 @@ func compileEntity(spec EntitySpec, dialect string) (*entityPlan, error) {
 			return nil, fmt.Errorf("%s: search column %q must be a text column", where, s)
 		}
 	}
+	if spec.SearchIndex && len(spec.Search) == 0 {
+		return nil, fmt.Errorf("%s: search_index needs search columns", where)
+	}
 	if spec.OrgResource != "" && p.columns[spec.OrgColumn] == nil {
 		return nil, fmt.Errorf("%s: org_column %q must be a declared column", where, spec.OrgColumn)
 	}
@@ -231,9 +273,28 @@ func compileEntity(spec EntitySpec, dialect string) (*entityPlan, error) {
 		p.access[a.Op] = append(p.access[a.Op], compiledAccess{roles: a.Roles, cond: expr})
 		p.anyAccess = true
 	}
-	for _, h := range spec.On {
+	p.spec.On = slices.Clone(spec.On)
+	for i := range p.spec.On {
+		h := &p.spec.On[i]
 		if !slices.Contains([]string{"created", "updated", "deleted", "*"}, h.Event) || h.Hook == "" {
 			return nil, fmt.Errorf("%s: on %q: event must be created, updated, deleted or * and needs a hook", where, h.Event)
+		}
+		if !h.Durable && (h.MaxAttempts != 0 || h.RetryBase != "") {
+			return nil, fmt.Errorf("%s: on %q: max_attempts and retry_base apply to durable hooks only", where, h.Event)
+		}
+		if h.MaxAttempts == 0 {
+			h.MaxAttempts = 10
+		}
+		if h.MaxAttempts < 1 {
+			return nil, fmt.Errorf("%s: on %q: max_attempts must be at least 1", where, h.Event)
+		}
+		h.retryBase = 2 * time.Second
+		if h.RetryBase != "" {
+			d, err := time.ParseDuration(h.RetryBase)
+			if err != nil || d <= 0 {
+				return nil, fmt.Errorf("%s: on %q: retry_base %q is not a positive duration", where, h.Event, h.RetryBase)
+			}
+			h.retryBase = d
 		}
 	}
 	if p.spec.Limit <= 0 {
@@ -241,6 +302,12 @@ func compileEntity(spec EntitySpec, dialect string) (*entityPlan, error) {
 	}
 	if p.spec.MaxLimit <= 0 {
 		p.spec.MaxLimit = 500
+	}
+	if p.spec.BulkMax < 0 || (p.spec.BulkMax > 0 && !p.spec.Bulk) {
+		return nil, fmt.Errorf("%s: bulk_max must be positive and needs bulk true", where)
+	}
+	if p.spec.BulkMax == 0 {
+		p.spec.BulkMax = 500
 	}
 	return p, nil
 }
@@ -320,6 +387,9 @@ func (p *entityPlan) ddl() []string {
 	if p.spec.TenantScoped {
 		index(false, "tenant_id", "created_at")
 	}
+	if p.spec.SearchIndex {
+		stmts = append(stmts, p.searchDDL()...)
+	}
 	return stmts
 }
 
@@ -347,7 +417,7 @@ func expandEntities(doc Document) (Document, error) {
 	for _, r := range doc.Routes {
 		routes[r.Name] = true
 	}
-	seen := map[string]bool{}
+	seen, outboxes := map[string]bool{}, map[string]bool{}
 	for _, spec := range doc.Entities {
 		if seen[spec.Name] {
 			return doc, fmt.Errorf("ref/platform: entity %q declared twice", spec.Name)
@@ -374,6 +444,12 @@ func expandEntities(doc Document) (Document, error) {
 			for _, m := range plan.ddl() {
 				migrations = append(migrations, m)
 			}
+			if slices.ContainsFunc(spec.On, func(h EntityHook) bool { return h.Durable }) && !outboxes[spec.Database] {
+				outboxes[spec.Database] = true
+				for _, m := range entityEventsDDL(dialect) {
+					migrations = append(migrations, m)
+				}
+			}
 			config["migrations"] = migrations
 			resources[i].Config = config
 		}
@@ -397,13 +473,20 @@ func expandEntities(doc Document) (Document, error) {
 		if spec.Aggregate {
 			ops = append(ops, opRoute{"aggregate", "GET", base + "/-/aggregate", 200, false})
 		}
+		if spec.Analytics {
+			ops = append(ops, opRoute{"analytics", "GET", base + "/-/analytics", 200, false})
+		}
+		if spec.Bulk {
+			ops = append(ops, opRoute{"bulk", "POST", base + "/-/bulk", 200, true})
+		}
+
 		for _, o := range ops {
 			intent := "entity." + spec.Name + "." + o.op
 			if !intents[intent] {
 				intents[intent] = true
 				node := NodeSpec{Name: "result", Uses: "entity.op", Resource: spec.Database, Provides: []string{"result"},
 					Config: map[string]any{"entity": spec.Name, "op": o.op}}
-				if o.op != "list" && o.op != "get" && o.op != "export" && o.op != "aggregate" {
+				if !slices.Contains([]string{"list", "get", "export", "aggregate", "analytics"}, o.op) {
 					node.Kind = "effect"
 				}
 				if o.body {
@@ -432,7 +515,7 @@ func expandEntities(doc Document) (Document, error) {
 func registerEntityActions(r *Registry) {
 	mustAction(r, "entity.op", ActionFactoryFunc(buildEntityOp), ActionInfo{
 		Family:  "data",
-		Summary: "Run an operation of a declared entity: list, get, create, update, delete, export or aggregate",
+		Summary: "Run an operation of a declared entity: list, get, create, update, delete, export, aggregate, analytics or bulk",
 		Config: []ConfigField{
 			{Name: "entity", Type: "string", Required: true},
 			{Name: "op", Type: "string", Required: true},
@@ -461,7 +544,7 @@ func buildEntityOp(build BuildContext, spec NodeSpec) (Action, error) {
 	if es == nil {
 		return nil, fmt.Errorf("node %q: unknown entity %q", spec.Name, name)
 	}
-	if !slices.Contains(entityOps, op) {
+	if !slices.Contains(entityOps, op) && op != "bulk" {
 		return nil, fmt.Errorf("node %q: unknown entity op %q", spec.Name, op)
 	}
 	plan, err := compileEntity(*es, db.Dialect)
@@ -469,6 +552,12 @@ func buildEntityOp(build BuildContext, spec NodeSpec) (Action, error) {
 		return nil, err
 	}
 	rt := &entityRuntime{plan: plan, db: db, op: op, spec: spec}
+	if slices.ContainsFunc(plan.spec.On, func(h EntityHook) bool { return h.Durable }) {
+		db.enableEntityEvents() // before the background loops start
+	}
+	if plan.spec.SearchIndex {
+		db.registerSearchIndex(plan)
+	}
 	if es.OrgResource != "" {
 		res, ok := build.Resource(es.OrgResource)
 		if !ok {
@@ -490,8 +579,10 @@ type entityRuntime struct {
 }
 
 func (rt *entityRuntime) run(ctx *ActionContext) (ActionResult, error) {
-	if err := rt.allowed(ctx, rt.op, nil); err != nil {
-		return ActionResult{}, err
+	if rt.op != "bulk" { // checked per item
+		if err := rt.allowed(ctx, rt.op, nil); err != nil {
+			return ActionResult{}, err
+		}
 	}
 	var (
 		out any
@@ -501,7 +592,7 @@ func (rt *entityRuntime) run(ctx *ActionContext) (ActionResult, error) {
 	case "list":
 		out, err = rt.list(ctx)
 	case "get":
-		out, err = rt.getOne(ctx, rt.id(ctx), true)
+		out, err = rt.getOne(ctx, rt.db.Reader(), rt.id(ctx), true)
 	case "create":
 		out, err = rt.create(ctx)
 	case "update":
@@ -512,6 +603,10 @@ func (rt *entityRuntime) run(ctx *ActionContext) (ActionResult, error) {
 		out, err = rt.export(ctx)
 	case "aggregate":
 		out, err = rt.aggregate(ctx)
+	case "analytics":
+		out, err = rt.analytics(ctx)
+	case "bulk":
+		out, err = rt.bulk(ctx)
 	}
 	if err != nil {
 		return ActionResult{}, err
@@ -673,9 +768,16 @@ func (rt *entityRuntime) filters(ctx *ActionContext, args []any, reserved ...str
 			if len(p.spec.Search) == 0 || strings.TrimSpace(raw) == "" {
 				continue
 			}
-			args = append(args, "%"+strings.ToLower(strings.TrimSpace(raw))+"%")
+			if p.spec.SearchIndex {
+				var more []string
+				more, args = p.searchCondition(raw, args)
+				conds = append(conds, more...)
+				continue
+			}
 			var ors []string
 			for _, col := range p.spec.Search {
+				// A placeholder each: MySQL's are positional.
+				args = append(args, "%"+strings.ToLower(strings.TrimSpace(raw))+"%")
 				ors = append(ors, fmt.Sprintf("LOWER(%s) LIKE $%d", col, len(args)))
 			}
 			conds = append(conds, "("+strings.Join(ors, " OR ")+")")
@@ -699,7 +801,7 @@ func (rt *entityRuntime) filters(ctx *ActionContext, args []any, reserved ...str
 				if err != nil {
 					return nil, nil, invalidInput("filter %s: %v", key, err)
 				}
-				args = append(args, v)
+				args = append(args, sqlValue(rt.db.Dialect, v))
 				ph = append(ph, fmt.Sprintf("$%d", len(args)))
 			}
 			conds = append(conds, fmt.Sprintf("%s IN (%s)", col, strings.Join(ph, ", ")))
@@ -721,7 +823,7 @@ func (rt *entityRuntime) filters(ctx *ActionContext, args []any, reserved ...str
 			if err != nil {
 				return nil, nil, invalidInput("filter %s: %v", key, err)
 			}
-			args = append(args, v)
+			args = append(args, sqlValue(rt.db.Dialect, v))
 			conds = append(conds, fmt.Sprintf("%s %s $%d", col, sqlOp, len(args)))
 		}
 	}
@@ -737,14 +839,7 @@ func filterValue(kind string, scale int, raw string) (any, error) {
 	case "number":
 		return strconv.ParseFloat(raw, 64)
 	case "boolean":
-		b, err := strconv.ParseBool(raw)
-		if err != nil {
-			return nil, err
-		}
-		if b {
-			return 1, nil
-		}
-		return 0, nil
+		return strconv.ParseBool(raw)
 	}
 	return raw, nil
 }
@@ -827,8 +922,8 @@ func (rt *entityRuntime) list(ctx *ActionContext) (any, error) {
 	return map[string]any{"items": items, "total": int(total), "limit": limit, "offset": offset}, nil
 }
 
-// load reads one row within scope (nil, nil when absent).
-func (rt *entityRuntime) load(ctx *ActionContext, id string, columns string) (map[string]any, error) {
+// load reads one row within scope through q (nil, nil when absent).
+func (rt *entityRuntime) load(ctx *ActionContext, q execer, id string, columns string) (map[string]any, error) {
 	if id == "" {
 		return nil, invalidInput("a record id is required")
 	}
@@ -837,7 +932,7 @@ func (rt *entityRuntime) load(ctx *ActionContext, id string, columns string) (ma
 		return nil, err
 	}
 	stmt := fmt.Sprintf("SELECT %s FROM %s WHERE %s", columns, rt.plan.table, strings.Join(append([]string{"id = $1"}, conds...), " AND "))
-	rows, err := queryRows(ctx.Context, rt.db.Reader(), rebind(rt.db.Dialect, stmt), args)
+	rows, err := queryRows(ctx.Context, q, rebind(rt.db.Dialect, stmt), args)
 	if err != nil {
 		return nil, databaseFailure(err)
 	}
@@ -847,8 +942,8 @@ func (rt *entityRuntime) load(ctx *ActionContext, id string, columns string) (ma
 	return rt.decode(rows[0]), nil
 }
 
-func (rt *entityRuntime) getOne(ctx *ActionContext, id string, check bool) (map[string]any, error) {
-	rec, err := rt.load(ctx, id, rt.selectList())
+func (rt *entityRuntime) getOne(ctx *ActionContext, q execer, id string, check bool) (map[string]any, error) {
+	rec, err := rt.load(ctx, q, id, rt.selectList())
 	if err != nil {
 		return nil, err
 	}
@@ -1118,21 +1213,30 @@ func (rt *entityRuntime) create(ctx *ActionContext) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	rec, err := rt.validate(body, true)
+	ch, err := rt.prepareCreate(ctx, body)
 	if err != nil {
 		return nil, err
 	}
+	return rt.commitOne(ctx, ch)
+}
+
+// prepareCreate validates a submitted record and builds its insert.
+func (rt *entityRuntime) prepareCreate(ctx *ActionContext, body map[string]any) (entityChange, error) {
+	rec, err := rt.validate(body, true)
+	if err != nil {
+		return entityChange{}, err
+	}
 	if err := rt.checkOrg(ctx, rec); err != nil {
-		return nil, err
+		return entityChange{}, err
 	}
 	if rt.hasRowConditions("create") {
 		if err := rt.allowed(ctx, "create", rec); err != nil {
-			return nil, err
+			return entityChange{}, err
 		}
 	}
 	p := rt.plan
 	if p.spec.TenantScoped && ctx.TenantID == "" {
-		return nil, permissionDenied("this data is tenant-scoped but no tenant could be determined for the request")
+		return entityChange{}, permissionDenied("this data is tenant-scoped but no tenant could be determined for the request")
 	}
 	now := ctx.Now.UTC().Format(time.RFC3339Nano)
 	if ctx.Now.IsZero() {
@@ -1157,38 +1261,40 @@ func (rt *entityRuntime) create(ctx *ActionContext) (any, error) {
 		ph[i] = fmt.Sprintf("$%d", i+1)
 	}
 	stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", p.table, strings.Join(cols, ", "), strings.Join(ph, ", "))
-	if _, err := rt.db.ExecContext(ctx.Context, rebind(rt.db.Dialect, stmt), args...); err != nil {
-		return nil, databaseFailure(err)
-	}
-	created, err := rt.getOne(ctx, id, false)
-	if err != nil {
-		return nil, err
-	}
-	rt.fire(ctx, "created", created, nil)
-	return created, nil
+	return entityChange{event: "created", id: id, stmt: stmt, args: args}, nil
 }
 
 func (rt *entityRuntime) update(ctx *ActionContext) (any, error) {
-	id := rt.id(ctx)
 	body, err := rt.body(ctx)
 	if err != nil {
 		return nil, err
 	}
-	prev, err := rt.getOne(ctx, id, false)
+	ch, err := rt.prepareUpdate(ctx, rt.db.Reader(), rt.id(ctx), body)
 	if err != nil {
 		return nil, err
 	}
+	return rt.commitOne(ctx, ch)
+}
+
+// prepareUpdate reads the record through q, checks the caller may change it,
+// validates the changes and builds the update. A versioned update matches
+// the version the caller read, so a concurrent change affects no row.
+func (rt *entityRuntime) prepareUpdate(ctx *ActionContext, q execer, id string, body map[string]any) (entityChange, error) {
+	prev, err := rt.getOne(ctx, q, id, false)
+	if err != nil {
+		return entityChange{}, err
+	}
 	if rt.hasRowConditions("update") {
 		if err := rt.allowed(ctx, "update", prev); err != nil {
-			return nil, err
+			return entityChange{}, err
 		}
 	}
 	changes, err := rt.validate(body, false)
 	if err != nil {
-		return nil, err
+		return entityChange{}, err
 	}
 	if err := rt.checkOrg(ctx, changes); err != nil {
-		return nil, err
+		return entityChange{}, err
 	}
 	p := rt.plan
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -1205,7 +1311,7 @@ func (rt *entityRuntime) update(ctx *ActionContext) (any, error) {
 	if p.spec.Versioned {
 		want, ok := ToFloat(body["version"])
 		if !ok {
-			return nil, entityInvalid("version is required", []any{map[string]any{"path": "version", "rule": "required", "message": "send the version you read"}})
+			return entityChange{}, entityInvalid("version is required", []any{map[string]any{"path": "version", "rule": "required", "message": "send the version you read"}})
 		}
 		sets = append(sets, "version = version + 1")
 		args = append(args, int64(want))
@@ -1213,37 +1319,35 @@ func (rt *entityRuntime) update(ctx *ActionContext) (any, error) {
 	}
 	scoped, args, err := rt.scope(ctx, args)
 	if err != nil {
-		return nil, err
+		return entityChange{}, err
 	}
 	conds = append(conds, scoped...)
 	stmt := fmt.Sprintf("UPDATE %s SET %s WHERE %s", p.table, strings.Join(sets, ", "), strings.Join(conds, " AND "))
-	res, err := rt.db.ExecContext(ctx.Context, rebind(rt.db.Dialect, stmt), args...)
-	if err != nil {
-		return nil, databaseFailure(err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		if p.spec.Versioned {
-			return nil, conflict("%s %s was changed by someone else; reload and try again", p.spec.Name, id)
-		}
-		return nil, notFound(p.spec.Name, id)
-	}
-	updated, err := rt.getOne(ctx, id, false)
-	if err != nil {
-		return nil, err
-	}
-	rt.fire(ctx, "updated", updated, prev)
-	return updated, nil
+	return entityChange{event: "updated", id: id, stmt: stmt, args: args, prev: prev}, nil
 }
 
 func (rt *entityRuntime) delete(ctx *ActionContext) (any, error) {
 	id := rt.id(ctx)
-	prev, err := rt.getOne(ctx, id, false)
+	ch, err := rt.prepareDelete(ctx, rt.db.Reader(), id)
 	if err != nil {
 		return nil, err
 	}
+	if _, err := rt.commitOne(ctx, ch); err != nil {
+		return nil, err
+	}
+	return map[string]any{"deleted": true, "id": id}, nil
+}
+
+// prepareDelete reads the record through q, checks the caller may delete it
+// and builds the (soft or hard) delete.
+func (rt *entityRuntime) prepareDelete(ctx *ActionContext, q execer, id string) (entityChange, error) {
+	prev, err := rt.getOne(ctx, q, id, false)
+	if err != nil {
+		return entityChange{}, err
+	}
 	if rt.hasRowConditions("delete") {
 		if err := rt.allowed(ctx, "delete", prev); err != nil {
-			return nil, err
+			return entityChange{}, err
 		}
 	}
 	p := rt.plan
@@ -1255,16 +1359,12 @@ func (rt *entityRuntime) delete(ctx *ActionContext) (any, error) {
 	}
 	scoped, args, err := rt.scope(ctx, args)
 	if err != nil {
-		return nil, err
+		return entityChange{}, err
 	}
 	if len(scoped) > 0 {
 		stmt += " AND " + strings.Join(scoped, " AND ")
 	}
-	if _, err := rt.db.ExecContext(ctx.Context, rebind(rt.db.Dialect, stmt), args...); err != nil {
-		return nil, databaseFailure(err)
-	}
-	rt.fire(ctx, "deleted", prev, prev)
-	return map[string]any{"deleted": true, "id": id}, nil
+	return entityChange{event: "deleted", id: id, stmt: stmt, args: args, prev: prev}, nil
 }
 
 // export returns the filtered rows as CSV (up to 10000).
@@ -1380,7 +1480,7 @@ func (rt *entityRuntime) fire(ctx *ActionContext, event string, record, previous
 		return
 	}
 	for _, h := range rt.plan.spec.On {
-		if h.Event != event && h.Event != "*" {
+		if h.Durable || (h.Event != event && h.Event != "*") {
 			continue
 		}
 		input := map[string]any{"entity": rt.plan.spec.Name, "event": event, "record": record}

@@ -47,6 +47,11 @@ type Document struct {
 	// resource that holds run-time overrides shared by every replica.
 	Flags     []FlagSpec `bcl:"flag,block"`
 	FlagStore string     `bcl:"flag_store"`
+
+	// Currencies extend the built-in ISO 4217 registry (see locale.go).
+	Currencies []CurrencySpec `bcl:"currency,block"`
+	// Residency declares where data may live and be sent (see residency.go).
+	Residency *ResidencySpec `bcl:"residency"`
 }
 
 // SecretSpec resolves one named secret at load time, from the environment or a
@@ -81,6 +86,10 @@ type ResourceSpec struct {
 	// Inferred dependencies (config.database, config.cache, config.queue and
 	// the rest listed in resourceDependencyKeys) need no declaration.
 	DependsOn []string `bcl:"depends_on"`
+	// Region is where this resource keeps (or, for an outbound service, sends)
+	// its data, e.g. "eu-west-1". Residency policies are checked against it;
+	// a resource without one inherits the region of the database it names.
+	Region string `bcl:"region"`
 
 	// resolved holds the already-open resources this provider depends on, keyed
 	// by the config key that named them. It is populated by the compiler in
@@ -172,6 +181,9 @@ type TenantSpec struct {
 	Queues      []string       `bcl:"queues"`
 	Constants   map[string]any `bcl:"constants"`
 	Metadata    map[string]any `bcl:"metadata"`
+	// Region is the tenant's data home: a residency zone name or a region.
+	// Writes on the tenant's behalf to a resource outside it are refused.
+	Region string `bcl:"region"`
 }
 
 // WorkerSpec binds a durable queue job type to an intent or a process.

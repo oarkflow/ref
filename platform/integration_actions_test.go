@@ -164,8 +164,11 @@ intent "report.fail" {
     provides [started]
     config { event "progress" data "working" }
   }
+  # Declared pure: as the decision "deny" defaults to, it would refuse the
+  # request before anything streamed. This case is a failure mid-stream.
   node "never" {
     uses "deny"
+    kind pure
     requires [started]
     provides [never]
     config { message "not allowed" }

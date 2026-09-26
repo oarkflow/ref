@@ -38,6 +38,11 @@ func Compile(def *Definition) (*Compiled, error) {
 	if def == nil || strings.TrimSpace(def.Name) == "" {
 		return nil, fmt.Errorf("pipeline: a pipeline needs a name")
 	}
+	def = withGateNodes(def)
+	def, err := withWhenAliases(def)
+	if err != nil {
+		return nil, err
+	}
 	c := &Compiled{
 		Def:          def,
 		forms:        map[string]*compiledForm{},
@@ -192,6 +197,11 @@ func Compile(def *Definition) (*Compiled, error) {
 			return nil, fmt.Errorf("%s: on %q names unknown stage %q", where, h.Event, h.Stage)
 		}
 	}
+	for _, rule := range def.Notify {
+		if err := checkNotifyRule(rule, def); err != nil {
+			return nil, fmt.Errorf("%s: notify %q: %w", where, rule.Event, err)
+		}
+	}
 	if r := def.Retention; r != nil {
 		if sp, err := ParseSpan(r.After); err != nil || sp.Zero() {
 			return nil, fmt.Errorf("%s: retention after must be a duration like \"8760h\" or \"365d\"", where)
@@ -273,6 +283,9 @@ func (c *Compiled) checkStage(st Stage) error {
 			return err
 		}
 	}
+	if err := c.checkReviews(st); err != nil {
+		return err
+	}
 	switch st.Complete {
 	case "", "all", "any":
 	case "quorum":
@@ -307,6 +320,34 @@ func (c *Compiled) checkStage(st Stage) error {
 				}
 			}
 		}
+		blocks := map[string]bool{}
+		for _, b := range st.Page.Info {
+			if !validName(b.Name) || blocks[b.Name] {
+				return fmt.Errorf("info %q: missing or duplicate name", b.Name)
+			}
+			blocks[b.Name] = true
+			if strings.TrimSpace(b.Body) == "" && strings.TrimSpace(b.Title) == "" {
+				return fmt.Errorf("info %q needs a title or a body", b.Name)
+			}
+			if !oneOf(b.Style, "", StyleInfo, StyleWarning, StyleSuccess, StyleDanger) {
+				return fmt.Errorf("info %q: style %q is not info, warning, success or danger", b.Name, b.Style)
+			}
+			if b.Before != "" && !seen[b.Before] {
+				return fmt.Errorf("info %q: before names unknown group %q", b.Name, b.Before)
+			}
+		}
+		for _, a := range st.Page.Acknowledgements {
+			if !validName(a.Name) || blocks[a.Name] {
+				return fmt.Errorf("acknowledge %q: missing or duplicate name", a.Name)
+			}
+			blocks[a.Name] = true
+			if strings.TrimSpace(a.Text) == "" {
+				return fmt.Errorf("acknowledge %q needs text", a.Name)
+			}
+			if a.Before != "" && !seen[a.Before] {
+				return fmt.Errorf("acknowledge %q: before names unknown group %q", a.Name, a.Before)
+			}
+		}
 	}
 	nodes := map[string]bool{}
 	for _, n := range st.Nodes {
@@ -320,6 +361,10 @@ func (c *Compiled) checkStage(st Stage) error {
 				return fmt.Errorf("node %q (%s) needs forms", n.Name, n.Kind)
 			}
 		case NodeApproval, NodeTask:
+		case NodeGate:
+			if n.Optional || n.Approvals < 0 {
+				return fmt.Errorf("gate node %q cannot be optional and needs approvals >= 1", n.Name)
+			}
 		case NodeVote:
 			switch n.Consensus {
 			case "", ConsensusUnanimous, ConsensusMajority:
@@ -342,7 +387,7 @@ func (c *Compiled) checkStage(st Stage) error {
 				return fmt.Errorf("certificate node %q names unknown certificate %q", n.Name, n.Certificate)
 			}
 		default:
-			return fmt.Errorf("node %q: kind %q is not form, review, approval, vote, check, automated, certificate or task", n.Name, n.Kind)
+			return fmt.Errorf("node %q: kind %q is not form, review, approval, vote, gate, check, automated, certificate or task", n.Name, n.Kind)
 		}
 		for _, f := range n.Forms {
 			if c.forms[f] == nil {
@@ -445,6 +490,15 @@ func checkInput(in Input) error {
 	if in.MinLength < 0 || in.MaxLength < 0 || (in.MaxLength > 0 && in.MinLength > in.MaxLength) {
 		return fmt.Errorf("min_length/max_length are inconsistent")
 	}
+	if in.MaxBytes < 0 || in.MaxFiles < 0 {
+		return fmt.Errorf("max_bytes and max_files must not be negative")
+	}
+	if (in.MaxBytes > 0 || in.MaxFiles > 0) && in.Kind != KindFile {
+		return fmt.Errorf("max_bytes and max_files apply to file inputs only")
+	}
+	if in.Kind == KindFile && (in.Sealed || in.Compute != "") {
+		return fmt.Errorf("a file input cannot be sealed or computed")
+	}
 	return nil
 }
 
@@ -489,6 +543,12 @@ func (c *Compiled) Expressions() map[string]string {
 			for _, g := range st.Page.Groups {
 				add(where+" group "+g.Name+" visible_if", g.VisibleIf)
 			}
+			for _, b := range st.Page.Info {
+				add(where+" info "+b.Name+" visible_if", b.VisibleIf)
+			}
+			for _, a := range st.Page.Acknowledgements {
+				add(where+" acknowledge "+a.Name+" visible_if", a.VisibleIf)
+			}
 		}
 		for _, n := range st.Nodes {
 			add(where+" node "+n.Name+" applies_if", n.AppliesIf)
@@ -503,6 +563,15 @@ func (c *Compiled) Expressions() map[string]string {
 		for _, r := range st.Rules {
 			add(where+" rule "+r.Name, r.Check)
 		}
+		for _, r := range st.Reviews {
+			for _, b := range r.Buckets {
+				add(where+" review triage bucket "+b.Name+" condition", b.Condition)
+			}
+			add(where+" review sampling sample_if", r.SampleIf)
+			for i, expr := range r.AlwaysReviewIf {
+				add(fmt.Sprintf("%s review sampling always_review_if[%d]", where, i), expr)
+			}
+		}
 	}
 	for name, cf := range c.forms {
 		for _, r := range cf.Rules {
@@ -514,6 +583,9 @@ func (c *Compiled) Expressions() map[string]string {
 	}
 	for i, h := range c.Def.On {
 		add(fmt.Sprintf("on[%d] %s when", i, h.Event), h.When)
+	}
+	for i, n := range c.Def.Notify {
+		add(fmt.Sprintf("notify[%d] %s condition", i, n.Event), n.Condition)
 	}
 	return out
 }
