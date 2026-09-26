@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oarkflow/bcl"
@@ -63,6 +64,9 @@ var evalOptions = &bcl.EvalOptions{
 	AllowHash:     true,
 	AllowEncoding: true,
 	AllowTime:     true,
+	// StrictFunctions makes a call to an unknown function an error rather
+	// than bcl's legacy "return the argument" (v0.0.36).
+	StrictFunctions: true,
 	// Functions adds the money, Bikram Sambat and fiscal-year helpers (see
 	// expr_locale.go).
 	Functions: exprFunctions,
@@ -80,48 +84,106 @@ func CompileExpr(raw string) (*Expression, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compile expression %q: %w", raw, err)
 	}
-	if err := checkSyntax(prog); err != nil {
+	if err := checkFunctions(raw); err != nil {
 		return nil, fmt.Errorf("compile expression %q: %w", raw, err)
 	}
 	return &Expression{raw: raw, prog: prog}, nil
 }
 
-// syntaxErrorPrefixes are how bcl reports a malformed expression: an unclosed
-// bracket, a dangling operator, tokens left after a complete expression.
-var syntaxErrorPrefixes = []string{"expected '", "unexpected token", "unexpected expression token", "unterminated", "error: unterminated"}
+// knownFunctions caches whether a function name resolves (name -> bool).
+var knownFunctions sync.Map
 
-// checkSyntax rejects a malformed expression at compile time. bcl (v0.0.35)
-// only tokenises in CompileExpression and parses while it evaluates, so a
-// typo such as `(a` or `a ==` would otherwise surface on the first request
-// rather than when the document is validated. The expression is evaluated
-// once against an empty environment (bcl parses both sides of a
-// short-circuit), and only the parser's errors count: an error that depends
-// on data, such as a type mismatch, is left to real evaluation.
-func checkSyntax(prog *bcl.ExpressionProgram) (err error) {
-	defer func() {
-		if recover() != nil {
-			err = nil // a function panicking on missing data is not a syntax error
+// checkFunctions rejects a call to a function that does not exist, so a typo
+// such as `uper(name)` fails when the document is validated. Evaluation is
+// strict too (evalOptions.StrictFunctions), but bcl (v0.0.36) checks syntax
+// in CompileExpression without options, so it cannot tell a registered
+// function from a typo there. Each called name is probed once instead:
+// `name()` evaluated in strict mode fails with "unknown function" only when
+// nothing by that name exists (a real function fails on its arguments, or
+// not at all).
+func checkFunctions(raw string) error {
+	for _, name := range calledNames(raw) {
+		known, ok := knownFunctions.Load(name)
+		if !ok {
+			known = probeFunction(name)
+			knownFunctions.Store(name, known)
 		}
-	}()
-	opts := *evalOptions
-	opts.Variables = Env{}
-	if _, evalErr := prog.Eval(Env{}, &opts); evalErr != nil {
-		msg := evalErr.Error()
-		for _, prefix := range syntaxErrorPrefixes {
-			if strings.HasPrefix(msg, prefix) {
-				return fmt.Errorf("syntax error: %s", firstLine(msg))
-			}
+		if !known.(bool) {
+			return fmt.Errorf("unknown function %q", name)
 		}
 	}
 	return nil
 }
 
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
+func probeFunction(name string) (known bool) {
+	defer func() {
+		if recover() != nil {
+			known = true // it ran (and panicked on no arguments): it exists
+		}
+	}()
+	prog, err := bcl.CompileExpression(name + "()")
+	if err != nil {
+		return true // not a plain call; leave it to evaluation
 	}
-	return s
+	opts := *evalOptions
+	opts.Variables = Env{}
+	_, err = prog.Eval(Env{}, &opts)
+	return err == nil || !strings.HasPrefix(err.Error(), "unknown function")
 }
+
+// calledNames returns the names used as functions in an expression: an
+// identifier (possibly dotted) followed by "(", outside string literals.
+func calledNames(src string) []string {
+	var names []string
+	seen := map[string]bool{}
+	quote := byte(0)
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		if quote != 0 {
+			if c == '\\' {
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		if c == '"' || c == '\'' || c == '`' {
+			quote = c
+			continue
+		}
+		if !isIdentStart(c) || (i > 0 && (isIdentPart(src[i-1]) || src[i-1] == '.')) {
+			continue
+		}
+		j := i
+		for j < len(src) && (isIdentPart(src[j]) || src[j] == '.') {
+			j++
+		}
+		k := j
+		for k < len(src) && (src[k] == ' ' || src[k] == '\t') {
+			k++
+		}
+		if k < len(src) && src[k] == '(' {
+			if name := src[i:j]; !seen[name] && !exprKeywords[name] {
+				seen[name] = true
+				names = append(names, name)
+			}
+		}
+		i = j - 1
+	}
+	return names
+}
+
+// exprKeywords may precede "(" without being a call: `a and (b)`, `x in (..)`.
+var exprKeywords = map[string]bool{"and": true, "or": true, "not": true, "in": true, "not_in": true, "match": true,
+	"contains": true, "starts_with": true, "ends_with": true, "matches": true, "has": true, "has_any": true,
+	"has_all": true, "between": true, "exists": true, "empty": true, "equals": true, "greater_than": true,
+	"less_than": true, "greater_or_equal": true, "less_or_equal": true, "true": true, "false": true, "nil": true, "null": true}
+
+func isIdentStart(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func isIdentPart(c byte) bool { return isIdentStart(c) || (c >= '0' && c <= '9') }
 
 // MustCompileExpr is CompileExpr for expressions built by this package itself,
 // where a failure is a bug rather than bad configuration.

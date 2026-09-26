@@ -28,7 +28,7 @@ It opens nothing: no database connection, no migration, no listener. Secrets tha
 
 `platform.DiffDocuments(before, after)` lists every named block (resource, shape, role, intent, route, process, pipeline, entity, flag) that was added, removed or changed. Reviewers see this on each revision.
 
-> Expressions are syntax-checked during validation: an unclosed bracket, a dangling operator or leftover tokens (`(a`, `a ==`, `"USD" "NPR"`) make the revision invalid. Errors that depend on data, such as dividing text, still appear only at run time.
+> Expressions are checked during validation: an unclosed bracket, a dangling operator, leftover tokens (`(a`, `a ==`, `"USD" "NPR"`) or a call to a function that does not exist (`uper(name)`) makes the revision invalid. Errors that depend on data, such as dividing text, still appear only at run time.
 
 ## The workflow
 

@@ -52,13 +52,14 @@ func TestExpressionCompatibility(t *testing.T) {
 	}
 }
 
-// Malformed expressions fail at compile time, so validation catches them;
-// expressions that are only wrong for some data still compile.
+// Malformed expressions fail at compile time, so validation catches them
+// (bcl rejects them in CompileExpression since v0.0.36); expressions that
+// are only wrong for some data still compile.
 func TestMalformedExpressionsFailToCompile(t *testing.T) {
 	for _, src := range []string{"(a", "(x + 1", "a ==", "a +", "x >", "x y", `"USD" "NPR"`, `"USD" to "NPR"`,
-		"(x > 0) )", "x in [1, 2", "false && (a", "true || (a"} {
-		if _, err := CompileExpr(src); err == nil || !strings.Contains(err.Error(), "syntax error") {
-			t.Errorf("%s compiled: %v", src, err)
+		"(x > 0) )", "x in [1, 2", "false && (a", "true || (a", "match x { 1 => ("} {
+		if _, err := CompileExpr(src); err == nil {
+			t.Errorf("%s compiled", src)
 		}
 	}
 	for _, src := range []string{"input.amount / 0", "a.b.c == 1", "len(missing) > 0", "x > 1 && y < 2",
@@ -69,12 +70,40 @@ func TestMalformedExpressionsFailToCompile(t *testing.T) {
 	}
 }
 
-// bcl (v0.0.35) parses only when it evaluates, which is why checkSyntax
-// evaluates once. When CompileExpression starts rejecting malformed input
-// itself, this fails and checkSyntax can go.
-func TestBCLCompileStillSkipsParsing(t *testing.T) {
-	if _, err := bcl.CompileExpression("(a"); err != nil {
-		t.Fatalf("bcl.CompileExpression now parses (%v): checkSyntax is redundant", err)
+// A misspelled function fails at compile time, and at evaluation too (strict
+// functions); names inside strings and operators before "(" are not calls.
+func TestUnknownFunctionsFailToCompile(t *testing.T) {
+	for _, src := range []string{"uper(input.name) == 'X'", "lenght(input.tags) > 0", "input.ok && fiscal_yr(input.date) == '2081/82'",
+		"false && nope(1)"} {
+		if _, err := CompileExpr(src); err == nil || !strings.Contains(err.Error(), "unknown function") {
+			t.Errorf("%s: %v", src, err)
+		}
+	}
+	for _, src := range []string{"upper(input.name) == 'X'", "len(input.tags) > 0", "bs_year(input.date) > 2080",
+		"input.note == 'call(me)'", "a and (b or c)", "x in [1, 2] or not (a)", "lower( input.name ) == 'x'"} {
+		if _, err := CompileExpr(src); err != nil {
+			t.Errorf("%s: %v", src, err)
+		}
+	}
+	if got := calledNames(`upper(a) == "f(x)" && money_add('NPR', b, c) or (d)`); strings.Join(got, ",") != "upper,money_add" {
+		t.Errorf("calledNames = %v", got)
+	}
+	// Evaluation is strict as well, for expressions compiled some other way.
+	prog, err := bcl.CompileExpression("uper('a')")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&Expression{raw: "uper('a')", prog: prog}).Eval(Env{}); err == nil || !strings.Contains(err.Error(), "unknown function") {
+		t.Errorf("strict evaluation: %v", err)
+	}
+}
+
+// bcl (v0.0.36) cannot check function names when compiling (it takes no
+// options there), which is why checkFunctions probes them. If it starts to,
+// this fails and checkFunctions can go.
+func TestBCLCompileStillAcceptsUnknownFunctions(t *testing.T) {
+	if _, err := bcl.CompileExpression("uper('a')"); err != nil {
+		t.Fatalf("bcl.CompileExpression now rejects unknown functions (%v): checkFunctions is redundant", err)
 	}
 }
 
