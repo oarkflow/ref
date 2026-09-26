@@ -193,6 +193,9 @@ func openHTTPService(_ context.Context, spec ResourceSpec) (Resource, io.Closer,
 			if err := service.checkHost(req.URL); err != nil {
 				return err
 			}
+			if err := checkEgress(req.Context(), req.URL.Hostname()); err != nil {
+				return err
+			}
 			if len(via) >= 5 {
 				return fmt.Errorf("too many redirects")
 			}
@@ -256,6 +259,9 @@ func (s *HTTPService) Do(ctx context.Context, request HTTPRequest) (HTTPResponse
 		target.RawQuery = query.Encode()
 	}
 	if err := s.checkHost(target); err != nil {
+		return HTTPResponse{}, err
+	}
+	if err := checkEgress(ctx, target.Hostname()); err != nil {
 		return HTTPResponse{}, err
 	}
 

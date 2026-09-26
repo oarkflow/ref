@@ -126,8 +126,10 @@ type Platform struct {
 	flags *flagRegistry
 
 	// currencies is the built-in ISO registry plus the document's currency
-	// blocks.
+	// blocks; residency is the compiled data-residency policy, nil when the
+	// document declares none.
 	currencies *money.Registry
+	residency  *residencyPlan
 
 	background context.CancelFunc
 	wg         sync.WaitGroup
@@ -293,6 +295,9 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 	// leave every such lookup reading an empty document.
 	p.Document = publicDocument(doc)
 	if err := p.openResources(ctx, doc, opts.Registry); err != nil {
+		return nil, err
+	}
+	if p.residency, err = compileResidency(doc, p.resources); err != nil {
 		return nil, err
 	}
 	if p.flags, err = compileFlags(doc, p.resources); err != nil {
@@ -838,6 +843,7 @@ func (p *Platform) compileNode(registry *Registry, build BuildContext, spec Inte
 	if err != nil {
 		return err
 	}
+	residency := p.residency.guardFor(spec.Name, nodeSpec, registry)
 
 	onError := strings.ToLower(strings.TrimSpace(nodeSpec.OnError))
 	switch onError {
@@ -926,6 +932,9 @@ func (p *Platform) compileNode(registry *Registry, build BuildContext, spec Inte
 			nc.Decisions().RecordAllow(reg.Name, nil)
 		}
 
+		if err := p.residencyCheck(residency, actionCtx); err != nil {
+			return err
+		}
 		result, err := p.runNodeAction(actionCtx, action, node, retry, nodeTimeout)
 		if err != nil {
 			if onError == "continue" {
@@ -1212,6 +1221,9 @@ func validateDocument(doc Document, registry *Registry) error {
 		}
 	}
 
+	if err := validateResidency(doc, resources, intents); err != nil {
+		return err
+	}
 	if err := validateRouteSpecs(doc, resources, intents, processes); err != nil {
 		return err
 	}

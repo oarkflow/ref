@@ -2,10 +2,12 @@ package platform
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/oarkflow/ref/intent"
 	"github.com/oarkflow/ref/platform/spi"
 )
 
@@ -356,6 +358,12 @@ var httpCallAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) (
 // retry policy and the caller both see something truthful: their bad request is
 // a 422 here, and the upstream's outage is a 503, not a generic 500.
 func upstreamFailure(err error, status int) error {
+	// A refusal made on this side (data residency) is already a failure of our
+	// own and keeps its category rather than becoming an upstream error.
+	var own intent.Failure
+	if errors.As(err, &own) && own.Category == intent.CategoryPermission {
+		return own
+	}
 	switch {
 	case status == http.StatusNotFound:
 		return notFound("upstream resource", "")

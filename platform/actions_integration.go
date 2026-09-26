@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -146,6 +147,10 @@ func buildGRPCJSON(build BuildContext, spec NodeSpec) (Action, error) {
 // grpcFailure maps a Connect/gRPC error ({"code": "...", "message": "..."})
 // onto a platform failure category, falling back to the HTTP status.
 func grpcFailure(response HTTPResponse, err error) error {
+	var own intent.Failure
+	if errors.As(err, &own) && own.Category == intent.CategoryPermission {
+		return own
+	}
 	body, _ := response.JSON.(map[string]any)
 	code := strings.ToLower(Stringify(body["code"]))
 	message := Stringify(body["message"])
