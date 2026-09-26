@@ -32,13 +32,13 @@ func (r *RingBuffer) Push(e Event) {
 	for {
 		w := r.write.Load()
 		rd := r.read.Load()
-		
+
 		// If buffer is full, yield the CPU thread
 		if w-rd >= r.mask {
 			runtime.Gosched()
 			continue
 		}
-		
+
 		// Attempt to claim the write slot
 		if r.write.CompareAndSwap(w, w+1) {
 			// Write the data into the pre-allocated slot (Zero Allocation)
@@ -53,15 +53,15 @@ func (r *RingBuffer) Pop() (Event, bool) {
 	for {
 		rd := r.read.Load()
 		w := r.write.Load()
-		
+
 		// If buffer is empty
 		if rd == w {
 			return Event{}, false
 		}
-		
+
 		// Read the data
 		e := r.buffer[rd&r.mask]
-		
+
 		// Attempt to claim the read slot
 		if r.read.CompareAndSwap(rd, rd+1) {
 			return e, true
