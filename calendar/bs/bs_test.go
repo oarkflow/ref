@@ -51,9 +51,9 @@ var newYears = []struct {
 	{2100, "2043-04-14"},
 }
 
-// shrawanFirst is 1 Shrawan — the first day of Nepal's fiscal year — from
-// bikram-sambat. 2076–2082 match the fiscal-year start dates the Government
-// of Nepal published.
+// shrawanFirst is 1 Shrawan — the first day of Nepal's fiscal year — as
+// computed by bikram-sambat's converter (e.g. FY 2081/82 began 2024-07-16 and
+// FY 2082/83 on 2025-07-17).
 var shrawanFirst = []struct {
 	year int
 	ad   string
