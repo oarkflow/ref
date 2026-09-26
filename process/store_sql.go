@@ -789,9 +789,9 @@ func (s *sqlStore) ClaimDueTimers(ctx context.Context, now time.Time, limit int,
 	defer func() { _ = tx.Rollback() }()
 	statement := fmt.Sprintf(`SELECT id, run_id, fire_at, kind, step, edge, on_fire, payload, claim_token,
 		claimed_until, attempts, last_error, created_at FROM %s
-		WHERE fire_at <= $1 AND (claimed_until IS NULL OR claimed_until <= $1)
+		WHERE fire_at <= $1 AND (claimed_until IS NULL OR claimed_until <= $2)
 		ORDER BY fire_at LIMIT %d%s`, s.timers, limit, lockSuffix(s.dialect))
-	rows, err := tx.QueryContext(ctx, s.q(statement), now.UTC())
+	rows, err := tx.QueryContext(ctx, s.q(statement), now.UTC(), now.UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -845,8 +845,8 @@ func (s *sqlStore) ReleaseTimer(ctx context.Context, id, token string, retryAt t
 		lastError = cause.Error()
 	}
 	statement := s.q(fmt.Sprintf(`UPDATE %s SET claim_token=NULL, claimed_until=NULL, last_error=$1,
-		fire_at=CASE WHEN fire_at < $2 THEN $2 ELSE fire_at END WHERE id=$3 AND claim_token=$4`, s.timers))
-	result, err := s.db.ExecContext(ctx, statement, null(lastError), retryAt.UTC(), id, token)
+		fire_at=CASE WHEN fire_at < $2 THEN $3 ELSE fire_at END WHERE id=$4 AND claim_token=$5`, s.timers))
+	result, err := s.db.ExecContext(ctx, statement, null(lastError), retryAt.UTC(), retryAt.UTC(), id, token)
 	if err != nil {
 		return err
 	}
@@ -949,9 +949,9 @@ func (s *sqlStore) ClaimSubscriptions(ctx context.Context, event, correlation st
 	statement := fmt.Sprintf(`SELECT id, run_id, event, correlation, step, subscription_key, edge, expires_at, claim_token,
 		claimed_until, attempts, last_error, pending_event, pending_correlation, pending_payload, created_at
 		FROM %s WHERE event=$1 AND (correlation IS NULL OR correlation=$2)
-		AND (expires_at IS NULL OR expires_at > $3) AND (claimed_until IS NULL OR claimed_until <= $3)
+		AND (expires_at IS NULL OR expires_at > $3) AND (claimed_until IS NULL OR claimed_until <= $4)
 		ORDER BY created_at LIMIT %d%s`, s.subs, limit, lockSuffix(s.dialect))
-	rows, err := tx.QueryContext(ctx, s.q(statement), event, correlation, now.UTC())
+	rows, err := tx.QueryContext(ctx, s.q(statement), event, correlation, now.UTC(), now.UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -1503,9 +1503,9 @@ func (s *sqlStore) ListTasks(ctx context.Context, filter TaskFilter) ([]*Task, e
 // CountOpenTasks implements Store.
 func (s *sqlStore) CountOpenTasks(ctx context.Context, assignee string) (int, error) {
 	statement := s.q(fmt.Sprintf(
-		"SELECT COUNT(*) FROM %s WHERE status IN ('open','claimed','escalated') AND (assignee=$1 OR claimed_by=$1)", s.tasks))
+		"SELECT COUNT(*) FROM %s WHERE status IN ('open','claimed','escalated') AND (assignee=$1 OR claimed_by=$2)", s.tasks))
 	var count int
-	err := s.db.QueryRowContext(ctx, statement, assignee).Scan(&count)
+	err := s.db.QueryRowContext(ctx, statement, assignee, assignee).Scan(&count)
 	return count, err
 }
 
@@ -1515,9 +1515,9 @@ func (s *sqlStore) DueTasks(ctx context.Context, now time.Time, limit int) ([]*T
 		limit = 50
 	}
 	statement := s.q(fmt.Sprintf(`SELECT %s FROM %s
-		WHERE status IN ('open','claimed') AND ((due_at IS NOT NULL AND due_at <= $1) OR (reminder_at IS NOT NULL AND reminder_at <= $1))
+		WHERE status IN ('open','claimed') AND ((due_at IS NOT NULL AND due_at <= $1) OR (reminder_at IS NOT NULL AND reminder_at <= $2))
 		ORDER BY due_at LIMIT %d`, taskColumns, s.tasks, limit))
-	rows, err := s.db.QueryContext(ctx, statement, now.UTC())
+	rows, err := s.db.QueryContext(ctx, statement, now.UTC(), now.UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -1644,6 +1644,9 @@ func (s *sqlStore) Close() error { return nil }
 // ---------------------------------------------------------------------------
 
 // rebind converts $1-style placeholders to the dialect's own form.
+//
+// MySQL's ? is positional, so each $n must appear once in a statement: a
+// value used twice is passed twice, under two numbers.
 func rebind(dialect, statement string) string {
 	if dialect != "mysql" {
 		return statement
@@ -1672,9 +1675,10 @@ func rebind(dialect, statement string) string {
 func textColumn(dialect string) string {
 	if dialect == "mysql" {
 		// MySQL cannot index an unbounded TEXT column without a prefix length, and
-		// every column typed here is one we index or key on. VARCHAR(500) allows
-		// long idempotency keys and process names while remaining indexable.
-		return "VARCHAR(500)"
+		// every column typed here is one we index or key on. VARCHAR(191) is the
+		// widest utf8mb4 column that three-column indexes stay under InnoDB's
+		// 3072-byte key limit with.
+		return "VARCHAR(191)"
 	}
 	return "TEXT"
 }

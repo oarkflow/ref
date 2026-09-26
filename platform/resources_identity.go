@@ -252,7 +252,7 @@ func (d *IdentityDirectory) migrate(ctx context.Context) error {
 		if _, err := d.db.ExecContext(ctx, statement); err != nil {
 			// MySQL has no CREATE INDEX IF NOT EXISTS; a second start finds the
 			// index already there.
-			if d.db.Dialect == "mysql" && strings.Contains(strings.ToLower(err.Error()), "duplicate key name") {
+			if indexExists(d.db.Dialect, err) {
 				continue
 			}
 			return err

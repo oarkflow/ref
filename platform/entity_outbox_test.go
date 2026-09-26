@@ -129,7 +129,7 @@ func TestEntityDurableHooksPostgres(t *testing.T) {
 func runEntityDurableHooks(t *testing.T, driver, dsn string) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "app.bcl")
-	if err := os.WriteFile(path, []byte(entityOutboxApp), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(appSQL(driver, entityOutboxApp)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	h := newAppHarness(t, path, map[string]string{

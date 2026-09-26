@@ -220,7 +220,7 @@ The channel intent receives this input:
 
 The intent resolves the user's address, typically with a lookup and `notify.send`. A failing intent makes the delivery retry, so write intents that are idempotent. Each item's `id` is stable.
 
-**Storage.** With a database, the resource also creates two tables. The same conformance tests run them on SQLite and PostgreSQL. Both tables use only portable SQL, so MySQL works as well.
+**Storage.** With a database, the resource also creates two tables. The same conformance tests run them on SQLite, PostgreSQL 16 and MariaDB 10.11 (the `mysql` dialect; MySQL 8 itself has not been run).
 
 | Table | Contents |
 |---|---|
