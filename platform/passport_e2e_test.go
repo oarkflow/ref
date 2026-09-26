@@ -141,6 +141,9 @@ func TestPassportPipelineEndToEnd(t *testing.T) {
 	if len(groups) != 5 || dig(groups, 2, "layout") != "tabbed" || dig(groups, 3, "mode") != "summary" {
 		t.Fatalf("groups: %v", groups)
 	}
+	if dig(started, "page", "info", 0, "name") != "fees" || dig(started, "page", "info", 0, "before") != "what" {
+		t.Fatalf("info blocks: %v", dig(started, "page", "info"))
+	}
 	// The office list is reference data resolved for the case's district.
 	choices := fmt.Sprint(inputsOf(started)["request.office"]["choices"])
 	if !strings.Contains(choices, "ktm-dao") || strings.Contains(choices, "mrg-dao") || !strings.Contains(choices, "dop") {
