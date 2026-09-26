@@ -184,10 +184,14 @@ func (s *SQLStore) enqueue(ctx context.Context, tx *sql.Tx, c *Case) error {
 func (s *SQLStore) ClaimEvents(ctx context.Context, limit int, lease time.Duration, now time.Time) ([]OutboxEvent, error) {
 	token := randomID()
 	// The derived table keeps MySQL happy (it cannot select from the table
-	// it updates); the lease token identifies what this caller claimed.
+	// it updates); the lease token identifies what this caller claimed. The
+	// outer condition repeats the lease test: PostgreSQL re-checks it on a
+	// row another dispatcher leased meanwhile (the IN list alone is not), so
+	// two replicas never lease the same event.
 	res, err := s.db.ExecContext(ctx, s.q(`UPDATE {p}outbox SET lease_token = ?, lease_until = ?
-		WHERE id IN (SELECT id FROM (SELECT id FROM {p}outbox WHERE dead = 0 AND next_at <= ? AND lease_until <= ? ORDER BY created_at LIMIT ?) due)`),
-		token, now.Add(lease).UnixNano(), now.UnixNano(), now.UnixNano(), limit)
+		WHERE id IN (SELECT id FROM (SELECT id FROM {p}outbox WHERE dead = 0 AND next_at <= ? AND lease_until <= ? ORDER BY created_at LIMIT ?) due)
+		AND dead = 0 AND lease_until <= ?`),
+		token, now.Add(lease).UnixNano(), now.UnixNano(), now.UnixNano(), limit, now.UnixNano())
 	if err != nil {
 		return nil, err
 	}

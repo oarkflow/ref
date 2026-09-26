@@ -289,3 +289,7 @@ func TestMySQLStoreConformance(t *testing.T) {
 	storeConformance(t, s)
 	notifyConformance(t, s)
 }
+
+// TestPostgresConcurrentClaims races dispatchers on one outbox: each event
+// must be leased to exactly one of them (PostgreSQL re-checks only the outer
+// condition of the claiming UPDATE on a row leased meanwhile).

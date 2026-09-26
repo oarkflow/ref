@@ -137,11 +137,16 @@ func scanEntityEvents(rows *sql.Rows) ([]EntityEvent, error) {
 func (o *entityEvents) claim(ctx context.Context, limit int, lease time.Duration, now time.Time) ([]EntityEvent, error) {
 	token := newPrefixedID("lease")
 	t := entityEventsTable
+	// The outer condition repeats the lease test: PostgreSQL re-checks it on
+	// a row another dispatcher leased meanwhile (the IN list alone is not),
+	// so two replicas never lease the same event.
 	stmt := fmt.Sprintf(`UPDATE %s SET lease_token = $1, lease_until = $2 WHERE id IN (SELECT id FROM (SELECT id FROM %s
-		WHERE dead = 0 AND next_at <= $3 AND lease_until <= $4 ORDER BY created_at, id LIMIT $5) due)`, t, t)
+		WHERE dead = 0 AND next_at <= $3 AND lease_until <= $4 ORDER BY created_at, id LIMIT $5) due) AND dead = 0 AND lease_until <= $6`, t, t)
 	// Each placeholder is used once: rebind turns $n into MySQL's positional
-	// ?, so a repeated $n would need its argument repeated too.
-	if _, err := o.db.ExecContext(ctx, rebind(o.db.Dialect, stmt), token, now.Add(lease).UnixNano(), now.UnixNano(), now.UnixNano(), limit); err != nil {
+	// ?, so a repeated $n would need its argument repeated too. The outer
+	// condition repeats the lease check: PostgreSQL re-checks only it on a row
+	// another dispatcher leased while this UPDATE waited.
+	if _, err := o.db.ExecContext(ctx, rebind(o.db.Dialect, stmt), token, now.Add(lease).UnixNano(), now.UnixNano(), now.UnixNano(), limit, now.UnixNano()); err != nil {
 		return nil, err
 	}
 	rows, err := o.db.QueryContext(ctx, rebind(o.db.Dialect, fmt.Sprintf(
