@@ -313,6 +313,13 @@ func (r *Registry) resource(kind string) (ResourceFactory, bool) {
 	return factory, ok
 }
 
+// actionKind is the node kind an action is registered with ("" if none).
+func (r *Registry) actionKind(name string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.actionDoc[normalizeName(name)].Kind
+}
+
 func (r *Registry) action(name string) (ActionFactory, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

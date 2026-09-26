@@ -879,7 +879,13 @@ func (p *Platform) compileNode(registry *Registry, build BuildContext, spec Inte
 		aliveKey = key(nodeSpec.keepAlive)
 		provides = append(provides, aliveKey.Any())
 	}
-	kind, err := nodeKind(nodeSpec.Kind)
+	declared := nodeSpec.Kind
+	if declared == "" && registry.actionKind(nodeSpec.Uses) == "decision" {
+		// A guard is a decision whether or not the author said so: as a pure
+		// node it would race the intent's effects instead of gating them.
+		declared = "decision"
+	}
+	kind, err := nodeKind(declared)
 	if err != nil {
 		return fmt.Errorf("ref/platform: %s: %w", what, err)
 	}
