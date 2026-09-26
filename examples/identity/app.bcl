@@ -1,0 +1,519 @@
+####################################################################
+# Identity and signing
+#
+# * A built-in user directory (identity.users): people sign in with an
+#   email and password and get a JWT carrying the roles of the tenant
+#   they chose; tenant admins invite people, change their roles and org
+#   units, suspend and reactivate them, and read an audit trail.
+# * One Ed25519 key set (crypto.signer) signs everything: the JWTs
+#   (EdDSA), issued licences (verifiable offline against the published
+#   JWKS), and arbitrary payloads through /api/sign.
+#
+# Environment:
+#   IDENTITY_DB_DRIVER / IDENTITY_DSN   sqlite (default) or pgx
+#   IDENTITY_SIGNING_KEY               PKCS#8 PEM (openssl genpkey -algorithm ed25519)
+#   IDENTITY_ADMIN_EMAIL / _PASSWORD   the first administrator (created once)
+####################################################################
+
+name "identity"
+version "1"
+
+resource "db" {
+  kind "database.sql"
+  description "Users, memberships, invitations, audit trail and licences"
+  config {
+    driver env("IDENTITY_DB_DRIVER", "sqlite")
+    dsn env("IDENTITY_DSN", "file:.data/identity.db?_pragma=busy_timeout(5000)")
+  }
+}
+
+resource "keys" {
+  kind "crypto.signer"
+  description "The application's signing key; its public half is published at /.well-known/jwks.json"
+  config {
+    private_key env.required("IDENTITY_SIGNING_KEY")
+    key_id env("IDENTITY_KEY_ID", "identity-1")
+  }
+}
+
+resource "jwt" {
+  kind "auth.jwt"
+  description "EdDSA tokens signed by the key set"
+  config {
+    signer "keys"
+    issuer "identity-example"
+    audience "identity-example"
+    ttl "1h"
+  }
+}
+
+resource "users" {
+  kind "identity.users"
+  description "People, their tenants and roles"
+  config {
+    database "db"
+    token_issuer "jwt"
+    admin_roles ["admin"]
+    global_roles ["platform_admin"]
+    invite_ttl "72h"
+    argon2_memory env("IDENTITY_ARGON2_MEMORY", "65536")
+    argon2_iterations env("IDENTITY_ARGON2_ITERATIONS", "3")
+    argon2_parallelism env("IDENTITY_ARGON2_PARALLELISM", "4")
+    bootstrap {
+      email env.required("IDENTITY_ADMIN_EMAIL")
+      password env.required("IDENTITY_ADMIN_PASSWORD")
+      name "First Admin"
+      tenant "acme"
+      roles ["admin"]
+    }
+  }
+}
+
+resource "limits" {
+  kind "ratelimit.memory"
+}
+
+resource "cases" {
+  kind "pipeline.cases"
+  description "Trade licence applications"
+  config {
+    pipelines ["licence"]
+    database "db"
+    table_prefix "licence_"
+    signer "keys"
+  }
+}
+
+####################################################################
+# A small pipeline whose certificates are signed with the key set
+####################################################################
+
+pipeline "licence" {
+  title "Trade licence"
+  number_format "TL-{year}-{seq:5}"
+
+  input "holder" {
+    label "Licence holder"
+    kind text
+    required true
+    min_length 2
+  }
+  input "trade" {
+    label "Trade"
+    kind text
+    required true
+  }
+
+  form "application" {
+    title "Application"
+    fields ["holder", "trade"]
+  }
+
+  stage "application" {
+    title "Application"
+    kind submission
+    public true
+    page {
+      title "Apply for a trade licence"
+      group "main" {
+        title "Application"
+        forms ["application"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+
+  stage "issuance" {
+    title "Issuance"
+    kind issuance
+    auto_advance true
+    node "issue" {
+      title "Issue the licence"
+      kind certificate
+      certificate "licence"
+      auto true
+    }
+  }
+
+  certificate "licence" {
+    title "Trade licence"
+    number_format "TLC-{year}-{seq:4}"
+    fields ["application.holder", "application.trade"]
+    validity "8760h"
+  }
+}
+
+####################################################################
+# Sign-in, invitations, passwords
+####################################################################
+
+intent "auth.login" {
+  response "session"
+  node "session" {
+    uses "identity.login"
+    resource "users"
+    kind effect
+    requires [input]
+    provides [session]
+  }
+}
+
+intent "auth.accept_invite" {
+  response "member"
+  node "member" {
+    uses "identity.accept_invite"
+    resource "users"
+    kind effect
+    requires [input]
+    provides [member]
+  }
+}
+
+intent "auth.change_password" {
+  response "result"
+  node "result" {
+    uses "identity.change_password"
+    resource "users"
+    kind effect
+    requires [input]
+    provides [result]
+  }
+}
+
+intent "auth.jwks" {
+  response "jwks"
+  node "jwks" {
+    uses "crypto.jwks"
+    resource "keys"
+    provides [jwks]
+  }
+}
+
+####################################################################
+# Administration: every operation re-checks, against the directory,
+# that the caller administers the tenant.
+####################################################################
+
+intent "admin.users" {
+  response "users"
+  node "users" {
+    uses "identity.admin"
+    resource "users"
+    provides [users]
+    config { operation "list_users" }
+  }
+}
+
+intent "admin.user" {
+  response "user"
+  node "user" {
+    uses "identity.admin"
+    resource "users"
+    provides [user]
+    config { operation "get_user" }
+  }
+}
+
+intent "admin.invite" {
+  response "invitation"
+  node "invitation" {
+    uses "identity.admin"
+    resource "users"
+    kind effect
+    requires [input]
+    provides [invitation]
+    config { operation "invite" }
+  }
+}
+
+intent "admin.invitations" {
+  response "invitations"
+  node "invitations" {
+    uses "identity.admin"
+    resource "users"
+    provides [invitations]
+    config { operation "list_invitations" }
+  }
+}
+
+intent "admin.suspend" {
+  response "user"
+  node "user" {
+    uses "identity.admin"
+    resource "users"
+    kind effect
+    provides [user]
+    config { operation "suspend" }
+  }
+}
+
+intent "admin.reactivate" {
+  response "user"
+  node "user" {
+    uses "identity.admin"
+    resource "users"
+    kind effect
+    provides [user]
+    config { operation "reactivate" }
+  }
+}
+
+intent "admin.add_membership" {
+  response "member"
+  node "member" {
+    uses "identity.admin"
+    resource "users"
+    kind effect
+    requires [input]
+    provides [member]
+    config { operation "add_membership" }
+  }
+}
+
+intent "admin.change_membership" {
+  response "member"
+  node "member" {
+    uses "identity.admin"
+    resource "users"
+    kind effect
+    requires [input]
+    provides [member]
+    config { operation "change_membership" }
+  }
+}
+
+intent "admin.remove_membership" {
+  response "result"
+  node "result" {
+    uses "identity.admin"
+    resource "users"
+    kind effect
+    provides [result]
+    config { operation "remove_membership" }
+  }
+}
+
+intent "admin.audit" {
+  response "entries"
+  node "entries" {
+    uses "identity.admin"
+    resource "users"
+    provides [entries]
+    config { operation "audit" }
+  }
+}
+
+####################################################################
+# Signing arbitrary payloads
+####################################################################
+
+intent "sign" {
+  response "signature"
+  node "signature" {
+    uses "crypto.sign"
+    resource "keys"
+    requires [input]
+    provides [signature]
+    config { value_fact "input.payload" }
+  }
+}
+
+intent "verify" {
+  response "result"
+  node "result" {
+    uses "crypto.verify"
+    resource "keys"
+    requires [input]
+    provides [result]
+  }
+}
+
+####################################################################
+# Licences
+####################################################################
+
+intent "licence.start" {
+  response "case"
+  node "case" {
+    uses "pipeline.start"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [case]
+  }
+}
+
+intent "licence.act" {
+  response "view"
+  node "view" {
+    uses "pipeline.act"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "licence.get" {
+  response "case"
+  node "case" {
+    uses "pipeline.get"
+    resource "cases"
+    provides [case]
+  }
+}
+
+intent "licence.verify" {
+  response "result"
+  node "result" {
+    uses "pipeline.verify"
+    resource "cases"
+    provides [result]
+  }
+}
+
+####################################################################
+# Routes
+####################################################################
+
+route "auth.login" {
+  method POST
+  path "/api/auth/login"
+  intent "auth.login"
+  cache_control "no-store"
+  # Keyed on the remote address: there is no principal yet, and every
+  # failure looks the same, so the limiter is the brute-force defence.
+  rate_limit { limiter "limits" limit 20 window 1m }
+}
+route "auth.accept_invite" {
+  method POST
+  path "/api/auth/invitations/accept"
+  intent "auth.accept_invite"
+  cache_control "no-store"
+  rate_limit { limiter "limits" limit 20 window 1m }
+}
+route "auth.change_password" {
+  method POST
+  path "/api/auth/password"
+  intent "auth.change_password"
+  auth "jwt"
+}
+route "auth.jwks" {
+  method GET
+  path "/.well-known/jwks.json"
+  intent "auth.jwks"
+  cache_control "public, max-age=300"
+}
+
+route "admin.users" {
+  method GET
+  path "/api/admin/users"
+  intent "admin.users"
+  auth "jwt"
+  authz { roles ["admin", "platform_admin"] }
+}
+route "admin.user" {
+  method GET
+  path "/api/admin/users/:id"
+  intent "admin.user"
+  auth "jwt"
+  authz { roles ["admin", "platform_admin"] }
+}
+route "admin.invite" {
+  method POST
+  path "/api/admin/invitations"
+  intent "admin.invite"
+  auth "jwt"
+  status 201
+  authz { roles ["admin", "platform_admin"] }
+}
+route "admin.invitations" {
+  method GET
+  path "/api/admin/invitations"
+  intent "admin.invitations"
+  auth "jwt"
+  authz { roles ["admin", "platform_admin"] }
+}
+route "admin.suspend" {
+  method POST
+  path "/api/admin/users/:id/suspend"
+  intent "admin.suspend"
+  auth "jwt"
+  authz { roles ["admin", "platform_admin"] }
+}
+route "admin.reactivate" {
+  method POST
+  path "/api/admin/users/:id/reactivate"
+  intent "admin.reactivate"
+  auth "jwt"
+  authz { roles ["admin", "platform_admin"] }
+}
+route "admin.add_membership" {
+  method POST
+  path "/api/admin/memberships"
+  intent "admin.add_membership"
+  auth "jwt"
+  status 201
+  authz { roles ["admin", "platform_admin"] }
+}
+route "admin.change_membership" {
+  method PUT
+  path "/api/admin/users/:id/membership"
+  intent "admin.change_membership"
+  auth "jwt"
+  authz { roles ["admin", "platform_admin"] }
+}
+route "admin.remove_membership" {
+  method DELETE
+  path "/api/admin/users/:id/membership"
+  intent "admin.remove_membership"
+  auth "jwt"
+  authz { roles ["admin", "platform_admin"] }
+}
+route "admin.audit" {
+  method GET
+  path "/api/admin/audit"
+  intent "admin.audit"
+  auth "jwt"
+  authz { roles ["admin", "platform_admin"] }
+}
+
+route "sign" {
+  method POST
+  path "/api/sign"
+  intent "sign"
+  auth "jwt"
+}
+route "verify" {
+  method POST
+  path "/api/verify"
+  intent "verify"
+}
+
+route "licence.start" {
+  method POST
+  path "/api/licences"
+  intent "licence.start"
+  auth "jwt"
+  status 201
+}
+route "licence.act" {
+  method POST
+  path "/api/licences/:id/stages/:stage/actions/:action"
+  intent "licence.act"
+  auth "jwt"
+}
+route "licence.get" {
+  method GET
+  path "/api/licences/:id"
+  intent "licence.get"
+  auth "jwt"
+}
+route "licence.verify" {
+  method GET
+  path "/api/licence-certificates/:key"
+  intent "licence.verify"
+}

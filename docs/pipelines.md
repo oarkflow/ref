@@ -120,9 +120,9 @@ Node statuses are `pending`, `passed`, `failed`, `waived` and `skipped` (`applie
 
 A `certificate` block names the data paths copied into the certificate, its number format (`PPA-{year}-{seq:4}`, `{case}`) and its `validity`.
 
-An issued certificate is canonicalised and SHA-256 hashed. With the resource's `signing_secret`, it is also HMAC-signed. It carries a short verification code.
+An issued certificate is canonicalised and SHA-256 hashed. With the resource's `signing_secret`, it is also HMAC-signed. With a `signer` (a `crypto.signer` resource), it also carries a `key_signature` (`{alg, kid, sig}`, Ed25519 or RSA) over the same canonical content. That signature can be verified offline by anyone holding the published JWKS: `pipeline.VerifyCertificateSignature(cert, keys)` with `keys` from `signing.ParseJWKS`. The HMAC stays for backward compatibility: certificates issued before the signer was added keep verifying. Every certificate carries a short verification code.
 
-`pipeline.verify` checks the hash, the signature, expiry and revocation for a given number or code. Any edit to the content is detected.
+`pipeline.verify` checks the hash, the signatures, expiry and revocation for a given number or code. Any edit to the content is detected. For a key-signed certificate, the response also includes everything the signature covers, so the holder can re-verify it offline.
 
 ### Concurrency
 
@@ -326,6 +326,7 @@ resource "cases" {
     org_resource "org"              # lookups + jurisdiction-scoped queues
     allow_anonymous true            # public stages without an account
     signing_secret env.required("PASSPORT_SIGNING_SECRET")
+    signer "keys"                   # optional crypto.signer: asymmetric certificate signatures
     seal_secret env("PASSPORT_SEAL_SECRET", "")   # required only with sealed inputs
   }
 }
@@ -377,7 +378,8 @@ compiled, err := pipeline.Compile(&def)
 e := pipeline.NewEngine(compiled)
 e.Eval = myEvaluator          // expressions
 e.Automation = myAutomation   // automated nodes
-e.SigningKey = key            // certificates
+e.SigningKey = key            // certificates (HMAC)
+e.Signer = keySet             // certificates (Ed25519/RSA, a *signing.KeySet)
 c, _ := e.Start(ctx, applicant, pipeline.StartOptions{Number: "PP-1"})
 c, err = e.Act(ctx, c, applicant, "application", "submit", pipeline.ActInput{Data: data})
 v, _ := e.View(c, officer, "")
