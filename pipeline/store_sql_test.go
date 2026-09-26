@@ -79,6 +79,26 @@ func storeConformance(t *testing.T, s interface {
 		}
 	}
 
+	// Triage: priority order (1 first, untriaged last), queue filter.
+	c2, err := s.Get(ctx, "c2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2.Triage = &Triage{Stage: "review", Priority: 2, Queue: "std"}
+	got.Triage = &Triage{Stage: "review", Priority: 1, Queue: "urgent"}
+	for _, c := range []*Case{c2, got} {
+		if err := s.Update(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ordered, err := s.List(ctx, Query{Pipeline: "p", Order: OrderPriority})
+	if err != nil || len(ordered) != 3 || ordered[0].ID != "c1" || ordered[1].ID != "c2" || ordered[2].ID != "c3" {
+		t.Fatalf("priority order: %v %v", err, ordered)
+	}
+	if std, _ := s.List(ctx, Query{Queues: []string{"std"}}); len(std) != 1 || std[0].ID != "c2" {
+		t.Fatalf("queue filter: %v", std)
+	}
+
 	// Sequences and certificates.
 	for want := int64(1); want <= 3; want++ {
 		if n, err := s.NextSeq(ctx, "p"); err != nil || n != want {

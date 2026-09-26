@@ -377,6 +377,65 @@ type Stage struct {
 	ExternalRoles []string `bcl:"external_roles" json:"external_roles,omitempty"`
 	// Rules are cross-field checks applied when the stage advances.
 	Rules []Rule `bcl:"rule,block" json:"rules,omitempty"`
+	// Reviews are human-in-the-loop review modes of the stage (diff, gate,
+	// triage, sampling); several may be combined.
+	Reviews []Review `bcl:"review,block" json:"reviews,omitempty"`
+}
+
+// Review modes.
+const (
+	ReviewDiff     = "diff"
+	ReviewGate     = "gate"
+	ReviewTriage   = "triage"
+	ReviewSampling = "sampling"
+)
+
+// Review is one human-in-the-loop review mode of a stage, named by its mode:
+//
+//	review "diff"     { against approved }                  what changed since the last submission or approval
+//	review "gate"     { approvals 2  roles ["senior"] }     N distinct approvals before the case can advance
+//	review "triage"   { bucket "urgent" { when "..."  priority 1  queue "urgent" } }
+//	review "sampling" { percent 20  always_review_if ["..."] }
+type Review struct {
+	Mode string `bcl:",id" json:"mode"`
+
+	// Against (diff) is the baseline: submission (the previous submission,
+	// the default) or approved (the last approved version).
+	Against string `bcl:"against,ident" json:"against,omitempty"`
+
+	// Approvals (gate) is how many distinct reviewers must approve; Roles
+	// restricts who counts. Node names the gate node (default "gate").
+	Approvals int      `bcl:"approvals" json:"approvals,omitempty"`
+	Roles     []string `bcl:"roles" json:"roles,omitempty"`
+	Node      string   `bcl:"node" json:"node,omitempty"`
+
+	// Buckets (triage) classify a case on arrival, first match wins; a case
+	// matching none gets DefaultPriority and DefaultQueue.
+	Buckets         []TriageBucket `bcl:"bucket,block" json:"buckets,omitempty"`
+	DefaultPriority int            `bcl:"default_priority" json:"default_priority,omitempty"`
+	DefaultQueue    string         `bcl:"default_queue" json:"default_queue,omitempty"`
+
+	// Percent (sampling) of cases, chosen deterministically from a hash of
+	// the case id (and Salt), require human review; so do cases matching
+	// SampleIf and, whatever the sample, AlwaysReviewIf. The rest pass
+	// without review.
+	Percent        float64  `bcl:"percent" json:"percent,omitempty"`
+	SampleIf       string   `bcl:"sample_if" json:"sample_if,omitempty"`
+	AlwaysReviewIf []string `bcl:"always_review_if" json:"always_review_if,omitempty"`
+	Salt           string   `bcl:"salt" json:"salt,omitempty"`
+}
+
+// TriageBucket is one priority/queue class of a triage review.
+type TriageBucket struct {
+	Name string `bcl:",id" json:"name"`
+	// When classifies a case into the bucket (empty matches every case).
+	When string `bcl:"when" json:"when,omitempty"`
+	// Priority orders work lists: 1 is the most urgent.
+	Priority int    `bcl:"priority" json:"priority"`
+	Queue    string `bcl:"queue" json:"queue,omitempty"`
+	// Roles narrow routing of the bucket's cases (e.g. senior officers for
+	// urgent work) when the stage routes automatically.
+	Roles []string `bcl:"roles" json:"roles,omitempty"`
 }
 
 // Node kinds.
@@ -389,6 +448,9 @@ const (
 	NodeCertificate = "certificate"
 	NodeTask        = "task"
 	NodeVote        = "vote"
+	// NodeGate is a review gate: the stage cannot advance until enough
+	// distinct reviewers approve. A review "gate" block declares one.
+	NodeGate = "gate"
 )
 
 // Consensus policies of a vote node.

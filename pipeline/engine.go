@@ -309,11 +309,19 @@ func (e *Engine) enterStage(ctx context.Context, c *Case, name string, actor Act
 	if ss.Assignee != "" {
 		ss.PreviousAssignee = ss.Assignee
 	}
-	ss.Assignee, ss.AssignedAt, ss.Routing, ss.Suspended, ss.SLA = "", nil, nil, nil, nil
+	ss.Assignee, ss.AssignedAt, ss.Routing, ss.Suspended, ss.SLA, ss.Review = "", nil, nil, nil, nil, nil
 	e.startSLA(st, ss, now)
 	c.emit("stage.entered", name, actor.ID, now, nil)
+	routeRoles, passed, err := e.enterReviews(ctx, c, st, ss, actor, env, depth)
+	if err != nil || passed {
+		return err
+	}
 	if st.Routing != nil && st.Routing.Strategy != "" && st.Routing.Strategy != RouteManual {
-		if err := e.route(ctx, c, st, ss, nil, nil, ""); err != nil {
+		reason := ""
+		if len(routeRoles) > 0 {
+			reason = "triage bucket " + c.Triage.Bucket
+		}
+		if err := e.route(ctx, c, st, ss, routeRoles, nil, reason); err != nil {
 			return err
 		}
 	}
@@ -501,6 +509,7 @@ func (e *Engine) completeStage(ctx context.Context, c *Case, name string, actor 
 	if ss.SLA != nil && ss.SLA.Status != SLABreached {
 		ss.SLA.Status = SLAMet
 	}
+	e.recordReviewed(c, st, ss, actor, now)
 	c.closeVisit(name, "completed", now)
 	if ss.Assignee != "" {
 		ss.PreviousAssignee, ss.Assignee, ss.AssignedAt = ss.Assignee, "", nil
@@ -1026,6 +1035,13 @@ func (e *Engine) act(ctx context.Context, c *Case, actor Actor, stage string, sp
 		if broken := e.brokenRules(c, st, ss, actor); len(broken) > 0 {
 			return nil, &ValidationError{Message: "the stage does not pass its checks", Fields: broken}
 		}
+		// A review gate is hard: no action, not even skip_nodes, passes it.
+		if why, closed := e.closedGate(st, ss); closed {
+			return nil, badState("stage %q is gated: %s", stage, why)
+		}
+		if len(st.Reviews) > 0 {
+			entry.Revision = c.Revision
+		}
 		if !spec.SkipNodes {
 			for _, n := range st.Nodes {
 				if ns := ss.Nodes[n.Name]; ns != nil && ns.Status == NodeFailed && !n.Optional {
@@ -1204,6 +1220,9 @@ func (e *Engine) NodeAct(ctx context.Context, in *Case, actor Actor, stage, node
 		return nil, forbidden("an external link cannot act on %q", node)
 	}
 	if verb == "waive" {
+		if n.Kind == NodeGate {
+			return nil, forbidden("the review gate %q cannot be waived", node)
+		}
 		if !actor.HasAnyRole(n.WaiveRoles) {
 			return nil, forbidden("you may not waive %q", node)
 		}
@@ -1212,7 +1231,7 @@ func (e *Engine) NodeAct(ctx context.Context, in *Case, actor Actor, stage, node
 	}
 	// Approval and vote nodes are other people's decisions by design; every
 	// other node belongs to whoever holds the case.
-	if n.Kind != NodeApproval && n.Kind != NodeVote && verb != "waive" {
+	if n.Kind != NodeApproval && n.Kind != NodeVote && n.Kind != NodeGate && verb != "waive" {
 		if err := e.guardClaim(c, st, ss, actor); err != nil {
 			return nil, err
 		}
@@ -1291,7 +1310,7 @@ func (e *Engine) NodeAct(ctx context.Context, in *Case, actor Actor, stage, node
 				return nil, badState("you already approved %q", node)
 			}
 		}
-		ns.Approvals = append(ns.Approvals, Approval{By: actor.ID, At: now, Comment: input.Comment})
+		ns.Approvals = append(ns.Approvals, Approval{By: actor.ID, At: now, Comment: input.Comment, Revision: c.Revision})
 		need := max(1, n.Approvals)
 		ns.Status = NodeInProgress
 		if len(ns.Approvals) >= need {
@@ -1321,9 +1340,28 @@ func (e *Engine) NodeAct(ctx context.Context, in *Case, actor Actor, stage, node
 				return nil, badState("you already voted on %q", node)
 			}
 		}
-		ns.Approvals = append(ns.Approvals, Approval{By: actor.ID, At: now, Comment: input.Comment, Decision: decision})
+		ns.Approvals = append(ns.Approvals, Approval{By: actor.ID, At: now, Comment: input.Comment, Decision: decision, Revision: c.Revision})
 		ns.Status, ns.Result = tallyVotes(n, ns.Approvals)
 		entry.To = fmt.Sprintf("%s (%v/%v)", decision, ns.Result["approve"], ns.Result["reject"])
+		markActor()
+	case n.Kind == NodeGate && (verb == "approve" || verb == "reject"):
+		if ns.Status == NodePassed {
+			return nil, badState("the review gate %q is already open", node)
+		}
+		if verb == "reject" && strings.TrimSpace(input.Comment) == "" {
+			return nil, &ValidationError{Message: "a reason is required", Fields: []FieldError{{Path: "comment", Rule: "required", Message: "say why you reject"}}}
+		}
+		if slices.ContainsFunc(ns.Approvals, func(a Approval) bool { return a.By == actor.ID }) {
+			return nil, badState("you already decided on %q", node)
+		}
+		ns.Approvals = append(ns.Approvals, Approval{By: actor.ID, At: now, Comment: input.Comment, Decision: verb, Revision: c.Revision})
+		ns.Status, ns.Result = tallyGate(n, ns.Approvals)
+		entry.To = fmt.Sprintf("%s (%v/%v)", verb, ns.Result["approve"], ns.Result["required"])
+		entry.Revision = c.Revision
+		c.emit(map[string]string{"approve": "review.approved", "reject": "review.rejected"}[verb], stage, actor.ID, now, map[string]any{"node": node, "approvals": ns.Result["approve"], "required": ns.Result["required"]})
+		if ns.Status == NodePassed {
+			c.emit("review.gate_opened", stage, actor.ID, now, map[string]any{"node": node})
+		}
 		markActor()
 	case n.Kind == NodeForm && verb == "complete":
 		var missing []FieldError

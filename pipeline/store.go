@@ -27,8 +27,13 @@ type Query struct {
 	// Assignees keeps cases whose current stage is assigned to one of these
 	// ("" in the list matches unassigned work).
 	Assignees []string
-	Limit     int
-	Offset    int
+	// Queues keeps cases triaged into one of these queues.
+	Queues []string
+	// Order is "" (newest first) or "priority": triage priority (1 first,
+	// untriaged last), then oldest first.
+	Order  string
+	Limit  int
+	Offset int
 }
 
 // Store persists cases. Update must fail with ErrConflict when the stored
@@ -123,7 +128,39 @@ func (q Query) matches(c *Case) bool {
 		(len(q.Stages) == 0 || slices.Contains(q.Stages, c.Stage)) &&
 		(len(q.Statuses) == 0 || slices.Contains(q.Statuses, c.Status)) &&
 		(len(q.OrgUnits) == 0 || slices.Contains(q.OrgUnits, c.OrgUnit)) &&
-		(len(q.Assignees) == 0 || slices.Contains(q.Assignees, c.CurrentAssignee()))
+		(len(q.Assignees) == 0 || slices.Contains(q.Assignees, c.CurrentAssignee())) &&
+		(len(q.Queues) == 0 || slices.Contains(q.Queues, c.TriageQueue()))
+}
+
+// OrderPriority orders a listing by triage priority.
+const OrderPriority = "priority"
+
+// TriagePriority is the case's triage priority (0 = untriaged).
+func (c *Case) TriagePriority() int {
+	if c.Triage == nil {
+		return 0
+	}
+	return c.Triage.Priority
+}
+
+// TriageQueue is the case's triage queue ("" = none).
+func (c *Case) TriageQueue() string {
+	if c.Triage == nil {
+		return ""
+	}
+	return c.Triage.Queue
+}
+
+// byPriority reports whether a lists before b in priority order.
+func byPriority(a, b *Case) bool {
+	pa, pb := a.TriagePriority(), b.TriagePriority()
+	if (pa == 0) != (pb == 0) {
+		return pb == 0
+	}
+	if pa != pb {
+		return pa < pb
+	}
+	return a.CreatedAt.Before(b.CreatedAt)
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +234,9 @@ func (s *MemoryStore) List(_ context.Context, q Query) ([]*Case, error) {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if q.Order == OrderPriority {
+		sort.SliceStable(out, func(i, j int) bool { return byPriority(out[i], out[j]) })
+	}
 	return page(out, q), nil
 }
 
@@ -339,7 +379,8 @@ func (s *SQLStore) Migrate(ctx context.Context) error {
 	}
 	// Tables created before a column existed get it added; a "duplicate
 	// column" error means it is already there.
-	for _, col := range []string{fmt.Sprintf("assignee %s NOT NULL DEFAULT ''", key), "assigned_at BIGINT NOT NULL DEFAULT 0"} {
+	for _, col := range []string{fmt.Sprintf("assignee %s NOT NULL DEFAULT ''", key), "assigned_at BIGINT NOT NULL DEFAULT 0",
+		"priority INTEGER NOT NULL DEFAULT 0", fmt.Sprintf("queue %s NOT NULL DEFAULT ''", key)} {
 		if _, err := s.db.ExecContext(ctx, s.q(`ALTER TABLE {p}cases ADD COLUMN `+col)); err != nil {
 			msg := strings.ToLower(err.Error())
 			if !strings.Contains(msg, "duplicate") && !strings.Contains(msg, "already exists") {
@@ -387,9 +428,9 @@ func (s *SQLStore) Create(ctx context.Context, c *Case) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO {p}cases (id, pipeline, number, tenant_id, org_unit, status, stage, created_by, assignee, assigned_at, revision, doc, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		c.ID, c.Pipeline, c.Number, c.TenantID, c.OrgUnit, c.Status, c.Stage, c.CreatedBy, c.CurrentAssignee(), c.currentAssignedAt(), c.Revision, string(doc),
+	if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO {p}cases (id, pipeline, number, tenant_id, org_unit, status, stage, created_by, assignee, assigned_at, priority, queue, revision, doc, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		c.ID, c.Pipeline, c.Number, c.TenantID, c.OrgUnit, c.Status, c.Stage, c.CreatedBy, c.CurrentAssignee(), c.currentAssignedAt(), c.TriagePriority(), c.TriageQueue(), c.Revision, string(doc),
 		c.CreatedAt.UnixNano(), c.UpdatedAt.UnixNano()); err != nil {
 		return err
 	}
@@ -436,9 +477,9 @@ func (s *SQLStore) Update(ctx context.Context, c *Case) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, s.q(`UPDATE {p}cases SET status = ?, stage = ?, org_unit = ?, assignee = ?, assigned_at = ?, revision = ?, doc = ?, updated_at = ?
+	res, err := tx.ExecContext(ctx, s.q(`UPDATE {p}cases SET status = ?, stage = ?, org_unit = ?, assignee = ?, assigned_at = ?, priority = ?, queue = ?, revision = ?, doc = ?, updated_at = ?
 		WHERE id = ? AND revision = ?`),
-		c.Status, c.Stage, c.OrgUnit, c.CurrentAssignee(), c.currentAssignedAt(), c.Revision, string(doc), c.UpdatedAt.UnixNano(), c.ID, expected)
+		c.Status, c.Stage, c.OrgUnit, c.CurrentAssignee(), c.currentAssignedAt(), c.TriagePriority(), c.TriageQueue(), c.Revision, string(doc), c.UpdatedAt.UnixNano(), c.ID, expected)
 	if err != nil {
 		c.Revision = expected
 		return err
@@ -506,11 +547,17 @@ func (s *SQLStore) List(ctx context.Context, q Query) ([]*Case, error) {
 	add("status", q.Statuses)
 	add("org_unit", q.OrgUnits)
 	add("assignee", q.Assignees)
+	add("queue", q.Queues)
 	limit := q.Limit
 	if limit <= 0 || limit > 5000 {
 		limit = 100
 	}
-	statement := "SELECT doc FROM {p}cases WHERE " + strings.Join(where, " AND ") + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	order := "created_at DESC"
+	if q.Order == OrderPriority {
+		// Untriaged cases (priority 0) last, then the most urgent, oldest first.
+		order = "CASE WHEN priority = 0 THEN 1 ELSE 0 END, priority, created_at"
+	}
+	statement := "SELECT doc FROM {p}cases WHERE " + strings.Join(where, " AND ") + " ORDER BY " + order + " LIMIT ? OFFSET ?"
 	args = append(args, limit, max(0, q.Offset))
 	rows, err := s.db.QueryContext(ctx, s.q(statement), args...)
 	if err != nil {

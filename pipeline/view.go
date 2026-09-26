@@ -32,6 +32,10 @@ type View struct {
 	Seal *SealView `json:"seal,omitempty"`
 	// External is set when the viewer is an outside party on a link.
 	External *LinkView `json:"external,omitempty"`
+	// Review is the stage's review-mode state (staff only): the diff since
+	// the baseline, the gate's decisions, the triage class and the sampling
+	// decision.
+	Review *ReviewView `json:"review,omitempty"`
 }
 
 // WorkView is a stage's work state for the viewer.
@@ -358,6 +362,9 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 		if n.Kind == NodeVote {
 			nv.Required = max(1, n.Voters)
 		}
+		if n.Kind == NodeGate {
+			nv.Required = max(1, n.Approvals)
+		}
 		if ns.Result != nil {
 			nv.Result = ns.Result
 		}
@@ -382,6 +389,9 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 	}
 	v.Notes = e.NotesFor(c, actor)
 	staff := e.staff(actor)
+	if staff {
+		v.Review = e.reviewView(c, st, ss, reveal)
+	}
 	if c.Stage == stage {
 		w := &WorkView{Claimable: claimable(st), Assignee: ss.Assignee, AssignedAt: ss.AssignedAt, SLA: ss.SLA, Suspended: ss.Suspended}
 		if staff {
@@ -481,6 +491,11 @@ func (e *Engine) nodeOperations(c *Case, st *Stage, n *Node, ns *NodeState, acto
 		voted := slices.ContainsFunc(ns.Approvals, func(a Approval) bool { return a.By == actor.ID })
 		if !voted && ns.Status != NodePassed && ns.Status != NodeFailed {
 			ops = append(ops, "vote")
+		}
+	case NodeGate:
+		decided := slices.ContainsFunc(ns.Approvals, func(a Approval) bool { return a.By == actor.ID })
+		if !decided && ns.Status != NodePassed {
+			ops = append(ops, "approve", "reject")
 		}
 	case NodeApproval:
 		approved := false
