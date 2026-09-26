@@ -259,7 +259,8 @@ func (o *entityEvents) deliver(ctx context.Context, p *Platform) int {
 			input[k] = v
 		}
 		input["event_id"], input["attempt"] = ev.ID, ev.Attempts+1
-		hctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		tenant, _ := ev.Input["tenant_id"].(string)
+		hctx, cancel := context.WithTimeout(withResidencyTenant(ctx, tenant), 30*time.Second)
 		_, err := p.CallIntent(hctx, ev.Hook, input, nil)
 		cancel()
 		if err != nil && ctx.Err() != nil {

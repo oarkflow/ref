@@ -374,7 +374,7 @@ func (p *PipelineCases) deliverOne(ctx context.Context, platform *Platform, ev p
 				continue
 			}
 		}
-		hctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		hctx, cancel := context.WithTimeout(withResidencyTenant(ctx, c.TenantID), 30*time.Second)
 		_, err := platform.CallIntent(hctx, hook.Hook, input, nil)
 		cancel()
 		if err != nil {

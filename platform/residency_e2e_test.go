@@ -569,3 +569,59 @@ func TestResidencyGuard(t *testing.T) {
 		t.Fatal("no residency block, no guard")
 	}
 }
+
+// TestResidencyDurableHook: a durable entity hook runs later, from the
+// outbox, with no request identity. It must still be held to the residency of
+// the tenant whose change produced it — before, the missing tenant made the
+// hook unconstrained, so an eu tenant's record could be sent to a us service.
+func TestResidencyDurableHook(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	src := strings.Replace(residencyApp, `column "name" { kind text  required true }`,
+		`column "name" { kind text  required true }
+  on "created" {
+    hook "crm.us"
+    durable true
+    max_attempts 1
+  }`, 1)
+	dir := t.TempDir()
+	h := newAppHarness(t, writeApp(t, src), map[string]string{
+		"RES_EU_DSN":     "file:" + filepath.Join(dir, "eu.db") + "?_pragma=busy_timeout(5000)",
+		"RES_US_DSN":     "file:" + filepath.Join(dir, "us.db"),
+		"RES_UPSTREAM":   upstream.URL,
+		"RES_JWT_SECRET": "residency-test-secret-0123456789abcdef",
+	})
+	acme := h.token("jwt", "u1", []string{"staff"}, map[string]any{"tenant_id": "acme"})
+	free := h.token("jwt", "u3", []string{"staff"}, map[string]any{"tenant_id": "free"})
+
+	// An unconstrained tenant's hook reaches the us service.
+	if status, body := h.call("POST", "/api/customers", free, map[string]any{"name": "Fay"}); status != 201 {
+		t.Fatalf("free create: %d %v", status, body)
+	}
+	waitFor(t, "the free tenant's hook", func() bool { return calls.Load() == 1 })
+
+	// acme is homed in eu: its hook must be refused, and never leave.
+	if status, body := h.call("POST", "/api/customers", acme, map[string]any{"name": "Ann"}); status != 201 {
+		t.Fatalf("acme create: %d %v", status, body)
+	}
+	waitFor(t, "the acme hook refusal", func() bool {
+		_, resp := h.call("GET", "/audit", acme, nil)
+		rows, _ := resp.([]any)
+		for _, row := range rows {
+			if dig(row, "tenant_id") == "acme" && dig(row, "action") == "residency.denied" &&
+				strings.Contains(Stringify(dig(row, "detail")), "crm_us") {
+				return true
+			}
+		}
+		return false
+	})
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("upstream saw %d calls, want 1 — acme's hook left the region", got)
+	}
+}

@@ -99,6 +99,7 @@ func TestDocumentPDF(t *testing.T) {
 	pdf, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "application/pdf" ||
+		resp.Header.Get("X-Content-Type-Options") != "nosniff" ||
 		!strings.Contains(resp.Header.Get("Content-Disposition"), `filename="invoice-INV-7.pdf"`) || !bytes.HasPrefix(pdf, []byte("%PDF-")) {
 		t.Fatalf("pdf: %d %v", resp.StatusCode, resp.Header)
 	}
