@@ -42,6 +42,9 @@ type Database struct {
 	// events is the durable entity hook outbox, when an entity declares one.
 	eventsMu sync.Mutex
 	events   *entityEvents
+	// searchIndexes are the entity search indexes the startup backfill checks,
+	// by table (guarded by eventsMu).
+	searchIndexes map[string]*entitySearchIndex
 }
 
 // Reader returns the pool a read-only query should use, falling back to the

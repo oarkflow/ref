@@ -1,12 +1,13 @@
 # Entities: declarative data resources
 
 An `entity` block declares a table and gets a complete, validated REST API. There is no intent or route to write. It is DAGFlow's `resource` (CRUD) block, extended with the following:
-- filters and full-text-style search;
+- filters and full-text-style search, with an optional token index;
 - sorting, pagination and totals;
 - optimistic versioning;
 - per-operation access rules with row conditions;
 - tenant, owner and organisational scoping;
-- CSV export and aggregates;
+- bulk creates, updates and deletes;
+- CSV export, aggregates and analytics;
 - post-commit hooks.
 
 When the document loads, each entity is expanded into ordinary intents (`entity.<name>.<op>`) and routes, and its table is added to the database's migrations. It therefore composes with everything else:
@@ -23,9 +24,12 @@ entity "project" {
   soft_delete true              # delete stamps deleted_at
   versioned true                # updates must send the version they read (409 otherwise)
   search ["name", "code"]       # ?q=
+  search_index true             # ?q= by word prefix through a token index
   default_sort "name"
   export true                   # GET /api/projects/-/export  (CSV)
   aggregate true                # GET /api/projects/-/aggregate
+  analytics true                # GET /api/projects/-/analytics
+  bulk true                     # POST /api/projects/-/bulk
 
   column "name"   { kind text  required true  min_length 2  max_length 100 }
   column "code"   { kind text  unique true  pattern "^[A-Z]{2,5}-[0-9]+$"  immutable true }
@@ -72,16 +76,111 @@ Writes are validated as a whole. Every problem is reported at once as a `422` wi
 | `DELETE {path}/:id` | `delete`: soft or hard |
 | `GET {path}/-/export` | CSV: up to 10,000 rows, same filters; spreadsheet formula injection neutralised |
 | `GET {path}/-/aggregate?group_by=status&agg=sum&field=budget` | `count`, `sum`, `avg`, `min` or `max`, same filters |
+| `GET {path}/-/analytics?metrics=count,sum:budget&group_by=status&bucket=month` | several metrics, up to 2 group-by columns and a time bucket, same filters (see [Analytics](#analytics)) |
+| `POST {path}/-/bulk` | many creates, updates and deletes in one request (see [Bulk operations](#bulk-operations)) |
 
 List and export take these query parameters:
 - **Filters** by column: `col=v`, `col__ne`, `__gt`, `__gte`, `__lt`, `__lte`, `__in=a,b`, `__like` (substring) and `__null=true|false`. Unknown filters are a `422`, so a mistyped filter never silently returns everything.
-- **Search:** `q=` searches the `search` columns.
+- **Search:** `q=` searches the `search` columns: a case-insensitive substring match, or a word-prefix match with `search_index true` (see [Search index](#search-index)).
 - **Sorting:** `sort=-budget,name`.
 - **Paging:** `limit`, `offset`.
 
+## Analytics
+
+`analytics true` adds `GET {path}/-/analytics`, a richer aggregate. It takes these parameters, plus the same filters, `q=` and scoping as list:
+
+| Parameter | Meaning |
+|---|---|
+| `metrics` | A comma-separated list; the default is `count`. Each item is `count` (rows), or `count:<field>` (non-null values), `sum:<field>`, `avg:<field>`, `min:<field>` or `max:<field>` over a numeric column. At most 10. |
+| `group_by` | One or two columns, comma-separated. They may be any returned, non-JSON column, or `created_by`. |
+| `bucket` | `day`, `week` (ISO weeks, labelled by their Monday) or `month`. |
+| `bucket_field` | The `date` or `datetime` column to bucket, or `created_at` (the default) or `updated_at`. Buckets are UTC. |
+
+```json
+GET /api/sales/-/analytics?metrics=count,sum:amount,avg:amount&group_by=region&bucket=month&bucket_field=sold_on
+
+{"metrics": ["count", "sum:amount", "avg:amount"], "group_by": ["region"], "bucket": "month", "bucket_field": "sold_on", "groups": 2,
+ "rows": [{"bucket": "2026-09", "group": {"region": "north"}, "values": {"count": 2, "sum_amount": "0.30", "avg_amount": "0.15"}},
+          {"bucket": "2026-09", "group": {"region": "south"}, "values": {"count": 2, "sum_amount": "1.05", "avg_amount": "0.53"}}]}
+```
+
+- A metric's key in `values` is `fn_field` (or `count`). Values keep the column's kind:
+  - `decimal` sums, minimums, maximums and averages are exact strings, and an average is rounded half away from zero to the column's scale;
+  - `integer` sums, minimums and maximums are integers;
+  - averages of `integer` and `number` columns are numbers.
+- A metric over no values is `null`.
+- The database does the grouping, and no rows are loaded. Every metric derives from `SUM`, `COUNT`, `MIN` and `MAX`, and days and months are `SUBSTR` of the stored ISO text, so the same SQL runs on SQLite, PostgreSQL and MySQL. Weeks are rolled up from days in Go.
+- A query that would produce more than 1,000 groups is refused with a `422` rather than truncated. Filter it, group by less, or use a coarser bucket.
+
+## Bulk operations
+
+`bulk true` adds `POST {path}/-/bulk`, which carries many changes in one request:
+
+```json
+{
+  "create": [{"name": "Alpha", "code": "AL-1"}, {"name": "Beta", "code": "BE-2"}],
+  "update": [{"id": "…", "version": 3, "status": "active"}],
+  "delete": ["…", {"id": "…"}],
+  "atomic": true
+}
+```
+
+- Each item is validated and access-checked exactly as the single create, update or delete it stands for: the same `422` details, `version` rule, row conditions, scoping and org checks. The op-level `allow` rules (roles) of each op present apply to the whole request, so a caller who may not delete gets a `403` for a request with any delete.
+- Items run in order: creates, then updates, then deletes. A record may appear only once among the updates and deletes.
+- `bulk_max` (default 500) caps the items of a request.
+- **`atomic` (default `true`)** is all or nothing. Every item is prepared inside one transaction, and if any is invalid, missing or forbidden, nothing is written. The response is an error with code `BULK_REJECTED`, whose status is that of the first failed item, and `details` lists every failed item as `{op, index, id, status, code, message, details}`. If a statement then fails, for example on a duplicate, that item is reported and the whole batch rolls back. Search tokens and durable hook events are written in the same transaction, so a rejected batch leaves neither behind. Plain hooks run after the commit.
+- With **`atomic: false`**, each item commits on its own, as a single request would.
+
+A successful response has the counts and one result per item, in execution order:
+
+```json
+{"atomic": true, "created": 2, "updated": 1, "deleted": 1, "failed": 0,
+ "results": [{"op": "create", "index": 0, "id": "…", "ok": true, "record": {…}}, …]}
+```
+
+With `atomic: false`, a failed item has `ok: false` and the error fields instead of `record`.
+
+## Search index
+
+Without an index, `q=` scans the `search` columns with `LOWER(col) LIKE '%q%'`, which reads every row. Add `search_index true` to keep a token index instead:
+
+```bcl
+entity "place" {
+  search ["name", "city"]
+  search_index true
+  ...
+}
+```
+
+- The migration adds a `<table>_search (record_id, token)` table with an index on `token`.
+- Each create, update and delete rewrites the record's tokens **in the same transaction as the change**, so the index never disagrees with a committed record. A soft delete drops the tokens.
+- A token is a word of the search columns: compatibility-decomposed, accents dropped, lower-cased (`ß` becomes `ss`), split on anything that is not a letter or digit. Words are cut at 64 characters, and a record indexes at most 512 distinct words.
+- `q=` is tokenised the same way (at most 8 words). **Every** query word must be the prefix of some word of the row: `q=bri rep` finds "Bridge repair", `q=zurich` finds "Zürich", and `q=ridge` finds nothing. A query with no letters or digits does not filter.
+- The match is an indexed `token LIKE 'word%'` on SQLite, PostgreSQL and MySQL.
+
+When the application starts and a token table is empty (because the index was just turned on for an existing table, for example), every live record is indexed in the background. To rebuild on demand, for example after rows were changed with raw SQL, use an `entity.reindex` node:
+
+```bcl
+intent "places.reindex" {
+  response "r"
+  node "r" {
+    uses "entity.reindex"
+    resource "db"          # the entity's database
+    kind effect
+    provides [r]
+    config {
+      entity "place"
+      roles ["ops"]        # optional: only these roles may call it
+    }
+  }
+}
+```
+
+It re-derives the tokens of every live record, a page per transaction, drops tokens of deleted records and returns `{entity, indexed}`.
+
 ## Access and scoping
 
-**`allow` blocks** govern each operation: `list`, `get`, `create`, `update`, `delete`, `export`, `aggregate`, or `*` as the default.
+**`allow` blocks** govern each operation: `list`, `get`, `create`, `update`, `delete`, `export`, `aggregate`, `analytics`, or `*` as the default. A bulk request has no block of its own: each item is checked as the create, update or delete it is.
 - An op's own blocks **replace** the `*` blocks.
 - With no `allow` blocks at all, every operation is open to whoever passes the route's authentication.
 - With some blocks, an op without a matching block is denied.
