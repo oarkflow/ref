@@ -342,6 +342,8 @@ Because a hook may run again after a partial failure, **hooks should be idempote
 
 `pipeline.events` lists dead-lettered events and requeues one for immediate delivery, once its cause is fixed.
 
+The operations actions (`pipeline.events`, `pipeline.hold`, `pipeline.erase`, `pipeline.sweep`, `pipeline.analytics`, and `process.analytics`) always need an authenticated caller, even when `roles` is empty and the route has no `auth`; an anonymous call gets `401`. `roles`, when set, further restricts them to holders of one of those roles. Work the platform starts itself (a schedule, a queue worker, a process step) carries no principal and is allowed, so a scheduled `pipeline.sweep` keeps working; an `async` route enqueues with the caller's identity, so do not put these actions behind an anonymous async route.
+
 ### Review modes
 
 A stage's `review` blocks add human-in-the-loop policies. A stage may combine several:

@@ -176,7 +176,7 @@ intent "places.reindex" {
 }
 ```
 
-It re-derives the tokens of every live record, a page per transaction, drops tokens of deleted records and returns `{entity, indexed}`.
+The caller must be authenticated, with or without `roles`. It re-derives the tokens of every live record, a page per transaction, drops tokens of deleted records and returns `{entity, indexed}`.
 
 ## Access and scoping
 
@@ -232,6 +232,8 @@ To operate the outbox, use an `entity.events` node on the database:
 - By default it lists dead-lettered events: `{dead: [...]}`, each with its input, attempts and last error.
 - With op `requeue` (from config, a `:op` path parameter or `?op=`) it gives the event `:event_id` a fresh set of attempts.
 - `entity` limits it to one entity, and `roles` restricts who may call it.
+- The caller must always be authenticated, even without `roles` and on a route without `auth` (an anonymous call gets `401`): dead-lettered events hold full record payloads. The same holds for `entity.reindex`.
+- A caller with a resolved tenant sees, and may requeue, only its own tenant's events (the event's `tenant_id`). A tenant's listing is filtered after `limit` is applied, so it may hold fewer than `limit` events.
 
 ## Raw responses
 
