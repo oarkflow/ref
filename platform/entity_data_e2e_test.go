@@ -187,7 +187,9 @@ func runEntityData(t *testing.T, driver, dsn string) {
 	waitFor(t, "hooks before the index", func() bool {
 		_, body := before.call("GET", "/api/log", staff, nil)
 		rows, _ := body.([]any)
-		return len(rows) == 2
+		var pending int
+		_ = before.platform.resources["db"].(*Database).QueryRowContext(context.Background(), "SELECT COUNT(*) FROM ref_entity_events").Scan(&pending)
+		return len(rows) == 2 && pending == 0
 	})
 	_ = before.platform.Close()
 

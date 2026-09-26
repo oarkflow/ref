@@ -71,6 +71,14 @@ func (c *execCancelCtx) Done() <-chan struct{} {
 	return done
 }
 
+// observed reports whether Done was called, i.e. whether something may
+// still be watching this context.
+func (c *execCancelCtx) observed() bool {
+	c.doneMu.Lock()
+	defer c.doneMu.Unlock()
+	return c.doneCtx != nil
+}
+
 func (c *execCancelCtx) cancelExecution() {
 	c.doneMu.Lock()
 	canceled := c.canceled.Swap(true)
@@ -888,8 +896,17 @@ func (s *Scheduler) execute(
 		}
 		fact.ReleaseStore(es.facts)
 		ReleaseDecisionSet(es.decisions)
+		// A context derived from specCtx during the execution (database/sql
+		// and net/http create them) keeps a goroutine that, once Done fires,
+		// reads specCtx.Err. Reused for another execution, specCtx would
+		// report that execution's live parent (nil) and the goroutine panics
+		// with "missing cancel error". So once Done was handed out, es is
+		// left to the garbage collector instead of the pool.
+		observed := es.specCtx.observed()
 		es.reset()
-		execStatePool.Put(es)
+		if !observed {
+			execStatePool.Put(es)
+		}
 	}()
 
 	// Acquire pooled nodeState slice

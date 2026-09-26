@@ -244,16 +244,26 @@ func (p *PipelineCases) deliver(ctx context.Context, platform *Platform) int {
 		return 0
 	}
 	for _, ev := range events {
+		if ctx.Err() != nil {
+			break // shutting down: the lease lapses and another dispatcher takes the rest
+		}
 		err := p.deliverOne(ctx, platform, ev)
+		if err != nil && ctx.Err() != nil {
+			break // interrupted by shutdown, not a failed attempt
+		}
+		// Record the outcome even when shutdown began meanwhile: hooks that
+		// ran must be acknowledged, or they run again after the lease.
+		sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		switch {
 		case err == nil:
-			err = p.outbox.AckEvent(ctx, ev.ID)
+			err = p.outbox.AckEvent(sctx, ev.ID)
 		case ev.Attempts+1 >= p.maxAttempts:
 			slog.Error("pipeline event dead-lettered", "resource", p.name, "event", ev.Event.Name, "case", ev.CaseID, "error", err)
-			err = p.outbox.RetryEvent(ctx, ev.ID, now, true, err.Error())
+			err = p.outbox.RetryEvent(sctx, ev.ID, now, true, err.Error())
 		default:
-			err = p.outbox.RetryEvent(ctx, ev.ID, now.Add(p.backoff(ev.Attempts+1)), false, err.Error())
+			err = p.outbox.RetryEvent(sctx, ev.ID, now.Add(p.backoff(ev.Attempts+1)), false, err.Error())
 		}
+		scancel()
 		if err != nil {
 			slog.Warn("pipeline outbox update failed", "resource", p.name, "event", ev.ID, "error", err)
 		}

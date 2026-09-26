@@ -244,6 +244,9 @@ func (o *entityEvents) deliver(ctx context.Context, p *Platform) int {
 		return 0
 	}
 	for _, ev := range events {
+		if ctx.Err() != nil {
+			break // shutting down: the lease lapses and another dispatcher takes the rest
+		}
 		input := make(map[string]any, len(ev.Input)+2)
 		for k, v := range ev.Input {
 			input[k] = v
@@ -252,16 +255,23 @@ func (o *entityEvents) deliver(ctx context.Context, p *Platform) int {
 		hctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		_, err := p.CallIntent(hctx, ev.Hook, input, nil)
 		cancel()
+		if err != nil && ctx.Err() != nil {
+			break // interrupted by shutdown, not a failed attempt
+		}
+		// Record the outcome even when shutdown began meanwhile: a hook
+		// that ran must be acknowledged, or it runs again after the lease.
+		sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		switch {
 		case err == nil:
-			err = o.ack(ctx, ev)
+			err = o.ack(sctx, ev)
 		case ev.Attempts+1 >= ev.MaxAttempts:
 			slog.Error("entity hook dead-lettered", "entity", ev.Entity, "event", ev.Event, "hook", ev.Hook, "id", ev.ID, "error", err)
-			err = o.retry(ctx, ev, now, true, err.Error())
+			err = o.retry(sctx, ev, now, true, err.Error())
 		default:
-			err = o.retry(ctx, ev, now.Add(entityBackoff(ev.retryBase, ev.Attempts+1)), false, err.Error())
+			err = o.retry(sctx, ev, now.Add(entityBackoff(ev.retryBase, ev.Attempts+1)), false, err.Error())
 		}
-		if err != nil && ctx.Err() == nil {
+		scancel()
+		if err != nil {
 			slog.Warn("entity hook outbox update failed", "id", ev.ID, "error", err)
 		}
 	}
