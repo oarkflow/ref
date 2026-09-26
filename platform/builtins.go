@@ -41,6 +41,7 @@ func registerBuiltins(r *Registry) {
 	registerDOSActions(r)
 	registerPipelineActions(r)
 	registerEntityActions(r)
+	registerEntityEventActions(r)
 	registerFlagActions(r)
 	registerDocumentActions(r)
 }

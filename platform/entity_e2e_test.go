@@ -161,7 +161,7 @@ func TestEntitiesPostgres(t *testing.T) {
 	if dsn == "" {
 		t.Skip("TEST_POSTGRES_DSN not set")
 	}
-	runEntities(t, "pgx", dsn)
+	runEntities(t, "pgx", freshPostgres(t, dsn))
 }
 
 func runEntities(t *testing.T, driver, dsn string) {

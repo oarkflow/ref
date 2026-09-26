@@ -97,6 +97,28 @@ List and export take these query parameters:
 
 `on "created" | "updated" | "deleted" | "*" { hook "<intent>" }` runs an intent **after** the change is committed, with `{entity, event, record, previous}` as its input. A failing hook is logged; it never undoes the change.
 
+That plain hook runs once, in the request. If it fails, or the process dies first, it is lost. For anything that must happen, such as syncing to an ERP, sending a receipt or updating a ledger, mark the hook `durable`:
+
+```bcl
+on "created" {
+  hook "invoice.sync"
+  durable true
+  max_attempts 8      # default 10
+  retry_base "5s"     # doubling up to 10m; default 2s
+}
+```
+
+A durable hook is written to a `ref_entity_events` table **in the same transaction as the change**. So a committed change always has its hook, and a change that rolled back (a duplicate or a version conflict, for example) never does. The migration creates the table on the entity's database.
+
+A background dispatcher then calls the hook intent. Its input is `{entity, event, record, previous, actor, tenant_id, event_id, attempt}`. On failure it retries with backoff. After `max_attempts` failures the event is dead-lettered. Replicas share the table: a claimed event is leased for a minute, so each event goes to one replica at a time.
+
+Delivery is **at least once**, so make the hook idempotent on `event_id`, for example with `INSERT … ON CONFLICT (event_id) DO NOTHING`.
+
+To operate the outbox, use an `entity.events` node on the database:
+- By default it lists dead-lettered events: `{dead: [...]}`, each with its input, attempts and last error.
+- With op `requeue` (from config, a `:op` path parameter or `?op=`) it gives the event `:event_id` a fresh set of attempts.
+- `entity` limits it to one entity, and `roles` restricts who may call it.
+
 ## Raw responses
 
 The CSV export uses a general platform mechanism: any action may return a `platform.RawResponse{ContentType, Filename, Body}`. A route then sends those bytes as-is, with the given content type and a download filename, instead of JSON. PDF certificates, images and reports use the same path.

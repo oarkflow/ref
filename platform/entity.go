@@ -130,9 +130,20 @@ type EntityAccess struct {
 
 // EntityHook runs an intent after a committed change: created, updated,
 // deleted or "*".
+//
+// A durable hook is recorded in the same transaction as the change and
+// delivered by a background dispatcher with retries (MaxAttempts, default
+// 10; RetryBase doubling, default 2s) and dead-lettering, so it survives a
+// crash and a failing downstream. Delivery is at-least-once: its input
+// carries a stable event_id for idempotency.
 type EntityHook struct {
-	Event string `bcl:",id"`
-	Hook  string `bcl:"hook"`
+	Event       string `bcl:",id"`
+	Hook        string `bcl:"hook"`
+	Durable     bool   `bcl:"durable"`
+	MaxAttempts int    `bcl:"max_attempts"`
+	RetryBase   string `bcl:"retry_base"`
+
+	retryBase time.Duration
 }
 
 var entityOps = []string{"list", "get", "create", "update", "delete", "export", "aggregate"}
@@ -231,9 +242,28 @@ func compileEntity(spec EntitySpec, dialect string) (*entityPlan, error) {
 		p.access[a.Op] = append(p.access[a.Op], compiledAccess{roles: a.Roles, cond: expr})
 		p.anyAccess = true
 	}
-	for _, h := range spec.On {
+	p.spec.On = slices.Clone(spec.On)
+	for i := range p.spec.On {
+		h := &p.spec.On[i]
 		if !slices.Contains([]string{"created", "updated", "deleted", "*"}, h.Event) || h.Hook == "" {
 			return nil, fmt.Errorf("%s: on %q: event must be created, updated, deleted or * and needs a hook", where, h.Event)
+		}
+		if !h.Durable && (h.MaxAttempts != 0 || h.RetryBase != "") {
+			return nil, fmt.Errorf("%s: on %q: max_attempts and retry_base apply to durable hooks only", where, h.Event)
+		}
+		if h.MaxAttempts == 0 {
+			h.MaxAttempts = 10
+		}
+		if h.MaxAttempts < 1 {
+			return nil, fmt.Errorf("%s: on %q: max_attempts must be at least 1", where, h.Event)
+		}
+		h.retryBase = 2 * time.Second
+		if h.RetryBase != "" {
+			d, err := time.ParseDuration(h.RetryBase)
+			if err != nil || d <= 0 {
+				return nil, fmt.Errorf("%s: on %q: retry_base %q is not a positive duration", where, h.Event, h.RetryBase)
+			}
+			h.retryBase = d
 		}
 	}
 	if p.spec.Limit <= 0 {
@@ -347,7 +377,7 @@ func expandEntities(doc Document) (Document, error) {
 	for _, r := range doc.Routes {
 		routes[r.Name] = true
 	}
-	seen := map[string]bool{}
+	seen, outboxes := map[string]bool{}, map[string]bool{}
 	for _, spec := range doc.Entities {
 		if seen[spec.Name] {
 			return doc, fmt.Errorf("ref/platform: entity %q declared twice", spec.Name)
@@ -373,6 +403,12 @@ func expandEntities(doc Document) (Document, error) {
 			}
 			for _, m := range plan.ddl() {
 				migrations = append(migrations, m)
+			}
+			if slices.ContainsFunc(spec.On, func(h EntityHook) bool { return h.Durable }) && !outboxes[spec.Database] {
+				outboxes[spec.Database] = true
+				for _, m := range entityEventsDDL(dialect) {
+					migrations = append(migrations, m)
+				}
 			}
 			config["migrations"] = migrations
 			resources[i].Config = config
@@ -469,6 +505,9 @@ func buildEntityOp(build BuildContext, spec NodeSpec) (Action, error) {
 		return nil, err
 	}
 	rt := &entityRuntime{plan: plan, db: db, op: op, spec: spec}
+	if slices.ContainsFunc(plan.spec.On, func(h EntityHook) bool { return h.Durable }) {
+		db.enableEntityEvents() // before the background loops start
+	}
 	if es.OrgResource != "" {
 		res, ok := build.Resource(es.OrgResource)
 		if !ok {
@@ -1150,10 +1189,7 @@ func (rt *entityRuntime) create(ctx *ActionContext) (any, error) {
 		ph[i] = fmt.Sprintf("$%d", i+1)
 	}
 	stmt := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", p.table, strings.Join(cols, ", "), strings.Join(ph, ", "))
-	if _, err := rt.db.ExecContext(ctx.Context, rebind(rt.db.Dialect, stmt), args...); err != nil {
-		return nil, databaseFailure(err)
-	}
-	created, err := rt.getOne(ctx, id, false)
+	_, created, err := rt.write(ctx, "created", stmt, args, nil, func(q execer) (map[string]any, error) { return rt.loadOn(ctx, q, id) })
 	if err != nil {
 		return nil, err
 	}
@@ -1210,19 +1246,15 @@ func (rt *entityRuntime) update(ctx *ActionContext) (any, error) {
 	}
 	conds = append(conds, scoped...)
 	stmt := fmt.Sprintf("UPDATE %s SET %s WHERE %s", p.table, strings.Join(sets, ", "), strings.Join(conds, " AND "))
-	res, err := rt.db.ExecContext(ctx.Context, rebind(rt.db.Dialect, stmt), args...)
+	n, updated, err := rt.write(ctx, "updated", stmt, args, prev, func(q execer) (map[string]any, error) { return rt.loadOn(ctx, q, id) })
 	if err != nil {
-		return nil, databaseFailure(err)
+		return nil, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n == 0 {
 		if p.spec.Versioned {
 			return nil, conflict("%s %s was changed by someone else; reload and try again", p.spec.Name, id)
 		}
 		return nil, notFound(p.spec.Name, id)
-	}
-	updated, err := rt.getOne(ctx, id, false)
-	if err != nil {
-		return nil, err
 	}
 	rt.fire(ctx, "updated", updated, prev)
 	return updated, nil
@@ -1253,8 +1285,12 @@ func (rt *entityRuntime) delete(ctx *ActionContext) (any, error) {
 	if len(scoped) > 0 {
 		stmt += " AND " + strings.Join(scoped, " AND ")
 	}
-	if _, err := rt.db.ExecContext(ctx.Context, rebind(rt.db.Dialect, stmt), args...); err != nil {
-		return nil, databaseFailure(err)
+	n, _, err := rt.write(ctx, "deleted", stmt, args, prev, func(execer) (map[string]any, error) { return prev, nil })
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, notFound(p.spec.Name, id)
 	}
 	rt.fire(ctx, "deleted", prev, prev)
 	return map[string]any{"deleted": true, "id": id}, nil
@@ -1373,7 +1409,7 @@ func (rt *entityRuntime) fire(ctx *ActionContext, event string, record, previous
 		return
 	}
 	for _, h := range rt.plan.spec.On {
-		if h.Event != event && h.Event != "*" {
+		if h.Durable || (h.Event != event && h.Event != "*") {
 			continue
 		}
 		input := map[string]any{"entity": rt.plan.spec.Name, "event": event, "record": record}
