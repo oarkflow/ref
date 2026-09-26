@@ -834,6 +834,9 @@ func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute,
 	if raw, ok := value.(RawResponse); ok {
 		p.applyResponseHeaders(c, route)
 		c.Set("Content-Type", orDefault(raw.ContentType, "application/octet-stream"))
+		// The content type of a download may come from an uploader; stop the
+		// browser second-guessing it into HTML or script.
+		c.Set("X-Content-Type-Options", "nosniff")
 		if raw.Filename != "" {
 			c.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", raw.Filename))
 		}
