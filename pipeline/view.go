@@ -105,6 +105,31 @@ type PageView struct {
 	Layout      string      `json:"layout"`
 	SubmitLabel string      `json:"submit_label,omitempty"`
 	Groups      []GroupView `json:"groups"`
+	// Info are the page's informational blocks the viewer may see.
+	Info []InfoView `json:"info,omitempty"`
+	// Acknowledgements are the statements the submitter must accept.
+	Acknowledgements []AckView `json:"acknowledgements,omitempty"`
+}
+
+// InfoView is a rendered informational block.
+type InfoView struct {
+	Name   string `json:"name"`
+	Title  string `json:"title,omitempty"`
+	Body   string `json:"body"`
+	Style  string `json:"style"`
+	Before string `json:"before,omitempty"`
+}
+
+// AckView is an acknowledgement to accept. SHA256 is the hash of Text, which
+// a client sends back to prove the wording it showed; Accepted is the
+// latest acceptance of this wording at the stage.
+type AckView struct {
+	Name     string     `json:"name"`
+	Title    string     `json:"title,omitempty"`
+	Text     string     `json:"text"`
+	SHA256   string     `json:"sha256"`
+	Before   string     `json:"before,omitempty"`
+	Accepted *AckRecord `json:"accepted,omitempty"`
 }
 
 // GroupView is a rendered group.
@@ -151,6 +176,8 @@ type InputView struct {
 	Min         string   `json:"min,omitempty"`
 	Max         string   `json:"max,omitempty"`
 	Accept      []string `json:"accept,omitempty"`
+	MaxBytes    int64    `json:"max_bytes,omitempty"`
+	MaxFiles    int      `json:"max_files,omitempty"`
 	Span        int      `json:"span,omitempty"`
 	Value       any      `json:"value,omitempty"`
 	Masked      bool     `json:"masked,omitempty"`
@@ -183,6 +210,9 @@ type ActionView struct {
 	Outcome         string `json:"outcome"`
 	CommentRequired bool   `json:"comment_required,omitempty"`
 	Confirm         string `json:"confirm,omitempty"`
+	// ConfirmSubmit: the action is two-step (review, then commit with the
+	// returned confirm_token).
+	ConfirmSubmit bool `json:"confirm_submit,omitempty"`
 }
 
 // View renders a stage of a case for an actor. An empty stage means the
@@ -282,6 +312,9 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 						Help: in.Help, Placeholder: in.Placeholder, Required: e.required(in, env), Editable: canEdit,
 						Options: in.Options, Lookup: in.Lookup, Pattern: in.Pattern, MinLength: in.MinLength, MaxLength: in.MaxLength,
 						Min: in.Min, Max: in.Max, Accept: in.Accept, Span: in.Span}
+					if in.Kind == KindFile {
+						iv.MaxBytes, iv.MaxFiles = e.maxUpload(in), max(1, in.MaxFiles)
+					}
 					if in.Lookup != "" && e.Lookup != nil {
 						iv.Choices = e.Lookup(in.Lookup, c)
 					} else {
@@ -346,6 +379,9 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 				page.Groups = append(page.Groups, gv)
 			}
 		}
+		if actor.Link == nil {
+			e.pageBlocks(c, st, actor, env, page)
+		}
 		v.Page = page
 	}
 	for i := range st.Nodes {
@@ -376,7 +412,7 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 	if open {
 		for _, a := range e.Actions(c, actor) {
 			v.Actions = append(v.Actions, ActionView{Name: a.Name, Label: orDefault(a.Label, a.Name), Outcome: orDefault(a.Outcome, OutcomeAdvance),
-				CommentRequired: a.CommentRequired, Confirm: a.Confirm})
+				CommentRequired: a.CommentRequired, Confirm: a.Confirm, ConfirmSubmit: e.confirmRequired(c, stage, a)})
 		}
 	}
 	if actor.Link != nil {
@@ -539,4 +575,28 @@ func orDefault(v, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+// pageBlocks adds a page's info blocks and acknowledgements to its view.
+func (e *Engine) pageBlocks(c *Case, st *Stage, actor Actor, env map[string]any, page *PageView) {
+	for _, b := range st.Page.Info {
+		if len(b.Roles) > 0 && !actor.HasAnyRole(b.Roles) {
+			continue
+		}
+		if ok, err := e.cond(b.VisibleIf, env); err != nil || !ok {
+			continue
+		}
+		page.Info = append(page.Info, InfoView{Name: b.Name, Title: b.Title, Body: b.Body, Style: orDefault(b.Style, StyleInfo), Before: b.Before})
+	}
+	for _, a := range e.requiredAcks(c, st, actor) {
+		av := AckView{Name: a.Name, Title: a.Title, Text: a.Text, SHA256: AckHash(a.Text), Before: a.Before}
+		for i := len(c.Acknowledgements) - 1; i >= 0; i-- {
+			if r := c.Acknowledgements[i]; r.Stage == st.Name && r.Name == a.Name && r.SHA256 == av.SHA256 {
+				record := r
+				av.Accepted = &record
+				break
+			}
+		}
+		page.Acknowledgements = append(page.Acknowledgements, av)
+	}
 }

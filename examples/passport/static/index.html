@@ -243,7 +243,7 @@ document.getElementById('tokClear').addEventListener('click', () => { token = ''
 
 // ---------- state ----------
 const S = { view: null, vals: {}, reps: {}, dirty: new Set(), errs: {}, notice: null, flash: null, steps: {}, verdicts: {}, nodeIn: {}, comment: '', busy: false, history: null, key: '',
-  wf: null, linkUrl: '', note: { body: '', internal: false, replyTo: '' }, link: null };
+  wf: null, linkUrl: '', note: { body: '', internal: false, replyTo: '' }, link: null, acks: {} };
 
 function page(...kids) { app.replaceChildren(...kids.flat().filter(Boolean)); }
 function notice() {
@@ -531,11 +531,49 @@ async function mutate(method, path, body, prefix, okText, after) {
 }
 const stagePath = () => '/stages/' + encodeURIComponent(S.view.stage.name);
 
+// Info blocks shown above a group (before) or, with no group, at the top of the page.
+function infoEl(before) {
+  const pg = S.view.page || {};
+  return (pg.info || []).filter(b => (b.before || '') === before).map(b =>
+    h('div', { class: 'banner ' + ({ warning: 'warn', danger: 'error', success: 'ok' }[b.style] || 'info'), role: 'note' },
+      b.title ? h('strong', null, b.title + ' ') : null, b.body));
+}
+
+// Acknowledgements the submitter must accept; each is sent back with the hash of the wording shown.
+function acksEl() {
+  const list = (S.view.page || {}).acknowledgements || [];
+  return list.map(a => h('div', { class: 'field', 'data-path': 'acknowledgements.' + a.name },
+    h('label', null, h('input', { type: 'checkbox', checked: !!S.acks[a.name], onchange: e => { S.acks[a.name] = e.target.checked; } }),
+      ' ', a.title ? h('strong', null, a.title + ': ') : null, a.text),
+    a.accepted ? h('div', { class: 'note' }, 'Accepted ' + when(a.accepted.at) + ' by ' + a.accepted.by) : null,
+    errList(S.errs['acknowledgements.' + a.name])));
+}
+function ackBody() {
+  const out = {};
+  for (const a of (S.view.page || {}).acknowledgements || []) if (S.acks[a.name]) out[a.name] = a.sha256;
+  return out;
+}
+
+// A confirm_submit action: the server validates and returns a review with a token; committing resends the same body with it.
+async function confirmAndSubmit(a, body) {
+  const path = stagePath() + '/actions/' + encodeURIComponent(a.name);
+  let r;
+  S.busy = true; S.errs = {}; S.notice = { kind: 'warn', text: 'Checking…' }; renderCase();
+  try { r = await api('POST', '/cases/' + encodeURIComponent(S.view.case.id) + path, body, S.view.case.id); } catch (e) { failed(e, ''); }
+  S.busy = false; if (r) S.notice = null; renderCase();
+  if (!r || !r.confirmation_required) return;
+  const lines = (r.review.fields || []).map(f => f.label + ': ' + (f.value && typeof f.value === 'object' ? (f.value.name || JSON.stringify(f.value)) : f.value));
+  if (!window.confirm((a.confirm || 'Please review your submission.') + '\n\n' + lines.join('\n'))) return;
+  mutate('POST', path, { ...body, confirm_token: r.confirm_token }, '', a.label + ': done.');
+}
+
 function actionBar() {
   const v = S.view, acts = v.actions || [];
   if (!v.can_edit && !acts.length) return null;
   const needs = acts.filter(a => a.comment_required).map(a => a.label);
+  const submits = acts.some(a => ['advance', 'approve'].includes(a.outcome));
   return h('div', { class: 'bar' },
+    submits ? h('div', { style: 'flex:1 1 100%' }, acksEl()) : null,
     acts.length ? h('div', { class: 'field', style: 'flex:1 1 100%', 'data-path': 'comment' },
       h('label', { for: 'act_comment' }, 'Comment', h('span', { class: 'muted' }, needs.length ? ' (required to ' + needs.join(', ') + ')' : ' (optional)')),
       h('textarea', { id: 'act_comment', rows: 2, value: S.comment, 'aria-invalid': S.errs.comment ? 'true' : null, oninput: e => { S.comment = e.target.value; } }),
@@ -549,9 +587,11 @@ function actionBar() {
         if (a.comment_required && !comment) {
           S.errs = { comment: ['A comment is required to ' + a.label + '.'] }; renderCase(); document.getElementById('act_comment').focus(); return;
         }
-        if (a.confirm && !window.confirm(a.confirm)) return;
+        if (a.confirm && !a.confirm_submit && !window.confirm(a.confirm)) return;
         const body = { revision: v.case.revision }; if (comment) body.comment = comment;
         const data = collect(); if (data) body.data = data;
+        if (['advance', 'approve'].includes(a.outcome)) body.acknowledgements = ackBody();
+        if (a.confirm_submit) return confirmAndSubmit(a, body);
         mutate('POST', stagePath() + '/actions/' + encodeURIComponent(a.name), body, '', a.label + ': done.');
       } }, a.label))));
 }
@@ -789,9 +829,9 @@ function renderCase() {
   let body = null;
   if (pg && pg.groups && pg.groups.length) {
     const items = pg.groups.map(g => ({ title: g.title || g.name, forms: g.forms.map(f => f.name), flagged: g.forms.some(f => f.inputs.some(i => i.flag)),
-      collapsed: g.collapsed, el: groupEl(g) }));
+      collapsed: g.collapsed, el: h('div', null, infoEl(g.name), groupEl(g)) }));
     body = h('section', { class: 'card', 'aria-labelledby': 'pg-title' },
-      h('h2', { id: 'pg-title' }, pg.title || st.title || st.name), pg.description ? h('p', { class: 'muted' }, pg.description) : null,
+      h('h2', { id: 'pg-title' }, pg.title || st.title || st.name), pg.description ? h('p', { class: 'muted' }, pg.description) : null, infoEl(''),
       arrange(pg.layout, 'page', items, footer));
   } else if (footer) {
     body = h('section', { class: 'card' }, h('h2', null, st.title || st.name), st.description ? h('p', { class: 'muted' }, st.description) : null, footer);

@@ -316,6 +316,34 @@ func (c *Compiled) checkStage(st Stage) error {
 				}
 			}
 		}
+		blocks := map[string]bool{}
+		for _, b := range st.Page.Info {
+			if !validName(b.Name) || blocks[b.Name] {
+				return fmt.Errorf("info %q: missing or duplicate name", b.Name)
+			}
+			blocks[b.Name] = true
+			if strings.TrimSpace(b.Body) == "" && strings.TrimSpace(b.Title) == "" {
+				return fmt.Errorf("info %q needs a title or a body", b.Name)
+			}
+			if !oneOf(b.Style, "", StyleInfo, StyleWarning, StyleSuccess, StyleDanger) {
+				return fmt.Errorf("info %q: style %q is not info, warning, success or danger", b.Name, b.Style)
+			}
+			if b.Before != "" && !seen[b.Before] {
+				return fmt.Errorf("info %q: before names unknown group %q", b.Name, b.Before)
+			}
+		}
+		for _, a := range st.Page.Acknowledgements {
+			if !validName(a.Name) || blocks[a.Name] {
+				return fmt.Errorf("acknowledge %q: missing or duplicate name", a.Name)
+			}
+			blocks[a.Name] = true
+			if strings.TrimSpace(a.Text) == "" {
+				return fmt.Errorf("acknowledge %q needs text", a.Name)
+			}
+			if a.Before != "" && !seen[a.Before] {
+				return fmt.Errorf("acknowledge %q: before names unknown group %q", a.Name, a.Before)
+			}
+		}
 	}
 	nodes := map[string]bool{}
 	for _, n := range st.Nodes {
@@ -458,6 +486,15 @@ func checkInput(in Input) error {
 	if in.MinLength < 0 || in.MaxLength < 0 || (in.MaxLength > 0 && in.MinLength > in.MaxLength) {
 		return fmt.Errorf("min_length/max_length are inconsistent")
 	}
+	if in.MaxBytes < 0 || in.MaxFiles < 0 {
+		return fmt.Errorf("max_bytes and max_files must not be negative")
+	}
+	if (in.MaxBytes > 0 || in.MaxFiles > 0) && in.Kind != KindFile {
+		return fmt.Errorf("max_bytes and max_files apply to file inputs only")
+	}
+	if in.Kind == KindFile && (in.Sealed || in.Compute != "") {
+		return fmt.Errorf("a file input cannot be sealed or computed")
+	}
 	return nil
 }
 
@@ -501,6 +538,12 @@ func (c *Compiled) Expressions() map[string]string {
 		if st.Page != nil {
 			for _, g := range st.Page.Groups {
 				add(where+" group "+g.Name+" visible_if", g.VisibleIf)
+			}
+			for _, b := range st.Page.Info {
+				add(where+" info "+b.Name+" visible_if", b.VisibleIf)
+			}
+			for _, a := range st.Page.Acknowledgements {
+				add(where+" acknowledge "+a.Name+" visible_if", a.VisibleIf)
 			}
 		}
 		for _, n := range st.Nodes {

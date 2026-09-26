@@ -474,6 +474,13 @@ func (p *Platform) serve(c fh.Ctx, route compiledRoute) error {
 			}
 		}
 	}
+	if strings.HasPrefix(strings.ToLower(ct), "multipart/form-data") && len(body) > 0 {
+		converted, err := multipartToJSON(body, ct)
+		if err != nil {
+			return projectFailure(c, err)
+		}
+		body = converted
+	}
 	if route.requestPipeline != nil {
 		shaped, err := p.shapeRequest(route, body, env)
 		if err != nil {

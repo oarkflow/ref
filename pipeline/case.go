@@ -87,6 +87,8 @@ type Case struct {
 	// Snapshots are versions of the data kept for diff reviews: each
 	// submission to a diff-reviewed stage and each approval there.
 	Snapshots []Snapshot `json:"snapshots,omitempty"`
+	// Acknowledgements records every accepted page acknowledgement.
+	Acknowledgements []AckRecord `json:"acknowledgements,omitempty"`
 
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`

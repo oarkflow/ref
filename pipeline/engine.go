@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oarkflow/ref/signing"
@@ -46,6 +47,21 @@ type Engine struct {
 	// SealKey encrypts sealed inputs (AES-256-GCM). Required when the
 	// pipeline declares sealed inputs.
 	SealKey []byte
+
+	// ManagedFiles makes file inputs take uploads only (see Attach): a save
+	// may clear a file input or keep its files, never write a reference.
+	// Hosts that store uploads set it.
+	ManagedFiles bool
+	// MaxUploadBytes caps an uploaded file whose input sets no max_bytes
+	// (default DefaultMaxUploadBytes).
+	MaxUploadBytes int64
+	// ConfirmTTL is how long a confirm_submit review stays valid (default
+	// 30 minutes).
+	ConfirmTTL time.Duration
+
+	// confirmKey signs confirmation tokens when there is no SigningKey.
+	confirmOnce sync.Once
+	confirmKey  []byte
 }
 
 // Option is one choice of a lookup-backed input.
@@ -743,6 +759,10 @@ func (e *Engine) saveInto(c *Case, actor Actor, stage string, data map[string]an
 					if !ok {
 						continue
 					}
+					if in.Kind == KindFile && e.ManagedFiles && !isEmpty(value) {
+						errs = append(errs, FieldError{Path: fmt.Sprintf("%s.%d.%s", form, i, name), Rule: "upload", Message: "files cannot be uploaded into a repeatable form"})
+						continue
+					}
 					v, rule, msg := e.C.coerce(form, in, value)
 					if msg == "" {
 						rule, msg = e.checkLookup(c, in, v)
@@ -775,7 +795,15 @@ func (e *Engine) saveInto(c *Case, actor Actor, stage string, data map[string]an
 			if !ok {
 				continue
 			}
-			v, rule, msg := e.C.coerce(form, in, values[name])
+			var (
+				v         any
+				rule, msg string
+			)
+			if in.Kind == KindFile && e.ManagedFiles {
+				v, rule, msg = e.fileValue(c, form+"."+name, in, values[name])
+			} else {
+				v, rule, msg = e.C.coerce(form, in, values[name])
+			}
 			if msg == "" {
 				rule, msg = e.checkLookup(c, in, v)
 			}
@@ -932,6 +960,10 @@ type ActInput struct {
 	Data    map[string]any `json:"data,omitempty"`
 	// Flags adds inputs to return for correction beyond the review verdicts.
 	Flags map[string]string `json:"flags,omitempty"`
+	// Acknowledgements are the page acknowledgements the submitter accepts.
+	Acknowledgements Acks `json:"acknowledgements,omitempty"`
+	// ConfirmToken commits a confirm_submit action reviewed with Preview.
+	ConfirmToken string `json:"confirm_token,omitempty"`
 }
 
 // defaultSubmit is used when a stage declares no actions.
@@ -1000,33 +1032,21 @@ func findAction(st *Stage, action string) (ActionSpec, bool) {
 }
 
 // act applies an action to c in place. system actions (SLA breach handling)
-// skip the permission and claim checks.
+// skip the permission, claim, acknowledgement and confirmation checks.
 func (e *Engine) act(ctx context.Context, c *Case, actor Actor, stage string, spec ActionSpec, input ActInput, system bool) (*Case, error) {
-	st, ss, err := e.stageOpen(c, stage)
+	st, ss, changed, err := e.beginAct(c, actor, stage, spec, input, system)
 	if err != nil {
 		return nil, err
 	}
-	action := spec.Name
-	if !system {
-		if actor.Link != nil || !e.mayTakeAction(c, st, ss, spec, actor, e.Env(c, actor)) {
-			return nil, forbidden("you may not %s at stage %q", action, stage)
-		}
-		if spec.Outcome != OutcomeWithdraw || !isApplicant(c, actor) {
-			if err := e.guardClaim(c, st, ss, actor); err != nil {
-				return nil, err
-			}
-		}
-		if spec.CommentRequired && strings.TrimSpace(input.Comment) == "" {
-			return nil, &ValidationError{Message: "a comment is required", Fields: []FieldError{{Path: "comment", Rule: "required", Message: "a comment is required to " + titleOr(spec.Label, action)}}}
-		}
-	}
-	var changed []string
-	if len(input.Data) > 0 {
-		if changed, err = e.saveInto(c, actor, stage, input.Data); err != nil {
+	if !system && e.confirmRequired(c, stage, spec) {
+		// The token binds the revision that was reviewed (saving the data
+		// above does not move it) and a hash of the submission: a changed
+		// case or different data voids it.
+		if err := e.checkConfirmToken(c, actor, stage, spec.Name, input); err != nil {
 			return nil, err
 		}
-		e.refreshChecks(c, stage)
 	}
+	action := spec.Name
 	now := e.now()
 	entry := Entry{At: now, Actor: actor.ID, Stage: stage, Action: action, Comment: input.Comment, Changes: changed}
 	outcome := spec.Outcome
@@ -1035,28 +1055,14 @@ func (e *Engine) act(ctx context.Context, c *Case, actor Actor, stage string, sp
 	}
 	switch outcome {
 	case OutcomeAdvance, OutcomeApprove:
-		if missing := e.missingRequired(c, st, ss, actor); len(missing) > 0 {
-			return nil, &ValidationError{Message: "the stage is incomplete", Fields: missing}
-		}
-		if broken := e.brokenRules(c, st, ss, actor); len(broken) > 0 {
-			return nil, &ValidationError{Message: "the stage does not pass its checks", Fields: broken}
-		}
-		// A review gate is hard: no action, not even skip_nodes, passes it.
-		if why, closed := e.closedGate(st, ss); closed {
-			return nil, badState("stage %q is gated: %s", stage, why)
+		if err := e.checkAdvance(c, st, ss, spec, actor, input, system); err != nil {
+			return nil, err
 		}
 		if len(st.Reviews) > 0 {
 			entry.Revision = c.Revision
 		}
-		if !spec.SkipNodes {
-			for _, n := range st.Nodes {
-				if ns := ss.Nodes[n.Name]; ns != nil && ns.Status == NodeFailed && !n.Optional {
-					return nil, badState("node %q failed; return or reject the case instead", n.Name)
-				}
-			}
-			if !e.nodesSatisfied(st, ss) {
-				return nil, badState("stage %q still has open work: %s", stage, strings.Join(e.OpenNodes(c, stage), ", "))
-			}
+		if !system {
+			e.recordAcks(c, st, actor, now)
 		}
 		c.History = append(c.History, entry)
 		if err := e.completeStage(ctx, c, stage, actor, spec.Next, 0); err != nil {
@@ -1085,6 +1091,68 @@ func (e *Engine) act(ctx context.Context, c *Case, actor Actor, stage string, sp
 	c.UpdatedAt = now
 	e.finish(c, now)
 	return c, nil
+}
+
+// beginAct checks the actor may take the action and saves the data sent
+// with it into c.
+func (e *Engine) beginAct(c *Case, actor Actor, stage string, spec ActionSpec, input ActInput, system bool) (*Stage, *StageState, []string, error) {
+	st, ss, err := e.stageOpen(c, stage)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	action := spec.Name
+	if !system {
+		if actor.Link != nil || !e.mayTakeAction(c, st, ss, spec, actor, e.Env(c, actor)) {
+			return nil, nil, nil, forbidden("you may not %s at stage %q", action, stage)
+		}
+		if spec.Outcome != OutcomeWithdraw || !isApplicant(c, actor) {
+			if err := e.guardClaim(c, st, ss, actor); err != nil {
+				return nil, nil, nil, err
+			}
+		}
+		if spec.CommentRequired && strings.TrimSpace(input.Comment) == "" {
+			return nil, nil, nil, &ValidationError{Message: "a comment is required", Fields: []FieldError{{Path: "comment", Rule: "required", Message: "a comment is required to " + titleOr(spec.Label, action)}}}
+		}
+	}
+	var changed []string
+	if len(input.Data) > 0 {
+		if changed, err = e.saveInto(c, actor, stage, input.Data); err != nil {
+			return nil, nil, nil, err
+		}
+		e.refreshChecks(c, stage)
+	}
+	return st, ss, changed, nil
+}
+
+// checkAdvance verifies a stage may be completed: every required input is
+// answered, every acknowledgement accepted, its rules hold and its nodes are
+// satisfied.
+func (e *Engine) checkAdvance(c *Case, st *Stage, ss *StageState, spec ActionSpec, actor Actor, input ActInput, system bool) error {
+	missing := e.missingRequired(c, st, ss, actor)
+	if !system {
+		missing = append(missing, e.checkAcks(c, st, actor, input.Acknowledgements)...)
+	}
+	if len(missing) > 0 {
+		return &ValidationError{Message: "the stage is incomplete", Fields: missing}
+	}
+	if broken := e.brokenRules(c, st, ss, actor); len(broken) > 0 {
+		return &ValidationError{Message: "the stage does not pass its checks", Fields: broken}
+	}
+	// A review gate is hard: no action, not even skip_nodes, passes it.
+	if why, closed := e.closedGate(st, ss); closed {
+		return badState("stage %q is gated: %s", st.Name, why)
+	}
+	if !spec.SkipNodes {
+		for _, n := range st.Nodes {
+			if ns := ss.Nodes[n.Name]; ns != nil && ns.Status == NodeFailed && !n.Optional {
+				return badState("node %q failed; return or reject the case instead", n.Name)
+			}
+		}
+		if !e.nodesSatisfied(st, ss) {
+			return badState("stage %q still has open work: %s", st.Name, strings.Join(e.OpenNodes(c, st.Name), ", "))
+		}
+	}
+	return nil
 }
 
 // returnTo sends the case back to target (default: the first stage) for
