@@ -40,7 +40,7 @@ flag "new_checkout" {
 flag "big_orders" {
   default false
   rule "large" {
-    condition "input.amount != nil and input.amount > 1000"
+    condition "input.amount > 1000"
     value true
   }
 }

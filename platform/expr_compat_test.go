@@ -59,3 +59,22 @@ func TestRewriteExpressionOnlyTouchesOperators(t *testing.T) {
 		}
 	}
 }
+
+// TestOrderingWithMissingValues pins bcl v0.0.33: an ordering comparison
+// with a missing or non-comparable operand is false, so a guard such as
+// `amount > limit` never passes because amount is absent.
+func TestOrderingWithMissingValues(t *testing.T) {
+	for src, want := range map[string]bool{
+		"x > 1000": false, "x >= 1000": false, "x < 1000": false, "x <= 1000": false,
+		"nil > 1000": false, "'abc' > 1000": false, "2 > 1": true, "'b' > 'a'": true,
+	} {
+		expr, err := CompileExpr(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := expr.Bool(Env{})
+		if err != nil || got != want {
+			t.Errorf("%s = %v (%v), want %v", src, got, err, want)
+		}
+	}
+}
