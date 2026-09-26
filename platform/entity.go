@@ -86,6 +86,9 @@ type EntitySpec struct {
 	MaxLimit    int    `bcl:"max_limit"`
 	Export      bool   `bcl:"export"`
 	Aggregate   bool   `bcl:"aggregate"`
+	// Analytics enables GET {path}/-/analytics: several metrics, up to two
+	// group-by columns and a day/week/month time bucket in one call.
+	Analytics bool `bcl:"analytics"`
 	// Bulk enables POST {path}/-/bulk: many creates, updates and deletes in
 	// one request, all-or-nothing by default; BulkMax caps its items
 	// (default 500).
@@ -127,7 +130,7 @@ type EntityColumn struct {
 }
 
 // EntityAccess allows an operation: list, get, create, update, delete,
-// export, aggregate or "*" (the default for ops without their own blocks —
+// export, aggregate, analytics or "*" (the default for ops without their own blocks —
 // an op's own blocks replace it). Roles restrict it to role holders; Condition is
 // checked against the record (and principal) for get/update/delete and
 // against the submitted record for create.
@@ -158,7 +161,7 @@ type EntityHook struct {
 // entityOps are the operations allow blocks govern. A bulk request is not
 // one of them: each of its items is checked as the create, update or delete
 // it is.
-var entityOps = []string{"list", "get", "create", "update", "delete", "export", "aggregate"}
+var entityOps = []string{"list", "get", "create", "update", "delete", "export", "aggregate", "analytics"}
 
 // entityPlan is a compiled entity.
 type entityPlan struct {
@@ -457,6 +460,9 @@ func expandEntities(doc Document) (Document, error) {
 		if spec.Aggregate {
 			ops = append(ops, opRoute{"aggregate", "GET", base + "/-/aggregate", 200, false})
 		}
+		if spec.Analytics {
+			ops = append(ops, opRoute{"analytics", "GET", base + "/-/analytics", 200, false})
+		}
 		if spec.Bulk {
 			ops = append(ops, opRoute{"bulk", "POST", base + "/-/bulk", 200, true})
 		}
@@ -467,7 +473,7 @@ func expandEntities(doc Document) (Document, error) {
 				intents[intent] = true
 				node := NodeSpec{Name: "result", Uses: "entity.op", Resource: spec.Database, Provides: []string{"result"},
 					Config: map[string]any{"entity": spec.Name, "op": o.op}}
-				if o.op != "list" && o.op != "get" && o.op != "export" && o.op != "aggregate" {
+				if !slices.Contains([]string{"list", "get", "export", "aggregate", "analytics"}, o.op) {
 					node.Kind = "effect"
 				}
 				if o.body {
@@ -496,7 +502,7 @@ func expandEntities(doc Document) (Document, error) {
 func registerEntityActions(r *Registry) {
 	mustAction(r, "entity.op", ActionFactoryFunc(buildEntityOp), ActionInfo{
 		Family:  "data",
-		Summary: "Run an operation of a declared entity: list, get, create, update, delete, export, aggregate or bulk",
+		Summary: "Run an operation of a declared entity: list, get, create, update, delete, export, aggregate, analytics or bulk",
 		Config: []ConfigField{
 			{Name: "entity", Type: "string", Required: true},
 			{Name: "op", Type: "string", Required: true},
@@ -584,6 +590,8 @@ func (rt *entityRuntime) run(ctx *ActionContext) (ActionResult, error) {
 		out, err = rt.export(ctx)
 	case "aggregate":
 		out, err = rt.aggregate(ctx)
+	case "analytics":
+		out, err = rt.analytics(ctx)
 	case "bulk":
 		out, err = rt.bulk(ctx)
 	}

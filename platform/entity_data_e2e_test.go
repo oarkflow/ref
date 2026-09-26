@@ -65,6 +65,42 @@ entity "place" {
   }
 }
 
+entity "sale" {
+  database "db"
+  auth "jwt"
+  tenant_scoped true
+  analytics true
+  bulk true
+  column "region" {
+    kind text
+  }
+  column "channel" {
+    kind text
+  }
+  column "qty" {
+    kind integer
+  }
+  column "amount" {
+    kind decimal
+  }
+  column "price" {
+    kind number
+  }
+  column "sold_on" {
+    kind date
+  }
+  column "margin" {
+    kind number
+    hidden true
+  }
+  allow "*" {
+    roles ["staff"]
+  }
+  allow "analytics" {
+    roles ["staff", "analyst"]
+  }
+}
+
 intent "log.hook" {
   response "n"
   node "n" {
@@ -234,6 +270,81 @@ func runEntityData(t *testing.T, driver, dsn string) {
 	}
 
 	entityBulk(t, h, db, search)
+	entityAnalytics(t, h)
+}
+
+func entityAnalytics(t *testing.T, h *appHarness) {
+	staff := h.token("jwt", "u1", []string{"staff"}, map[string]any{"tenant_id": "acme"})
+	analyst := h.token("jwt", "a1", []string{"analyst"}, map[string]any{"tenant_id": "acme"})
+	other := h.token("jwt", "u9", []string{"staff"}, map[string]any{"tenant_id": "globex"})
+	status, body := h.call("POST", "/api/sales/-/bulk", staff, map[string]any{"create": []any{
+		map[string]any{"region": "north", "channel": "web", "qty": 1, "amount": "0.10", "price": 1.5, "sold_on": "2026-09-21"},
+		map[string]any{"region": "north", "channel": "shop", "qty": 2, "amount": "0.20", "price": 2.5, "sold_on": "2026-09-23"},
+		map[string]any{"region": "south", "channel": "web", "qty": 3, "amount": "0.05", "price": 3.5, "sold_on": "2026-09-27"},
+		map[string]any{"region": "south", "channel": "web", "qty": 4, "amount": "1.00", "price": 4.5, "sold_on": "2026-09-28"},
+		map[string]any{"region": "north", "channel": "web", "qty": 5, "price": 5.5, "sold_on": "2026-10-02"},
+	}})
+	if status != 200 || dig(body, "created") != float64(5) {
+		t.Fatalf("seed sales: %d %v", status, body)
+	}
+	get := func(tok, query string) map[string]any {
+		t.Helper()
+		status, body := h.call("GET", "/api/sales/-/analytics?"+query, tok, nil)
+		if status != 200 {
+			t.Fatalf("analytics %s: %d %v", query, status, body)
+		}
+		return body.(map[string]any)
+	}
+	summary := func(body map[string]any) string {
+		var parts []string
+		for _, r := range body["rows"].([]any) {
+			row := r.(map[string]any)
+			parts = append(parts, fmt.Sprintf("%v %v %v", row["bucket"], row["group"], row["values"]))
+		}
+		return strings.Join(parts, " | ")
+	}
+
+	// Several metrics at once; decimals stay exact.
+	body = get(analyst, "metrics=count,sum:amount,avg:amount,count:amount,min:qty,max:qty,sum:qty,avg:qty,avg:price,max:price")
+	want := map[string]any{"count": float64(5), "sum_amount": "1.35", "avg_amount": "0.34", "count_amount": float64(4),
+		"min_qty": float64(1), "max_qty": float64(5), "sum_qty": float64(15), "avg_qty": float64(3), "avg_price": 3.5, "max_price": 5.5}
+	values, _ := dig(body, "rows", 0, "values").(map[string]any)
+	for k, v := range want {
+		if values[k] != v {
+			t.Errorf("%s = %v (%T), want %v", k, values[k], values[k], v)
+		}
+	}
+
+	for query, want := range map[string]string{
+		"group_by=region&metrics=count,sum:amount":                    "<nil> map[region:north] map[count:3 sum_amount:0.30] | <nil> map[region:south] map[count:2 sum_amount:1.05]",
+		"group_by=region,channel":                                     "<nil> map[channel:shop region:north] map[count:1] | <nil> map[channel:web region:north] map[count:2] | <nil> map[channel:web region:south] map[count:2]",
+		"bucket=week&bucket_field=sold_on&metrics=count,sum:qty":      "2026-09-21 <nil> map[count:3 sum_qty:6] | 2026-09-28 <nil> map[count:2 sum_qty:9]",
+		"bucket=month&bucket_field=sold_on&group_by=region":           "2026-09 map[region:north] map[count:2] | 2026-09 map[region:south] map[count:2] | 2026-10 map[region:north] map[count:1]",
+		"bucket=day&bucket_field=sold_on&region=north":                "2026-09-21 <nil> map[count:1] | 2026-09-23 <nil> map[count:1] | 2026-10-02 <nil> map[count:1]",
+		"bucket=week&bucket_field=sold_on&group_by=region&qty__gte=3": "2026-09-21 map[region:south] map[count:1] | 2026-09-28 map[region:north] map[count:1] | 2026-09-28 map[region:south] map[count:1]",
+	} {
+		if got := summary(get(staff, query)); got != want {
+			t.Errorf("%s:\n got %s\nwant %s", query, got, want)
+		}
+	}
+	if body := get(staff, "bucket=day"); len(body["rows"].([]any)) != 1 || dig(body, "rows", 0, "values", "count") != float64(5) {
+		t.Errorf("bucket by created_at: %v", body)
+	}
+	if body := get(other, ""); dig(body, "rows", 0, "values", "count") != float64(0) {
+		t.Errorf("cross-tenant analytics: %v", body)
+	}
+	for _, query := range []string{
+		"metrics=sum:region", "metrics=median:qty", "metrics=sum", "group_by=region,channel,qty", "group_by=margin",
+		"bucket=year", "bucket=day&bucket_field=region", "bucket_field=sold_on", "metrics=sum:margin", "colour=red",
+	} {
+		if status, body := h.call("GET", "/api/sales/-/analytics?"+query, staff, nil); status != 422 {
+			t.Errorf("bad analytics %s: %d %v", query, status, body)
+		}
+	}
+	viewer := h.token("jwt", "v1", []string{"viewer"}, map[string]any{"tenant_id": "acme"})
+	if status, _ := h.call("GET", "/api/sales/-/analytics", viewer, nil); status != 403 {
+		t.Errorf("analytics without the role: %d", status)
+	}
 }
 
 // entityBulk runs the bulk journey against the places runEntityData left:
@@ -370,6 +481,24 @@ func entityTokenCount(t *testing.T, db *Database) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+func TestAnalyticsHelpers(t *testing.T) {
+	for day, want := range map[string]string{"2026-09-21": "2026-09-21", "2026-09-27": "2026-09-21", "2026-10-01": "2026-09-28", "2026-01-01": "2025-12-29"} {
+		if got := isoWeekStart(day); got != want {
+			t.Errorf("isoWeekStart(%s) = %v, want %s", day, got, want)
+		}
+	}
+	for _, c := range [][3]int64{{135, 4, 34}, {134, 4, 34}, {-135, 4, -34}, {10, 4, 3}, {9, 4, 2}, {0, 3, 0}} {
+		if got := roundDiv(c[0], c[1]); got != c[2] {
+			t.Errorf("roundDiv(%d, %d) = %d, want %d", c[0], c[1], got, c[2])
+		}
+	}
+	for v, want := range map[any]int64{"30": 30, "30.000": 30, int64(7): 7, float64(4): 4} {
+		if got, ok := sqlInt(v); !ok || got != want {
+			t.Errorf("sqlInt(%v) = %d, %v", v, got, ok)
+		}
+	}
 }
 
 func TestSearchTokens(t *testing.T) {

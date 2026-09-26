@@ -7,7 +7,7 @@ An `entity` block declares a table and gets a complete, validated REST API. Ther
 - per-operation access rules with row conditions;
 - tenant, owner and organisational scoping;
 - bulk creates, updates and deletes;
-- CSV export and aggregates;
+- CSV export, aggregates and analytics;
 - post-commit hooks.
 
 When the document loads, each entity is expanded into ordinary intents (`entity.<name>.<op>`) and routes, and its table is added to the database's migrations. It therefore composes with everything else:
@@ -28,6 +28,7 @@ entity "project" {
   default_sort "name"
   export true                   # GET /api/projects/-/export  (CSV)
   aggregate true                # GET /api/projects/-/aggregate
+  analytics true                # GET /api/projects/-/analytics
   bulk true                     # POST /api/projects/-/bulk
 
   column "name"   { kind text  required true  min_length 2  max_length 100 }
@@ -75,6 +76,7 @@ Writes are validated as a whole. Every problem is reported at once as a `422` wi
 | `DELETE {path}/:id` | `delete`: soft or hard |
 | `GET {path}/-/export` | CSV: up to 10,000 rows, same filters; spreadsheet formula injection neutralised |
 | `GET {path}/-/aggregate?group_by=status&agg=sum&field=budget` | `count`, `sum`, `avg`, `min` or `max`, same filters |
+| `GET {path}/-/analytics?metrics=count,sum:budget&group_by=status&bucket=month` | several metrics, up to 2 group-by columns and a time bucket, same filters (see [Analytics](#analytics)) |
 | `POST {path}/-/bulk` | many creates, updates and deletes in one request (see [Bulk operations](#bulk-operations)) |
 
 List and export take these query parameters:
@@ -82,6 +84,33 @@ List and export take these query parameters:
 - **Search:** `q=` searches the `search` columns: a case-insensitive substring match, or a word-prefix match with `search_index true` (see [Search index](#search-index)).
 - **Sorting:** `sort=-budget,name`.
 - **Paging:** `limit`, `offset`.
+
+## Analytics
+
+`analytics true` adds `GET {path}/-/analytics`, a richer aggregate. It takes these parameters, plus the same filters, `q=` and scoping as list:
+
+| Parameter | Meaning |
+|---|---|
+| `metrics` | A comma-separated list; the default is `count`. Each item is `count` (rows), or `count:<field>` (non-null values), `sum:<field>`, `avg:<field>`, `min:<field>` or `max:<field>` over a numeric column. At most 10. |
+| `group_by` | One or two columns, comma-separated. They may be any returned, non-JSON column, or `created_by`. |
+| `bucket` | `day`, `week` (ISO weeks, labelled by their Monday) or `month`. |
+| `bucket_field` | The `date` or `datetime` column to bucket, or `created_at` (the default) or `updated_at`. Buckets are UTC. |
+
+```json
+GET /api/sales/-/analytics?metrics=count,sum:amount,avg:amount&group_by=region&bucket=month&bucket_field=sold_on
+
+{"metrics": ["count", "sum:amount", "avg:amount"], "group_by": ["region"], "bucket": "month", "bucket_field": "sold_on", "groups": 2,
+ "rows": [{"bucket": "2026-09", "group": {"region": "north"}, "values": {"count": 2, "sum_amount": "0.30", "avg_amount": "0.15"}},
+          {"bucket": "2026-09", "group": {"region": "south"}, "values": {"count": 2, "sum_amount": "1.05", "avg_amount": "0.53"}}]}
+```
+
+- A metric's key in `values` is `fn_field` (or `count`). Values keep the column's kind:
+  - `decimal` sums, minimums, maximums and averages are exact strings, and an average is rounded half away from zero to the column's scale;
+  - `integer` sums, minimums and maximums are integers;
+  - averages of `integer` and `number` columns are numbers.
+- A metric over no values is `null`.
+- The database does the grouping, and no rows are loaded. Every metric derives from `SUM`, `COUNT`, `MIN` and `MAX`, and days and months are `SUBSTR` of the stored ISO text, so the same SQL runs on SQLite, PostgreSQL and MySQL. Weeks are rolled up from days in Go.
+- A query that would produce more than 1,000 groups is refused with a `422` rather than truncated. Filter it, group by less, or use a coarser bucket.
 
 ## Bulk operations
 
@@ -151,7 +180,7 @@ It re-derives the tokens of every live record, a page per transaction, drops tok
 
 ## Access and scoping
 
-**`allow` blocks** govern each operation: `list`, `get`, `create`, `update`, `delete`, `export`, `aggregate`, or `*` as the default. A bulk request has no block of its own: each item is checked as the create, update or delete it is.
+**`allow` blocks** govern each operation: `list`, `get`, `create`, `update`, `delete`, `export`, `aggregate`, `analytics`, or `*` as the default. A bulk request has no block of its own: each item is checked as the create, update or delete it is.
 - An op's own blocks **replace** the `*` blocks.
 - With no `allow` blocks at all, every operation is open to whoever passes the route's authentication.
 - With some blocks, an op without a matching block is denied.
