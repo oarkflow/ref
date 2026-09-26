@@ -3,6 +3,7 @@ package platform
 import (
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/hmac"
 	"crypto/rand"
@@ -20,6 +21,8 @@ import (
 	"math/big"
 	"strings"
 	"time"
+
+	"github.com/oarkflow/ref/signing"
 )
 
 // JWT signing and verification.
@@ -41,8 +44,8 @@ import (
 //   - Signature comparison is constant-time for HMAC.
 //
 // Only the algorithm families a deployment actually needs are supported: HMAC
-// for symmetric secrets, RSA-PKCS1v15 and ECDSA for asymmetric keys and OIDC
-// providers. "none" is not implemented at all, which is the only correct amount
+// for symmetric secrets, RSA (PKCS1v15 and PSS), ECDSA and Ed25519 (EdDSA) for
+// asymmetric keys and OIDC providers. "none" is not implemented at all, which is the only correct amount
 // of support for it.
 
 var base64Raw = base64.RawURLEncoding
@@ -61,6 +64,10 @@ const (
 	ES256 JWTAlgorithm = "ES256"
 	ES384 JWTAlgorithm = "ES384"
 	ES512 JWTAlgorithm = "ES512"
+	PS256 JWTAlgorithm = "PS256"
+	PS384 JWTAlgorithm = "PS384"
+	PS512 JWTAlgorithm = "PS512"
+	EdDSA JWTAlgorithm = "EdDSA"
 )
 
 // ErrTokenInvalid is the single error every verification failure maps to.
@@ -80,12 +87,36 @@ type JWTKey struct {
 	rsaKey    *rsa.PrivateKey
 	ecPublic  *ecdsa.PublicKey
 	ecKey     *ecdsa.PrivateKey
+	edPublic  ed25519.PublicKey
+	edKey     ed25519.PrivateKey
 }
 
 // CanSign reports whether this key holds signing material, as opposed to
 // verification material only.
 func (k *JWTKey) CanSign() bool {
-	return len(k.secret) > 0 || k.rsaKey != nil || k.ecKey != nil
+	return len(k.secret) > 0 || k.rsaKey != nil || k.ecKey != nil || k.edKey != nil
+}
+
+// JWTKeyFromSigning adapts a crypto.signer key (Ed25519 → EdDSA, RSA →
+// RS256 or PS256), keeping its key id so tokens carry a kid and a verifier
+// holding several keys picks the right one.
+func JWTKeyFromSigning(k *signing.Key) (*JWTKey, error) {
+	key := &JWTKey{ID: k.ID, Algorithm: JWTAlgorithm(k.Algorithm)}
+	switch public := k.Public().(type) {
+	case ed25519.PublicKey:
+		key.edPublic = public
+		if private, ok := k.Private().(ed25519.PrivateKey); ok {
+			key.edKey = private
+		}
+	case *rsa.PublicKey:
+		key.rsaPublic = public
+		if private, ok := k.Private().(*rsa.PrivateKey); ok {
+			key.rsaKey = private
+		}
+	default:
+		return nil, fmt.Errorf("unsupported signing key type %T", public)
+	}
+	return key, nil
 }
 
 // NewHMACKey builds a symmetric key. The minimum length is enforced here rather
@@ -122,7 +153,7 @@ func ParsePublicKeyPEM(algorithm JWTAlgorithm, data []byte) (*JWTKey, error) {
 	key := &JWTKey{Algorithm: algorithm}
 	switch typed := parsed.(type) {
 	case *rsa.PublicKey:
-		if !strings.HasPrefix(string(algorithm), "RS") {
+		if !isRSAAlgorithm(algorithm) {
 			return nil, fmt.Errorf("%s cannot verify with an RSA key", algorithm)
 		}
 		key.rsaPublic = typed
@@ -131,6 +162,11 @@ func ParsePublicKeyPEM(algorithm JWTAlgorithm, data []byte) (*JWTKey, error) {
 			return nil, fmt.Errorf("%s cannot verify with an ECDSA key", algorithm)
 		}
 		key.ecPublic = typed
+	case ed25519.PublicKey:
+		if algorithm != EdDSA {
+			return nil, fmt.Errorf("%s cannot verify with an Ed25519 key", algorithm)
+		}
+		key.edPublic = typed
 	default:
 		return nil, fmt.Errorf("unsupported public key type %T", parsed)
 	}
@@ -152,6 +188,9 @@ func ParsePrivateKeyPEM(algorithm JWTAlgorithm, data []byte) (*JWTKey, error) {
 		case *ecdsa.PrivateKey:
 			key.ecKey, key.ecPublic = typed, &typed.PublicKey
 			return key, nil
+		case ed25519.PrivateKey:
+			key.edKey, key.edPublic = typed, typed.Public().(ed25519.PublicKey)
+			return key, nil
 		}
 	}
 	if parsed, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
@@ -163,6 +202,10 @@ func ParsePrivateKeyPEM(algorithm JWTAlgorithm, data []byte) (*JWTKey, error) {
 		return key, nil
 	}
 	return nil, errors.New("the configured private key is not a supported PKCS#8, PKCS#1 or SEC1 key")
+}
+
+func isRSAAlgorithm(algorithm JWTAlgorithm) bool {
+	return strings.HasPrefix(string(algorithm), "RS") || strings.HasPrefix(string(algorithm), "PS")
 }
 
 // jwkKey is the subset of a JSON Web Key this package understands.
@@ -253,6 +296,15 @@ func jwkToKey(jwk jwkKey) (*JWTKey, error) {
 				Y:     new(big.Int).SetBytes(y),
 			},
 		}, nil
+	case "OKP":
+		if jwk.Crv != "Ed25519" {
+			return nil, nil
+		}
+		x, err := base64Raw.DecodeString(jwk.X)
+		if err != nil || len(x) != ed25519.PublicKeySize {
+			return nil, errors.New("malformed Ed25519 key")
+		}
+		return &JWTKey{Algorithm: EdDSA, edPublic: ed25519.PublicKey(x)}, nil
 	default:
 		return nil, nil
 	}
@@ -505,6 +557,17 @@ func signJWTInput(key *JWTKey, input []byte) ([]byte, error) {
 		}
 		digest, cryptoHash := jwtDigest(key.Algorithm, input)
 		return rsa.SignPKCS1v15(rand.Reader, key.rsaKey, cryptoHash, digest)
+	case PS256, PS384, PS512:
+		if key.rsaKey == nil {
+			return nil, errors.New("signing requires an RSA private key")
+		}
+		digest, cryptoHash := jwtDigest(key.Algorithm, input)
+		return rsa.SignPSS(rand.Reader, key.rsaKey, cryptoHash, digest, &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash})
+	case EdDSA:
+		if key.edKey == nil {
+			return nil, errors.New("signing requires an Ed25519 private key")
+		}
+		return ed25519.Sign(key.edKey, input), nil
 	case ES256, ES384, ES512:
 		if key.ecKey == nil {
 			return nil, errors.New("signing requires an ECDSA private key")
@@ -541,6 +604,15 @@ func verifyJWTSignature(key *JWTKey, input, signature []byte) bool {
 		}
 		digest, cryptoHash := jwtDigest(key.Algorithm, input)
 		return rsa.VerifyPKCS1v15(key.rsaPublic, cryptoHash, digest, signature) == nil
+	case PS256, PS384, PS512:
+		if key.rsaPublic == nil {
+			return false
+		}
+		digest, cryptoHash := jwtDigest(key.Algorithm, input)
+		return rsa.VerifyPSS(key.rsaPublic, cryptoHash, digest, signature, &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash}) == nil
+	case EdDSA:
+		return len(key.edPublic) == ed25519.PublicKeySize && len(signature) == ed25519.SignatureSize &&
+			ed25519.Verify(key.edPublic, input, signature)
 	case ES256, ES384, ES512:
 		if key.ecPublic == nil {
 			return false
@@ -560,9 +632,9 @@ func verifyJWTSignature(key *JWTKey, input, signature []byte) bool {
 
 func jwtHash(algorithm JWTAlgorithm) func() hash.Hash {
 	switch algorithm {
-	case HS384, RS384, ES384:
+	case HS384, RS384, ES384, PS384:
 		return sha512.New384
-	case HS512, RS512, ES512:
+	case HS512, RS512, ES512, PS512:
 		return sha512.New
 	default:
 		return sha256.New
@@ -571,10 +643,10 @@ func jwtHash(algorithm JWTAlgorithm) func() hash.Hash {
 
 func jwtDigest(algorithm JWTAlgorithm, input []byte) ([]byte, crypto.Hash) {
 	switch algorithm {
-	case RS384, ES384:
+	case RS384, ES384, PS384:
 		sum := sha512.Sum384(input)
 		return sum[:], crypto.SHA384
-	case RS512, ES512:
+	case RS512, ES512, PS512:
 		sum := sha512.Sum512(input)
 		return sum[:], crypto.SHA512
 	default:
@@ -600,7 +672,9 @@ func ecCurve(name string) (elliptic.Curve, JWTAlgorithm, error) {
 func parseJWTAlgorithm(name string) (JWTAlgorithm, error) {
 	algorithm := JWTAlgorithm(strings.ToUpper(strings.TrimSpace(name)))
 	switch algorithm {
-	case HS256, HS384, HS512, RS256, RS384, RS512, ES256, ES384, ES512:
+	case "EDDSA", "ED25519":
+		return EdDSA, nil
+	case HS256, HS384, HS512, RS256, RS384, RS512, ES256, ES384, ES512, PS256, PS384, PS512:
 		return algorithm, nil
 	case "":
 		return HS256, nil
