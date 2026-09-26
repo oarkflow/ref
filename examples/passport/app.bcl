@@ -849,6 +849,19 @@ intent "passport.bulk" {
   }
 }
 
+# The issued certificate as a printable PDF with its verification code.
+intent "passport.certificate_pdf" {
+  response "pdf"
+  node "pdf" {
+    uses "pipeline.certificate_pdf"
+    resource "cases"
+    provides [pdf]
+    config {
+      verify_url "https://passport.example.gov/verify"
+    }
+  }
+}
+
 ####################################################################
 # Routes: the public page and certificate check are anonymous-friendly;
 # staff routes need a token.
@@ -923,6 +936,13 @@ route "verify" {
   allow_anonymous true
 }
 
+route "certificate_pdf" {
+  method GET
+  path "/api/passport/cases/:id/certificates/:number/pdf"
+  intent "passport.certificate_pdf"
+  auth "jwt"
+  allow_anonymous true
+}
 route "work" {
   method POST
   path "/api/passport/cases/:id/stages/:stage/work/:op"

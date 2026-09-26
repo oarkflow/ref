@@ -52,6 +52,9 @@ func actionEnv(ctx *ActionContext) Env {
 	if sess, ok := sessionFromContext(ctx.Context); ok {
 		env["session"] = sessionMap(sess)
 	}
+	if flags := flagsFor(ctx, env); flags != nil {
+		env["flags"] = flags
+	}
 	return env
 }
 

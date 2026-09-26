@@ -65,6 +65,10 @@ entity "project" {
   column "priority" {
     kind integer
   }
+  column "cost" {
+    kind decimal
+    min 0
+  }
   column "public" {
     kind boolean
   }
@@ -278,6 +282,28 @@ func TestEntitiesEndToEnd(t *testing.T) {
 		t.Fatalf("export: %d %s\n%s", resp.StatusCode, resp.Header.Get("Content-Type"), csvBody)
 	}
 
+	// Decimals are exact: 0.10 + 0.20 sums to exactly 0.30.
+	for _, c := range []struct{ name, code, cost string }{{"Dec one", "DA-1", "0.10"}, {"Dec two", "DA-2", "0.2"}} {
+		status, body := h.call("POST", "/api/projects", staff2, map[string]any{"name": c.name, "code": c.code, "cost": c.cost, "status": "draft"})
+		if status != 201 {
+			t.Fatalf("decimal create: %d %v", status, body)
+		}
+	}
+	_, body = h.call("GET", "/api/projects?code__in=DA-1,DA-2&sort=code", staff, nil)
+	if dig(body, "items", 0, "cost") != "0.10" || dig(body, "items", 1, "cost") != "0.20" {
+		t.Fatalf("decimal values: %v", body)
+	}
+	_, body = h.call("GET", "/api/projects/-/aggregate?agg=sum&field=cost&code__in=DA-1,DA-2", staff, nil)
+	if dig(body, "rows", 0, "value") != "0.30" {
+		t.Fatalf("decimal sum: %v", body)
+	}
+	if _, body := h.call("GET", "/api/projects?cost__gte=0.15", staff, nil); dig(body, "total") != float64(1) {
+		t.Fatalf("decimal filter: %v", body)
+	}
+	if status, _ := h.call("POST", "/api/projects", staff, map[string]any{"name": "Too precise", "cost": "1.234"}); status != 422 {
+		t.Fatalf("decimal precision: %d", status)
+	}
+
 	// Delete: admins only, soft.
 	if status, _ := h.call("DELETE", "/api/projects/"+id, staff, nil); status != 403 {
 		t.Fatalf("staff delete: %d", status)
@@ -288,7 +314,7 @@ func TestEntitiesEndToEnd(t *testing.T) {
 	if status, _ := h.call("GET", "/api/projects/"+id, staff, nil); status != 404 {
 		t.Fatalf("get after soft delete: %d", status)
 	}
-	if _, body := h.call("GET", "/api/projects", staff, nil); dig(body, "total") != float64(2) {
+	if _, body := h.call("GET", "/api/projects", staff, nil); dig(body, "total") != float64(4) { // 3 + 2 decimal rows - 1 deleted
 		t.Fatalf("list after delete: %v", body)
 	}
 
@@ -305,7 +331,33 @@ func TestEntitiesEndToEnd(t *testing.T) {
 	// Hooks ran after each committed create and delete.
 	_, body = h.call("GET", "/api/log", staff, nil)
 	logs := fmt.Sprint(body)
-	if strings.Count(logs, "created") != 4 || !strings.Contains(logs, "deleted") {
+	if strings.Count(logs, "created") != 6 || !strings.Contains(logs, "deleted") {
 		t.Fatalf("hooks: %v", body)
+	}
+}
+
+func TestDecimalParseFormat(t *testing.T) {
+	for _, tc := range []struct {
+		in    any
+		scale int
+		want  int64
+		ok    bool
+	}{
+		{"1250.5", 2, 125050, true}, {1250.5, 2, 125050, true}, {"-3", 2, -300, true}, {int64(7), 0, 7, true},
+		{".5", 2, 50, true}, {"1.234", 2, 0, false}, {"12a", 2, 0, false}, {"1e5", 2, 0, false},
+		{"99999999999999999999", 2, 0, false}, {true, 2, 0, false},
+	} {
+		got, err := parseDecimal(tc.in, tc.scale)
+		if (err == nil) != tc.ok || (tc.ok && got != tc.want) {
+			t.Errorf("parseDecimal(%v, %d) = %d, %v", tc.in, tc.scale, got, err)
+		}
+	}
+	for minor, want := range map[int64]string{125050: "1250.50", 5: "0.05", -300: "-3.00", 0: "0.00"} {
+		if got := formatDecimal(minor, 2); got != want {
+			t.Errorf("formatDecimal(%d) = %s, want %s", minor, got, want)
+		}
+	}
+	if formatDecimal(7, 0) != "7" {
+		t.Error("scale 0")
 	}
 }

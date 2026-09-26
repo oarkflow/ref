@@ -42,6 +42,11 @@ type Document struct {
 	// validated REST API with filters, search, export, aggregates, access
 	// rules and hooks (see entity.go).
 	Entities []EntitySpec `bcl:"entity,block"`
+
+	// Flags are feature flags (see flags.go); FlagStore names a cache
+	// resource that holds run-time overrides shared by every replica.
+	Flags     []FlagSpec `bcl:"flag,block"`
+	FlagStore string     `bcl:"flag_store"`
 }
 
 // SecretSpec resolves one named secret at load time, from the environment or a

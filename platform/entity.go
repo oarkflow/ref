@@ -93,9 +93,12 @@ type EntitySpec struct {
 type EntityColumn struct {
 	Name  string `bcl:",id"`
 	Label string `bcl:"label"`
-	// Kind: text (default), integer, number, boolean, date, datetime,
-	// email, json.
+	// Kind: text (default), integer, number, decimal, boolean, date,
+	// datetime, email, json. A decimal (money) is exact: stored as integer
+	// minor units with Scale decimals (default 2) and returned as a string
+	// such as "1250.50".
 	Kind      string   `bcl:"kind,ident"`
+	Scale     int      `bcl:"scale"`
 	Required  bool     `bcl:"required"`
 	Unique    bool     `bcl:"unique"`
 	Index     bool     `bcl:"index"`
@@ -185,8 +188,16 @@ func compileEntity(spec EntitySpec, dialect string) (*entityPlan, error) {
 		if col.Kind == "" {
 			col.Kind = "text"
 		}
-		if !slices.Contains([]string{"text", "integer", "number", "boolean", "date", "datetime", "email", "json"}, col.Kind) {
-			return nil, fmt.Errorf("%s: column %q: kind %q is not text, integer, number, boolean, date, datetime, email or json", where, col.Name, col.Kind)
+		if !slices.Contains([]string{"text", "integer", "number", "decimal", "boolean", "date", "datetime", "email", "json"}, col.Kind) {
+			return nil, fmt.Errorf("%s: column %q: kind %q is not text, integer, number, decimal, boolean, date, datetime, email or json", where, col.Name, col.Kind)
+		}
+		if col.Kind == "decimal" {
+			if col.Scale == 0 {
+				col.Scale = 2
+			}
+			if col.Scale < 0 || col.Scale > 8 {
+				return nil, fmt.Errorf("%s: column %q: scale must be 0-8", where, col.Name)
+			}
 		}
 		if col.Pattern != "" {
 			re, err := regexp.Compile(col.Pattern)
@@ -256,7 +267,7 @@ func (p *entityPlan) ddl() []string {
 	}
 	colType := func(c *EntityColumn) string {
 		switch c.Kind {
-		case "integer":
+		case "integer", "decimal":
 			return "BIGINT"
 		case "number":
 			return num
@@ -675,16 +686,16 @@ func (rt *entityRuntime) filters(ctx *ActionContext, args []any, reserved ...str
 		if (c == nil || c.Hidden || c.Kind == "json") && !slices.Contains([]string{"created_by", "created_at", "updated_at"}, col) {
 			return nil, nil, invalidInput("unknown filter %q", key)
 		}
-		kind := "text"
+		kind, scale := "text", 0
 		if c != nil {
-			kind = c.Kind
+			kind, scale = c.Kind, c.Scale
 		}
 		switch op {
 		case "in":
 			parts := strings.Split(raw, ",")
 			ph := make([]string, 0, len(parts))
 			for _, part := range parts {
-				v, err := filterValue(kind, strings.TrimSpace(part))
+				v, err := filterValue(kind, scale, strings.TrimSpace(part))
 				if err != nil {
 					return nil, nil, invalidInput("filter %s: %v", key, err)
 				}
@@ -706,7 +717,7 @@ func (rt *entityRuntime) filters(ctx *ActionContext, args []any, reserved ...str
 			if !ok {
 				return nil, nil, invalidInput("unknown filter operator %q", op)
 			}
-			v, err := filterValue(kind, raw)
+			v, err := filterValue(kind, scale, raw)
 			if err != nil {
 				return nil, nil, invalidInput("filter %s: %v", key, err)
 			}
@@ -717,8 +728,10 @@ func (rt *entityRuntime) filters(ctx *ActionContext, args []any, reserved ...str
 	return conds, args, nil
 }
 
-func filterValue(kind, raw string) (any, error) {
+func filterValue(kind string, scale int, raw string) (any, error) {
 	switch kind {
+	case "decimal":
+		return parseDecimal(raw, scale)
 	case "integer":
 		return strconv.ParseInt(raw, 10, 64)
 	case "number":
@@ -928,6 +941,19 @@ func coerceEntityValue(c *EntityColumn, raw any, re *regexp.Regexp) (any, string
 		return nil, "", ""
 	}
 	switch c.Kind {
+	case "decimal":
+		minor, err := parseDecimal(raw, c.Scale)
+		if err != nil {
+			return nil, "type", label + " " + err.Error()
+		}
+		f := float64(minor) / math.Pow10(c.Scale)
+		if c.Min != nil && f < *c.Min {
+			return nil, "min", fmt.Sprintf("%s must be at least %v", label, *c.Min)
+		}
+		if c.Max != nil && f > *c.Max {
+			return nil, "max", fmt.Sprintf("%s must be at most %v", label, *c.Max)
+		}
+		return minor, "", ""
 	case "integer", "number":
 		f, ok := ToFloat(raw)
 		if s, isStr := raw.(string); isStr {
@@ -1039,6 +1065,10 @@ func (rt *entityRuntime) decode(row map[string]any) map[string]any {
 		case c.Kind == "integer":
 			if f, ok := ToFloat(v); ok {
 				row[name] = int64(f)
+			}
+		case c.Kind == "decimal":
+			if f, ok := ToFloat(v); ok {
+				row[name] = formatDecimal(int64(f), c.Scale)
 			}
 		case c.Kind == "number":
 			if f, ok := ToFloat(v); ok {
@@ -1296,7 +1326,7 @@ func (rt *entityRuntime) aggregate(ctx *ActionContext) (any, error) {
 	case "count":
 	case "sum", "avg", "min", "max":
 		c := rt.plan.columns[field]
-		if c == nil || (c.Kind != "integer" && c.Kind != "number") {
+		if c == nil || (c.Kind != "integer" && c.Kind != "number" && c.Kind != "decimal") {
 			return nil, invalidInput("%s needs a numeric field", agg)
 		}
 		expr = strings.ToUpper(agg) + "(" + field + ")"
@@ -1323,6 +1353,13 @@ func (rt *entityRuntime) aggregate(ctx *ActionContext) (any, error) {
 		}
 		if f, ok := ToFloat(item["value"]); ok {
 			item["value"] = f
+			if c := rt.plan.columns[field]; c != nil && c.Kind == "decimal" && agg != "count" {
+				if agg == "avg" {
+					item["value"] = f / math.Pow10(c.Scale)
+				} else {
+					item["value"] = formatDecimal(int64(math.Round(f)), c.Scale)
+				}
+			}
 		}
 		if groupBy != "" {
 			g := row["grp"]
@@ -1362,4 +1399,65 @@ type RawResponse struct {
 	ContentType string
 	Filename    string
 	Body        []byte
+}
+
+// parseDecimal reads an exact decimal ("1250.5", 1250.5, "-3") into integer
+// minor units with scale decimals. More decimals than the scale is an error
+// rather than a silent rounding.
+func parseDecimal(raw any, scale int) (int64, error) {
+	var s string
+	switch v := raw.(type) {
+	case string:
+		s = strings.TrimSpace(v)
+	case float64:
+		s = strconv.FormatFloat(v, 'f', -1, 64)
+	case int, int64, int32:
+		s = fmt.Sprint(v)
+	default:
+		return 0, fmt.Errorf("must be a decimal number")
+	}
+	neg := strings.HasPrefix(s, "-")
+	s = strings.TrimPrefix(strings.TrimPrefix(s, "-"), "+")
+	whole, frac, _ := strings.Cut(s, ".")
+	if whole == "" {
+		whole = "0"
+	}
+	for _, part := range []string{whole, frac} {
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return 0, fmt.Errorf("must be a decimal number")
+			}
+		}
+	}
+	if len(frac) > scale {
+		return 0, fmt.Errorf("allows at most %d decimal places", scale)
+	}
+	frac += strings.Repeat("0", scale-len(frac))
+	if len(whole)+len(frac) > 18 {
+		return 0, fmt.Errorf("is too large")
+	}
+	n, err := strconv.ParseInt(whole+frac, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("must be a decimal number")
+	}
+	if neg {
+		n = -n
+	}
+	return n, nil
+}
+
+// formatDecimal renders minor units as an exact decimal string.
+func formatDecimal(minor int64, scale int) string {
+	sign := ""
+	if minor < 0 {
+		sign, minor = "-", -minor
+	}
+	s := strconv.FormatInt(minor, 10)
+	if scale == 0 {
+		return sign + s
+	}
+	if len(s) <= scale {
+		s = strings.Repeat("0", scale-len(s)+1) + s
+	}
+	return sign + s[:len(s)-scale] + "." + s[len(s)-scale:]
 }
