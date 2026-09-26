@@ -200,6 +200,16 @@ Rules the directory enforces, inside the transaction that makes the change:
 
 `identity.change_password` needs a signed-in principal and takes `{current_password, new_password}`. It verifies the current password, applies the minimum length, hashes the new one with argon2id and clears any lock. Hashes use the directory's argon2id parameters. `VerifyPassword` also accepts bcrypt hashes, so users imported from an older system keep working.
 
+### Cookie sessions and CSRF
+
+A `POST`, `PUT`, `PATCH` or `DELETE` that a session cookie authenticated (the route has a `session`, the cookie was sent, a principal resolved, and there is no `Authorization` or `X-API-Key` header) must come from the page's own origin, beyond what `SameSite=Lax` gives:
+
+- `Sec-Fetch-Site: same-origin` or `none` passes; `cross-site` or `same-site` passes only when `Origin` is one of the route's `cors { allow_origins }` (never `*`).
+- Otherwise `Origin`, or `Referer` when there is no `Origin`, must match the request's `Host` or an allowed origin.
+- A request with none of those headers (curl, a server, a test client) is not a browser's cross-site request and passes.
+
+A refused request gets `403 CSRF_REJECTED`. Bearer tokens and API keys are not ambient credentials, so they are not checked.
+
 ## Limitations
 
 - MySQL is supported by the DDL and statements but is not verified: the test suite runs the directory on SQLite and PostgreSQL only.
