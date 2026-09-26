@@ -27,6 +27,7 @@ import (
 	"github.com/oarkflow/ref/health"
 	"github.com/oarkflow/ref/intent"
 	"github.com/oarkflow/ref/invocation"
+	"github.com/oarkflow/ref/money"
 	"github.com/oarkflow/ref/observer"
 	"github.com/oarkflow/ref/process"
 	"github.com/oarkflow/ref/runtime"
@@ -123,6 +124,10 @@ type Platform struct {
 	static []compiledStatic
 
 	flags *flagRegistry
+
+	// currencies is the built-in ISO registry plus the document's currency
+	// blocks.
+	currencies *money.Registry
 
 	background context.CancelFunc
 	wg         sync.WaitGroup
@@ -268,6 +273,12 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 	if err := validateRoles(doc.Roles); err != nil {
 		return nil, err
 	}
+	if p.currencies, err = compileCurrencies(doc); err != nil {
+		return nil, err
+	}
+	if doc, err = resolveEntityCurrencies(doc, p.currencies); err != nil {
+		return nil, err
+	}
 	doc = applyFamilyDefaults(doc, opts.Registry)
 	if doc, err = expandEntities(doc); err != nil {
 		return nil, err
@@ -275,6 +286,7 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 	if err := validateDocument(doc, opts.Registry); err != nil {
 		return nil, err
 	}
+	publishCurrencies(doc, p.currencies)
 	// The model is published here, before anything compiles against it, because a
 	// composite node (flow.branch, a process step) has to resolve a cross-reference
 	// to another intent while it is being built. Publishing it at the end would

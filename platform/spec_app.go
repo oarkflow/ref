@@ -47,6 +47,9 @@ type Document struct {
 	// resource that holds run-time overrides shared by every replica.
 	Flags     []FlagSpec `bcl:"flag,block"`
 	FlagStore string     `bcl:"flag_store"`
+
+	// Currencies extend the built-in ISO 4217 registry (see locale.go).
+	Currencies []CurrencySpec `bcl:"currency,block"`
 }
 
 // SecretSpec resolves one named secret at load time, from the environment or a

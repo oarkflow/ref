@@ -63,6 +63,9 @@ var evalOptions = &bcl.EvalOptions{
 	AllowHash:     true,
 	AllowEncoding: true,
 	AllowTime:     true,
+	// Functions adds the money, Bikram Sambat and fiscal-year helpers (see
+	// expr_locale.go).
+	Functions: exprFunctions,
 }
 
 // CompileExpr compiles one expression. An empty string compiles to nil, which
