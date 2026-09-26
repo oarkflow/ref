@@ -6,6 +6,7 @@ An `entity` block declares a table and gets a complete, validated REST API. Ther
 - optimistic versioning;
 - per-operation access rules with row conditions;
 - tenant, owner and organisational scoping;
+- bulk creates, updates and deletes;
 - CSV export and aggregates;
 - post-commit hooks.
 
@@ -27,6 +28,7 @@ entity "project" {
   default_sort "name"
   export true                   # GET /api/projects/-/export  (CSV)
   aggregate true                # GET /api/projects/-/aggregate
+  bulk true                     # POST /api/projects/-/bulk
 
   column "name"   { kind text  required true  min_length 2  max_length 100 }
   column "code"   { kind text  unique true  pattern "^[A-Z]{2,5}-[0-9]+$"  immutable true }
@@ -73,12 +75,41 @@ Writes are validated as a whole. Every problem is reported at once as a `422` wi
 | `DELETE {path}/:id` | `delete`: soft or hard |
 | `GET {path}/-/export` | CSV: up to 10,000 rows, same filters; spreadsheet formula injection neutralised |
 | `GET {path}/-/aggregate?group_by=status&agg=sum&field=budget` | `count`, `sum`, `avg`, `min` or `max`, same filters |
+| `POST {path}/-/bulk` | many creates, updates and deletes in one request (see [Bulk operations](#bulk-operations)) |
 
 List and export take these query parameters:
 - **Filters** by column: `col=v`, `col__ne`, `__gt`, `__gte`, `__lt`, `__lte`, `__in=a,b`, `__like` (substring) and `__null=true|false`. Unknown filters are a `422`, so a mistyped filter never silently returns everything.
 - **Search:** `q=` searches the `search` columns: a case-insensitive substring match, or a word-prefix match with `search_index true` (see [Search index](#search-index)).
 - **Sorting:** `sort=-budget,name`.
 - **Paging:** `limit`, `offset`.
+
+## Bulk operations
+
+`bulk true` adds `POST {path}/-/bulk`, which carries many changes in one request:
+
+```json
+{
+  "create": [{"name": "Alpha", "code": "AL-1"}, {"name": "Beta", "code": "BE-2"}],
+  "update": [{"id": "…", "version": 3, "status": "active"}],
+  "delete": ["…", {"id": "…"}],
+  "atomic": true
+}
+```
+
+- Each item is validated and access-checked exactly as the single create, update or delete it stands for: the same `422` details, `version` rule, row conditions, scoping and org checks. The op-level `allow` rules (roles) of each op present apply to the whole request, so a caller who may not delete gets a `403` for a request with any delete.
+- Items run in order: creates, then updates, then deletes. A record may appear only once among the updates and deletes.
+- `bulk_max` (default 500) caps the items of a request.
+- **`atomic` (default `true`)** is all or nothing. Every item is prepared inside one transaction, and if any is invalid, missing or forbidden, nothing is written. The response is an error with code `BULK_REJECTED`, whose status is that of the first failed item, and `details` lists every failed item as `{op, index, id, status, code, message, details}`. If a statement then fails, for example on a duplicate, that item is reported and the whole batch rolls back. Search tokens and durable hook events are written in the same transaction, so a rejected batch leaves neither behind. Plain hooks run after the commit.
+- With **`atomic: false`**, each item commits on its own, as a single request would.
+
+A successful response has the counts and one result per item, in execution order:
+
+```json
+{"atomic": true, "created": 2, "updated": 1, "deleted": 1, "failed": 0,
+ "results": [{"op": "create", "index": 0, "id": "…", "ok": true, "record": {…}}, …]}
+```
+
+With `atomic: false`, a failed item has `ok: false` and the error fields instead of `record`.
 
 ## Search index
 
@@ -120,7 +151,7 @@ It re-derives the tokens of every live record, a page per transaction, drops tok
 
 ## Access and scoping
 
-**`allow` blocks** govern each operation: `list`, `get`, `create`, `update`, `delete`, `export`, `aggregate`, or `*` as the default.
+**`allow` blocks** govern each operation: `list`, `get`, `create`, `update`, `delete`, `export`, `aggregate`, or `*` as the default. A bulk request has no block of its own: each item is checked as the create, update or delete it is.
 - An op's own blocks **replace** the `*` blocks.
 - With no `allow` blocks at all, every operation is open to whoever passes the route's authentication.
 - With some blocks, an op without a matching block is denied.

@@ -86,6 +86,11 @@ type EntitySpec struct {
 	MaxLimit    int    `bcl:"max_limit"`
 	Export      bool   `bcl:"export"`
 	Aggregate   bool   `bcl:"aggregate"`
+	// Bulk enables POST {path}/-/bulk: many creates, updates and deletes in
+	// one request, all-or-nothing by default; BulkMax caps its items
+	// (default 500).
+	Bulk    bool `bcl:"bulk"`
+	BulkMax int  `bcl:"bulk_max"`
 	// Migrate creates the table and indexes at startup (default true).
 	Migrate *bool `bcl:"migrate"`
 
@@ -150,6 +155,9 @@ type EntityHook struct {
 	retryBase time.Duration
 }
 
+// entityOps are the operations allow blocks govern. A bulk request is not
+// one of them: each of its items is checked as the create, update or delete
+// it is.
 var entityOps = []string{"list", "get", "create", "update", "delete", "export", "aggregate"}
 
 // entityPlan is a compiled entity.
@@ -278,6 +286,12 @@ func compileEntity(spec EntitySpec, dialect string) (*entityPlan, error) {
 	}
 	if p.spec.MaxLimit <= 0 {
 		p.spec.MaxLimit = 500
+	}
+	if p.spec.BulkMax < 0 || (p.spec.BulkMax > 0 && !p.spec.Bulk) {
+		return nil, fmt.Errorf("%s: bulk_max must be positive and needs bulk true", where)
+	}
+	if p.spec.BulkMax == 0 {
+		p.spec.BulkMax = 500
 	}
 	return p, nil
 }
@@ -443,6 +457,9 @@ func expandEntities(doc Document) (Document, error) {
 		if spec.Aggregate {
 			ops = append(ops, opRoute{"aggregate", "GET", base + "/-/aggregate", 200, false})
 		}
+		if spec.Bulk {
+			ops = append(ops, opRoute{"bulk", "POST", base + "/-/bulk", 200, true})
+		}
 
 		for _, o := range ops {
 			intent := "entity." + spec.Name + "." + o.op
@@ -479,7 +496,7 @@ func expandEntities(doc Document) (Document, error) {
 func registerEntityActions(r *Registry) {
 	mustAction(r, "entity.op", ActionFactoryFunc(buildEntityOp), ActionInfo{
 		Family:  "data",
-		Summary: "Run an operation of a declared entity: list, get, create, update, delete, export or aggregate",
+		Summary: "Run an operation of a declared entity: list, get, create, update, delete, export, aggregate or bulk",
 		Config: []ConfigField{
 			{Name: "entity", Type: "string", Required: true},
 			{Name: "op", Type: "string", Required: true},
@@ -508,7 +525,7 @@ func buildEntityOp(build BuildContext, spec NodeSpec) (Action, error) {
 	if es == nil {
 		return nil, fmt.Errorf("node %q: unknown entity %q", spec.Name, name)
 	}
-	if !slices.Contains(entityOps, op) {
+	if !slices.Contains(entityOps, op) && op != "bulk" {
 		return nil, fmt.Errorf("node %q: unknown entity op %q", spec.Name, op)
 	}
 	plan, err := compileEntity(*es, db.Dialect)
@@ -543,8 +560,10 @@ type entityRuntime struct {
 }
 
 func (rt *entityRuntime) run(ctx *ActionContext) (ActionResult, error) {
-	if err := rt.allowed(ctx, rt.op, nil); err != nil {
-		return ActionResult{}, err
+	if rt.op != "bulk" { // checked per item
+		if err := rt.allowed(ctx, rt.op, nil); err != nil {
+			return ActionResult{}, err
+		}
 	}
 	var (
 		out any
@@ -565,6 +584,8 @@ func (rt *entityRuntime) run(ctx *ActionContext) (ActionResult, error) {
 		out, err = rt.export(ctx)
 	case "aggregate":
 		out, err = rt.aggregate(ctx)
+	case "bulk":
+		out, err = rt.bulk(ctx)
 	}
 	if err != nil {
 		return ActionResult{}, err
