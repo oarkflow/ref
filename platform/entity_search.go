@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 	"unicode"
 
@@ -357,8 +356,8 @@ func buildEntityReindex(build BuildContext, spec NodeSpec) (Action, error) {
 	roles := configStrings(spec.Config, "roles")
 	index := &entitySearchIndex{plan: plan, db: db}
 	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
-		if len(roles) > 0 && !slices.ContainsFunc(roles, ctx.Principal.HasRole) {
-			return ActionResult{}, permissionDenied("rebuilding the search index needs one of the roles " + strings.Join(roles, ", "))
+		if err := requireOperator(ctx, roles, "rebuilding the search index"); err != nil {
+			return ActionResult{}, err
 		}
 		n, err := index.rebuild(ctx.Context, true)
 		if err != nil {

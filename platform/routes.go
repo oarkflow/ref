@@ -406,6 +406,9 @@ func (p *Platform) serve(c fh.Ctx, route compiledRoute) error {
 	if err != nil {
 		return projectFailure(c, err)
 	}
+	if err := checkCSRF(c, route, principal); err != nil {
+		return projectFailure(c, err)
+	}
 	tenant, err := resolveTenant(c, route, principal)
 	if err != nil {
 		return projectFailure(c, err)
@@ -834,6 +837,9 @@ func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute,
 	if raw, ok := value.(RawResponse); ok {
 		p.applyResponseHeaders(c, route)
 		c.Set("Content-Type", orDefault(raw.ContentType, "application/octet-stream"))
+		// The content type of a download may come from an uploader; stop the
+		// browser second-guessing it into HTML or script.
+		c.Set("X-Content-Type-Options", "nosniff")
 		if raw.Filename != "" {
 			c.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", raw.Filename))
 		}
@@ -1036,6 +1042,74 @@ func (p *Platform) applyResponseHeaders(c fh.Ctx, route compiledRoute) {
 // ---------------------------------------------------------------------------
 // CORS
 // ---------------------------------------------------------------------------
+
+// checkCSRF refuses a cross-site browser request that a session cookie
+// authenticated. SameSite=Lax alone still lets a same-site page, or a
+// top-level cross-site navigation in some browsers, carry the cookie on an
+// unsafe method. A request is cookie-authenticated when the route has a
+// session, the cookie was sent, a principal resolved, and no bearer token or
+// API key came with it (a header a cross-site page cannot set without a CORS
+// preflight). Such a request must come from the request's own origin or one
+// of the route's CORS allow_origins. A request with no Origin, Referer or
+// Sec-Fetch-Site is not a browser's cross-site request, so it passes.
+func checkCSRF(c fh.Ctx, route compiledRoute, principal Principal) error {
+	switch strings.ToUpper(c.Method()) {
+	case "POST", "PUT", "PATCH", "DELETE":
+	default:
+		return nil
+	}
+	if route.session == nil || principal.ID == "" || c.GetCookie(route.session.CookieName()) == "" {
+		return nil
+	}
+	if c.Get("Authorization") != "" || c.Get("X-API-Key") != "" {
+		return nil
+	}
+	origin := c.Get("Origin")
+	if origin == "" {
+		if ref := c.Get("Referer"); ref != "" {
+			if u, err := url.Parse(ref); err == nil && u.Scheme != "" && u.Host != "" {
+				origin = u.Scheme + "://" + u.Host
+			} else {
+				origin = "null"
+			}
+		}
+	}
+	allowed := func() bool {
+		if origin == "" || origin == "null" {
+			return false
+		}
+		if route.spec.CORS != nil && slices.Contains(route.spec.CORS.AllowOrigins, origin) {
+			return true
+		}
+		u, err := url.Parse(origin)
+		if err != nil || u.Host == "" {
+			return false
+		}
+		host := c.Get("Host")
+		if host == "" {
+			host = c.Hostname()
+		}
+		return strings.EqualFold(u.Host, host)
+	}
+	rejected := intent.Failure{Code: "CSRF_REJECTED", Category: intent.CategoryPermission,
+		Message: "cross-site request refused"}
+	switch strings.ToLower(c.Get("Sec-Fetch-Site")) {
+	case "same-origin", "none":
+		return nil
+	case "cross-site", "same-site":
+		if origin != "" && allowed() {
+			return nil
+		}
+		return rejected
+	}
+	if origin == "" {
+		return nil
+	}
+	if !allowed() {
+		return rejected
+	}
+	return nil
+}
 
 // applyCORS sets the headers and answers a preflight. It reports whether the
 // request was fully handled.

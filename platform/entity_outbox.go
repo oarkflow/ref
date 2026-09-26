@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"slices"
-	"strings"
 	"time"
 )
 
@@ -137,9 +135,16 @@ func scanEntityEvents(rows *sql.Rows) ([]EntityEvent, error) {
 func (o *entityEvents) claim(ctx context.Context, limit int, lease time.Duration, now time.Time) ([]EntityEvent, error) {
 	token := newPrefixedID("lease")
 	t := entityEventsTable
+	// The outer condition repeats the lease test: PostgreSQL re-checks it on
+	// a row another dispatcher leased meanwhile (the IN list alone is not),
+	// so two replicas never lease the same event.
 	stmt := fmt.Sprintf(`UPDATE %s SET lease_token = $1, lease_until = $2 WHERE id IN (SELECT id FROM (SELECT id FROM %s
-		WHERE dead = 0 AND next_at <= $3 AND lease_until <= $3 ORDER BY created_at, id LIMIT $4) due)`, t, t)
-	if _, err := o.db.ExecContext(ctx, rebind(o.db.Dialect, stmt), token, now.Add(lease).UnixNano(), now.UnixNano(), limit); err != nil {
+		WHERE dead = 0 AND next_at <= $3 AND lease_until <= $4 ORDER BY created_at, id LIMIT $5) due) AND dead = 0 AND lease_until <= $6`, t, t)
+	// Each placeholder is used once: rebind turns $n into MySQL's positional
+	// ?, so a repeated $n would need its argument repeated too. The outer
+	// condition repeats the lease check: PostgreSQL re-checks only it on a row
+	// another dispatcher leased while this UPDATE waited.
+	if _, err := o.db.ExecContext(ctx, rebind(o.db.Dialect, stmt), token, now.Add(lease).UnixNano(), now.UnixNano(), now.UnixNano(), limit, now.UnixNano()); err != nil {
 		return nil, err
 	}
 	rows, err := o.db.QueryContext(ctx, rebind(o.db.Dialect, fmt.Sprintf(
@@ -186,6 +191,31 @@ func (o *entityEvents) dead(ctx context.Context, entity string, limit int) ([]En
 		return nil, err
 	}
 	return scanEntityEvents(rows)
+}
+
+// deadEvent loads one dead-lettered event, or nil when there is none.
+func (o *entityEvents) deadEvent(ctx context.Context, entity, id string) (*EntityEvent, error) {
+	stmt := fmt.Sprintf("SELECT %s FROM %s WHERE dead = 1 AND id = $1", entityEventColumns, entityEventsTable)
+	args := []any{id}
+	if entity != "" {
+		stmt += " AND entity = $2"
+		args = append(args, entity)
+	}
+	rows, err := o.db.QueryContext(ctx, rebind(o.db.Dialect, stmt), args...)
+	if err != nil {
+		return nil, err
+	}
+	events, err := scanEntityEvents(rows)
+	if err != nil || len(events) == 0 {
+		return nil, err
+	}
+	return &events[0], nil
+}
+
+// eventInTenant reports whether an event was recorded for tenant.
+func eventInTenant(ev EntityEvent, tenant string) bool {
+	t, _ := ev.Input["tenant_id"].(string)
+	return t == tenant
 }
 
 // requeue gives a dead-lettered event a fresh set of attempts, now.
@@ -252,7 +282,8 @@ func (o *entityEvents) deliver(ctx context.Context, p *Platform) int {
 			input[k] = v
 		}
 		input["event_id"], input["attempt"] = ev.ID, ev.Attempts+1
-		hctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		tenant, _ := ev.Input["tenant_id"].(string)
+		hctx, cancel := context.WithTimeout(withResidencyTenant(ctx, tenant), 30*time.Second)
 		_, err := p.CallIntent(hctx, ev.Hook, input, nil)
 		cancel()
 		if err != nil && ctx.Err() != nil {
@@ -464,8 +495,8 @@ func buildEntityEvents(build BuildContext, spec NodeSpec) (Action, error) {
 		return nil, fmt.Errorf("node %q: limit must be a positive integer", spec.Name)
 	}
 	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
-		if len(roles) > 0 && !slices.ContainsFunc(roles, ctx.Principal.HasRole) {
-			return ActionResult{}, permissionDenied("operating hook events needs one of the roles " + strings.Join(roles, ", "))
+		if err := requireOperator(ctx, roles, "operating hook events"); err != nil {
+			return ActionResult{}, err
 		}
 		o := db.enableEntityEvents()
 		op := configString(spec.Config, "op", "")
@@ -484,6 +515,16 @@ func buildEntityEvents(build BuildContext, spec NodeSpec) (Action, error) {
 			if id == "" {
 				return ActionResult{}, invalidInput("an event_id is required")
 			}
+			if ctx.TenantID != "" {
+				// A tenant-scoped caller may requeue only its own tenant's events.
+				ev, err := o.deadEvent(ctx.Context, entity, id)
+				if err != nil {
+					return ActionResult{}, databaseFailure(err)
+				}
+				if ev == nil || !eventInTenant(*ev, ctx.TenantID) {
+					return ActionResult{}, notFound("dead-lettered event", id)
+				}
+			}
 			ok, err := o.requeue(ctx.Context, entity, id)
 			if err != nil {
 				return ActionResult{}, databaseFailure(err)
@@ -497,12 +538,16 @@ func buildEntityEvents(build BuildContext, spec NodeSpec) (Action, error) {
 		if err != nil {
 			return ActionResult{}, databaseFailure(err)
 		}
-		list := make([]any, len(dead))
-		for i, ev := range dead {
+		list := make([]any, 0, len(dead))
+		for _, ev := range dead {
+			if ctx.TenantID != "" && !eventInTenant(ev, ctx.TenantID) {
+				// A tenant-scoped caller sees only its own tenant's events.
+				continue
+			}
 			raw, _ := json.Marshal(ev)
 			var m map[string]any
 			_ = json.Unmarshal(raw, &m)
-			list[i] = m
+			list = append(list, m)
 		}
 		return singleOutput(spec, map[string]any{"dead": list}), nil
 	}), nil

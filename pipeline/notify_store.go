@@ -209,9 +209,12 @@ const notificationColumns = `doc, attempts, dead, last_error, deliver_at`
 
 func (s *SQLStore) ClaimNotifications(ctx context.Context, limit int, lease time.Duration, now time.Time) ([]Notification, error) {
 	token := randomID()
+	// As in ClaimEvents, the outer lease test keeps two replicas from
+	// leasing the same notification.
 	res, err := s.db.ExecContext(ctx, s.q(`UPDATE {p}notifications SET lease_token = ?, lease_until = ?
-		WHERE id IN (SELECT id FROM (SELECT id FROM {p}notifications WHERE dead = 0 AND deliver_at <= ? AND lease_until <= ? ORDER BY deliver_at, created_at LIMIT ?) due)`),
-		token, now.Add(lease).UnixNano(), now.UnixNano(), now.UnixNano(), limit)
+		WHERE id IN (SELECT id FROM (SELECT id FROM {p}notifications WHERE dead = 0 AND deliver_at <= ? AND lease_until <= ? ORDER BY deliver_at, created_at LIMIT ?) due)
+		AND dead = 0 AND lease_until <= ?`),
+		token, now.Add(lease).UnixNano(), now.UnixNano(), now.UnixNano(), limit, now.UnixNano())
 	if err != nil {
 		return nil, err
 	}

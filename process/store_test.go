@@ -48,6 +48,7 @@ func runStoreConformance(t *testing.T, open func(*testing.T) Store) {
 		{"leases are exclusive until they expire", storeLeaseExclusion},
 		{"tasks reject a concurrent claim", storeTaskRevision},
 		{"joins accumulate across calls", storeJoinAccumulation},
+		{"a join and its run save together", storeJoinAndRun},
 		{"purge removes a run and everything belonging to it", storePurge},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -537,5 +538,40 @@ func storePurge(t *testing.T, store Store) {
 	tasks, _ := store.ListTasks(ctx, TaskFilter{RunID: run.ID, Status: TaskCompleted, Limit: 10})
 	if len(tasks) != 0 {
 		t.Fatalf("%d task rows survived the purge", len(tasks))
+	}
+}
+
+// storeJoinAndRun covers the write a fan-in makes when a source completes: the
+// join and the run's cursor in one transaction. On PostgreSQL it once failed on
+// every call because the run update was two arguments short, so no fan-in could
+// ever complete.
+func storeJoinAndRun(t *testing.T, store Store) {
+	ctx := context.Background()
+	run := newTestRun("run-10")
+	if err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	run, err := store.GetRun(ctx, "run-10")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	run.Status = StatusRunning
+	join := &Join{
+		RunID: "run-10", Edge: "gather", Sources: []string{"a", "b"},
+		Results: map[string]json.RawMessage{"a": json.RawMessage(`{"ok":true}`)},
+		Errors:  map[string]string{},
+	}
+	if err := store.SaveJoinAndRun(ctx, join, run); err != nil {
+		t.Fatalf("save join and run: %v", err)
+	}
+	loaded, err := store.GetRun(ctx, "run-10")
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if loaded.Status != StatusRunning || loaded.Revision != run.Revision {
+		t.Fatalf("the run was not saved with the join: %+v", loaded)
+	}
+	if saved, _ := store.GetJoin(ctx, "run-10", "gather"); saved == nil || len(saved.Results) != 1 {
+		t.Fatalf("the join was not saved with the run: %+v", saved)
 	}
 }

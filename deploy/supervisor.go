@@ -155,7 +155,7 @@ func (s *Supervisor) reconcile(ctx context.Context, addr net.Addr) {
 }
 
 func (s *Supervisor) start(ctx context.Context, rev *Revision, addr net.Addr) (*generation, error) {
-	if err := s.Manager.Verify(rev); err != nil {
+	if err := s.Manager.VerifyActivation(rev); err != nil {
 		return nil, err
 	}
 	p, err := s.Build(ctx, []byte(rev.Source))

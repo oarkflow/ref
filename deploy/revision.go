@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -46,10 +47,17 @@ type Revision struct {
 	// SigningPayload, made by the Manager's Signer. Unlike the HMAC, anyone
 	// with the public key can check it, and the key that verifies cannot sign.
 	KeySignature *signing.Signature `json:"key_signature,omitempty"`
-	Author       string             `json:"author"`
-	Message      string             `json:"message,omitempty"`
-	Status       string             `json:"status"`
-	CreatedAt    time.Time          `json:"created_at"`
+	// ApprovalSignature (HMAC) and ApprovalKeySignature (the Signer's key)
+	// cover ApprovalPayload: the revision's identity, the status "approved"
+	// and its sorted approvers. They are made when the revision becomes
+	// approved, so a status or approvals list edited in the store cannot be
+	// activated.
+	ApprovalSignature    string             `json:"approval_signature,omitempty"`
+	ApprovalKeySignature *signing.Signature `json:"approval_key_signature,omitempty"`
+	Author               string             `json:"author"`
+	Message              string             `json:"message,omitempty"`
+	Status               string             `json:"status"`
+	CreatedAt            time.Time          `json:"created_at"`
 	// BaseID is the revision that was active when this one was proposed;
 	// Changes is the block-level diff against it.
 	BaseID    string                    `json:"base_id,omitempty"`
@@ -165,6 +173,19 @@ func SigningPayload(r *Revision) []byte {
 	return fmt.Appendf(nil, "ref-revision/v1|%s|%d|%s", r.App, r.Seq, r.Checksum)
 }
 
+// ApprovalPayload is what a revision's approval signatures cover: the app,
+// the sequence, the source checksum, the status "approved" and the sorted
+// list of approvers, under its own domain prefix.
+func ApprovalPayload(r *Revision) []byte {
+	approvers := make([]string, len(r.Approvals))
+	for i, d := range r.Approvals {
+		approvers[i] = d.By
+	}
+	slices.Sort(approvers)
+	list, _ := json.Marshal(approvers)
+	return fmt.Appendf(nil, "ref-revision-approval/v1|%s|%d|%s|%s|%s", r.App, r.Seq, r.Checksum, StatusApproved, list)
+}
+
 func (m *Manager) verifier() Verifier {
 	if m.Verifier != nil {
 		return m.Verifier
@@ -182,6 +203,63 @@ func (m *Manager) sign(r *Revision) string {
 	mac := hmac.New(sha256.New, m.Secret)
 	fmt.Fprintf(mac, "%s|%d|%s", r.App, r.Seq, r.Checksum)
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (m *Manager) signApprovalHMAC(r *Revision) string {
+	if len(m.Secret) == 0 {
+		return ""
+	}
+	mac := hmac.New(sha256.New, m.Secret)
+	mac.Write(ApprovalPayload(r))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// signApproval signs a revision's approval state, as it becomes approved.
+func (m *Manager) signApproval(r *Revision) error {
+	r.ApprovalSignature = m.signApprovalHMAC(r)
+	r.ApprovalKeySignature = nil
+	if m.Signer != nil {
+		sig, err := m.Signer.Sign(ApprovalPayload(r))
+		if err != nil {
+			return fmt.Errorf("deploy: sign approval: %w", err)
+		}
+		r.ApprovalKeySignature = &sig
+	}
+	return nil
+}
+
+// VerifyActivation checks what activating or serving a revision needs:
+// Verify, a valid approval signature (the key signature or the HMAC, as for
+// Verify), and an approvals list that meets the Manager's threshold with
+// distinct approvers other than the author (unless AllowSelfApproval).
+// A revision approved before approval signatures existed has none and is
+// refused: re-propose and re-approve it.
+func (m *Manager) VerifyActivation(r *Revision) error {
+	if err := m.Verify(r); err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for _, d := range r.Approvals {
+		if d.By == "" || seen[d.By] || (d.By == r.Author && !m.AllowSelfApproval) {
+			return fmt.Errorf("%w: revision %d has an invalid approvals list", ErrTampered, r.Seq)
+		}
+		seen[d.By] = true
+	}
+	if m.Approvals > 0 && len(seen) < m.Approvals {
+		return fmt.Errorf("%w: revision %d has %d of %d approvals", ErrTampered, r.Seq, len(seen), m.Approvals)
+	}
+	verifier := m.verifier()
+	if len(m.Secret) == 0 && verifier == nil {
+		return nil
+	}
+	if verifier != nil && r.ApprovalKeySignature != nil && verifier.Verify(ApprovalPayload(r), *r.ApprovalKeySignature) == nil {
+		return nil
+	}
+	if len(m.Secret) > 0 && r.ApprovalSignature != "" &&
+		subtle.ConstantTimeCompare([]byte(m.signApprovalHMAC(r)), []byte(r.ApprovalSignature)) == 1 {
+		return nil
+	}
+	return fmt.Errorf("%w: revision %d has no valid approval signature", ErrTampered, r.Seq)
 }
 
 // Verify checks that a revision's source matches its checksum and that it
@@ -265,6 +343,9 @@ func (m *Manager) Propose(ctx context.Context, src []byte, author, message strin
 	if m.Approvals <= 0 {
 		r.Status = StatusApproved
 		r.History = append(r.History, Event{At: now, By: "system", Action: "approved", Note: "no review required"})
+		if err := m.signApproval(r); err != nil {
+			return nil, err
+		}
 	}
 	if err := m.Store.Create(ctx, r); err != nil {
 		return nil, err
@@ -306,6 +387,9 @@ func (m *Manager) Approve(ctx context.Context, id, by, comment string) (*Revisio
 	r.History = append(r.History, Event{At: now, By: by, Action: "approved", Note: comment})
 	if len(r.Approvals) >= max(1, m.Approvals) {
 		r.Status = StatusApproved
+		if err := m.signApproval(r); err != nil {
+			return nil, err
+		}
 	}
 	return r, m.Store.Update(ctx, r)
 }
@@ -379,7 +463,7 @@ func (m *Manager) Rollback(ctx context.Context, id, by, reason string) (*Revisio
 }
 
 func (m *Manager) activate(ctx context.Context, r *Revision, by, note string) (*Revision, error) {
-	if err := m.Verify(r); err != nil {
+	if err := m.VerifyActivation(r); err != nil {
 		return nil, err
 	}
 	now := m.now()

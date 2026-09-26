@@ -133,7 +133,7 @@ func (p *PipelineCases) sendNotification(ctx context.Context, platform *Platform
 		"channel": b.Channel, "user": b.User, "tenant_id": b.TenantID, "digest": b.Digest, "count": len(b.Items),
 		"severity": severity, "subject": b.Subject(), "body": b.Body(), "items": items,
 	}
-	hctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	hctx, cancel := context.WithTimeout(withResidencyTenant(ctx, b.TenantID), 30*time.Second)
 	defer cancel()
 	if _, err := platform.CallIntent(hctx, intentName, input, nil); err != nil {
 		slog.Warn("pipeline notification failed", "resource", p.name, "channel", b.Channel, "user", b.User, "error", err)

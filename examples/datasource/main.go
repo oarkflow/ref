@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,6 +60,7 @@ var (
 // --- Live Database Setup ---
 var db *sql.DB
 var dbQueryCount atomic.Int32
+var settingsQueryCount atomic.Int32
 
 func setupDatabase() {
 	var err error
@@ -127,6 +130,7 @@ func liveDBFetchUsers(ctx context.Context, ids []int64) (map[int64]User, error) 
 
 func liveDBFetchSettings(ctx context.Context, tenantID string) (TenantSettings, error) {
 	dbQueryCount.Add(1)
+	settingsQueryCount.Add(1)
 	log.Printf("[LIVE DB] Fetching settings for tenant: %s", tenantID)
 
 	var s TenantSettings
@@ -181,9 +185,26 @@ func adapt(sr source.Registration) capability.Registration {
 }
 
 func main() {
-	fmt.Println("=== REF DataSource Subsystem (Live SQLite Database) ===")
+	if _, err := run(os.Stdout); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// scenarioStats records the live database queries each scenario executed,
+// in total and for tenant settings alone.
+type scenarioStats struct {
+	Queries         [3]int32
+	SettingsQueries [3]int32
+}
+
+// run executes the three scenarios, writing the report to out.
+func run(out io.Writer) (scenarioStats, error) {
+	var counts scenarioStats
+	fmt.Fprintln(out, "=== REF DataSource Subsystem (Live SQLite Database) ===")
 	setupDatabase()
 	defer db.Close()
+	dbQueryCount.Store(0)
+	settingsQueryCount.Store(0)
 
 	// 1. Setup Caching and Metrics
 	cache := source.NewProcessCache(source.ProcessCacheConfig{MaxEntries: 1000})
@@ -250,9 +271,14 @@ func main() {
 	settingsFetcherReg := source.NewFetchCapability(
 		"capability.fetch_tenant_settings",
 		source.Spec{
-			Name:        "tenant-db",
-			Kind:        source.KindDatabase,
-			ReadOnly:    true,
+			Name:     "tenant-db",
+			Kind:     source.KindDatabase,
+			ReadOnly: true,
+			// Tenant settings are not principal-scoped and the key function
+			// already includes the tenant ID. Without SecurityPublic the
+			// default tenant scope fails closed (no cache, no coalescing)
+			// because this example performs no authorization decision.
+			Security:    source.SecurityPublic,
 			Cacheable:   true,
 			Coalescible: true,
 			CacheTTL:    5 * time.Minute,
@@ -273,6 +299,10 @@ func main() {
 			return req.TenantID
 		}),
 		source.WithMetricsObserver(func(sm source.Metrics) {
+			// MetricsCollector is not safe for concurrent use; share the
+			// observer's lock since both paths record into it.
+			metricsObs.mu.Lock()
+			defer metricsObs.mu.Unlock()
 			metricsColl.Record(sm)
 		}),
 	)
@@ -308,13 +338,13 @@ func main() {
 
 	engine := runtime.NewEngine(runtime.WithCapability(nPlusOneResolver), runtime.WithCapability(settingsFetcher), runtime.WithObserver(compObs))
 	if err := engine.RegisterDefinition(dashboardIntent); err != nil {
-		log.Fatalf("RegisterDefinition failed: %v", err)
+		return counts, fmt.Errorf("RegisterDefinition failed: %w", err)
 	}
 	if err := engine.Compile(); err != nil {
-		log.Fatalf("Compile failed: %v", err)
+		return counts, fmt.Errorf("Compile failed: %w", err)
 	}
 
-	runIntent := func(req DashboardRequest) {
+	runIntent := func(req DashboardRequest) error {
 		payload, _ := json.Marshal(req)
 		inv := &invocation.Invocation{
 			ID:     "inv-1",
@@ -323,26 +353,35 @@ func main() {
 		}
 		res, err := engine.Dispatch(context.Background(), inv)
 		if err != nil {
-			log.Fatalf("Dispatch failed: %v", err)
+			return fmt.Errorf("Dispatch failed: %w", err)
 		}
 		data, _ := json.MarshalIndent(res, "", "  ")
-		fmt.Printf("Response: %s\n", string(data))
+		fmt.Fprintf(out, "Response: %s\n", string(data))
+		return nil
 	}
 
 	// === SCENARIO 1: First Request (Cold Cache, simulates N+1) ===
-	fmt.Println("\n--- Scenario 1: First Request (Cold Cache, 5 concurrent user loads) ---")
-	runIntent(DashboardRequest{TenantID: "tenant-acme", UIDs: []int64{101, 102, 103, 104, 105}})
-	fmt.Printf("Live DB Queries Executed: %d (Expected: 2 -> 1 for settings, 1 for batched users!)\n", dbQueryCount.Load())
+	fmt.Fprintln(out, "\n--- Scenario 1: First Request (Cold Cache, 5 concurrent user loads) ---")
+	if err := runIntent(DashboardRequest{TenantID: "tenant-acme", UIDs: []int64{101, 102, 103, 104, 105}}); err != nil {
+		return counts, err
+	}
+	counts.Queries[0], counts.SettingsQueries[0] = dbQueryCount.Load(), settingsQueryCount.Load()
+	fmt.Fprintf(out, "Live DB Queries Executed: %d (Expected: 2 -> 1 for settings, 1 for batched users!)\n", dbQueryCount.Load())
 
 	// === SCENARIO 2: Second Request (Hot Cache) ===
-	fmt.Println("\n--- Scenario 2: Second Request (Hot Cache for Tenant API) ---")
+	fmt.Fprintln(out, "\n--- Scenario 2: Second Request (Hot Cache for Tenant API) ---")
 	dbQueryCount.Store(0)
-	runIntent(DashboardRequest{TenantID: "tenant-acme", UIDs: []int64{201, 202}})
-	fmt.Printf("Live DB Queries Executed: %d (Expected: 1 -> Users only, Settings served from ProcessCache!)\n", dbQueryCount.Load())
+	settingsQueryCount.Store(0)
+	if err := runIntent(DashboardRequest{TenantID: "tenant-acme", UIDs: []int64{201, 202}}); err != nil {
+		return counts, err
+	}
+	counts.Queries[1], counts.SettingsQueries[1] = dbQueryCount.Load(), settingsQueryCount.Load()
+	fmt.Fprintf(out, "Live DB Queries Executed: %d (Expected: 1 -> Users only, Settings served from ProcessCache!)\n", dbQueryCount.Load())
 
 	// === SCENARIO 3: High Concurrency Thundering Herd (Coalescing) ===
-	fmt.Println("\n--- Scenario 3: Thundering Herd (100 simultaneous requests) ---")
+	fmt.Fprintln(out, "\n--- Scenario 3: Thundering Herd (100 simultaneous requests) ---")
 	dbQueryCount.Store(0)
+	settingsQueryCount.Store(0)
 	cache.InvalidateSource("tenant-db")
 
 	var wg sync.WaitGroup
@@ -361,5 +400,7 @@ func main() {
 	}
 	wg.Wait()
 
-	fmt.Printf("Live DB Queries Executed for 100 concurrent requests: %d (Expected: 2 -> 1 for batched users, 1 for settings via Coalescer!)\n", dbQueryCount.Load())
+	counts.Queries[2], counts.SettingsQueries[2] = dbQueryCount.Load(), settingsQueryCount.Load()
+	fmt.Fprintf(out, "Live DB Queries Executed for 100 concurrent requests: %d (Expected: 2 -> 1 for batched users, 1 for settings via Coalescer!)\n", counts.Queries[2])
+	return counts, nil
 }

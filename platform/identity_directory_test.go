@@ -128,3 +128,91 @@ func TestLoginUnknownUserCostsAVerification(t *testing.T) {
 		t.Fatalf("unknown user took %v, known user %v: the unknown path skips the hash", unknown, known)
 	}
 }
+
+// A tenant administrator must not be able to hand out a global role: the
+// membership's roles become the token's roles at the next sign-in, and a
+// global role administers every tenant.
+func TestTenantAdminCannotGrantGlobalRole(t *testing.T) {
+	d := openTestDirectory(t)
+	ctx := context.Background()
+	root, _ := d.UserByEmail(ctx, "root@x.test")
+	admin := Principal{ID: root.ID, TenantID: "t1", Roles: []string{"admin"}}
+	if _, err := d.Invite(ctx, admin, "t1", "mallory@x.test", "", []string{"platform_admin"}, ""); failureCode(err) != "PERMISSION_DENIED" {
+		t.Fatalf("invite with a global role: %v", err)
+	}
+	if _, err := d.ChangeMembership(ctx, admin, "t1", root.ID, []string{"admin", "platform_admin"}, nil); failureCode(err) != "PERMISSION_DENIED" {
+		t.Fatalf("self-grant of a global role: %v", err)
+	}
+	if _, err := d.AddMembership(ctx, admin, "t2", root.ID, "", []string{" platform_admin"}, ""); failureCode(err) != "PERMISSION_DENIED" {
+		t.Fatalf("add_membership with a global role: %v", err)
+	}
+	res, err := d.Login(ctx, "root@x.test", "root password 123", "t1", "")
+	if err != nil || d.isGlobal(res.Principal) {
+		t.Fatalf("the tenant admin became global: %v %+v", err, res)
+	}
+	// A global administrator still can.
+	if _, err := d.Invite(ctx, Principal{ID: "op", Roles: []string{"platform_admin"}}, "t1", "ops@x.test", "", []string{"platform_admin"}, ""); err != nil {
+		t.Fatalf("global admin granting a global role: %v", err)
+	}
+}
+
+// Failed attempts that all read the account before any of them records a
+// failure (parallel guesses) must still add up to a lock.
+func TestLockoutCountsParallelFailures(t *testing.T) {
+	d := openTestDirectory(t)
+	ctx := context.Background()
+	stale, _ := d.UserByEmail(ctx, "root@x.test")
+	now := time.Now()
+	for range 3 {
+		d.recordFailure(ctx, stale, now) // every call carries FailedLogins == 0
+	}
+	user, _ := d.UserByEmail(ctx, "root@x.test")
+	if user.LockedUntil <= now.UnixMilli() {
+		t.Fatalf("three failures from stale reads did not lock the account: failed=%d locked_until=%d", user.FailedLogins, user.LockedUntil)
+	}
+}
+
+// Global authority is re-read from the database: once a global administrator
+// is demoted, the token they still hold no longer administers other tenants.
+func TestDemotedGlobalAdminLosesGlobalAuthority(t *testing.T) {
+	d := openTestDirectory(t)
+	ctx := context.Background()
+	root, _ := d.UserByEmail(ctx, "root@x.test")
+	op := Principal{ID: "bootstrap-op", Roles: []string{"platform_admin"}}
+	if _, err := d.ChangeMembership(ctx, op, "t1", root.ID, []string{"admin", "platform_admin"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	res, err := d.Login(ctx, "root@x.test", "root password 123", "t1", "")
+	if err != nil || !d.isGlobal(res.Principal) {
+		t.Fatalf("login as global admin: %v %+v", err, res)
+	}
+	token := res.Principal
+	if err := d.Authorize(ctx, token, "t9"); err != nil {
+		t.Fatalf("global admin on a foreign tenant: %v", err)
+	}
+	if p, err := d.VerifiedPrincipal(ctx, token); err != nil || !d.isGlobal(p) {
+		t.Fatalf("verified global admin: %v %+v", err, p)
+	}
+	// Demote: the membership keeps admin of t1 but loses the global role.
+	if _, err := d.ChangeMembership(ctx, op, "t1", root.ID, []string{"admin"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Authorize(ctx, token, "t9"); failureCode(err) != "PERMISSION_DENIED" {
+		t.Fatalf("demoted admin's token still administers a foreign tenant: %v", err)
+	}
+	if err := d.Authorize(ctx, token, "t1"); err != nil {
+		t.Fatalf("demoted admin still administers their own tenant: %v", err)
+	}
+	p, err := d.VerifiedPrincipal(ctx, token)
+	if err != nil || d.isGlobal(p) {
+		t.Fatalf("stale global role survived verification: %v %+v", err, p)
+	}
+	if _, err := d.Invite(ctx, p, "t1", "mallory@x.test", "", []string{"platform_admin"}, ""); failureCode(err) != "PERMISSION_DENIED" {
+		t.Fatalf("demoted admin granted a global role: %v", err)
+	}
+	// A token that claims a global role for an account without one is refused too.
+	forged := Principal{ID: root.ID, TenantID: "t1", Roles: []string{"platform_admin"}}
+	if err := d.Authorize(ctx, forged, "t9"); failureCode(err) != "PERMISSION_DENIED" {
+		t.Fatalf("unbacked global claim: %v", err)
+	}
+}

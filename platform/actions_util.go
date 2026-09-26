@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -436,4 +437,34 @@ func rateLimited(message string) error {
 		message = "too many requests"
 	}
 	return intent.Failure{Code: "RATE_LIMITED", Category: intent.CategoryRateLimit, Message: message}
+}
+
+// requireOperator guards the operations actions (outbox, reindex, sweep,
+// erasure, analytics). A caller over an external transport (HTTP, WebSocket,
+// gRPC) must be an authenticated principal, and must hold one of roles when
+// roles is set: an operations action on a route without auth is otherwise
+// open to anyone. Work the platform started itself (schedules, queue workers,
+// process steps) carries no principal and is trusted.
+func requireOperator(ctx *ActionContext, roles []string, what string) error {
+	if ctx.Principal.ID == "" && !internalTransport(ctx) {
+		return intent.Failure{Code: "UNAUTHENTICATED", Category: intent.CategoryAuth,
+			Message: what + " needs an authenticated caller"}
+	}
+	if len(roles) > 0 && !slices.ContainsFunc(roles, ctx.Principal.HasRole) {
+		return permissionDenied(what + " needs one of the roles " + strings.Join(roles, ", "))
+	}
+	return nil
+}
+
+// internalTransport reports whether the invocation was started by the
+// platform itself rather than by an outside caller.
+func internalTransport(ctx *ActionContext) bool {
+	if ctx.Invocation == nil {
+		return false
+	}
+	switch ctx.Invocation.Transport.Protocol {
+	case "internal", "queue", "process", "cli":
+		return true
+	}
+	return false
 }

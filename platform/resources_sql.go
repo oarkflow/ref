@@ -171,6 +171,9 @@ func openDatabase(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, 
 	}
 	for i, statement := range configStrings(spec.Config, "migrations") {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
+			if indexExists(handle.Dialect, err) {
+				continue
+			}
 			handle.closeAll()
 			return nil, nil, fmt.Errorf("migration[%d]: %w", i, err)
 		}
@@ -293,6 +296,9 @@ func safeIdentifiers(names []string) ([]string, error) {
 // rebind converts $1-style placeholders into the dialect's own form. database/sql
 // does not do this, and writing every internal statement three times would be
 // both tedious and a place for the three versions to drift.
+//
+// MySQL's ? is positional, so each $n must appear once in a statement: a
+// value used twice is passed twice, under two numbers.
 func rebind(dialect, statement string) string {
 	if dialect != "mysql" {
 		return statement
@@ -316,6 +322,14 @@ func rebind(dialect, statement string) string {
 		i = j - 1
 	}
 	return out.String()
+}
+
+// indexExists reports whether err is MySQL refusing to create an index that
+// is already there. MySQL has no CREATE INDEX IF NOT EXISTS (MariaDB does), so
+// index DDL is written without it for the mysql family and a re-run at the
+// next startup meets this error, which means the migration is already done.
+func indexExists(dialect string, err error) bool {
+	return dialect == "mysql" && err != nil && strings.Contains(strings.ToLower(err.Error()), "duplicate key name")
 }
 
 // upsertClause returns the dialect's "insert or replace on this key" suffix.

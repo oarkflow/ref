@@ -357,8 +357,13 @@ func (h *pipelineHandler) load(ctx *ActionContext) (*pipeline.Case, *pipeline.En
 func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 	// Hooks and automations invoke intents as part of this request.
 	hookCtx := context.WithValue(ctx.Context, pipelineCallKey{}, ctx)
-	if len(h.roles) > 0 && !slices.ContainsFunc(h.roles, ctx.Principal.HasRole) {
-		return ActionResult{}, permissionDenied("you may not do that")
+	switch h.op {
+	case "events", "hold", "erase", "sweep", "analytics":
+		// The operations ops: an authenticated caller always, and one of the
+		// roles when they are set.
+		if err := requireOperator(ctx, h.roles, "pipeline."+h.op); err != nil {
+			return ActionResult{}, err
+		}
 	}
 	switch h.op {
 	case "link_view", "link_submit":

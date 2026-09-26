@@ -99,24 +99,13 @@ resource "policy_engine" {
     default_tenant "default"
     strict_validation true
     request_timeout 5s
-  }
-}
-
-# ---- Publish business rules at startup ------------------------------------
-
-intent "rules.publish_todo_policy" {
-  response "response"
-  timeout 10s
-  node "publish" {
-    uses "rules.publish"
-    resource "policy_engine"
-    kind effect
-    requires [input]
-    provides [published]
-    config {
-      name "todo-policy"
+    # Published when the engine opens, on every start (the store is in
+    # memory); an invalid rule fails startup rather than the first request.
+    definition "todo-policy" {
       version "1"
       source <<BCL
+        bcl { version "1.0" }
+
         decision_table "todo.creation_policy" {
           default allow
           hit_policy first
@@ -127,19 +116,28 @@ intent "rules.publish_todo_policy" {
           }
           row "title-too-short" {
             priority 90
-            when { all { input.title != nil len(input.title) < 3 } }
+            when {
+              all {
+                input.title != nil
+                len(input.title) < 3
+              }
+            }
             then { outcome { decision deny reason "title must be at least 3 characters" } }
           }
           row "title-too-long" {
             priority 80
-            when { all { input.title != nil len(input.title) > 200 } }
+            when {
+              all {
+                input.title != nil
+                len(input.title) > 200
+              }
+            }
             then { outcome { decision deny reason "title must not exceed 200 characters" } }
           }
         }
 BCL
     }
   }
-  node "response" { uses "collect" requires [published] provides [response] }
 }
 
 # ---- Authentication -------------------------------------------------------
@@ -348,6 +346,7 @@ intent "todos.create" {
     provides [policy_decision]
     config {
       decision "todo.creation_policy"
+      definition "todo-policy"
     }
   }
   node "insert" {

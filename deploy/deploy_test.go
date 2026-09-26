@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/oarkflow/ref/platform"
 	_ "modernc.org/sqlite"
 )
@@ -283,13 +285,52 @@ func TestSQLStoreRevisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	s, err := NewSQLStore(db, "sqlite", "")
+	sqlStoreRevisions(t, db, "sqlite", "")
+}
+
+// TestSQLStoreRevisionsMySQL runs the same journey on a MySQL-compatible
+// server when TEST_MYSQL_DSN is set (e.g. ref:ref@tcp(127.0.0.1:3306)/reftest).
+func TestSQLStoreRevisionsMySQL(t *testing.T) {
+	dsn := os.Getenv("TEST_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("TEST_MYSQL_DSN not set")
+	}
+	cfg, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DBName == "" {
+		cfg.DBName = "reftest"
+		admin, err := sql.Open("mysql", dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer admin.Close()
+		if _, err := admin.Exec("CREATE DATABASE IF NOT EXISTS reftest"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db, err := sql.Open("mysql", cfg.FormatDSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	table := fmt.Sprintf("t%d_revisions", time.Now().UnixNano())
+	t.Cleanup(func() { _, _ = db.Exec("DROP TABLE IF EXISTS " + table) })
+	sqlStoreRevisions(t, db, "mysql", table)
+}
+
+func sqlStoreRevisions(t *testing.T, db *sql.DB, dialect, table string) {
+	s, err := NewSQLStore(db, dialect, table)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
 	if err := s.Migrate(ctx); err != nil {
 		t.Fatal(err)
+	}
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatalf("migrate twice: %v", err)
 	}
 	m := newManager(s)
 	r1, err := m.Propose(ctx, []byte(appSource("v1")), "alice", "one")

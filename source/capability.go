@@ -144,7 +144,19 @@ func NewFetchCapability(
 		}
 		if spec.Coalescible && cfg.coalescer != nil && cacheEnabled {
 			metrics.Coalesced = true
-			val, fetchErr = cfg.coalescer.DoContext(nc, cacheKey.String(), fetch)
+			coalesced := fetch
+			if spec.Cacheable && cfg.cache != nil {
+				// A caller that missed the cache can reach the coalescer
+				// just after an earlier flight finished and populated
+				// the cache; re-check so it does not fetch again.
+				coalesced = func() (any, error) {
+					if cached, hit, err := cfg.cache.Get(cacheKey); err == nil && hit && cached != nil {
+						return cloneSourceValue(cfg, cached), nil
+					}
+					return fetch()
+				}
+			}
+			val, fetchErr = cfg.coalescer.DoContext(nc, cacheKey.String(), coalesced)
 		} else {
 			val, fetchErr = fetch()
 		}

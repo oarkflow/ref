@@ -252,7 +252,7 @@ func (d *IdentityDirectory) migrate(ctx context.Context) error {
 		if _, err := d.db.ExecContext(ctx, statement); err != nil {
 			// MySQL has no CREATE INDEX IF NOT EXISTS; a second start finds the
 			// index already there.
-			if d.db.Dialect == "mysql" && strings.Contains(strings.ToLower(err.Error()), "duplicate key name") {
+			if indexExists(d.db.Dialect, err) {
 				continue
 			}
 			return err
@@ -401,6 +401,21 @@ func (d *IdentityDirectory) isAdmin(roles []string) bool {
 	return false
 }
 
+// checkGrant refuses roles the actor may not hand out. A global role in a
+// membership becomes a global role in the token identity.login issues, so a
+// tenant administrator who could grant one would administer every tenant.
+func (d *IdentityDirectory) checkGrant(actor Principal, roles []string) error {
+	if d.isGlobal(actor) {
+		return nil
+	}
+	for _, r := range roles {
+		if slices.Contains(d.globalRoles, strings.TrimSpace(r)) {
+			return permissionDenied(fmt.Sprintf("only a global administrator can grant the role %q", strings.TrimSpace(r)))
+		}
+	}
+	return nil
+}
+
 func (d *IdentityDirectory) isGlobal(p Principal) bool {
 	for _, r := range p.Roles {
 		if slices.Contains(d.globalRoles, r) {
@@ -408,6 +423,54 @@ func (d *IdentityDirectory) isGlobal(p Principal) bool {
 		}
 	}
 	return false
+}
+
+// globalInDatabase reports whether actor is a global administrator according
+// to the database: the token claims a global role, the account is active and
+// the membership the token was issued for (any membership when the token names
+// no tenant) still holds a global role.
+func (d *IdentityDirectory) globalInDatabase(ctx context.Context, actor Principal) (bool, error) {
+	if actor.ID == "" || !d.isGlobal(actor) {
+		return false, nil
+	}
+	user, err := d.UserByID(ctx, actor.ID)
+	if err != nil || user == nil || user.Status != UserActive {
+		return false, err
+	}
+	memberships, err := d.Memberships(ctx, d.db.DB, actor.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, m := range memberships {
+		if actor.TenantID != "" && m.TenantID != actor.TenantID {
+			continue
+		}
+		for _, r := range m.Roles {
+			if slices.Contains(d.globalRoles, r) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// VerifiedPrincipal returns actor with its global roles removed unless the
+// database still grants one, so the operations that follow Authorize never
+// act on a stale global claim.
+func (d *IdentityDirectory) VerifiedPrincipal(ctx context.Context, actor Principal) (Principal, error) {
+	if !d.isGlobal(actor) {
+		return actor, nil
+	}
+	global, err := d.globalInDatabase(ctx, actor)
+	if err != nil {
+		return actor, databaseFailure(err)
+	}
+	if global {
+		return actor, nil
+	}
+	out := actor
+	out.Roles = slices.DeleteFunc(slices.Clone(actor.Roles), func(r string) bool { return slices.Contains(d.globalRoles, r) })
+	return out, nil
 }
 
 const identityUserColumns = "id, email, name, password_hash, status, mfa_enabled, mfa_secret, failed_logins, locked_until, created_at, updated_at, last_login"
@@ -624,13 +687,16 @@ func (d *IdentityDirectory) Login(ctx context.Context, email, password, tenant, 
 // recordFailure counts a failed attempt and locks the account for a while
 // after too many in a row. The lock is silent (the caller keeps seeing
 // INVALID_CREDENTIALS), so it cannot be used to discover accounts.
+//
+// The count is incremented in the database, not from the value read at the
+// start of the attempt: parallel guesses that all read the same count would
+// otherwise each write count+1 and never reach the limit.
 func (d *IdentityDirectory) recordFailure(ctx context.Context, user *IdentityUser, now time.Time) {
-	failed := user.FailedLogins + 1
-	var locked int64
-	if d.maxFailed > 0 && failed >= d.maxFailed {
-		locked, failed = now.Add(d.lockout).UnixMilli(), 0
+	_, _ = d.db.ExecContext(ctx, d.q("UPDATE %s SET failed_logins = failed_logins + 1 WHERE id = $1", d.users), user.ID)
+	if d.maxFailed > 0 {
+		_, _ = d.db.ExecContext(ctx, d.q("UPDATE %s SET failed_logins = 0, locked_until = $1 WHERE id = $2 AND failed_logins >= $3", d.users),
+			now.Add(d.lockout).UnixMilli(), user.ID, d.maxFailed)
 	}
-	_, _ = d.db.ExecContext(ctx, d.q("UPDATE %s SET failed_logins = $1, locked_until = $2 WHERE id = $3", d.users), failed, locked, user.ID)
 }
 
 func verifyTOTP(secret, code string, now time.Time) bool {
@@ -693,11 +759,19 @@ func (d *IdentityDirectory) ChangePassword(ctx context.Context, userID, current,
 // Authorize checks that actor administers tenant: a global role, or an admin
 // role in the actor's current membership of that tenant (read from the
 // database, so a demotion takes effect immediately).
+//
+// A global role counts only while the database still backs it: the token's
+// roles are a snapshot from sign-in, so a demoted or suspended operator would
+// otherwise keep administering every tenant until the token expired.
 func (d *IdentityDirectory) Authorize(ctx context.Context, actor Principal, tenant string) error {
 	if actor.ID == "" {
 		return errUnauthenticated
 	}
-	if d.isGlobal(actor) {
+	global, err := d.globalInDatabase(ctx, actor)
+	if err != nil {
+		return databaseFailure(err)
+	}
+	if global {
 		return nil
 	}
 	if tenant == "" {
@@ -741,6 +815,9 @@ func (d *IdentityDirectory) Invite(ctx context.Context, actor Principal, tenant,
 	}
 	if tenant == "" {
 		return nil, invalidInput("a tenant is required")
+	}
+	if err := d.checkGrant(actor, roles); err != nil {
+		return nil, err
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -981,6 +1058,9 @@ func (d *IdentityDirectory) guardLastAdmin(ctx context.Context, tx *sql.Tx, tena
 
 // AddMembership adds an existing user to tenant.
 func (d *IdentityDirectory) AddMembership(ctx context.Context, actor Principal, tenant, userID, email string, roles []string, orgUnit string) (map[string]any, error) {
+	if err := d.checkGrant(actor, roles); err != nil {
+		return nil, err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	tx, err := d.db.BeginTx(ctx, nil)
@@ -1021,6 +1101,9 @@ func (d *IdentityDirectory) AddMembership(ctx context.Context, actor Principal, 
 // ChangeMembership replaces a member's roles and/or org unit (nil roles or a
 // nil org unit keep the current value).
 func (d *IdentityDirectory) ChangeMembership(ctx context.Context, actor Principal, tenant, userID string, roles []string, orgUnit *string) (map[string]any, error) {
+	if err := d.checkGrant(actor, roles); err != nil {
+		return nil, err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	tx, err := d.db.BeginTx(ctx, nil)

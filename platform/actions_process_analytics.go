@@ -71,6 +71,9 @@ var processAnalyticsAction = ActionFactoryFunc(func(build BuildContext, spec Nod
 	name := configString(spec.Config, "process", "")
 
 	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
+		if err := requireOperator(ctx, nil, "process analytics"); err != nil {
+			return ActionResult{}, err
+		}
 		store := engine.Store()
 		// A tenant-scoped caller only ever sees its own runs.
 		base := process.RunFilter{Process: name, TenantID: ctx.TenantID}

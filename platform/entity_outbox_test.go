@@ -107,7 +107,18 @@ intent "events" {
   }
 }
 
+intent "events_open" {
+  response "r"
+  node "r" {
+    uses "entity.events"
+    resource "db"
+    kind effect
+    provides [r]
+  }
+}
+
 route "events" { method GET path "/ops/invoice-events" intent "events" auth "jwt" }
+route "events_open" { method GET path "/ops/open-events" intent "events_open" }
 route "requeue" { method POST path "/ops/invoice-events/:event_id/:op" intent "events" auth "jwt" }
 route "switch" { method POST path "/switch" intent "switch_on" auth "jwt" }
 route "synced" { method GET path "/synced" intent "synced" auth "jwt" }
@@ -129,7 +140,7 @@ func TestEntityDurableHooksPostgres(t *testing.T) {
 func runEntityDurableHooks(t *testing.T, driver, dsn string) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "app.bcl")
-	if err := os.WriteFile(path, []byte(entityOutboxApp), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(appSQL(driver, entityOutboxApp)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	h := newAppHarness(t, path, map[string]string{
@@ -163,6 +174,10 @@ func runEntityDurableHooks(t *testing.T, driver, dsn string) {
 	}
 	if status, _ := h.call("GET", "/ops/invoice-events", user, nil); status != 403 {
 		t.Fatalf("events without the ops role: %d", status)
+	}
+	// Without roles and without auth the outbox is still not anonymous.
+	if status, body := h.call("GET", "/ops/open-events", "", nil); status != 401 {
+		t.Fatalf("anonymous events without roles: %d %v", status, body)
 	}
 
 	// Fix the cause and requeue: delivered once, with the actor.

@@ -109,7 +109,7 @@ GET /api/sales/-/analytics?metrics=count,sum:amount,avg:amount&group_by=region&b
   - `integer` sums, minimums and maximums are integers;
   - averages of `integer` and `number` columns are numbers.
 - A metric over no values is `null`.
-- The database does the grouping, and no rows are loaded. Every metric derives from `SUM`, `COUNT`, `MIN` and `MAX`, and days and months are `SUBSTR` of the stored ISO text, so the same SQL runs on SQLite, PostgreSQL and MySQL. Weeks are rolled up from days in Go.
+- The database does the grouping, and no rows are loaded. Every metric derives from `SUM`, `COUNT`, `MIN` and `MAX`, and days and months are `SUBSTR` of the stored ISO text, so the same SQL is written for SQLite, PostgreSQL and MySQL. It is tested on SQLite and PostgreSQL only. Weeks are rolled up from days in Go.
 - A query that would produce more than 1,000 groups is refused with a `422` rather than truncated. Filter it, group by less, or use a coarser bucket.
 
 ## Bulk operations
@@ -156,7 +156,7 @@ entity "place" {
 - Each create, update and delete rewrites the record's tokens **in the same transaction as the change**, so the index never disagrees with a committed record. A soft delete drops the tokens.
 - A token is a word of the search columns: compatibility-decomposed, accents dropped, lower-cased (`ß` becomes `ss`), split on anything that is not a letter or digit. Words are cut at 64 characters, and a record indexes at most 512 distinct words.
 - `q=` is tokenised the same way (at most 8 words). **Every** query word must be the prefix of some word of the row: `q=bri rep` finds "Bridge repair", `q=zurich` finds "Zürich", and `q=ridge` finds nothing. A query with no letters or digits does not filter.
-- The match is an indexed `token LIKE 'word%'` on SQLite, PostgreSQL and MySQL.
+- The match is an indexed `token LIKE 'word%'` on SQLite, PostgreSQL and MySQL. The token index is tested on SQLite and PostgreSQL; MySQL is not verified.
 
 When the application starts and a token table is empty (because the index was just turned on for an existing table, for example), every live record is indexed in the background. To rebuild on demand, for example after rows were changed with raw SQL, use an `entity.reindex` node:
 
@@ -176,7 +176,7 @@ intent "places.reindex" {
 }
 ```
 
-It re-derives the tokens of every live record, a page per transaction, drops tokens of deleted records and returns `{entity, indexed}`.
+The caller must be authenticated, with or without `roles`. It re-derives the tokens of every live record, a page per transaction, drops tokens of deleted records and returns `{entity, indexed}`.
 
 ## Access and scoping
 
@@ -191,6 +191,21 @@ It re-derives the tokens of every live record, a page per transaction, drops tok
 - `tenant_scoped`: rows of the caller's tenant only. The tenant is stamped on create.
 - `owner_scoped`: rows the caller created, unless they hold one of `owner_bypass_roles`.
 - `org_resource` + `org_column`: rows inside the caller's organisational units (an `org.hierarchy` resource). Writes outside the caller's units are refused.
+
+## Databases
+
+Entities run on SQLite, PostgreSQL and the MySQL family. On MySQL, keyed and indexed columns are `VARCHAR(191)`, and index DDL has no `IF NOT EXISTS`: a second startup meets "Duplicate key name", which the migration runner treats as already done.
+
+What the test suite runs on each server:
+
+| Feature | SQLite | PostgreSQL 16 | MySQL family |
+|---|---|---|---|
+| CRUD, filters, `search`, versioning, scoping, plain hooks | yes | yes | yes, on MariaDB 10.11 |
+| A second startup over the same database | yes | yes | yes, on MariaDB 10.11 |
+| Durable hooks (`ref_entity_events`) | yes | yes | yes, on MariaDB 10.11 |
+| `search_index`, bulk, aggregates, analytics | yes | yes | not verified |
+
+MySQL 8 itself has not been run. Hand-written SQL, in `migrations` and in `database.*` statements, goes to the driver unchanged, so an app on MySQL writes `?` placeholders and `INSERT IGNORE` or `ON DUPLICATE KEY UPDATE` rather than `ON CONFLICT`.
 
 ## Hooks
 
@@ -217,6 +232,8 @@ To operate the outbox, use an `entity.events` node on the database:
 - By default it lists dead-lettered events: `{dead: [...]}`, each with its input, attempts and last error.
 - With op `requeue` (from config, a `:op` path parameter or `?op=`) it gives the event `:event_id` a fresh set of attempts.
 - `entity` limits it to one entity, and `roles` restricts who may call it.
+- The caller must always be authenticated, even without `roles` and on a route without `auth` (an anonymous call gets `401`): dead-lettered events hold full record payloads. The same holds for `entity.reindex`.
+- A caller with a resolved tenant sees, and may requeue, only its own tenant's events (the event's `tenant_id`). A tenant's listing is filtered after `limit` is applied, so it may hold fewer than `limit` events.
 
 ## Raw responses
 
