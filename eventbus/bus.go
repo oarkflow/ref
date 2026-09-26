@@ -45,7 +45,7 @@ func (b *Bus) Subscribe(eventType string, h Handler) {
 func (b *Bus) Publish(ctx context.Context, events ...Event) {
 	for _, e := range events {
 		fmt.Printf("[EVENT BUS] Published Event: %s (Agg: %s)\n", e.Type, e.Aggregate)
-		
+
 		b.mu.RLock()
 		handlers := b.handlers[e.Type]
 		b.mu.RUnlock()

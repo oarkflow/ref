@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/oarkflow/ref/platform"
+	"github.com/oarkflow/ref/signing"
 )
 
 // Revision statuses.
@@ -35,16 +36,20 @@ const (
 
 // Revision is one version of an application's document.
 type Revision struct {
-	ID        string    `json:"id"`
-	App       string    `json:"app"`
-	Seq       int64     `json:"seq"`
-	Source    string    `json:"source"`
-	Checksum  string    `json:"checksum"`
-	Signature string    `json:"signature,omitempty"`
-	Author    string    `json:"author"`
-	Message   string    `json:"message,omitempty"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        string `json:"id"`
+	App       string `json:"app"`
+	Seq       int64  `json:"seq"`
+	Source    string `json:"source"`
+	Checksum  string `json:"checksum"`
+	Signature string `json:"signature,omitempty"`
+	// KeySignature is an asymmetric (Ed25519 or RSA) signature over
+	// SigningPayload, made by the Manager's Signer. Unlike the HMAC, anyone
+	// with the public key can check it, and the key that verifies cannot sign.
+	KeySignature *signing.Signature `json:"key_signature,omitempty"`
+	Author       string             `json:"author"`
+	Message      string             `json:"message,omitempty"`
+	Status       string             `json:"status"`
+	CreatedAt    time.Time          `json:"created_at"`
 	// BaseID is the revision that was active when this one was proposed;
 	// Changes is the block-level diff against it.
 	BaseID    string                    `json:"base_id,omitempty"`
@@ -112,6 +117,13 @@ type Manager struct {
 	// Secret signs revisions (HMAC-SHA256), so a source edited in the store
 	// cannot be activated.
 	Secret []byte
+	// Signer additionally signs revisions with an asymmetric key (typically
+	// Ed25519; a *signing.KeySet). Verifier checks those signatures; when it
+	// is nil and Signer can verify too (a *signing.KeySet can), Signer is
+	// used. A verifier holding only public keys lets a host check revisions
+	// it could never have signed.
+	Signer   Signer
+	Verifier Verifier
 	// Approvals is how many distinct reviewers must approve (default 1; 0
 	// activates without review, for development).
 	Approvals int
@@ -135,6 +147,34 @@ func newID() string {
 	return "rev_" + hex.EncodeToString(b[:])
 }
 
+// Signer signs a revision's payload; *signing.KeySet implements it.
+type Signer interface {
+	Sign(payload []byte) (signing.Signature, error)
+}
+
+// Verifier checks a revision's asymmetric signature; *signing.KeySet
+// implements it.
+type Verifier interface {
+	Verify(payload []byte, sig signing.Signature) error
+}
+
+// SigningPayload is what a revision's key signature covers: the app, the
+// sequence and the source checksum, under a domain prefix so the signature
+// cannot be replayed as a signature over anything else.
+func SigningPayload(r *Revision) []byte {
+	return fmt.Appendf(nil, "ref-revision/v1|%s|%d|%s", r.App, r.Seq, r.Checksum)
+}
+
+func (m *Manager) verifier() Verifier {
+	if m.Verifier != nil {
+		return m.Verifier
+	}
+	if v, ok := m.Signer.(Verifier); ok {
+		return v
+	}
+	return nil
+}
+
 func (m *Manager) sign(r *Revision) string {
 	if len(m.Secret) == 0 {
 		return ""
@@ -144,16 +184,27 @@ func (m *Manager) sign(r *Revision) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// Verify checks that a revision's source matches its checksum and signature.
+// Verify checks that a revision's source matches its checksum and that it
+// carries a valid signature: the asymmetric key signature (with a Verifier)
+// or the HMAC (with a Secret) — either one is enough, so revisions signed
+// before a key was introduced keep verifying. With neither configured only
+// the checksum is checked.
 func (m *Manager) Verify(r *Revision) error {
 	sum := sha256.Sum256([]byte(r.Source))
 	if hex.EncodeToString(sum[:]) != r.Checksum {
 		return ErrTampered
 	}
-	if len(m.Secret) > 0 && subtle.ConstantTimeCompare([]byte(m.sign(r)), []byte(r.Signature)) != 1 {
-		return ErrTampered
+	verifier := m.verifier()
+	if len(m.Secret) == 0 && verifier == nil {
+		return nil
 	}
-	return nil
+	if verifier != nil && r.KeySignature != nil && verifier.Verify(SigningPayload(r), *r.KeySignature) == nil {
+		return nil
+	}
+	if len(m.Secret) > 0 && r.Signature != "" && subtle.ConstantTimeCompare([]byte(m.sign(r)), []byte(r.Signature)) == 1 {
+		return nil
+	}
+	return ErrTampered
 }
 
 // Active returns the app's active revision (nil when there is none).
@@ -191,6 +242,13 @@ func (m *Manager) Propose(ctx context.Context, src []byte, author, message strin
 	r := &Revision{ID: newID(), App: m.App, Seq: seq, Source: string(src), Checksum: hex.EncodeToString(sum[:]),
 		Author: author, Message: message, Status: StatusPending, CreatedAt: now, Warnings: report.Warnings}
 	r.Signature = m.sign(r)
+	if m.Signer != nil {
+		sig, err := m.Signer.Sign(SigningPayload(r))
+		if err != nil {
+			return nil, fmt.Errorf("deploy: sign revision: %w", err)
+		}
+		r.KeySignature = &sig
+	}
 	active, err := m.Active(ctx)
 	if err != nil {
 		return nil, err

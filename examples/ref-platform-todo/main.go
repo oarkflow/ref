@@ -18,7 +18,7 @@ func main() {
 	defer cancel()
 
 	opts := platform.DefaultLoadOptions()
-	
+
 	// Load the BCL file that contains the entire application definition
 	p, err := platform.LoadFile(ctx, "examples/ref-platform-todo/app.bcl", opts)
 	if err != nil {
@@ -27,7 +27,7 @@ func main() {
 	defer p.Close()
 
 	app := fh.NewFast()
-	
+
 	// Mount the REF intents as HTTP routes
 	if err := p.Mount(app); err != nil {
 		log.Fatalf("Failed to mount application: %v", err)
@@ -47,11 +47,11 @@ func main() {
 	// Block until signal is received
 	<-ctx.Done()
 	log.Println("\nReceived shutdown signal. Commencing graceful shutdown...")
-	
+
 	// Shutdown fast-http engine
 	if err := app.Shutdown(); err != nil {
 		log.Printf("Error during server shutdown: %v", err)
 	}
-	
+
 	log.Println("Shutdown complete.")
 }

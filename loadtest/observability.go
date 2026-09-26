@@ -17,14 +17,14 @@ import (
 
 type ObservableMetrics struct {
 	// Request metrics
-	TotalRequests   atomic.Int64
-	SuccessCount    atomic.Int64
-	ErrorCount      atomic.Int64
-	TimeoutCount    atomic.Int64
-	RateLimited     atomic.Int64
-	TotalLatencyNs  atomic.Int64
-	MinLatencyNs    atomic.Int64
-	MaxLatencyNs    atomic.Int64
+	TotalRequests  atomic.Int64
+	SuccessCount   atomic.Int64
+	ErrorCount     atomic.Int64
+	TimeoutCount   atomic.Int64
+	RateLimited    atomic.Int64
+	TotalLatencyNs atomic.Int64
+	MinLatencyNs   atomic.Int64
+	MaxLatencyNs   atomic.Int64
 
 	// Throughput tracking (per-second snapshots)
 	SecondlyRPS     []float64
@@ -189,11 +189,11 @@ func (s *SystemSampler) sample() {
 // ============================================================
 
 type ThroughputSampler struct {
-	metrics    *ObservableMetrics
-	interval   time.Duration
-	lastReqs   int64
-	stop       chan struct{}
-	wg         sync.WaitGroup
+	metrics  *ObservableMetrics
+	interval time.Duration
+	lastReqs int64
+	stop     chan struct{}
+	wg       sync.WaitGroup
 }
 
 // NewThroughputSampler creates a sampler that tracks RPS over time.
@@ -493,7 +493,7 @@ func PrintFullReport(name string, m *ObservableMetrics) {
 
 	// ── Efficiency Score ──
 	// Compute a composite score based on throughput, latency, and memory
-	rpsScore := math.Min(rps/10000*100, 100)                          // 10k rps = 100
+	rpsScore := math.Min(rps/10000*100, 100)                                // 10k rps = 100
 	latencyScore := math.Max(0, 100-float64(avgLatency.Microseconds())/100) // <100us = 100
 	memScore := 100.0
 	if len(m.HeapAllocSamples) > 0 {

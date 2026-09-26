@@ -121,7 +121,9 @@ func NewRollout(opts RolloutOptions) (http.Handler, error) {
 			opts.Legacy.ServeHTTP(recorder, clone())
 			legacy := recorder.snapshot()
 			recorder.copyTo(w)
-			if legacy.Status < 200 || legacy.Status >= 300 { return }
+			if legacy.Status < 200 || legacy.Status >= 300 {
+				return
+			}
 			select {
 			case shadowSlots <- struct{}{}:
 				go func(snapshot RequestSnapshot, legacy ResponseSnapshot) {
@@ -294,7 +296,9 @@ func ShadowFH(legacy fh.HandlerFunc, preview PreviewFunc, maxBodyBytes int, onDi
 		if legacyResponse.Status == 0 {
 			legacyResponse.Status = 200
 		}
-		if legacyResponse.Status < 200 || legacyResponse.Status >= 300 { return err }
+		if legacyResponse.Status < 200 || legacyResponse.Status >= 300 {
+			return err
+		}
 		select {
 		case shadowSlots <- struct{}{}:
 			go func(snapshot RequestSnapshot, legacyResult ResponseSnapshot) {

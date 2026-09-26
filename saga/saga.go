@@ -37,7 +37,7 @@ func NewOrchestrator() *Orchestrator {
 func (o *Orchestrator) AddStep(name string, action, compensate func(ctx context.Context) error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	
+
 	o.steps = append(o.steps, Step{
 		Name:       name,
 		Action:     action,
@@ -59,7 +59,7 @@ func (o *Orchestrator) Execute(ctx context.Context) error {
 		if err != nil {
 			// A step failed. We must roll back all previously completed steps.
 			fmt.Printf("[SAGA] Step '%s' failed: %v. Initiating compensation (rollback)...\n", step.Name, err)
-			
+
 			// Execute compensation in reverse order
 			for i := len(completedSteps) - 1; i >= 0; i-- {
 				compStep := completedSteps[i]
@@ -76,7 +76,7 @@ func (o *Orchestrator) Execute(ctx context.Context) error {
 			// Return wrapped error
 			return fmt.Errorf("%w: failed at step '%s' (%v)", ErrSagaFailed, step.Name, err)
 		}
-		
+
 		// Mark step as completed so it can be compensated if a future step fails.
 		fmt.Printf("[SAGA] Step '%s' completed successfully.\n", step.Name)
 		completedSteps = append(completedSteps, step)

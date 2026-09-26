@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/oarkflow/ref/signing"
 )
 
 // Engine applies operations to cases of one compiled pipeline. It is safe for
@@ -22,8 +24,12 @@ type Engine struct {
 	// SigningKey signs issued certificates (HMAC-SHA256). Without it
 	// certificates carry a content hash only.
 	SigningKey []byte
-	Now        func() time.Time
-	NewID      func() string
+	// Signer additionally signs certificates with an asymmetric key
+	// (Ed25519 or RSA) and verifies them with any key of the set, so a
+	// certificate can be checked offline against the published JWKS.
+	Signer *signing.KeySet
+	Now    func() time.Time
+	NewID  func() string
 	// Lookup resolves an input's lookup set (reference data) into options for
 	// the case. When set, submitted values must be one of them.
 	Lookup func(set string, c *Case) []Option

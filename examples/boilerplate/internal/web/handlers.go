@@ -70,15 +70,15 @@ func (h *ViewHandler) Admin(c fh.Ctx) error {
 	roles := h.rbacManager.GetRoleDefinitions()
 
 	return c.Render("pages/dashboard/admin", map[string]any{
-		"title":       "Admin Portal — System Governance",
-		"activeNav":   "admin",
-		"user":        user,
-		"principal":   principal,
-		"users":       users,
-		"totalUsers":  total,
-		"roles":       roles,
-		"success":     c.Query("success", ""),
-		"error":       c.Query("error", ""),
+		"title":      "Admin Portal — System Governance",
+		"activeNav":  "admin",
+		"user":       user,
+		"principal":  principal,
+		"users":      users,
+		"totalUsers": total,
+		"roles":      roles,
+		"success":    c.Query("success", ""),
+		"error":      c.Query("error", ""),
 	}, "layouts/base")
 }
 

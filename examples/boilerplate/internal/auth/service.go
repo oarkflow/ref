@@ -22,12 +22,12 @@ var (
 
 // Service defines auth business logic operations.
 type Service struct {
-	userRepo       UserRepository
-	sessionRepo    SessionRepository
-	resetRepo      PasswordResetRepository
-	hasher         *PasswordHasher
-	sessionTTL     time.Duration
-	resetTokenTTL  time.Duration
+	userRepo      UserRepository
+	sessionRepo   SessionRepository
+	resetRepo     PasswordResetRepository
+	hasher        *PasswordHasher
+	sessionTTL    time.Duration
+	resetTokenTTL time.Duration
 }
 
 // ServiceConfig configures auth behaviors.

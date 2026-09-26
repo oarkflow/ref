@@ -21,6 +21,7 @@ import (
 	"github.com/oarkflow/fh/pkg/storage/kv"
 	"github.com/oarkflow/ref/intent"
 	"github.com/oarkflow/ref/platform/spi"
+	"github.com/oarkflow/ref/signing"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -64,10 +65,11 @@ func registerAuthResources(r *Registry) {
 
 	mustResource(r, "auth.jwt", ResourceFactoryFunc(openJWTAuth), ResourceKindInfo{
 		Family:   "auth",
-		Summary:  "Verifies bearer JWTs against a configured secret or public key. The algorithm comes from the key, never the token.",
+		Summary:  "Verifies bearer JWTs against a configured secret, public key or crypto.signer key set. The algorithm comes from the key, never the token.",
 		Provides: []string{"Authenticator", "JWTIssuer"},
 		Config: []ConfigField{
-			{Name: "algorithm", Type: "string", Default: "HS256", Summary: "HS256/384/512, RS256/384/512 or ES256/384/512"},
+			{Name: "algorithm", Type: "string", Default: "HS256", Summary: "HS256/384/512, RS256/384/512, PS256/384/512, ES256/384/512 or EdDSA"},
+			{Name: "signer", Type: "resource", Summary: "crypto.signer whose active key signs (EdDSA, RS256 or PS256) and whose every key verifies, by kid; replaces secret/public_key"},
 			{Name: "secret", Type: "string", Summary: "HMAC secret, at least 32 bytes"},
 			{Name: "public_key", Type: "string", Summary: "PEM verification key, or a path when public_key_file is set"},
 			{Name: "public_key_file", Type: "string"},
@@ -392,6 +394,7 @@ func claimStrings(body map[string]any, path string) []string {
 }
 
 type jwtAuth struct {
+	signer  *Signer
 	keys    map[string]*JWTKey
 	signing *JWTKey
 	verify  JWTVerifyOptions
@@ -402,7 +405,7 @@ type jwtAuth struct {
 
 func openJWTAuth(_ context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("auth.jwt", spec.Config,
-		"algorithm", "secret", "public_key", "public_key_file", "private_key", "private_key_file",
+		"algorithm", "secret", "public_key", "public_key_file", "private_key", "private_key_file", "signer",
 		"issuer", "audience", "skew", "ttl", "allow_missing_expiry",
 		"subject_claim", "roles_claim", "scopes_claim", "tenant_claim", "email_claim", "username_claim"); err != nil {
 		return nil, nil, err
@@ -433,7 +436,31 @@ func openJWTAuth(_ context.Context, spec ResourceSpec) (Resource, io.Closer, err
 		},
 	}
 
+	signer, err := requireSigner(spec, "signer")
+	if err != nil {
+		return nil, nil, err
+	}
 	switch {
+	case signer != nil:
+		// The key set decides every algorithm: each key verifies tokens
+		// carrying its kid, the active key signs. A retired key stays in the
+		// set so tokens it issued keep verifying until they expire.
+		for _, key := range []string{"secret", "public_key", "public_key_file", "private_key", "private_key_file"} {
+			if configString(spec.Config, key, "") != "" {
+				return nil, nil, fmt.Errorf("resource %q: config.signer replaces config.%s; set one or the other", spec.Name, key)
+			}
+		}
+		auth.signer = signer
+		for _, k := range signer.keys.Keys() {
+			key, err := JWTKeyFromSigning(k)
+			if err != nil {
+				return nil, nil, fmt.Errorf("resource %q: %w", spec.Name, err)
+			}
+			auth.keys[k.ID] = key
+			if k == signer.keys.Active() {
+				auth.signing = key
+			}
+		}
 	case strings.HasPrefix(string(algorithm), "HS"):
 		secret, err := requiredString(spec.Config, "secret")
 		if err != nil {
@@ -488,6 +515,14 @@ func readKeyMaterial(config map[string]any, key string) ([]byte, error) {
 	return data, nil
 }
 
+// JWKS publishes the verification keys of a signer-backed resource.
+func (a *jwtAuth) JWKS() signing.JWKS {
+	if a.signer == nil {
+		return signing.JWKS{Keys: []signing.JWK{}}
+	}
+	return a.signer.JWKS()
+}
+
 // Authenticate implements spi.Authenticator.
 func (a *jwtAuth) Authenticate(_ context.Context, creds Credentials) (Principal, error) {
 	if creds.BearerToken == "" {
@@ -508,7 +543,7 @@ func (a *jwtAuth) Authenticate(_ context.Context, creds Credentials) (Principal,
 // calls after a login intent has verified credentials.
 func (a *jwtAuth) Issue(principal Principal, ttl time.Duration, extra map[string]any) (string, time.Time, error) {
 	if a.signing == nil || !a.signing.CanSign() {
-		return "", time.Time{}, errors.New("this auth.jwt resource has no signing key: set secret, or private_key_file for an asymmetric algorithm")
+		return "", time.Time{}, errors.New("this auth.jwt resource has no signing key: set secret, private_key_file for an asymmetric algorithm, or a signer with a private key")
 	}
 	if ttl <= 0 {
 		ttl = a.ttl
