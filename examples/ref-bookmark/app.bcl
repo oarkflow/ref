@@ -166,26 +166,13 @@ resource "policy_engine" {
     default_tenant "default"
     strict_validation true
     request_timeout 5s
-  }
-}
-
-####################################################################
-# Publish business rules at startup
-####################################################################
-
-intent "rules.publish_bookmark_policy" {
-  response "response"
-  timeout 10s
-  node "publish" {
-    uses "rules.publish"
-    resource "policy_engine"
-    kind effect
-    requires [input]
-    provides [published]
-    config {
-      name "bookmark-policy"
+    # Published when the engine opens, on every start (the store is in
+    # memory); an invalid rule fails startup rather than the first request.
+    definition "bookmark-policy" {
       version "1"
       source <<BCL
+        bcl { version "1.0" }
+
         decision_table "bookmark.creation_policy" {
           default allow
           hit_policy first
@@ -201,24 +188,38 @@ intent "rules.publish_bookmark_policy" {
           }
           row "url-too-long" {
             priority 80
-            when { all { input.url != nil len(input.url) > 2048 } }
+            when {
+              all {
+                input.url != nil
+                len(input.url) > 2048
+              }
+            }
             then { outcome { decision deny reason "url must not exceed 2048 characters" } }
           }
           row "title-too-long" {
             priority 70
-            when { all { input.title != nil len(input.title) > 200 } }
+            when {
+              all {
+                input.title != nil
+                len(input.title) > 200
+              }
+            }
             then { outcome { decision deny reason "title must not exceed 200 characters" } }
           }
           row "too-many-tags" {
             priority 60
-            when { all { input.tags != nil len(input.tags) > 10 } }
+            when {
+              all {
+                input.tags != nil
+                len(input.tags) > 10
+              }
+            }
             then { outcome { decision deny reason "a bookmark may have at most 10 tags" } }
           }
         }
 BCL
     }
   }
-  node "response" { uses "collect" requires [published] provides [response] }
 }
 
 ####################################################################
@@ -441,8 +442,9 @@ intent "bookmark.create" {
     uses "queue.outbox_publish"
     resource "outbox"
     kind effect
+    # Published only once both decisions have allowed the write.
     speculation post_policy_safe
-    requires [bookmark_row, principal]
+    requires [bookmark_row, principal, auth_decision, policy_decision]
     provides [analytics_event]
     config {
       topic "bookmark.created"
@@ -1112,6 +1114,7 @@ route "create_bookmark" {
   status 201
   mode sync
   auth "identity"
+  session "sessions"
   timeout 10s
   max_body_bytes 8192
 
@@ -1142,6 +1145,7 @@ route "list_bookmarks" {
   intent "bookmark.list"
   mode sync
   auth "identity"
+  session "sessions"
   timeout 5s
 
   authz {
@@ -1165,6 +1169,7 @@ route "get_bookmark" {
   intent "bookmark.get"
   mode sync
   auth "identity"
+  session "sessions"
   timeout 5s
 
   authz {
@@ -1181,6 +1186,7 @@ route "update_bookmark" {
   intent "bookmark.update"
   mode sync
   auth "identity"
+  session "sessions"
   timeout 5s
   max_body_bytes 4096
 
@@ -1196,6 +1202,7 @@ route "delete_bookmark" {
   intent "bookmark.delete"
   mode sync
   auth "identity"
+  session "sessions"
   timeout 5s
 
   authz {
@@ -1219,6 +1226,7 @@ route "search_bookmarks" {
   intent "bookmark.search"
   mode sync
   auth "identity"
+  session "sessions"
   timeout 5s
 
   authz {
