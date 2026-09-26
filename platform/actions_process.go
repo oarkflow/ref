@@ -24,6 +24,7 @@ import (
 // registerProcessActions installs both halves of the durable-process family.
 func registerProcessActions(r *Registry) {
 	registerProcessRunActions(r)
+	registerProcessAnalyticsAction(r)
 	registerTaskActions(r)
 }
 
