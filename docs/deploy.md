@@ -28,7 +28,7 @@ It opens nothing: no database connection, no migration, no listener. Secrets tha
 
 `platform.DiffDocuments(before, after)` lists every named block (resource, shape, role, intent, route, process, pipeline, entity, flag) that was added, removed or changed. Reviewers see this on each revision.
 
-> bcl v0.0.34 still compiles some incomplete expressions (`a ==`, `(a`), so a typo inside an expression can pass validation. It still fails when the revision builds, and then the running revision keeps serving.
+> Expressions are syntax-checked during validation: an unclosed bracket, a dangling operator or leftover tokens (`(a`, `a ==`, `"USD" "NPR"`) make the revision invalid. Errors that depend on data, such as dividing text, still appear only at run time.
 
 ## The workflow
 

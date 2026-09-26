@@ -142,11 +142,17 @@ func TestBCLReservedNamesStillBehaveAsDocumented(t *testing.T) {
 		}
 	})
 
-	t.Run("const is still a parse error", func(t *testing.T) {
+	t.Run("const binds inside a block", func(t *testing.T) {
+		var parsed struct {
+			Probes []struct {
+				Name  string `bcl:",id"`
+				Const string `bcl:"const"`
+			} `bcl:"probe,block"`
+		}
+		// Fixed in v0.0.35: before, `const` inside a block was a parse error.
 		source := "probe \"p\" {\n  const \"x\"\n}\n"
-		var parsed doc
-		if err := bcl.UnmarshalWithOptions([]byte(source), &parsed, &bcl.Options{}); err == nil {
-			t.Fatal("`const` now parses as a key — bclcompat.go's reserved list is out of date")
+		if err := bcl.UnmarshalWithOptions([]byte(source), &parsed, &bcl.Options{}); err != nil || len(parsed.Probes) != 1 || parsed.Probes[0].Const != "x" {
+			t.Fatalf("`const` no longer binds as a key (BCL regression): %v %+v", err, parsed.Probes)
 		}
 	})
 }

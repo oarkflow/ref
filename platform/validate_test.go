@@ -65,3 +65,29 @@ func TestValidateOpensNothing(t *testing.T) {
 		t.Fatalf("diff: %+v", diff)
 	}
 }
+
+// A malformed expression makes the document invalid, so a deploy proposal
+// with a typo in a guard is refused instead of failing on its first request.
+func TestValidateReportsMalformedExpression(t *testing.T) {
+	src := `
+name "guarded"
+intent "check" {
+  response "ok"
+  node "ok" {
+    uses "decision.expression"
+    requires [input]
+    provides [ok]
+    config { expression "(input.amount > 100" }
+  }
+}
+route "check" { method POST path "/check" intent "check" }
+`
+	r := Validate(context.Background(), []byte(src), ".", DefaultLoadOptions())
+	if joined := strings.Join(r.Errors, "\n"); !strings.Contains(joined, "syntax error") {
+		t.Fatalf("malformed expression not reported: %v", r.Errors)
+	}
+	fixed := strings.Replace(src, `"(input.amount > 100"`, `"input.amount > 100"`, 1)
+	if r := Validate(context.Background(), []byte(fixed), ".", DefaultLoadOptions()); len(r.Errors) != 0 {
+		t.Fatalf("valid document rejected: %v", r.Errors)
+	}
+}

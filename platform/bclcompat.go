@@ -11,12 +11,12 @@ import (
 // BCL has behaviours a spec has to be designed around. Most of them fail
 // *silently* — a field stays empty, a timeout becomes zero, a whole block
 // vanishes — which is why they are written down here and asserted by
-// bcl_test.go rather than rediscovered one incident at a time. As of v0.0.34:
+// bcl_test.go rather than rediscovered one incident at a time. As of v0.0.35:
 //
-//  1. `const` is a parser keyword: a field or config key named `const` is a
-//     parse error. (`when` was one too until v0.0.34, and derailed the parse;
-//     it now binds like any key, so guards accept `when` as an alias of
-//     `condition`.)
+//  1. `when` and `const` bind like any key inside a block. Until v0.0.34
+//     `when` opened a conditional block and swallowed the rest of the
+//     document, and until v0.0.35 `const` was a parse error; guards now accept
+//     `when` as an alias of `condition`.
 //
 //  2. `type`, `map`, `import` and `include` never bind to a struct field. A
 //     `bcl:"type"` field silently stays empty. This package spells the node and
@@ -44,7 +44,7 @@ import (
 //
 // reservedBCLNames is asserted by a test, so a future BCL release that changes any
 // of this is caught here rather than in somebody's deployment.
-var reservedBCLNames = []string{"const", "type", "map", "import", "include", "schema", "field", "audit"}
+var reservedBCLNames = []string{"type", "map", "import", "include", "schema", "field", "audit"}
 
 // Duration is a configured duration: a string in the document, a time.Duration
 // once parsed.

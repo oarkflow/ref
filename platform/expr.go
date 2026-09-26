@@ -76,11 +76,51 @@ func CompileExpr(raw string) (*Expression, error) {
 	if raw == "" {
 		return nil, nil
 	}
-	prog, err := bcl.CompileExpression(rewriteExpression(raw))
+	prog, err := bcl.CompileExpression(raw)
 	if err != nil {
 		return nil, fmt.Errorf("compile expression %q: %w", raw, err)
 	}
+	if err := checkSyntax(prog); err != nil {
+		return nil, fmt.Errorf("compile expression %q: %w", raw, err)
+	}
 	return &Expression{raw: raw, prog: prog}, nil
+}
+
+// syntaxErrorPrefixes are how bcl reports a malformed expression: an unclosed
+// bracket, a dangling operator, tokens left after a complete expression.
+var syntaxErrorPrefixes = []string{"expected '", "unexpected token", "unexpected expression token", "unterminated", "error: unterminated"}
+
+// checkSyntax rejects a malformed expression at compile time. bcl (v0.0.35)
+// only tokenises in CompileExpression and parses while it evaluates, so a
+// typo such as `(a` or `a ==` would otherwise surface on the first request
+// rather than when the document is validated. The expression is evaluated
+// once against an empty environment (bcl parses both sides of a
+// short-circuit), and only the parser's errors count: an error that depends
+// on data, such as a type mismatch, is left to real evaluation.
+func checkSyntax(prog *bcl.ExpressionProgram) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = nil // a function panicking on missing data is not a syntax error
+		}
+	}()
+	opts := *evalOptions
+	opts.Variables = Env{}
+	if _, evalErr := prog.Eval(Env{}, &opts); evalErr != nil {
+		msg := evalErr.Error()
+		for _, prefix := range syntaxErrorPrefixes {
+			if strings.HasPrefix(msg, prefix) {
+				return fmt.Errorf("syntax error: %s", firstLine(msg))
+			}
+		}
+	}
+	return nil
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // MustCompileExpr is CompileExpr for expressions built by this package itself,

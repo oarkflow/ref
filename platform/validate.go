@@ -118,6 +118,7 @@ func Validate(ctx context.Context, src []byte, baseDir string, opts LoadOptions)
 			}
 		}
 	}
+	r.Errors = append(r.Errors, validateExpressions(doc, opts.Registry)...)
 	r.Errors = append(r.Errors, validateNotifyChannels(doc)...)
 	flagDoc := doc
 	flagDoc.FlagStore = "" // the store is a resource: checked when it opens
@@ -263,4 +264,39 @@ func DiffDocuments(before, after *Document) []DocumentChange {
 	compare("flag", index(before.Flags, func(i int) string { return before.Flags[i].Name }, len(before.Flags)),
 		index(after.Flags, func(i int) string { return after.Flags[i].Name }, len(after.Flags)))
 	return out
+}
+
+// validateExpressions compiles the expressions of intents and processes: every
+// node config field the action catalog types as an expression, and process
+// edge conditions and step skip_when. Compiling includes a syntax check, so a
+// typo such as `(a` fails validation instead of the first request.
+func validateExpressions(doc Document, registry *Registry) []string {
+	var errs []string
+	check := func(where, expr string) {
+		if _, err := CompileExpr(expr); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", where, err))
+		}
+	}
+	for _, it := range doc.Intents {
+		for _, n := range it.Nodes {
+			for _, field := range registry.actionFields(n.Uses) {
+				if field.Type != "expression" {
+					continue
+				}
+				if expr, ok := n.Config[field.Name].(string); ok {
+					check(fmt.Sprintf("intent %s node %s %s", it.Name, n.Name, field.Name), expr)
+				}
+			}
+		}
+	}
+	for _, p := range doc.Processes {
+		for _, st := range p.Steps {
+			check(fmt.Sprintf("process %s step %s skip_when", p.Name, st.Name), st.SkipWhen)
+		}
+		for _, e := range p.Edges {
+			check(fmt.Sprintf("process %s edge %s condition", p.Name, e.Name), e.Condition)
+			check(fmt.Sprintf("process %s edge %s when", p.Name, e.Name), e.When)
+		}
+	}
+	return errs
 }
