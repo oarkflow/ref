@@ -82,7 +82,7 @@ func registerPipelineActions(r *Registry) {
 		Summary:  "List cases: the caller's own (mine), their work queue (queue) or everything they may view (all), scoped to their jurisdiction",
 		Provides: "The case summaries",
 		Config: with(
-			ConfigField{Name: "scope", Type: "string", Default: "queue", Summary: "mine | queue | all (or ?scope=)"},
+			ConfigField{Name: "scope", Type: "string", Default: "queue", Summary: "mine | queue | all (or ?scope=); ?queue= filters by triage queue, ?order=priority|newest (priority is the default for work lists of triaged pipelines)"},
 			ConfigField{Name: "limit", Type: "int", Default: "50"},
 		),
 	})
@@ -170,6 +170,18 @@ func registerPipelineActions(r *Registry) {
 		Summary:  "Process analytics: cycle and dwell times, rework, SLA attainment, bottlenecks, throughput and per-assignee load",
 		Provides: "The analytics report",
 		Config:   with(roles),
+	})
+	mustAction(r, "pipeline.notify_prefs", pipelineAction("notify_prefs"), ActionInfo{
+		Family: "workflow", Kind: "read",
+		Summary:  "Read the caller's notification preferences, the channels and events they can choose from, and their pending (deferred or digested) notifications",
+		Provides: "{preferences, channels, events, pending}",
+		Config:   common,
+	})
+	mustAction(r, "pipeline.notify_prefs_set", pipelineAction("notify_prefs_set"), ActionInfo{
+		Family: "workflow", Kind: "effect",
+		Summary:  "Replace the caller's notification preferences: {channels, events, timezone, quiet_hours {start, end}, digest immediate|hourly|daily, digest_at}",
+		Provides: "{preferences, channels, events, pending}",
+		Config:   common,
 	})
 	mustAction(r, "pipeline.bulk", pipelineAction("bulk"), ActionInfo{
 		Family: "workflow", Kind: "effect",
@@ -345,6 +357,8 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 		return h.erase(ctx, hookCtx)
 	case "bulk":
 		return h.bulk(ctx, hookCtx)
+	case "notify_prefs", "notify_prefs_set":
+		return h.notifyPrefs(ctx)
 	case "describe":
 		e, err := h.engine("")
 		if err != nil {
@@ -620,6 +634,20 @@ func (h *pipelineHandler) list(ctx *ActionContext) (ActionResult, error) {
 	if s := h.param(ctx, "status"); s != "" {
 		q.Statuses = []string{s}
 	}
+	if s := h.param(ctx, "queue"); s != "" {
+		q.Queues = []string{s}
+	}
+	switch order := h.param(ctx, "order"); order {
+	case "priority":
+		q.Order = pipeline.OrderPriority
+	case "", "newest":
+		// Work lists of a pipeline with triage are ordered by priority.
+		if order == "" && scope != "mine" && scope != "all" && hasTriage(e.C.Def) {
+			q.Order = pipeline.OrderPriority
+		}
+	default:
+		return ActionResult{}, invalidInput("order must be priority or newest")
+	}
 	switch scope {
 	case "mine":
 		if actor.ID == "" {
@@ -709,6 +737,9 @@ func (h *pipelineHandler) list(ctx *ActionContext) (ActionResult, error) {
 				row["on_hold"] = ss.Suspended.Reason
 			}
 		}
+		if c.Triage != nil {
+			row["priority"], row["queue"], row["triage_bucket"] = c.Triage.Priority, c.Triage.Queue, c.Triage.Bucket
+		}
 		out = append(out, row)
 	}
 	return h.out(out)
@@ -730,7 +761,7 @@ func (h *pipelineHandler) get(c *pipeline.Case, e *pipeline.Engine, actor pipeli
 		"id": c.ID, "number": c.Number, "pipeline": c.Pipeline, "status": c.Status, "stage": c.Stage,
 		"org_unit": c.OrgUnit, "created_by": c.CreatedBy, "revision": c.Revision,
 		"created_at": c.CreatedAt, "updated_at": c.UpdatedAt,
-		"stages": stages, "history": c.History, "certificates": c.Certificates,
+		"stages": stages, "history": c.History, "certificates": c.Certificates, "triage": c.Triage,
 	})
 }
 
@@ -828,4 +859,15 @@ func pipelineFailure(err error) error {
 		return intent.Failure{Code: "CONFLICT", Category: intent.CategoryConflict, Message: "the case was changed by someone else; reload and try again"}
 	}
 	return databaseFailure(err)
+}
+
+func hasTriage(def *pipeline.Definition) bool {
+	for _, st := range def.Stages {
+		for _, r := range st.Reviews {
+			if r.Mode == pipeline.ReviewTriage {
+				return true
+			}
+		}
+	}
+	return false
 }

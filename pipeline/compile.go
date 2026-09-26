@@ -38,6 +38,7 @@ func Compile(def *Definition) (*Compiled, error) {
 	if def == nil || strings.TrimSpace(def.Name) == "" {
 		return nil, fmt.Errorf("pipeline: a pipeline needs a name")
 	}
+	def = withGateNodes(def)
 	c := &Compiled{
 		Def:          def,
 		forms:        map[string]*compiledForm{},
@@ -192,6 +193,11 @@ func Compile(def *Definition) (*Compiled, error) {
 			return nil, fmt.Errorf("%s: on %q names unknown stage %q", where, h.Event, h.Stage)
 		}
 	}
+	for _, rule := range def.Notify {
+		if err := checkNotifyRule(rule, def); err != nil {
+			return nil, fmt.Errorf("%s: notify %q: %w", where, rule.Event, err)
+		}
+	}
 	if r := def.Retention; r != nil {
 		if sp, err := ParseSpan(r.After); err != nil || sp.Zero() {
 			return nil, fmt.Errorf("%s: retention after must be a duration like \"8760h\" or \"365d\"", where)
@@ -273,6 +279,9 @@ func (c *Compiled) checkStage(st Stage) error {
 			return err
 		}
 	}
+	if err := c.checkReviews(st); err != nil {
+		return err
+	}
 	switch st.Complete {
 	case "", "all", "any":
 	case "quorum":
@@ -320,6 +329,10 @@ func (c *Compiled) checkStage(st Stage) error {
 				return fmt.Errorf("node %q (%s) needs forms", n.Name, n.Kind)
 			}
 		case NodeApproval, NodeTask:
+		case NodeGate:
+			if n.Optional || n.Approvals < 0 {
+				return fmt.Errorf("gate node %q cannot be optional and needs approvals >= 1", n.Name)
+			}
 		case NodeVote:
 			switch n.Consensus {
 			case "", ConsensusUnanimous, ConsensusMajority:
@@ -342,7 +355,7 @@ func (c *Compiled) checkStage(st Stage) error {
 				return fmt.Errorf("certificate node %q names unknown certificate %q", n.Name, n.Certificate)
 			}
 		default:
-			return fmt.Errorf("node %q: kind %q is not form, review, approval, vote, check, automated, certificate or task", n.Name, n.Kind)
+			return fmt.Errorf("node %q: kind %q is not form, review, approval, vote, gate, check, automated, certificate or task", n.Name, n.Kind)
 		}
 		for _, f := range n.Forms {
 			if c.forms[f] == nil {
@@ -503,6 +516,15 @@ func (c *Compiled) Expressions() map[string]string {
 		for _, r := range st.Rules {
 			add(where+" rule "+r.Name, r.Check)
 		}
+		for _, r := range st.Reviews {
+			for _, b := range r.Buckets {
+				add(where+" review triage bucket "+b.Name+" condition", b.Condition)
+			}
+			add(where+" review sampling sample_if", r.SampleIf)
+			for i, expr := range r.AlwaysReviewIf {
+				add(fmt.Sprintf("%s review sampling always_review_if[%d]", where, i), expr)
+			}
+		}
 	}
 	for name, cf := range c.forms {
 		for _, r := range cf.Rules {
@@ -514,6 +536,9 @@ func (c *Compiled) Expressions() map[string]string {
 	}
 	for i, h := range c.Def.On {
 		add(fmt.Sprintf("on[%d] %s when", i, h.Event), h.When)
+	}
+	for i, n := range c.Def.Notify {
+		add(fmt.Sprintf("notify[%d] %s condition", i, n.Event), n.Condition)
 	}
 	return out
 }

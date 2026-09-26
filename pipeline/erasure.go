@@ -105,6 +105,25 @@ func (e *Engine) anonymize(c *Case, actor, reason string, now time.Time) {
 			}
 		}
 	}
+	// Snapshots kept for diff reviews hold the same personal data.
+	for i := range c.Snapshots {
+		snap := &Case{Data: c.Snapshots[i].Data}
+		for _, path := range single {
+			if v, ok := snap.Get(path); ok && !isEmpty(v) {
+				snap.Set(path, ErasedMarker)
+			}
+		}
+		for form, names := range repeat {
+			for _, raw := range asList(snap.Data[form]) {
+				entry, _ := raw.(map[string]any)
+				for _, n := range names {
+					if v, ok := entry[n]; ok && !isEmpty(v) {
+						entry[n] = ErasedMarker
+					}
+				}
+			}
+		}
+	}
 	scrub := func(s string) string {
 		for _, v := range removed {
 			if len(v) >= 3 {

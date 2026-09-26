@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/oarkflow/ref/hierarchy"
@@ -45,6 +46,18 @@ type PipelineCases struct {
 	order          []string
 	org            *OrgHierarchy
 	allowAnonymous bool
+	// notify stores notification preferences and planned notifications when
+	// any pipeline declares notify rules; channels maps each notification
+	// channel to the intent that delivers it.
+	notify   pipeline.NotifyStore
+	channels map[string]string
+	// skew shifts the resource's clock (tests of quiet hours and digests).
+	skew atomic.Int64
+}
+
+// now is the resource's clock.
+func (p *PipelineCases) now() time.Time {
+	return time.Now().Add(time.Duration(p.skew.Load())).UTC()
 }
 
 // pipelineDefinitionsKey is the config key the compiler injects the
@@ -68,6 +81,7 @@ func registerPipelineResources(r *Registry) {
 			{Name: "allow_anonymous", Type: "bool", Default: "false", Summary: "Let anonymous callers start public pipelines; they get an access key to return to their case"},
 			{Name: "event_max_attempts", Type: "int", Default: "10", Summary: "Attempts before an event hook is dead-lettered"},
 			{Name: "event_retry_base", Type: "duration", Default: "2s", Summary: "First retry delay of a failed event hook (doubles, at most 10m)"},
+			{Name: "notify_channels", Type: "map", Summary: "Notification channels of the pipelines' notify rules: channel name -> intent that delivers a message ({channel, user, subject, body, digest, items})"},
 		},
 	})
 }
@@ -75,7 +89,7 @@ func registerPipelineResources(r *Registry) {
 func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("pipeline.cases", spec.Config,
 		"pipelines", "database", "table_prefix", "migrate", "signing_secret", "signer", "seal_secret", "org_resource", "allow_anonymous",
-		"event_max_attempts", "event_retry_base",
+		"event_max_attempts", "event_retry_base", "notify_channels",
 		pipelineDefinitionsKey); err != nil {
 		return nil, nil, err
 	}
@@ -162,12 +176,16 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 		p.engines[name] = engine
 		p.order = append(p.order, name)
 	}
+	if err := p.configureChannels(spec); err != nil {
+		return nil, nil, err
+	}
 
 	if configString(spec.Config, "database", "") == "" {
 		mem := pipeline.NewMemoryStore()
 		mem.Record = p.recordFilter()
 		p.store = mem
 		p.useOutbox(mem, mem.Record != nil)
+		p.useNotify(mem)
 		return p, nil, nil
 	}
 	db, err := requireSQLHandle(spec, "database")
@@ -186,6 +204,7 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 	store.Record = p.recordFilter()
 	p.store = store
 	p.useOutbox(store, store.Record != nil)
+	p.useNotify(store)
 	return p, nil, nil
 }
 
@@ -196,6 +215,9 @@ func (p *PipelineCases) recordFilter() func(pipeline.Event) bool {
 	for _, name := range p.order {
 		for _, h := range p.engines[name].C.Def.On {
 			patterns = append(patterns, h.Event)
+		}
+		for _, n := range p.engines[name].C.Def.Notify {
+			patterns = append(patterns, n.Event)
 		}
 	}
 	if len(patterns) == 0 {
@@ -216,13 +238,16 @@ func (p *PipelineCases) useOutbox(o pipeline.Outbox, enabled bool) {
 // runBackground delivers outbox events until ctx ends: woken by commits,
 // and polling so retries and other replicas' events are picked up.
 func (p *PipelineCases) runBackground(ctx context.Context, platform *Platform) {
-	if p.outbox == nil {
+	if p.outbox == nil && p.notify == nil {
 		return
 	}
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
-		for p.deliver(ctx, platform) > 0 {
+		for p.outbox != nil && p.deliver(ctx, platform) > 0 {
+		}
+		if p.notify != nil {
+			p.flushNotifications(ctx, platform)
 		}
 		select {
 		case <-ctx.Done():
@@ -294,6 +319,11 @@ func (p *PipelineCases) deliverOne(ctx context.Context, platform *Platform, ev p
 	}
 	if err != nil {
 		return err
+	}
+	// Notifications are planned first: storing them is idempotent, so a
+	// retry after a failing hook never duplicates them.
+	if err := p.planNotifications(ctx, e, c, ev); err != nil {
+		return fmt.Errorf("notifications: %w", err)
 	}
 	for _, hook := range e.C.Def.On {
 		if !eventMatches(hook.Event, ev.Event.Name) || (hook.Stage != "" && hook.Stage != ev.Event.Stage) {
@@ -407,7 +437,7 @@ func (p *PipelineCases) orgCovers(units []string, unit string) bool {
 // never undoes the change.
 func (p *PipelineCases) dispatch(ctx context.Context, e *pipeline.Engine, c *pipeline.Case) {
 	hooks := e.C.Def.On
-	if len(hooks) == 0 {
+	if len(hooks) == 0 && len(e.C.Def.Notify) == 0 {
 		return
 	}
 	if p.outbox != nil {

@@ -91,6 +91,7 @@ The **view** (`pipeline.view`) resolves all of this for the caller. It returns g
 | `certificate` | Issues a certificate when the stage completes. |
 | `due` | The SLA (e.g. `"72h"`). Queue rows carry `due_at` and `overdue`. |
 | `on_enter`, `on_complete` | Intents run as hooks. A failing hook aborts the operation, so nothing is saved. |
+| `review` blocks | Human-in-the-loop review modes: `diff`, `gate`, `triage` and `sampling`. See [Review modes](#review-modes). |
 
 Stage statuses are `pending`, `active`, `returned`, `completed`, `rejected` and `skipped`. Case statuses are `draft`, `in_progress`, `returned`, `approved`, `rejected`, `withdrawn` and `completed`.
 
@@ -105,6 +106,7 @@ Stage statuses are `pending`, `active`, `returned`, `completed`, `rejected` and 
 | `task` | `complete`, `fail` | Someone completed it (with an optional `result`). |
 | `form` | `complete` | Its forms validate. |
 | `certificate` | `issue` | The certificate was issued. With `auto true` this happens on stage entry. |
+| `gate` | `approve`, `reject` | `approvals` distinct reviewers approved. A `review "gate"` block declares it. See [Review modes](#review-modes). |
 | any | `waive` (for `waive_roles`) | — |
 
 Node statuses are `pending`, `passed`, `failed`, `waived` and `skipped` (`applies_if` false). `optional` nodes never block their stage.
@@ -269,6 +271,7 @@ Every operation emits events. The names are:
 - **Stage:** `stage.entered`, `stage.completed`, `stage.skipped`
 - **Work:** `assigned`, `queued`, `claimed`, `released`, `delegated`, `suspended`, `resumed`
 - **SLA:** `sla.warning`, `sla.breached`, `sla.escalated`
+- **Review:** `triaged`, `review.sampled`, `review.not_sampled`, `review.approved`, `review.rejected`, `review.gate_opened`
 - **Other:** `note.added`, `link.issued`, `link.submitted`, `sealed.opened`, `erased`, `retention.applied`
 
 **Delivery is durable.** Events that some hook listens to are written to an outbox in the **same transaction** as the case change. An event exists exactly when its change was committed.
@@ -282,6 +285,35 @@ A background dispatcher (one per replica; leases stop two replicas delivering th
 Because a hook may run again after a partial failure, **hooks should be idempotent**. `event.id` is stable across retries, which makes a good deduplication key.
 
 `pipeline.events` lists dead-lettered events and requeues one for immediate delivery, once its cause is fixed.
+
+### Review modes
+
+A stage's `review` blocks add human-in-the-loop policies. A stage may combine several:
+
+```bcl
+review "diff"     { against submission }                 # or approved
+review "gate"     { approvals 2  roles ["senior"] }
+review "triage"   { bucket "urgent" { condition "claim.amount > 1000"  priority 1  queue "urgent" } }
+review "sampling" { percent 10  always_review_if ["claim.amount > 10000"] }
+```
+
+| Mode | Effect |
+|---|---|
+| `diff` | The view shows field-level changes since the previous submission or the last approved version. Approval records the revision reviewed. |
+| `gate` | A hard gate: the case cannot advance until N distinct reviewers (optionally with given roles) approve. Rejections are recorded. |
+| `triage` | Buckets classify a case on arrival into a priority and queue. Work lists are ordered by priority. |
+| `sampling` | Only a deterministic percentage (by a hash of the case id), or cases matching a condition, are reviewed. The rest pass with a `not_sampled` audit record. |
+
+See [Review modes and notifications](pipeline-review.md) for the details.
+
+### Notifications
+
+`notify "event" { to [...]  channels [...]  severity …  subject "…" }` rules send notifications to people. Delivery goes through channel intents that are named in the resource's `notify_channels`. Each person's preferences decide what reaches them:
+- channel opt-in and opt-out, per event pattern;
+- quiet hours in their time zone (urgent and critical notifications bypass them);
+- hourly or daily digests.
+
+Preferences and pending notifications are stored durably and flushed by the resource's background loop. See [Review modes and notifications](pipeline-review.md#notifications).
 
 ### Analytics
 
@@ -328,11 +360,12 @@ resource "cases" {
     signing_secret env.required("PASSPORT_SIGNING_SECRET")
     signer "keys"                   # optional crypto.signer: asymmetric certificate signatures
     seal_secret env("PASSPORT_SEAL_SECRET", "")   # required only with sealed inputs
+    notify_channels { email "passport.send_email" }  # required only with notify rules
   }
 }
 ```
 
-The resource compiles each pipeline and every expression in it at load time, so a typo stops the deployment. With a database, it creates `<prefix>cases`, `<prefix>certificates`, `<prefix>sequences` and `<prefix>outbox`.
+The resource compiles each pipeline and every expression in it at load time, so a typo stops the deployment. With a database, it creates `<prefix>cases`, `<prefix>certificates`, `<prefix>sequences`, `<prefix>outbox`, `<prefix>notify_prefs` and `<prefix>notifications`.
 
 The stores are verified by one conformance suite against memory, SQLite and PostgreSQL. To include PostgreSQL, set `TEST_POSTGRES_DSN`; the Passport example also runs end to end on it when that variable is set. Routing reads each worker's workload with a single indexed `GROUP BY` rather than loading every open case. Sweeps, analytics and erasure page through all cases, and analytics folds them one at a time, so no scan is capped or holds every case in memory.
 
@@ -344,9 +377,11 @@ The stores are verified by one conformance suite against memory, SQLite and Post
 | `pipeline.save` | `id`, `stage`, `input.data` | The view |
 | `pipeline.act` | `id`, `stage`, `action`, body `{comment, data, flags, revision}` | The view |
 | `pipeline.node` | `id`, `stage`, `node`, `verb`, body `{comment, verdicts, result}` | The view |
-| `pipeline.list` | `scope` = `queue` \| `mine` \| `all`, `status`, `stage`, `limit`, `offset` | Case rows |
+| `pipeline.list` | `scope` = `queue` \| `mine` \| `assigned` \| `all`, `status`, `stage`, `queue`, `order` (`priority` \| `newest`), `limit`, `offset` | Case rows |
 | `pipeline.get` | `id` | Header, stage states, history and certificates |
 | `pipeline.verify` | `key` (a number or code) | `{valid, reason, certificate}` |
+| `pipeline.notify_prefs` | — | The caller's notification preferences and pending notifications |
+| `pipeline.notify_prefs_set` | body: the preferences | The same, after replacing them |
 
 Each action looks for a parameter such as `id` in this order, so routes need no plumbing nodes:
 1. `config.id_fact` (a fact path)
