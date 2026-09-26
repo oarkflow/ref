@@ -80,6 +80,12 @@ func openFSStorage(_ context.Context, spec ResourceSpec) (Resource, io.Closer, e
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, nil, fmt.Errorf("resource %q: create storage directory: %w", spec.Name, err)
 	}
+	// Resolve the root itself through any symlinks (e.g. macOS's /var ->
+	// /private/var) so it matches what EvalSymlinks later returns for a
+	// write's parent directory in path().
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
 	maxBytes, err := configInt64(spec.Config, "max_object_bytes", 25<<20)
 	if err != nil {
 		return nil, nil, err
