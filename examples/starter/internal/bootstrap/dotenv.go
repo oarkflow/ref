@@ -77,3 +77,37 @@ func DotenvPath() string {
 	}
 	return ".env"
 }
+
+// LoadSecretFile reads a single secret's raw value from path and calls
+// os.Setenv(envVar, ...) — but only when envVar is not already set. A real
+// environment variable always wins, exactly as LoadDotenv's does; this is
+// the same rule applied to a file a secrets-manager sidecar (a Vault Agent
+// template, the AWS/GCP Secrets Manager CSI driver, ...) writes instead of
+// a human-edited .env.
+//
+// A missing file is not an error, for the same reason LoadDotenv's is not:
+// this path is a local-development or single-secrets-manager convenience,
+// and its absence — SESSION_SECRET set directly by the platform, say — is
+// the normal case everywhere else.
+//
+// Trailing newlines are trimmed: `echo` (unlike `printf`) appends one, and a
+// secret ending in "\n" would otherwise silently fail the 32-byte minimum a
+// caller like the session resource enforces, or just not match what was
+// actually written to the secrets manager.
+func LoadSecretFile(envVar, path string) error {
+	if _, exists := os.LookupEnv(envVar); exists {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	value := strings.TrimRight(string(data), "\r\n")
+	if value == "" {
+		return nil
+	}
+	return os.Setenv(envVar, value)
+}

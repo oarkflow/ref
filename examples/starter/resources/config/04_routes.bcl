@@ -39,6 +39,12 @@ route "web.login_action" {
   allow_anonymous true
   cache_control "no-store"
   rate_limit { limiter "limits" limit 10 window 1m message "Too many login attempts. Please wait a minute." }
+  # Feeds resources/security/rules/auth-abuse-velocity.bcl's brute-force
+  # detection — the guard's own automatic per-request check (every route
+  # gets this for free) only ever evaluates "request.received", which
+  # cannot know whether THIS login will succeed; this reports the real
+  # outcome once it's known. See platform's SecurityEventSpec doc comment.
+  security_event { on_success "auth.login_success" on_failure "auth.login_failed" }
 }
 
 route "web.register_page" {

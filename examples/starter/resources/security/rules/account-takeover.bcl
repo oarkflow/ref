@@ -1,0 +1,47 @@
+# PAUSED — what it would take to activate:
+#
+# tcpguard's account-takeover-abuse rule (its own reference pack) keys on
+# abuse.signals.account_takeover_score, which its AccountTakeoverDetector
+# derives from session-continuity signals this starter's guard integration
+# does not collect: a session's country/ASN changing between requests, a
+# new device fingerprint, a new user-agent for an existing session. That
+# requires either GeoIP session tracking (tcpguard's own DisableGeoIP:
+# false path, already on by default — see resources/security/tcpguard.bcl
+# — but with no session-to-request continuity stored anywhere) or a custom
+# Enricher wired into the "security.tcpguard" resource (no config surface
+# for one yet in platform/resources_security.go).
+#
+# Flip `status` to `active` once one of those exists; until then this rule
+# would never see a non-zero account_takeover_score and would sit here
+# doing nothing but reading falsely reassuring — hence paused, not
+# deleted: the intent (protect against a stolen session) is real, the
+# building block it needs is not yet.
+rule "account-takeover-abuse" {
+  status paused
+  priority 200
+
+  trigger {
+    on request.received
+    on auth.login_success
+  }
+
+  when {
+    abuse.signals.account_takeover_score greater_or_equal 2
+  }
+
+  risk {
+    base 85
+    max 95
+  }
+
+  severity {
+    high when risk.score greater_or_equal 75
+  }
+
+  actions {
+    high {
+      run mfa_challenge
+      run create_incident
+    }
+  }
+}

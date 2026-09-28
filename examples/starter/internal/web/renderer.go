@@ -3,7 +3,7 @@
 // engine interface. cmd/server/main.go wires this once, in Go, because a
 // BCL document has no way to name a Go rendering engine — every page it
 // renders (which template, which layout, which intent feeds it) is still
-// declared entirely in bcl/.
+// declared entirely in resources/config/.
 package web
 
 import (
@@ -30,7 +30,7 @@ type RendererConfig struct {
 // `appName` even before a real request supplies one.
 func NewSPLRenderer(cfg RendererConfig) (*template.SPLEngine, error) {
 	if cfg.TemplatesDir == "" {
-		cfg.TemplatesDir = "./templates"
+		cfg.TemplatesDir = "./resources/templates"
 	}
 	if cfg.AppName == "" {
 		cfg.AppName = "starter"

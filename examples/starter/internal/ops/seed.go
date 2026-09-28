@@ -14,7 +14,7 @@ import (
 // This exists so a fresh clone has a way in without a fixed password hash
 // sitting in a BCL migration in version control: the hash is computed at
 // startup from AdminPassword, and env-gating means production can never
-// get this account no matter what bcl/01_resources.bcl says.
+// get this account no matter what resources/config/01_resources.bcl says.
 func SeedDevAdmin(ctx context.Context, db *platform.Database, env, email, password string) error {
 	if env == "production" {
 		return nil

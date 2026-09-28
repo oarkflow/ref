@@ -1,0 +1,90 @@
+# PAUSED — what it would take to activate:
+#
+# tcpguard's payment-velocity/high-value-payment rules (its own reference
+# pack) key on abuse.payment.user_amount/.tenant_amount and
+# business.amount — populated by a BusinessExtractor
+# (tcpguard.HTTPContextBuilder.BusinessExtractor), which nothing in this
+# starter's guard integration (platform/resources_security.go) configures;
+# only IdentityExtractor is wired (see auth-abuse-velocity.bcl's comment).
+#
+# This starter's closest analog is orders.create's own "amount" field
+# (resources/config/09_workflow_example.bcl) — genuinely money-shaped, but
+# not payment processing, and rules/orders/policy.bcl (the
+# github.com/oarkflow/rules business-rules engine, a different layer —
+# see CONFIGURATION.md's "Network protection and business rules") already
+# enforces its own $5,000 self-service cap on that same field. A real
+# payments surface would want both this velocity check *and* a
+# BusinessExtractor parsing its own request shape (parallel to
+# resources_security.go's identity_fields config, but there is no
+# equivalent "business_amount_field" option yet) before flipping `status`
+# to `active`.
+rule "payment-velocity-abuse" {
+  status paused
+  priority 160
+
+  scope {
+    methods ["POST"]
+    paths ["/api/v1/orders"]
+  }
+
+  trigger {
+    on request.received
+  }
+
+  when {
+    any {
+      abuse.payment.user_amount greater_or_equal 200000
+      abuse.payment.tenant_amount greater_or_equal 500000
+    }
+  }
+
+  risk {
+    base 92
+    max 100
+  }
+
+  severity {
+    critical when risk.score greater_or_equal 90
+  }
+
+  actions {
+    critical {
+      run block
+      run create_incident
+    }
+  }
+}
+
+rule "high-value-payment" {
+  status paused
+  priority 90
+
+  scope {
+    methods ["POST"]
+    paths ["/api/v1/orders"]
+  }
+
+  trigger {
+    on request.received
+  }
+
+  when {
+    business.amount greater_than 1000000
+  }
+
+  risk {
+    base 90
+    max 100
+  }
+
+  severity {
+    critical when risk.score greater_or_equal 90
+  }
+
+  actions {
+    critical {
+      run block
+      run create_incident
+    }
+  }
+}

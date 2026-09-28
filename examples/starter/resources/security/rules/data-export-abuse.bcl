@@ -1,0 +1,45 @@
+# PAUSED — what it would take to activate:
+#
+# tcpguard's data-export-abuse rule (its own reference pack) keys on
+# abuse.data_export.count/.large_body, which its detector only derives
+# from requests it can identify as export/download operations (see
+# github.com/oarkflow/tcpguard's abuse.go detectExportVelocity — it looks
+# at path patterns and response characteristics tcpguard's defaults expect
+# an "export"/"download" naming convention for). This starter has no bulk-
+# export or download endpoint at all — GET /api/v1/users returns a fixed,
+# small page of accounts, not an exportable dataset.
+#
+# If this starter grows a real export surface (CSV/bulk download of
+# orders, say), flip `status` to `active` — the detector already knows how
+# to recognize one by shape; nothing else needs to change here.
+rule "data-export-abuse" {
+  status paused
+  priority 170
+
+  trigger {
+    on request.received
+  }
+
+  when {
+    any {
+      abuse.data_export.count greater_or_equal 2
+      abuse.data_export.large_body equals true
+    }
+  }
+
+  risk {
+    base 90
+    max 100
+  }
+
+  severity {
+    critical when risk.score greater_or_equal 90
+  }
+
+  actions {
+    critical {
+      run block
+      run create_incident
+    }
+  }
+}

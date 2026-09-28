@@ -382,42 +382,26 @@ func (e *Engine) CompleteTask(ctx context.Context, taskID, principal, action str
 		return nil, err
 	}
 	task.Result = encoded
-	if err := e.store.SaveTask(ctx, task); err != nil {
-		if errors.Is(err, ErrRevisionConflict) {
-			return nil, fmt.Errorf("ref/process: task %s changed while you were completing it; reload and try again", taskID)
-		}
-		return nil, err
-	}
-
-	// Record the completion as the step's own result, so a later edge reading
-	// results.<step> sees the decision.
-	stateKey := task.Key
-	if stateKey == "" {
-		stateKey = task.Step
-	}
-	state, err := e.stepStateByKey(ctx, task.RunID, stateKey)
-	if err != nil {
-		return task, err
-	}
-	if state == nil {
-		return task, fmt.Errorf("ref/process: task %s has no persisted step state", taskID)
-	}
-	sequence, err := e.store.NextStepSequence(ctx, task.RunID)
-	if err != nil {
-		return task, err
-	}
-	state.Status = StepCompleted
-	state.Sequence = sequence
-	state.FinishedAt = &now
-	state.Result = task.Result
-	if err := e.store.SaveStep(ctx, state); err != nil {
-		return task, err
-	}
 
 	// The run continues from the task step's own outgoing edges. That is the one
 	// place a resumed frame is the *same* step rather than a target: the task step
 	// has now produced its result, and its edges resolve off it.
+	//
+	// Persisting the task as completed is deferred to resumeAfterTask, which does
+	// it under the run's lease, atomically with resolving those edges — not here.
+	// Saving it here first has a real race: it is the one write that makes this
+	// task invisible to hasOutstandingWait's open-task query, and the run's own
+	// still-in-flight synchronous Advance (from a non-detached Start, parking at
+	// this very task) can reach settle between that write and this call's lease
+	// acquisition, see nothing outstanding, and complete the run one step short —
+	// silently, because this call then finds the run already terminal and no-ops.
+	// See applyStepCompletion's beforeResolve doc for the full mechanics; this was
+	// reproduced directly (not theorised) while diagnosing this starter's
+	// TestCompleteJourney flakiness.
 	if err := e.resumeAfterTask(ctx, task, result); err != nil {
+		if errors.Is(err, ErrRevisionConflict) {
+			return task, fmt.Errorf("ref/process: task %s changed while you were completing it; reload and try again", taskID)
+		}
 		return task, err
 	}
 	return task, nil
@@ -428,12 +412,19 @@ func (e *Engine) CompleteTask(ctx context.Context, taskID, principal, action str
 // It shares continueFromStep with the child-process path: both are steps whose work
 // finished outside an ordinary execution, and both must resolve edges rather than
 // re-run the step — re-running a task step would open a second task.
+//
+// The task's own completion is persisted via beforeResolve — under the run's
+// lease, alongside the step state and the edges it resolves — rather than by
+// the caller beforehand. See CompleteTask's comment for why the ordering
+// matters.
 func (e *Engine) resumeAfterTask(ctx context.Context, task *Task, result map[string]any) error {
 	stateKey := task.Key
 	if stateKey == "" {
 		stateKey = task.Step
 	}
-	return e.continueFromStep(ctx, task.RunID, task.Step, stateKey, result, nil)
+	return e.continueFromStep(ctx, task.RunID, task.Step, stateKey, result, nil, func(ctx context.Context) error {
+		return e.store.SaveTask(ctx, task)
+	})
 }
 
 // taskStep resolves the definition and task configuration behind a task row.

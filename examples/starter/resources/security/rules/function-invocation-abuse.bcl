@@ -1,0 +1,50 @@
+# PAUSED — what it would take to activate:
+#
+# tcpguard's function-invocation-abuse rule (its own reference pack) keys
+# on abuse.fn.invocations/.errors, a signal shaped for a FaaS-style
+# surface (a generic "invoke this named function" endpoint, one request
+# per invocation, tracked by function name). This starter has no such
+# surface — every route is its own fixed intent, not a dynamically-named
+# function invocation.
+#
+# If this starter grows one (a webhook-triggered automation endpoint that
+# runs a caller-named script, say — genuinely different from the fixed
+# webhook trigger resources/config/07_triggers.bcl already has), flip
+# `status` to `active`.
+rule "function-invocation-abuse" {
+  status paused
+  priority 165
+
+  trigger {
+    on request.received
+    on function.invoked
+  }
+
+  when {
+    any {
+      abuse.fn.invocations greater_or_equal 3
+      abuse.fn.errors greater_or_equal 3
+    }
+  }
+
+  risk {
+    base 72
+    max 90
+  }
+
+  severity {
+    medium when risk.score greater_or_equal 50
+    high when risk.score greater_or_equal 75
+  }
+
+  actions {
+    medium {
+      run throttle
+      run create_incident
+    }
+    high {
+      run mfa_challenge
+      run create_incident
+    }
+  }
+}

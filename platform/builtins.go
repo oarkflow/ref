@@ -39,6 +39,7 @@ func registerBuiltins(r *Registry) {
 	registerFlowActions(r)
 	registerProcessActions(r)
 	registerRulesActions(r)
+	registerSecurityActions(r)
 	registerOrgActions(r)
 	registerDOSActions(r)
 	registerPipelineActions(r)

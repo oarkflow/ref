@@ -1,0 +1,67 @@
+# Brute-force login protection — a rule in its own file, in the same
+# nested rules/ directory as application-attack-probe.bcl (see
+# ../tcpguard.bcl's comment for why: LoadTCPGuardBundleDir walks "path"
+# recursively).
+#
+# This is the rule that used to be documented here as "not shipped" —
+# closed by two things landing together: SecurityEventSpec
+# (platform/spec_route.go — a route's `security_event { on_success ...
+# on_failure ... }`) and the "security.report_event" action it's built on
+# (platform/resources_security.go). 04_routes.bcl's "web.login_action"
+# reports the real outcome of each login attempt after it's known, which
+# is the only way anything downstream of this trigger can ever see it —
+# the guard's own automatic per-request check (every route gets this for
+# free, before the intent even runs) evaluates generically as
+# "request.received"; it has no way to know in advance whether a login
+# will succeed.
+#
+# `run ban_ip` — not `run block` — is deliberate: this rule triggers `on
+# auth.login_failed`, an event reported via `security_event` *after* the
+# triggering request's own response is already decided (see that spec's
+# doc comment — it's instrumentation, not a gate), so a `block` action
+# here would have nothing left to block. `ban_ip` instead writes a durable
+# per-IP ban the guard checks unconditionally at the start of every future
+# evaluation, of any event type (github.com/oarkflow/tcpguard's own
+# blockedByState) — so the *next* request from that IP, on any route, is
+# what actually gets refused. Verified this actually works end to end,
+# not just read as plausible: platform/security_tcpguard_test.go's
+# TestSecurityEventFeedsAbuseDetectorAcrossRequests reproduces exactly
+# this shape (two reported failures, then an unrelated later request gets
+# blocked) against the real github.com/oarkflow/tcpguard library.
+rule "auth-abuse-velocity" {
+  status active
+  priority 190
+
+  trigger {
+    on auth.login_failed
+  }
+
+  # Both halves are live: ip_failures keys on the request's source IP;
+  # user_failures keys on the login body's "email" field, populated by
+  # ../../config/01_resources.bcl's "guard" resource `identity_fields
+  # ["email"]` (platform/resources_security.go's IdentityExtractor) — so a
+  # credential-stuffing attack against one account spread across many IPs
+  # is caught by the second condition even when the first never crosses
+  # its own threshold.
+  when {
+    any {
+      abuse.auth.ip_failures greater_or_equal 5
+      abuse.auth.user_failures greater_or_equal 5
+    }
+  }
+
+  risk {
+    base 92
+    max 100
+  }
+
+  severity {
+    critical when risk.score greater_or_equal 90
+  }
+
+  actions {
+    critical {
+      run ban_ip
+    }
+  }
+}

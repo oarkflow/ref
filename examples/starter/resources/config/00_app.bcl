@@ -28,6 +28,18 @@ role "user" {
 # Session cookies are HMAC-signed with this. `openssl rand -hex 32` for a
 # real deployment — the 32-byte minimum is enforced when the session
 # resource opens (01_resources.bcl).
+#
+# This declarative block exists for validation (a missing SESSION_SECRET
+# fails compilation with a clear message) and for `platform.Document`'s own
+# redaction bookkeeping — but 01_resources.bcl's session resource reads
+# SESSION_SECRET straight from the environment (`env.required(...)`, a
+# BCL-parse-time call), not from this block's resolved value, so `file`
+# below would silently do nothing for it. A secrets-manager deployment gets
+# SESSION_SECRET into the environment before this document is even parsed —
+# see cmd/server/main.go's SECRETS_DIR/SESSION_SECRET_FILE handling and
+# CONFIGURATION.md's "Secrets in production" for the file-based flow that
+# actually feeds it, verified end to end against a real local Vault
+# (scripts/render-secrets-from-vault.sh, scripts/rotate-secret.sh).
 secret "session_secret" {
   env "SESSION_SECRET"
   required true
@@ -35,8 +47,13 @@ secret "session_secret" {
 
 # The webhook trigger in 07_triggers.bcl needs an HMAC secret. It is its own
 # top-level `secret` block (not an inline env.required(...)) because
-# TriggerSpec.Secret names one by reference.
+# TriggerSpec.Secret names one by reference — trigger.go resolves it via
+# `platform.Secret("webhook_secret")`, this block's own resolved value, so
+# unlike session_secret above, `file` here is genuinely load-bearing: it
+# resolves this secret even if cmd/server/main.go's env-population were
+# ever skipped. Same Vault-verified flow as session_secret.
 secret "webhook_secret" {
   env "WEBHOOK_SECRET"
+  file env("WEBHOOK_SECRET_FILE", "./.data/secrets/webhook_secret")
   required true
 }

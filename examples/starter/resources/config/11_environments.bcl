@@ -1,7 +1,7 @@
 # ===========================================================================
 # Environment overlays
 #
-# `environment env("APP_ENV", "development")` (bcl/00_app.bcl) is one
+# `environment env("APP_ENV", "development")` (resources/config/00_app.bcl) is one
 # informational string a handful of checks branch on (crypto.signer's
 # ephemeral-key refusal in platform/resources_signer.go, for one). For
 # actually CHANGING a resource's configuration per environment, BCL has its
@@ -11,13 +11,13 @@
 #
 # A profile's `override "<type>.<name>" { ... }` merges its body into that
 # block's existing config — only the keys you list change; everything else
-# in bcl/01_resources.bcl stays as declared. A top-level key inside the
+# in resources/config/01_resources.bcl stays as declared. A top-level key inside the
 # profile (not "override") would merge directly into the document itself,
 # e.g. a different `version`.
 # ===========================================================================
 
 profile "production" {
-  # HTTPS-only cookies. bcl/01_resources.bcl's default (secure false) is
+  # HTTPS-only cookies. resources/config/01_resources.bcl's default (secure false) is
   # correct for `go run` over plain HTTP; a real deployment behind TLS
   # should not send the session cookie over an unencrypted connection.
   override "resource.sessions" {
@@ -35,5 +35,5 @@ profile "production" {
 # Run with the override active:
 #   APP_ENV=production ... go run ./cmd/server
 # Confirm it applied — this prints "true" only under the profile above:
-#   grep secure bcl/01_resources.bcl   # shows the *unmodified* source; the
+#   grep secure resources/config/01_resources.bcl   # shows the *unmodified* source; the
 #                                       # override only ever exists at compile time.

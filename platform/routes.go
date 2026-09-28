@@ -388,6 +388,26 @@ func (p *Platform) serve(c fh.Ctx, route compiledRoute) error {
 		if handled, err := p.guard.check(c); handled {
 			return err
 		}
+		if route.spec.SecurityEvent != nil {
+			// Registered this early so it fires for every exit path this
+			// route can take — the guard's own block above, an authz
+			// denial, an intent failure, or success — not just the happy
+			// path. See SecurityEventSpec's doc comment for why this
+			// exists: the guard's automatic check above cannot yet know
+			// whether this request will succeed.
+			guard := p.guard
+			spec := route.spec.SecurityEvent
+			c.OnBeforeResponse(func(c fh.Ctx) error {
+				eventType := spec.OnFailure
+				if c.StatusCode() < 400 {
+					eventType = spec.OnSuccess
+				}
+				if eventType != "" {
+					guard.report(c, eventType)
+				}
+				return nil
+			})
+		}
 	}
 
 	ctx := c.Context()

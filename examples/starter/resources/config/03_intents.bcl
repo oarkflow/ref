@@ -291,7 +291,7 @@ intent "auth.reset_password" {
   node "response" { uses "collect" requires [password_reset, token_consumed] provides [response] }
 }
 
-# The worker (bcl/05_workers.bcl) invokes this for job_type
+# The worker (resources/config/05_workers.bcl) invokes this for job_type
 # "auth.password_reset". Point NOTIFY_URL at a real notification service —
 # the loopback default is for local development only.
 intent "notification.password_reset" {
@@ -303,7 +303,7 @@ intent "notification.password_reset" {
   # the reset link twice — see notify.welcome's idempotent comment.
   idempotent true
 
-  # The worker that runs this (bcl/05_workers.bcl) bypasses the HTTP
+  # The worker that runs this (resources/config/05_workers.bcl) bypasses the HTTP
   # maintenance middleware entirely — this guard is what makes maintenance
   # mode apply here too. See internal/ops.MaintenanceGate.RegisterAction.
   node "maintenance" { uses "ops.maintenance_status" provides [maintenance_on] }
@@ -314,16 +314,54 @@ intent "notification.password_reset" {
     config { expression "maintenance_on == false" message "maintenance mode is on; delivery is paused" }
   }
 
+  # Same circuit-breaker pattern as notify.welcome — see that intent's own
+  # comment for why "deliver"'s on_error "continue" must never be what
+  # decides this intent's own success/failure.
+  node "breaker-guard" {
+    uses "circuit_breaker.guard"
+    resource "delivery_breaker"
+    kind read
+    requires [maintenance_ok]
+    provides [breaker_allowed]
+    config { key "'notifications'" message "the notification service is temporarily unavailable; try again shortly" }
+  }
+
   node "deliver" {
     uses "service.http"
     resource "notifications"
     kind effect
-    requires [input, maintenance_ok]
+    requires [input, maintenance_ok, breaker_allowed]
     provides [delivery]
     bulkhead { name "notify-welcome-delivery" limit 5 }
+    on_error "continue"
+    fallback { delivery { ok false } }
     config { method POST url env("NOTIFY_URL", "http://127.0.0.1:8099/welcome") body_fact "input" }
   }
-  node "response" { uses "collect" requires [delivery] provides [response] }
+
+  node "delivery-ok" {
+    uses "expression"
+    requires [delivery]
+    provides [delivery_ok]
+    config { expression "delivery.ok != false" }
+  }
+
+  node "breaker-record" {
+    uses "circuit_breaker.record"
+    resource "delivery_breaker"
+    kind effect
+    requires [delivery_ok]
+    provides [breaker_recorded]
+    config { key "'notifications'" success_fact "delivery_ok" }
+  }
+
+  node "delivery-succeeded" {
+    uses "validate.expression"
+    requires [delivery_ok, breaker_recorded]
+    provides [delivery_confirmed]
+    config { expression "delivery_ok == true" message "delivery to the notification service failed" }
+  }
+
+  node "response" { uses "collect" requires [delivery_confirmed] provides [response] }
 }
 
 # ---------------------------------------------------------------------------
@@ -450,17 +488,62 @@ intent "notify.welcome" {
     config { expression "maintenance_on == false" message "maintenance mode is on; welcome delivery is paused" }
   }
 
+  # Circuit breaker around the outbound call: "breaker-guard" refuses to
+  # even attempt it while the circuit is open (protecting a struggling
+  # dependency from every replica's retries, not just slowing each one
+  # down with its own timeout); "delivery-ok"/"breaker-record" report the
+  # real outcome back regardless of success or failure, and
+  # "delivery-succeeded" re-raises a failed delivery as this intent's own
+  # failure — on_error "continue" on "deliver" only ever exists to let the
+  # breaker observe the failure; it must never be the thing that decides
+  # whether this intent succeeded, or a struggling notification service
+  # would make notify.welcome report success anyway and this worker's
+  # retry (bcl/05_workers.bcl, max_attempts 5) would never fire.
+  node "breaker-guard" {
+    uses "circuit_breaker.guard"
+    resource "delivery_breaker"
+    kind read
+    requires [maintenance_ok]
+    provides [breaker_allowed]
+    config { key "'notifications'" message "the notification service is temporarily unavailable; try again shortly" }
+  }
+
   node "deliver" {
     uses "service.http"
     resource "notifications"
     kind effect
-    requires [input, validated, maintenance_ok]
+    requires [input, validated, maintenance_ok, breaker_allowed]
     provides [delivery]
     bulkhead { name "notify-welcome-delivery" limit 5 }
+    on_error "continue"
+    fallback { delivery { ok false } }
     config { method POST url env("NOTIFY_URL", "http://127.0.0.1:8099/welcome") body_fact "input" }
   }
 
-  node "response" { uses "collect" requires [delivery] provides [response] }
+  node "delivery-ok" {
+    uses "expression"
+    requires [delivery]
+    provides [delivery_ok]
+    config { expression "delivery.ok != false" }
+  }
+
+  node "breaker-record" {
+    uses "circuit_breaker.record"
+    resource "delivery_breaker"
+    kind effect
+    requires [delivery_ok]
+    provides [breaker_recorded]
+    config { key "'notifications'" success_fact "delivery_ok" }
+  }
+
+  node "delivery-succeeded" {
+    uses "validate.expression"
+    requires [delivery_ok, breaker_recorded]
+    provides [delivery_confirmed]
+    config { expression "delivery_ok == true" message "delivery to the notification service failed" }
+  }
+
+  node "response" { uses "collect" requires [delivery_confirmed] provides [response] }
 }
 
 # The asynchronous entry point: enqueues the same payload for the worker in

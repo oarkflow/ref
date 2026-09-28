@@ -1,4 +1,4 @@
-// Command server boots the application declared in ../../bcl.
+// Command server boots the application declared in ../../resources/config.
 //
 // There is deliberately no business logic here. This file owns exactly
 // three things that a BCL document cannot express on its own: bootstrap
@@ -9,7 +9,7 @@
 // internals rather than application intents.
 //
 // Anything else — a new route, a new resource, a new backend — is a change
-// to bcl/, not to this file. See ../../README.md's "How to add a product".
+// to resources/config/, not to this file. See ../../README.md's "How to add a product".
 package main
 
 import (
@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -32,9 +33,11 @@ import (
 	refconfig "github.com/oarkflow/ref/config"
 	"github.com/oarkflow/ref/examples/starter/internal/bootstrap"
 	"github.com/oarkflow/ref/examples/starter/internal/ops"
+	"github.com/oarkflow/ref/examples/starter/internal/telemetry"
 	"github.com/oarkflow/ref/examples/starter/internal/web"
 	"github.com/oarkflow/ref/health"
 	"github.com/oarkflow/ref/observer"
+	otelobserver "github.com/oarkflow/ref/observer/otel"
 	promobserver "github.com/oarkflow/ref/observer/prometheus"
 	slogobserver "github.com/oarkflow/ref/observer/slog"
 	"github.com/oarkflow/ref/platform"
@@ -43,7 +46,7 @@ import (
 	// To run against PostgreSQL instead: set DB_DRIVER=pgx and DB_DSN=..., and
 	// uncomment the driver import below. Nothing else in this repository
 	// changes — the database resource's driver/dsn live entirely in
-	// bcl/01_resources.bcl. Verified end to end against a real PostgreSQL
+	// resources/config/01_resources.bcl. Verified end to end against a real PostgreSQL
 	// 16 container while building this starter: login, session cookies,
 	// the orders workflow (flow.branch + a SERIAL primary key), and the
 	// password-reset flow all work identically to SQLite.
@@ -52,7 +55,7 @@ import (
 
 // Bootstrap is host-level configuration needed before the BCL document can
 // even be parsed. It is deliberately separate from the document's own
-// resources and secrets (bcl/00_app.bcl, bcl/01_resources.bcl) and from its
+// resources and secrets (resources/config/00_app.bcl, resources/config/01_resources.bcl) and from its
 // config-revision lifecycle (docs/deploy.md at the repository root, if you
 // grow into it) — this is process wiring, not application configuration.
 type Bootstrap struct {
@@ -63,7 +66,7 @@ type Bootstrap struct {
 	// Maintenance takes the whole process into maintenance mode from boot —
 	// useful for a maintenance window that starts before the process does.
 	// Once running, an admin can flip the same gate at runtime through
-	// POST /api/v1/admin/maintenance (bcl/10_maintenance.bcl) without a
+	// POST /api/v1/admin/maintenance (resources/config/10_maintenance.bcl) without a
 	// restart.
 	Maintenance bool `env:"MAINTENANCE" default:"false"`
 	// LogWebhookURL, when set, ships every structured log line (HTTP access
@@ -78,6 +81,12 @@ type Bootstrap struct {
 	// first login on any clone that isn't purely local.
 	AdminEmail    string `env:"ADMIN_EMAIL" default:"admin@example.com"`
 	AdminPassword string `env:"ADMIN_PASSWORD" default:"Password123!"`
+	// AppVersion tags both the SPL renderer's global and, when tracing is
+	// enabled, the OTel resource's service.version.
+	AppVersion string `env:"APP_VERSION" default:"0.1.0"`
+	// TracingEndpoint enables OpenTelemetry tracing when set — see
+	// internal/telemetry/tracing.go's doc comment.
+	TracingEndpoint string `env:"OTEL_EXPORTER_OTLP_ENDPOINT" default:""`
 }
 
 func main() {
@@ -92,6 +101,43 @@ func main() {
 		log.Fatalf("starter: loading %s: %v", bootstrap.DotenvPath(), err)
 	}
 
+	// SESSION_SECRET / WEBHOOK_SECRET, the same way, from files instead of a
+	// human-edited .env — the shape a secrets-manager sidecar (Vault Agent,
+	// the AWS/GCP Secrets Manager CSI driver, ...) renders into a pod, and
+	// the shape scripts/render-secrets-from-vault.sh renders locally against
+	// a real Vault. SESSION_SECRET_FILE/WEBHOOK_SECRET_FILE override the
+	// path per secret; SECRETS_DIR overrides the directory both default
+	// names (session_secret, webhook_secret) resolve against. Either
+	// SESSION_SECRET/WEBHOOK_SECRET already being set (the quick-start path)
+	// or neither file existing (no secrets manager configured) is the normal
+	// case — see LoadSecretFile's doc comment. resources/config/01_resources.bcl's
+	// session resource reads SESSION_SECRET directly (env.required, not the
+	// declarative `secret` block resources/config/00_app.bcl also declares it as),
+	// which is why this has to run here, in the process environment, rather
+	// than through that block's own env-then-file fallback — that fallback
+	// is what actually resolves WEBHOOK_SECRET (via the "webhook_secret"
+	// trigger reference in resources/config/07_triggers.bcl), so setting it here too
+	// is redundant for that one but harmless, and keeps both secrets on one
+	// visible mechanism instead of two different ones.
+	secretsDir := os.Getenv("SECRETS_DIR")
+	if secretsDir == "" {
+		secretsDir = "./.data/secrets"
+	}
+	sessionSecretFile := os.Getenv("SESSION_SECRET_FILE")
+	if sessionSecretFile == "" {
+		sessionSecretFile = filepath.Join(secretsDir, "session_secret")
+	}
+	if err := bootstrap.LoadSecretFile("SESSION_SECRET", sessionSecretFile); err != nil {
+		log.Fatalf("starter: loading %s: %v", sessionSecretFile, err)
+	}
+	webhookSecretFile := os.Getenv("WEBHOOK_SECRET_FILE")
+	if webhookSecretFile == "" {
+		webhookSecretFile = filepath.Join(secretsDir, "webhook_secret")
+	}
+	if err := bootstrap.LoadSecretFile("WEBHOOK_SECRET", webhookSecretFile); err != nil {
+		log.Fatalf("starter: loading %s: %v", webhookSecretFile, err)
+	}
+
 	boot, err := loadBootstrap(ctx)
 	if err != nil {
 		log.Fatalf("starter: %v", err)
@@ -100,12 +146,12 @@ func main() {
 	logger := newLogger(boot.Env, boot.LogLevel, boot.LogWebhookURL, boot.LogWebhookAuth)
 	logger.Info("starting", zlog.String("env", boot.Env), zlog.String("replica", boot.ReplicaID))
 
-	bclDir := bootstrap.ResolveDir("examples/starter/bcl", "./bcl", "bcl")
-	templatesDir := bootstrap.ResolveDir("examples/starter/templates", "./templates", "templates")
+	bclDir := bootstrap.ResolveDir("examples/starter/resources/config", "./resources/config", "resources/config")
+	templatesDir := bootstrap.ResolveDir("examples/starter/resources/templates", "./resources/templates", "resources/templates")
 
 	// Maintenance mode: one gate shared by the HTTP middleware below, the
 	// readiness check, and the "ops.maintenance_set" action a BCL admin
-	// route can call (bcl/10_maintenance.bcl). RegisterAction installs into
+	// route can call (resources/config/10_maintenance.bcl). RegisterAction installs into
 	// a process-wide driver map that platform.DefaultLoadOptions()'s
 	// NewRegistry() snapshots at the moment it's called, so this must run
 	// strictly before that — not just before LoadDir.
@@ -115,14 +161,14 @@ func main() {
 	opts := platform.DefaultLoadOptions()
 	opts.ReplicaID = boot.ReplicaID
 	// BCL's `profile "name" { override "resource.x" { ... } }` blocks
-	// (bcl/11_environments.bcl) apply only when Profile matches — this is
+	// (resources/config/11_environments.bcl) apply only when Profile matches — this is
 	// how "various environments" beyond a single informational string
 	// works: no filename convention, no code change, just opts.Profile set
 	// from the same APP_ENV every other environment-aware check reads.
 	opts.Profile = boot.Env
 	// zlog.NewSlogHandler bridges the same zlog logger into stdlib log/slog,
 	// which observer/slog already knows how to consume. Every REF node
-	// execution, decision, effect and intent completion compiled from bcl/
+	// execution, decision, effect and intent completion compiled from resources/config/
 	// is observed through it, in the same structured format as the HTTP
 	// access log below — one logging mechanism, not two, and (with
 	// LOG_WEBHOOK_URL set) one third-party sink for both.
@@ -138,6 +184,24 @@ func main() {
 	}
 	opts.Observers = []observer.Observer{slogobserver.New(slogLogger), promObs}
 
+	// Distributed tracing, opt-in: unset OTEL_EXPORTER_OTLP_ENDPOINT (the
+	// standard OTel env var, e.g. "localhost:4318" for a local
+	// otel-collector) and this is a no-op, same cost as not importing the
+	// package at all. See internal/telemetry/tracing.go and
+	// github.com/oarkflow/ref/observer/otel's own doc comment for what
+	// span this stream can and cannot express (no incoming request
+	// context, so no parent link to an HTTP span from this alone).
+	var tracerShutdown func(context.Context) error
+	if boot.TracingEndpoint != "" {
+		tp, shutdown, err := telemetry.NewTracerProvider(ctx, boot.TracingEndpoint, "starter", boot.AppVersion, boot.ReplicaID)
+		if err != nil {
+			log.Fatalf("starter: tracing: %v", err)
+		}
+		tracerShutdown = shutdown
+		opts.Observers = append(opts.Observers, otelobserver.New(tp.Tracer("starter")))
+		logger.Info("tracing enabled", zlog.String("endpoint", boot.TracingEndpoint))
+	}
+
 	healthRegistry := health.NewRegistry()
 	opts.HealthRegistry = healthRegistry
 	healthRegistry.Register("maintenance", health.Simple(maintenance.HealthCheck))
@@ -149,7 +213,7 @@ func main() {
 	}
 	defer p.Close()
 
-	// The "database" resource (bcl/01_resources.bcl) is a database.sql
+	// The "database" resource (resources/config/01_resources.bcl) is a database.sql
 	// resource; a readiness check that cannot ping it means requests that
 	// touch the database would fail too, so /readyz should say so before a
 	// load balancer routes traffic here.
@@ -168,11 +232,12 @@ func main() {
 	// The SPL renderer is Go glue a BCL document has no way to name — see
 	// internal/web/renderer.go's package doc. Every page it renders (which
 	// template, which layout, which intent feeds it) is still declared
-	// entirely in bcl/04_routes.bcl.
+	// entirely in resources/config/04_routes.bcl.
 	renderer, err := web.NewSPLRenderer(web.RendererConfig{
 		TemplatesDir: templatesDir,
 		IsDev:        boot.Env != "production",
 		AppName:      "starter",
+		AppVersion:   boot.AppVersion,
 	})
 	if err != nil {
 		log.Fatalf("starter: template engine: %v", err)
@@ -188,7 +253,7 @@ func main() {
 	app.Get("/livez", wrapHTTPHandler(health.LivenessHandler(healthRegistry)))
 	app.Get("/readyz", wrapHTTPHandler(health.ReadinessHandler(healthRegistry)))
 	// Every REF node/decision/effect/execution event, counted and timed —
-	// promobserver.New above is the only wiring; nothing in bcl/ knows
+	// promobserver.New above is the only wiring; nothing in resources/config/ knows
 	// metrics exist. Scrape it like any other Prometheus target.
 	app.Get("/metrics", wrapHTTPHandler(promhttp.HandlerFor(promRegistry, promhttp.HandlerOpts{})))
 
@@ -204,6 +269,13 @@ func main() {
 	logger.Info("shutting down")
 	if err := app.ShutdownWithTimeout(10 * time.Second); err != nil {
 		logger.Error("shutdown", zlog.Err(err))
+	}
+	if tracerShutdown != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := tracerShutdown(shutdownCtx); err != nil {
+			logger.Error("tracing shutdown", zlog.Err(err))
+		}
+		cancel()
 	}
 	logger.Info("stopped")
 }

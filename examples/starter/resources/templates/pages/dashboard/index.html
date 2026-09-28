@@ -29,7 +29,7 @@
     <span style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.05em;">Route groups</span>
     <h3 style="font-size: 1.2rem; font-weight: 700; margin-top: 0.2rem; margin-bottom: 1rem;">Protected routes</h3>
     <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
-      Every route under <code>route_group "api"</code> in <code>bcl/04_routes.bcl</code> shares that
+      Every route under <code>route_group "api"</code> in <code>resources/config/04_routes.bcl</code> shares that
       group's <code>session</code>/<code>auth</code>/<code>authz</code> defaults. The link below is the
       admin-only page — its own <code>authz { roles ["admin"] }</code> is the real gate: a signed-in
       "user" account gets HTTP 403 there, not a hidden link here.
@@ -38,7 +38,7 @@
       <span style="font-size: 1.1rem;">👑</span>
       <div style="text-align: left;">
         <div style="font-size: 0.85rem; font-weight: 600; color: #C084FC;">Admin portal</div>
-        <div style="font-size: 0.75rem; color: var(--text-dim);">Requires the "admin" role — see bcl/00_app.bcl's role block</div>
+        <div style="font-size: 0.75rem; color: var(--text-dim);">Requires the "admin" role — see resources/config/00_app.bcl's role block</div>
       </div>
     </a>
   </div>

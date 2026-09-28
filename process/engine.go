@@ -1293,8 +1293,8 @@ var ErrFiltered = errors.New("ref/process: payload filtered")
 // so pushing a frame for the step would re-run it (opening a second task, starting
 // a second child). This resolves off the result instead, which is why it exists
 // rather than the two callers each having their own version to drift apart.
-func (e *Engine) continueFromStep(ctx context.Context, runID, stepName, stateKey string, result map[string]any, stepErr error) error {
-	if err := e.applyStepCompletion(ctx, runID, stepName, stateKey, result, stepErr, nil); err != nil {
+func (e *Engine) continueFromStep(ctx context.Context, runID, stepName, stateKey string, result map[string]any, stepErr error, beforeResolve func(ctx context.Context) error) error {
+	if err := e.applyStepCompletion(ctx, runID, stepName, stateKey, result, stepErr, nil, beforeResolve); err != nil {
 		return err
 	}
 	return e.advanceOrEnqueue(ctx, runID)
@@ -1315,8 +1315,23 @@ func (e *Engine) continueFromStep(ctx context.Context, runID, stepName, stateKey
 // run still wants this completion — a child whose parent timed out or lost a
 // race was abandoned while its completion waited for the lease, and must not
 // continue the graph a second time.
+//
+// beforeResolve, when given, runs under the lease too, after wanted and before
+// anything else — it lets a caller persist the durable marker that makes this
+// completion visible elsewhere (a task's own "completed" row, in
+// CompleteTask's case) atomically with resolving the run's edges, rather than
+// before acquiring the lease. Persisting that marker first (the natural
+// order: complete the task, then continue the run) has a real race: the run's
+// own still-in-flight synchronous Advance (from a non-detached Start, parking
+// at this very task) can reach settle between the marker's write and this
+// call's lease acquisition, see nothing outstanding (hasOutstandingWait's
+// task query excludes exactly the status this marker just set), and complete
+// the run one step short — silently, because this call then finds the run
+// already terminal and no-ops. Doing the write here closes the window: no
+// other Advance can observe the marker until this call's own SaveRun commits
+// the continuation alongside it.
 func (e *Engine) applyStepCompletion(ctx context.Context, runID, stepName, stateKey string, result map[string]any, stepErr error,
-	wanted func(ctx context.Context) (bool, error)) error {
+	wanted func(ctx context.Context) (bool, error), beforeResolve func(ctx context.Context) error) error {
 	if stateKey == "" {
 		stateKey = stepName
 	}
@@ -1329,6 +1344,11 @@ func (e *Engine) applyStepCompletion(ctx context.Context, runID, stepName, state
 		if wanted != nil {
 			ok, err := wanted(ctx)
 			if err != nil || !ok {
+				return err
+			}
+		}
+		if beforeResolve != nil {
+			if err := beforeResolve(ctx); err != nil {
 				return err
 			}
 		}

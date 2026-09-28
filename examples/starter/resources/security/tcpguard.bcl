@@ -1,29 +1,40 @@
 # ===========================================================================
 # Network/API abuse protection — github.com/oarkflow/tcpguard
 #
-# This is a separate policy language from bcl/*.bcl (tcpguard's own BCL
+# This is a separate policy language from resources/config/*.bcl (tcpguard's own BCL
 # dialect: pack/guard/detector/rule/threat_model, not ref's
 # resource/intent/route), loaded by the "guard" resource in
-# bcl/01_resources.bcl (`resource "guard" { kind "security.tcpguard" config
+# resources/config/01_resources.bcl (`resource "guard" { kind "security.tcpguard" config
 # { path "./security" } }`). ref/platform's request pipeline
 # (platform/routes.go's serve) evaluates every request through it before
 # authentication runs — declaring the resource is the only wiring needed.
 #
-# What's shipped here is deliberately one rule, not tcpguard's full example
-# pack (account takeover, payment velocity, admin-export-after-hours, ...):
-# those need either data this starter doesn't have (a real threat-intel
-# feed, a payments/admin surface) or an *outcome* the guard was never told
-# about — see the note on auth-abuse-velocity below. Shipping a rule that
-# looks real but can never fire is worse than not shipping it; add the
-# richer example pack from tcpguard's own repo once this app actually needs
-# it, and wire the event reporting note below when you do.
+# What's shipped here is tcpguard's full reference-pack rule catalog (8
+# rules across rules/*.bcl), each with an explicit, literal `status`
+# ("active" or "paused" — env() does not work inside this field, confirmed
+# empirically; see platform's security_tcpguard_test.go and this repo's own
+# history for that finding). Two rules are active because this starter's
+# guard integration (identity_fields + security_event, see
+# auth-abuse-velocity.bcl) actually feeds their signals:
 #
-# The rule itself lives in rules/application-attack-probe.bcl, a nested
-# subdirectory next to this file — LoadTCPGuardBundleDir (bundle_parse.go)
-# walks "path" recursively and merges every ".bcl" file it finds, so a
-# pack/guard/detector declaration and its rules can be split across as many
-# files and directories as a real policy needs, the way tcpguard's own
-# example packs (one file per detector/rule/threat_model) do.
+#   active:  application-attack-probe.bcl, auth-abuse-velocity.bcl
+#   paused:  account-takeover.bcl, api-key-abuse.bcl (x2 rules),
+#            data-export-abuse.bcl, function-invocation-abuse.bcl,
+#            payment-fraud.bcl (x2 rules), destructive-admin-abuse.bcl
+#
+# Every paused rule's file explains exactly what integration point (an
+# IdentityExtractor-shaped BusinessExtractor config, an API-key auth
+# surface, a bulk-export endpoint, ...) is missing to flip it to `active` —
+# shipping a rule that looks real but can never fire is worse than not
+# shipping it, so nothing here is silently dead weight; it's a documented
+# menu.
+#
+# The rules live in rules/, a nested subdirectory next to this file —
+# LoadTCPGuardBundleDir (bundle_parse.go) walks "path" recursively and
+# merges every ".bcl" file it finds, so a pack/guard/detector declaration
+# and its rules can be split across as many files and directories as a
+# real policy needs, the way tcpguard's own example packs (one file per
+# detector/rule/threat_model) do.
 # ===========================================================================
 
 pack "starter" {
@@ -42,24 +53,20 @@ policy_safety {
   max_actions_per_rule 4
 }
 
-# Tuned down from tcpguard's own defaults (10MB) for a starter's traffic —
-# this only affects the "abuse" detector's derived signals below, not any
-# hard body-size limit; that's route.max_body_bytes (see 04_routes.bcl) or
-# per-route rate_limit, both handled by ref/platform itself, not by this.
+# Tuned down from tcpguard's own defaults (10MB body / 3 auth failures) for
+# a starter's traffic — this only affects the "abuse" detector's derived
+# signals below, not any hard body-size limit; that's route.max_body_bytes
+# (see 04_routes.bcl) or per-route rate_limit, both handled by
+# ref/platform itself, not by this. auth_ip_failure_threshold backs
+# rules/auth-abuse-velocity.bcl: it only ever increments because
+# 04_routes.bcl's "web.login_action" reports "auth.login_failed"/
+# "auth.login_success" via `security_event` after each attempt — the
+# guard's own automatic per-request check (every route gets this for free)
+# only ever evaluates "request.received", which cannot know whether a
+# login will succeed.
 detector "abuse" {
   type abuse
   window 10m
   scan_path_threshold 6
+  auth_ip_failure_threshold 5
 }
-
-# NOT shipped, and why: tcpguard's own example pack includes an
-# "auth-abuse-velocity" rule (brute-force login protection, keyed on
-# abuse.auth.ip_failures / .user_failures). Those counters only increment
-# when something tells the guard a login attempt *failed* — this platform's
-# guard integration (platform/resources_security.go) evaluates every
-# request generically as `request.received`; it does not yet know that
-# POST /login came back 401. Wiring that requires either the auth.login
-# action itself reporting the outcome, or the guard middleware inspecting
-# the response after ctx.Next() and reporting a synthetic
-# auth.login_failed/auth.login_success event — neither exists yet. Add it
-# before adding this rule back, or it will sit in this file doing nothing.

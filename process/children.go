@@ -198,5 +198,5 @@ func (e *Engine) resumeAfterChild(ctx context.Context, subscription *Subscriptio
 		}
 		return slices.ContainsFunc(subscriptions, func(s *Subscription) bool { return s.ID == subscription.ID }), nil
 	}
-	return e.applyStepCompletion(ctx, subscription.RunID, subscription.Step, stateKey, outcome, childOutcomeError(outcome), stillSubscribed)
+	return e.applyStepCompletion(ctx, subscription.RunID, subscription.Step, stateKey, outcome, childOutcomeError(outcome), stillSubscribed, nil)
 }

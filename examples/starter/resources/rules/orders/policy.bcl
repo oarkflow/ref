@@ -4,11 +4,11 @@
 # "rules.evaluate" action — no Go code, this file and one BCL node is the
 # whole integration).
 #
-# This is a separate policy dialect from bcl/*.bcl (rules' own
+# This is a separate policy dialect from resources/config/*.bcl (rules' own
 # module/decision_schema/decision_table blocks, not ref's
 # resource/intent/route), published by "policy_engine" in
-# bcl/01_resources.bcl and evaluated from orders.create
-# (bcl/09_workflow_example.bcl)'s "policy" node.
+# resources/config/01_resources.bcl and evaluated from orders.create
+# (resources/config/09_workflow_example.bcl)'s "policy" node.
 #
 # Why this exists as a *separate* layer from orders.create's own
 # flow.branch tier classification (large/small at $500) and its
@@ -23,7 +23,7 @@
 # reach for a second engine here, not the condition itself.
 #
 # Why this file lives at rules/orders/policy.bcl, not rules/order_policy.bcl:
-# "policy_engine"'s `dir "./rules"` config (bcl/01_resources.bcl) scans
+# "policy_engine"'s `dir "./resources/rules"` config (resources/config/01_resources.bcl) scans
 # recursively and names each definition after its own path — this becomes
 # definition "orders.policy" (see the "policy" node's `config { definition
 # "orders.policy" }`). A product with many independent policies gets one

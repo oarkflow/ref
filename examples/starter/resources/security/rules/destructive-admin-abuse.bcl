@@ -1,0 +1,44 @@
+# PAUSED — what it would take to activate:
+#
+# tcpguard's destructive-admin-abuse/admin-export-after-hours rules (its
+# own reference pack) key on abuse.admin.destructive and
+# business.outside_hours — a BusinessExtractor concern again (see
+# payment-fraud.bcl's comment for the same gap), and this starter's one
+# admin action (resources/config/10_maintenance.bcl's POST
+# /api/v1/admin/maintenance) doesn't map cleanly to either: it is
+# reversible (flip it back off) and has no "business hours" concept worth
+# gating — a maintenance window is exactly the kind of thing an admin
+# legitimately triggers outside business hours.
+#
+# If this starter grows a genuinely destructive admin action (bulk user
+# deletion, a data-purge endpoint), that is the shape to wire a
+# BusinessExtractor's "destructive" flag from and flip `status` to
+# `active` for.
+rule "destructive-admin-abuse" {
+  status paused
+  priority 155
+
+  trigger {
+    on request.received
+  }
+
+  when {
+    abuse.admin.destructive equals true
+  }
+
+  risk {
+    base 86
+    max 95
+  }
+
+  severity {
+    high when risk.score greater_or_equal 75
+  }
+
+  actions {
+    high {
+      run mfa_challenge
+      run create_incident
+    }
+  }
+}

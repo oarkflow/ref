@@ -1,0 +1,75 @@
+# PAUSED — what it would take to activate:
+#
+# tcpguard's api-key-sharing/api-client-rotation rules (its own reference
+# pack) key on abuse.api_key.distinct_ips/.distinct_users and
+# abuse.client.distinct_user_agents — signals the detector only derives
+# from an X-API-Key request header (see github.com/oarkflow/tcpguard's
+# abuse.go). This starter has no API-key authentication at all — every
+# route authenticates by session cookie (resources/config/01_resources.bcl's
+# "session_auth") — so no request this app serves would ever carry that
+# header, and this rule would never fire.
+#
+# If this starter grows an API-key-authenticated surface (a machine-to-
+# machine integration, say), reintroduce an auth.api_key resource, have
+# clients send X-API-Key, and flip `status` to `active` — the detector
+# side needs no other change.
+rule "api-key-sharing-abuse" {
+  status paused
+  priority 180
+
+  trigger {
+    on request.received
+  }
+
+  when {
+    any {
+      abuse.api_key.distinct_ips greater_or_equal 2
+      abuse.api_key.distinct_users greater_or_equal 2
+    }
+  }
+
+  risk {
+    base 78
+    max 89
+  }
+
+  severity {
+    high when risk.score greater_or_equal 75
+  }
+
+  actions {
+    high {
+      run mfa_challenge
+      run create_incident
+    }
+  }
+}
+
+rule "api-client-rotation-abuse" {
+  status paused
+  priority 175
+
+  trigger {
+    on request.received
+  }
+
+  when {
+    abuse.client.distinct_user_agents greater_or_equal 3
+  }
+
+  risk {
+    base 72
+    max 85
+  }
+
+  severity {
+    medium when risk.score greater_or_equal 50
+  }
+
+  actions {
+    medium {
+      run throttle
+      run create_incident
+    }
+  }
+}

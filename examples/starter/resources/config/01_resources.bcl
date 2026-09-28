@@ -16,7 +16,7 @@
 # (SQLite) and `SERIAL` (PostgreSQL) have no spelling both accept, and
 # hand-branching every dialect-sensitive statement in a BCL ternary (an
 # earlier version of this file did exactly that) doesn't scale past the
-# first such column. `../../migrations/*.bcl`, applied with
+# first such column. `../migrations/*.bcl`, applied with
 # `go run ./cmd/migrator migrate`, describes the schema once and lets
 # github.com/oarkflow/migrate generate the dialect-correct DDL. See
 # CONFIGURATION.md's "Schema migrations" section.
@@ -27,13 +27,22 @@ resource "database" {
   description "Users, sessions, jobs and the cache all live in one database — add a second only when you actually need one"
   config {
     driver env("DB_DRIVER", "sqlite")
-    dsn env("DB_DSN", "file:.data/starter/app.db?_pragma=busy_timeout(5000)")
+    dsn env("DB_DSN", "file:.data/starter/app.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
     max_open_connections env("DB_MAX_OPEN_CONNECTIONS", "20")
     max_idle_connections env("DB_MAX_IDLE_CONNECTIONS", "5")
     connection_max_lifetime 30m
     # ping defaults to true as of this starter: an unreachable database is a
     # startup failure here, never a surprise on the first request. Set
     # `ping false` only for a throwaway :memory: database in a test.
+    #
+    # journal_mode(WAL) is load-tested, not just copied from a tutorial:
+    # without it, a `hey -c 50` burst against an authenticated, DB-backed
+    # route reliably produced sporadic "disk I/O error"/500s under SQLite's
+    # default rollback-journal mode (readers and the writer blocking each
+    # other under concurrency busy_timeout alone doesn't fully resolve).
+    # With WAL, the same burst ran clean with no errors and roughly 3x the
+    # throughput and a third of the p99 latency. Irrelevant once DB_DRIVER
+    # is pgx (PostgreSQL has no such mode/setting to mirror).
     #
     # No `migrations` list here — run `go run ./cmd/migrator migrate`
     # before starting the server (once per schema change, not once per
@@ -86,7 +95,7 @@ resource "session_auth" {
 }
 
 # Role-based authorization. `superuser_roles` bypasses every `authz {
-# roles [...] }` check — see bcl/00_app.bcl's "admin" role.
+# roles [...] }` check — see resources/config/00_app.bcl's "admin" role.
 resource "authorization" {
   kind "authz.rbac"
   config {
@@ -109,12 +118,31 @@ resource "notifications" {
   }
 }
 
+# Circuit breaker over the one outbound dependency this app calls
+# (notifications). `cache` (not a dedicated store) so the breaker's state is
+# shared across every replica the same way sessions/rate limits already
+# are — a breaker that only one replica sees is not protecting the
+# dependency from the other replicas' traffic. After 5 consecutive
+# failures the circuit opens for 30s (refusing calls immediately, not
+# waiting out each one's own timeout) then admits one probe; see
+# 03_intents.bcl's notify.welcome and notification.password_reset for the
+# guard-before/record-after pattern around their "deliver" node.
+resource "delivery_breaker" {
+  kind "circuit_breaker.store"
+  config {
+    cache "cache"
+    failure_threshold 5
+    reset_after 30s
+  }
+}
+
 # Network/API abuse-detection perimeter guard (github.com/oarkflow/tcpguard,
 # wired into ref/platform's core — platform/resources_security.go). Declaring
 # this resource is the only wiring needed: platform/routes.go's serve()
 # evaluates every request through it before authentication runs. The policy
-# itself — its own BCL dialect, not this one — lives in security/, next to
-# bcl/ rather than inside it, since it is not an application document ref
+# itself — its own BCL dialect, not this one — lives in
+# resources/security/, a sibling of this file's own resources/config/
+# rather than inside it, since it is not an application document ref
 # compiles. Like the sqlite DSN in "database" above, this path is resolved
 # against the process's working directory, not this file's — run from
 # examples/starter (as every command in this starter's README does), the
@@ -122,25 +150,33 @@ resource "notifications" {
 resource "guard" {
   kind "security.tcpguard"
   config {
-    path "./security"
+    path "./resources/security"
     mode env("GUARD_MODE", "enforce")
+    # Populates the per-account half of resources/security/rules/
+    # auth-abuse-velocity.bcl's check (abuse.auth.user_failures) from the
+    # request body's "email" field — auth.login's own shape
+    # (resources/config/02_shapes.bcl's login_input) — so a credential-
+    # stuffing attack spread across many IPs against ONE account is still
+    # caught, not just a single-IP brute force.
+    identity_fields ["email"]
   }
 }
 
 # Business-rules engine (github.com/oarkflow/rules, core ref/platform's
-# "rules.engine" resource). `dir` scans ./rules recursively and publishes
-# one definition per ".bcl" file found, named by its path (rules/orders/
-# policy.bcl becomes definition "orders.policy") — a product with many
-# independent policies gets one nested directory per domain instead of a
-# `definition` block per file; an underscore-prefixed file (rules/orders/
-# _schema.bcl) is a fragment another file `import`s, not a definition of
-# its own. See rules/orders/policy.bcl for what's published here and why
-# it's a separate layer from orders.create's own flow.branch/decision.table;
-# see 09_workflow_example.bcl's "policy" node for where it's evaluated.
+# "rules.engine" resource). `dir` scans resources/rules recursively and
+# publishes one definition per ".bcl" file found, named by its path
+# (resources/rules/orders/policy.bcl becomes definition "orders.policy") —
+# a product with many independent policies gets one nested directory per
+# domain instead of a `definition` block per file; an underscore-prefixed
+# file (resources/rules/orders/_schema.bcl) is a fragment another file
+# `import`s, not a definition of its own. See resources/rules/orders/
+# policy.bcl for what's published here and why it's a separate layer from
+# orders.create's own flow.branch/decision.table; see
+# 09_workflow_example.bcl's "policy" node for where it's evaluated.
 resource "policy_engine" {
   kind "rules.engine"
   config {
     environment env("APP_ENV", "development")
-    dir "./rules"
+    dir "./resources/rules"
   }
 }

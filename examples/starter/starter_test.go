@@ -29,7 +29,7 @@ import (
 // runTestMigrations applies migrations/*.bcl against the test's own
 // temporary SQLite database by shelling out to cmd/migrator — the exact
 // same path a real deployment uses (`go run ./cmd/migrator cli migrate`).
-// bcl/01_resources.bcl's database resource no longer carries an inline
+// resources/config/01_resources.bcl's database resource no longer carries an inline
 // migrations list (see cmd/migrator/main.go's doc comment), so nothing
 // else creates these tables; running through the real binary here, rather
 // than driving github.com/oarkflow/migrate's Manager directly, keeps the
@@ -66,9 +66,9 @@ func registerTestActions() {
 // The starter end to end, on an in-process SQLite database:
 //   - session-cookie login, and RBAC that actually denies the wrong role
 //     (an authz {roles ["admin"]} route refuses a signed-in "user" account)
-//   - notify.welcome (bcl/03_intents.bcl) reused, unduplicated, across a
+//   - notify.welcome (resources/config/03_intents.bcl) reused, unduplicated, across a
 //     synchronous route and an asynchronous queue worker
-//   - the route_group in bcl/04_routes.bcl really does apply its shared
+//   - the route_group in resources/config/04_routes.bcl really does apply its shared
 //     session/auth/authz to every route nested inside it
 
 type harness struct {
@@ -100,7 +100,7 @@ func startApp(t *testing.T, bclDir string, env map[string]string) *harness {
 		}
 	}
 
-	templatesDir, err := filepath.Abs("templates")
+	templatesDir, err := filepath.Abs("resources/templates")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func (h *harness) doRaw(t *testing.T, c *http.Client, method, path string, body 
 }
 
 // welcomeRecorder stands in for the real notification service in
-// bcl/01_resources.bcl's "notifications" resource: it records every delivery
+// resources/config/01_resources.bcl's "notifications" resource: it records every delivery
 // so the test can prove both transports reached the same place.
 type welcomeRecorder struct {
 	mu   sync.Mutex
@@ -224,14 +224,14 @@ func TestStarterEndToEnd(t *testing.T) {
 	defer notify.Close()
 
 	dir := t.TempDir()
-	bclDir, err := filepath.Abs("bcl")
+	bclDir, err := filepath.Abs("resources/config")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	h := startApp(t, bclDir, map[string]string{
 		"APP_ENV":        "development",
-		"DB_DSN":         "file:" + filepath.Join(dir, "app.db") + "?_pragma=busy_timeout(5000)",
+		"DB_DSN":         "file:" + filepath.Join(dir, "app.db") + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)",
 		"SESSION_SECRET": "test-session-secret-0123456789ab-0123456789ab",
 		"WEBHOOK_SECRET": "test-webhook-secret-0123456789ab",
 		"NOTIFY_URL":     notify.URL,
@@ -241,7 +241,7 @@ func TestStarterEndToEnd(t *testing.T) {
 		t.Fatalf("GET /health = %d %v", status, body)
 	}
 
-	// --- The seeded admin account (bcl/01_resources.bcl's migration) -------
+	// --- The seeded admin account (resources/config/01_resources.bcl's migration) -------
 	admin := h.client(t)
 	status, resp := h.do(t, admin, "POST", "/login", map[string]any{
 		"email": "admin@example.com", "password": "Password123!",
@@ -251,7 +251,7 @@ func TestStarterEndToEnd(t *testing.T) {
 	}
 
 	// The admin-only, server-rendered user directory — a regression test
-	// for a real bug: "users" (bcl/03_intents.bcl's dashboard.admin), unlike
+	// for a real bug: "users" (resources/config/03_intents.bcl's dashboard.admin), unlike
 	// a single-row "user" fact, is a []map[string]any rendered through a
 	// `@for` loop, and any DATETIME column in it used to reach the template
 	// as a raw time.Time (modernc.org/sqlite scans DATETIME that way) —
@@ -279,7 +279,7 @@ func TestStarterEndToEnd(t *testing.T) {
 	}
 
 	// Transport 2: the same business logic, queued and run by
-	// bcl/05_workers.bcl's worker instead of inline in the request.
+	// resources/config/05_workers.bcl's worker instead of inline in the request.
 	if status, resp := h.do(t, admin, "POST", "/api/v1/notify/welcome-async", map[string]any{
 		"email": "async@example.com", "name": "Async",
 	}); status != 202 {
@@ -350,13 +350,13 @@ func TestPasswordResetFlow(t *testing.T) {
 	defer notify.Close()
 
 	dir := t.TempDir()
-	bclDir, err := filepath.Abs("bcl")
+	bclDir, err := filepath.Abs("resources/config")
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := startApp(t, bclDir, map[string]string{
 		"APP_ENV":        "development",
-		"DB_DSN":         "file:" + filepath.Join(dir, "app.db") + "?_pragma=busy_timeout(5000)",
+		"DB_DSN":         "file:" + filepath.Join(dir, "app.db") + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)",
 		"SESSION_SECRET": "test-session-secret-0123456789ab-0123456789ab",
 		"WEBHOOK_SECRET": "test-webhook-secret-0123456789ab",
 		"NOTIFY_URL":     notify.URL,
@@ -430,10 +430,10 @@ func TestPasswordResetFlow(t *testing.T) {
 }
 
 // TestMaintenanceGuardsBackgroundDelivery proves the gap the HTTP
-// middleware alone cannot close: a worker (bcl/05_workers.bcl) runs an
+// middleware alone cannot close: a worker (resources/config/05_workers.bcl) runs an
 // intent directly, bypassing that middleware entirely, so notify.welcome's
 // own "ops.maintenance_status" + validate.expression guard
-// (bcl/03_intents.bcl) is what actually stops it from delivering while
+// (resources/config/03_intents.bcl) is what actually stops it from delivering while
 // maintenance mode is on.
 func TestMaintenanceGuardsBackgroundDelivery(t *testing.T) {
 	recorder := &welcomeRecorder{}
@@ -441,13 +441,13 @@ func TestMaintenanceGuardsBackgroundDelivery(t *testing.T) {
 	defer notify.Close()
 
 	dir := t.TempDir()
-	bclDir, err := filepath.Abs("bcl")
+	bclDir, err := filepath.Abs("resources/config")
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := startApp(t, bclDir, map[string]string{
 		"APP_ENV":        "development",
-		"DB_DSN":         "file:" + filepath.Join(dir, "app.db") + "?_pragma=busy_timeout(5000)",
+		"DB_DSN":         "file:" + filepath.Join(dir, "app.db") + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)",
 		"SESSION_SECRET": "test-session-secret-0123456789ab-0123456789ab",
 		"WEBHOOK_SECRET": "test-webhook-secret-0123456789ab",
 		"NOTIFY_URL":     notify.URL,
@@ -481,7 +481,7 @@ func TestMaintenanceGuardsBackgroundDelivery(t *testing.T) {
 	// time (job.Attempts > 1) unless the intent is marked `idempotent
 	// true` — a maintenance window under ~1s never reaches that third
 	// attempt and would pass even without notify.welcome's `idempotent
-	// true` (bcl/03_intents.bcl). A real maintenance window is measured in
+	// true` (resources/config/03_intents.bcl). A real maintenance window is measured in
 	// minutes, not milliseconds, so this holds for exactly as long as a
 	// real one would need to.
 	time.Sleep(1800 * time.Millisecond)
@@ -491,7 +491,7 @@ func TestMaintenanceGuardsBackgroundDelivery(t *testing.T) {
 
 	testMaintenanceGate.Set(false, "")
 
-	// The job's retry (max_attempts 5, bcl/05_workers.bcl) picks it back up
+	// The job's retry (max_attempts 5, resources/config/05_workers.bcl) picks it back up
 	// once the guard passes again.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) && !recorder.hasEmail("during-maintenance@example.com") {
@@ -502,7 +502,7 @@ func TestMaintenanceGuardsBackgroundDelivery(t *testing.T) {
 	}
 }
 
-// TestOrdersWorkflowExample exercises bcl/09_workflow_example.bcl end to
+// TestOrdersWorkflowExample exercises resources/config/09_workflow_example.bcl end to
 // end: flow.branch's tier classification, decision.table + flow.switch's
 // status machine (including its "invalid transition" rejection and its
 // cancel path), and the priority_shipping feature flag actually changing
@@ -510,13 +510,13 @@ func TestMaintenanceGuardsBackgroundDelivery(t *testing.T) {
 // caller's role.
 func TestOrdersWorkflowExample(t *testing.T) {
 	dir := t.TempDir()
-	bclDir, err := filepath.Abs("bcl")
+	bclDir, err := filepath.Abs("resources/config")
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := startApp(t, bclDir, map[string]string{
 		"APP_ENV":        "development",
-		"DB_DSN":         "file:" + filepath.Join(dir, "app.db") + "?_pragma=busy_timeout(5000)",
+		"DB_DSN":         "file:" + filepath.Join(dir, "app.db") + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)",
 		"SESSION_SECRET": "test-session-secret-0123456789ab-0123456789ab",
 		"WEBHOOK_SECRET": "test-webhook-secret-0123456789ab",
 		"NOTIFY_URL":     "http://127.0.0.1:0", // unused by this test
@@ -611,7 +611,7 @@ func TestOrdersWorkflowExample(t *testing.T) {
 }
 
 // TestSecurityGuardBlocksAttackProbe proves security/tcpguard.bcl (loaded by
-// bcl/01_resources.bcl's "guard" resource, evaluated automatically by
+// resources/config/01_resources.bcl's "guard" resource, evaluated automatically by
 // ref/platform's request pipeline — see platform/resources_security.go and
 // platform/routes.go's serve) actually runs, not just that it compiles: a
 // path-traversal-shaped query string gets refused before the route's own
@@ -619,13 +619,13 @@ func TestOrdersWorkflowExample(t *testing.T) {
 // unaffected.
 func TestSecurityGuardBlocksAttackProbe(t *testing.T) {
 	dir := t.TempDir()
-	bclDir, err := filepath.Abs("bcl")
+	bclDir, err := filepath.Abs("resources/config")
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := startApp(t, bclDir, map[string]string{
 		"APP_ENV":        "development",
-		"DB_DSN":         "file:" + filepath.Join(dir, "app.db") + "?_pragma=busy_timeout(5000)",
+		"DB_DSN":         "file:" + filepath.Join(dir, "app.db") + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)",
 		"SESSION_SECRET": "test-session-secret-0123456789ab-0123456789ab",
 		"WEBHOOK_SECRET": "test-webhook-secret-0123456789ab",
 		"NOTIFY_URL":     "http://127.0.0.1:0", // unused by this test
@@ -666,7 +666,7 @@ func dig(v any, path ...any) any {
 }
 
 func TestMain(m *testing.M) {
-	// bcl/*.bcl resolve relative paths (the sqlite dsn's directory, if any)
+	// resources/config/*.bcl resolve relative paths (the sqlite dsn's directory, if any)
 	// against the current working directory, which go test already sets to
 	// this package's directory — nothing to change here, this only documents
 	// the assumption for anyone moving the test.

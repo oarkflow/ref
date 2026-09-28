@@ -1,6 +1,6 @@
 Migration "4_create_orders_table" {
   Version = "1.0.0"
-  Description = "Create the orders table (bcl/09_workflow_example.bcl)"
+  Description = "Create the orders table (resources/config/09_workflow_example.bcl)"
   Connection = "default"
   Up {
     CreateTable "orders" {

@@ -1,6 +1,6 @@
-// Command migrator applies the schema in ../../migrations against whichever
-// database DB_DRIVER/DB_DSN name — SQLite or PostgreSQL, from the same two
-// declarative BCL environment variables cmd/server reads.
+// Command migrator applies the schema in ../../resources/migrations against
+// whichever database DB_DRIVER/DB_DSN name — SQLite or PostgreSQL, from the
+// same two declarative BCL environment variables cmd/server reads.
 //
 // This is a separate binary, run as a separate step
 // (`go run ./cmd/migrator migrate`, then `go run ./cmd/server`), on purpose:
@@ -10,12 +10,12 @@
 // something that silently reruns on every server boot.
 //
 // github.com/oarkflow/migrate's migrations are themselves BCL
-// (migrations/*.bcl): one declarative schema per file, compiled to
-// dialect-correct SQL by the tool itself (SQLite's rowid-based
+// (resources/migrations/*.bcl): one declarative schema per file, compiled
+// to dialect-correct SQL by the tool itself (SQLite's rowid-based
 // auto-increment vs PostgreSQL's SERIAL, TEXT vs VARCHAR sizing, ...) — the
-// same problem bcl/01_resources.bcl used to solve by hand with a ternary
-// over two full copies of every CREATE TABLE statement, which is what this
-// replaces.
+// same problem resources/config/01_resources.bcl used to solve by hand
+// with a ternary over two full copies of every CREATE TABLE statement,
+// which is what this replaces.
 package main
 
 import (
@@ -35,7 +35,7 @@ func main() {
 	}
 
 	driver := env("DB_DRIVER", "sqlite")
-	dsn := env("DB_DSN", "file:.data/starter/app.db?_pragma=busy_timeout(5000)")
+	dsn := env("DB_DSN", "file:.data/starter/app.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	// cmd/server names the driver the way database/sql knows it ("pgx", the
 	// name jackc/pgx/v5/stdlib registers); github.com/oarkflow/migrate names
 	// dialects the way it groups drivers ("postgres" for any of pgx/pg/
@@ -68,8 +68,8 @@ func main() {
 		migrate.WithDriver(dbDriver),
 		migrate.WithHistoryDriver(historyDriver),
 		migrate.WithDialect(dialect),
-		migrate.WithMigrationDir(bootstrap.ResolveDir("examples/starter/migrations", "./migrations", "migrations")),
-		migrate.WithSeedDir(bootstrap.ResolveDir("examples/starter/migrations/seeds", "./migrations/seeds", "migrations/seeds")),
+		migrate.WithMigrationDir(bootstrap.ResolveDir("examples/starter/resources/migrations", "./resources/migrations", "resources/migrations")),
+		migrate.WithSeedDir(bootstrap.ResolveDir("examples/starter/resources/migrations/seeds", "./resources/migrations/seeds", "resources/migrations/seeds")),
 	)
 
 	// Delegates to github.com/oarkflow/migrate's own CLI dispatch over

@@ -52,14 +52,37 @@ type RouteSpec struct {
 	// MaxBodyBytes caps the request body. Zero uses the server default.
 	MaxBodyBytes int64 `bcl:"max_body_bytes"`
 
-	Authz        *AuthzSpec       `bcl:"authz"`
-	RateLimit    *RateLimitSpec   `bcl:"rate_limit"`
-	Idempotency  *IdempotencySpec `bcl:"idempotency"`
-	Tenant       *TenantRouteSpec `bcl:"tenant"`
-	Audit        *AuditSpec       `bcl:"route_audit"`
-	CORS         *CORSSpec        `bcl:"cors"`
-	RequestData  *DataSpec        `bcl:"request_data"`
-	ResponseData *DataSpec        `bcl:"response_data"`
+	Authz         *AuthzSpec         `bcl:"authz"`
+	RateLimit     *RateLimitSpec     `bcl:"rate_limit"`
+	Idempotency   *IdempotencySpec   `bcl:"idempotency"`
+	Tenant        *TenantRouteSpec   `bcl:"tenant"`
+	Audit         *AuditSpec         `bcl:"route_audit"`
+	CORS          *CORSSpec          `bcl:"cors"`
+	RequestData   *DataSpec          `bcl:"request_data"`
+	ResponseData  *DataSpec          `bcl:"response_data"`
+	SecurityEvent *SecurityEventSpec `bcl:"security_event"`
+}
+
+// SecurityEventSpec reports this route's outcome to the document's
+// security.tcpguard resource (if one is declared), after the response is
+// known — OnSuccess when the final status is < 400, OnFailure otherwise.
+// Either may be left empty to report only one direction.
+//
+// This exists because the guard's own automatic per-request check
+// (routes.go's serve, before dispatch) only ever sees "request.received":
+// at that point in the pipeline, whether a login attempt will succeed is
+// not yet decided. A rule keyed on an *outcome* — auth-abuse-velocity's
+// abuse.auth.ip_failures, account-takeover's session drift, anything
+// needing "did this attempt fail" — cannot fire without something telling
+// the guard that outcome after the fact, which is what this does.
+//
+//	route "auth.login" {
+//	  ...
+//	  security_event { on_success "auth.login_success" on_failure "auth.login_failed" }
+//	}
+type SecurityEventSpec struct {
+	OnSuccess string `bcl:"on_success"`
+	OnFailure string `bcl:"on_failure"`
 }
 
 // RouteGroupSpec batches routes that share a path prefix and, optionally, a

@@ -2,7 +2,7 @@
 // the kind of thing a future product will want without redesigning
 // anything — a shared toggle, an HTTP middleware, a health check, and one
 // BCL-reachable action to flip it. None of it is business logic, which is
-// why it lives beside cmd/server rather than in bcl/.
+// why it lives beside cmd/server rather than in resources/config/.
 package ops
 
 import (
@@ -197,7 +197,7 @@ func (g *MaintenanceGate) RegisterAction() {
 	// bypassing HTTP entirely — nothing stops a background job from writing
 	// to a database mid-migration just because maintenance mode is "on".
 	// A node using this action, required by whatever should pause, closes
-	// that gap explicitly per intent (see bcl/03_intents.bcl's
+	// that gap explicitly per intent (see resources/config/03_intents.bcl's
 	// notify.welcome and notification.password_reset for the pattern:
 	// requires it, then a validate.expression node gates on it).
 	platform.RegisterActionDriver("ops.maintenance_status",
