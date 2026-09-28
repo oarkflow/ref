@@ -472,8 +472,19 @@ func TestMaintenanceGuardsBackgroundDelivery(t *testing.T) {
 		t.Fatalf("POST /api/v1/notify/welcome-async = %d %v", status, resp)
 	}
 
-	// Give the worker time to try and fail; it must NOT deliver.
-	time.Sleep(300 * time.Millisecond)
+	// Long enough for the queue (500ms poll interval, resources_queue.go)
+	// to fail this job at least three times before maintenance clears —
+	// short of that, this test cannot tell a real fix from a regression: a
+	// worker's failed delivery is requeued via the same retry path
+	// (github.com/oarkflow/fh's DurableQueue.Retry) as any other job
+	// failure, and platform.go's runWorkerJob refuses to redeliver a THIRD
+	// time (job.Attempts > 1) unless the intent is marked `idempotent
+	// true` — a maintenance window under ~1s never reaches that third
+	// attempt and would pass even without notify.welcome's `idempotent
+	// true` (bcl/03_intents.bcl). A real maintenance window is measured in
+	// minutes, not milliseconds, so this holds for exactly as long as a
+	// real one would need to.
+	time.Sleep(1800 * time.Millisecond)
 	if recorder.hasEmail("during-maintenance@example.com") {
 		t.Fatalf("the worker delivered while maintenance mode was on: %+v", recorder.seen)
 	}

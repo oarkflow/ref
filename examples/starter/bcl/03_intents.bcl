@@ -299,6 +299,9 @@ intent "notification.password_reset" {
   response "response"
   timeout 15s
   max_external_io 1
+  # Same reasoning as notify.welcome: a retried delivery, at worst, sends
+  # the reset link twice — see notify.welcome's idempotent comment.
+  idempotent true
 
   # The worker that runs this (bcl/05_workers.bcl) bypasses the HTTP
   # maintenance middleware entirely — this guard is what makes maintenance
@@ -421,6 +424,13 @@ intent "notify.welcome" {
   response "response"
   timeout 15s
   max_external_io 1
+  # Worst case on a retry: the recipient gets the same welcome email twice —
+  # never a reason to let a maintenance-interrupted or transiently-failed
+  # delivery dead-letter permanently instead of trying again. Without this,
+  # platform.go's worker safeguard refuses every retry past the first with
+  # "cannot redeliver non-idempotent intent", including the very retry the
+  # maintenance-hold pattern below depends on.
+  idempotent true
 
   node "validate" {
     uses "validate.required"
