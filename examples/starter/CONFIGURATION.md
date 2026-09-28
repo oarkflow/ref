@@ -17,6 +17,8 @@ is no single generated reference for all of it yet.
 | `session_auth` | `auth.session` | `session`, `roles_claim` | Resolves the caller's principal (id, roles) from the cookie `sessions` verified. Every protected route names this as its `auth`. |
 | `authorization` | `authz.rbac` | `superuser_roles`, `default_roles` | The RBAC engine every route's `authz { authorizer "authorization" }` checks against. **`superuser_roles` does not bypass a route's `roles [...]` gate** — see below. |
 | `notifications` | `service.http` | `allowed_hosts`, `allow_private_networks` | Outbound target for `notify.welcome`. The host allowlist is an SSRF guard: a URL outside it is refused, not attempted. |
+| `guard` | `security.tcpguard` | `path`, `mode` | Network/API abuse-detection perimeter guard — see "Network protection and business rules" below. |
+| `policy_engine` | `rules.engine` | `dir` | Versioned business-rules engine — see the same section. |
 
 ## Schema migrations (`migrations/*.bcl`, `cmd/migrator`)
 
@@ -112,6 +114,68 @@ A node's `bulkhead { name "..." limit N }` caps concurrent calls to that
 node; every node across every intent naming the same `name` shares one
 limiter. Use it for a slow or flaky external dependency; it fails fast
 (`BULKHEAD_FULL`, HTTP 503) rather than queuing unboundedly.
+
+## Network protection and business rules (`security/`, `rules/`)
+
+Two capabilities live in core `ref/platform`, not in this starter's own Go
+code — declaring the resource is the whole integration, the same as every
+other resource kind in this document.
+
+**`security.tcpguard`** (`guard` resource, `security/tcpguard.bcl`,
+`platform/resources_security.go`) is a deployment-wide perimeter guard —
+credential-stuffing/endpoint-scanning/injection-shape abuse detection with
+graduated allow/monitor/challenge/throttle/block decisions
+(github.com/oarkflow/tcpguard), evaluated on *every* request before
+authentication runs. This is a different layer from a route's own
+`rate_limit`: `rate_limit` counts one route by a fixed window;
+`security.tcpguard` inspects the whole request's shape across every route
+against a policy pack written in tcpguard's own BCL dialect (not this
+one). `path` (`bcl/01_resources.bcl`) names a *directory*, not a file:
+`tcpguard.LoadTCPGuardBundleDir` walks it recursively, merging every
+`.bcl` file it finds — `security/` splits the pack/guard/policy_safety
+declaration (`security/tcpguard.bcl`) from the rule itself
+(`security/rules/application-attack-probe.bcl`) into a nested
+subdirectory to prove that, not because one rule needed two files; a real
+policy pack (tcpguard's own examples ship one file per detector/rule/
+threat_model) is where the split earns its keep. See that rule file's own
+comment for which of tcpguard's richer example rules (brute-force login
+velocity, payment velocity, ...) are *not* shipped and why: several need
+an outcome (a login actually failing) this integration does not yet
+report back to the guard.
+
+**`rules.engine`** (`policy_engine` resource, `rules/orders/policy.bcl`,
+core `platform/resources_rules_engine.go`) is a second decision engine
+(github.com/oarkflow/rules) alongside the built-in `decision.table` —
+reach for it, as `orders.create`'s `policy` node does, when a business
+rule needs independent versioning/rollback (`rules.Service.Activate` /
+`Rollback`) on its own schedule, not `decision.table`'s (redeployed with
+the rest of the application document). `dir "./rules"`
+(`bcl/01_resources.bcl`) scans recursively and publishes one definition
+per `.bcl` file, named by its path relative to `dir` — `rules/orders/
+policy.bcl` becomes definition `"orders.policy"`, which is what the
+`policy` node's `config { definition "orders.policy" }` names. A file
+whose name starts with `_` (`rules/orders/_schema.bcl`) is a fragment,
+not a definition of its own — `policy.bcl` pulls it in with
+`import "./_schema.bcl"` (`github.com/oarkflow/bcl`'s own directive, not
+this dialect's); a large ruleset splits into fragments the same way, and
+`dir`'s job is finding every independent definition, not composing one
+across files — `import` does that, inside whichever file needs it.
+`rules/orders/policy.bcl` is a different BCL dialect too (bare
+`decision_schema`/`decision_table` blocks — no `module` wrapper needed —
+not `resource`/`intent`/`route`) — see that file's own comment for why it
+exists as a second layer next to `orders.create`'s existing
+`flow.branch`/`decision.table` rather than folded into them.
+
+A `rules.evaluate` node with `kind decision` denies the same way
+`auth.require_session` does — `!Allowed` fails the node, and it must
+`requires` **only the facts the rule itself reads**, never a fact that
+another plain node needs to produce first: a plain node without
+`speculation` cannot run until every decision node in the intent has
+resolved (`execution/scheduler.go`'s `isGateEligible`), so a decision node
+requiring that plain node's output deadlocks the whole intent — every
+request denied, generically, with no node past the deadlock ever running.
+`orders.create`'s `policy` node hit exactly this requiring `[input,
+validated]` instead of `[input]`; its own comment is the postmortem.
 
 ## Pages (`templates/`)
 
@@ -218,6 +282,7 @@ which runs the same checks without opening a database or a listener).
 | `.env` sets a variable that's already set in the real environment | No error — the real value silently wins, `.env`'s is ignored | Expected behavior (`cmd/server/dotenv.go`), not a bug; unset the real one or edit it directly if you meant to override it locally. |
 | A BCL field does `env(...) == "x" ? A : B` all inline | No error — silently picks the wrong branch | Bind the `env()` call to its own field first, then compare that field, e.g. `db_driver env(...)` then `db_driver == "x" ? A : B`. A real parser quirk in the pinned `github.com/oarkflow/bcl` version, found while this starter still branched migrations by dialect in BCL (since replaced by `cmd/migrator` — see "Schema migrations" above — but the parser behavior itself is unchanged). |
 | A BCL field is a bare reference to another top-level field, inside a nested block or a list element | No error — the field's own *name* becomes its string value | Bare references only resolve reliably as a ternary's condition at the top level; use `env(...)` directly anywhere else. |
+| A `kind decision` node's `requires` names a fact that a plain (non-speculative) node produces | No error — every request silently denied, generically ("access denied"), no node past the deadlock ever runs | The decision node must `requires` only facts that are themselves speculation-free of every other decision node — see "Network protection and business rules" above's `rules.evaluate` note. Give the plain node `speculation pre_auth_safe`, or drop the fact from the decision node's `requires` if it doesn't actually need it. |
 
 ## What's deliberately not here
 

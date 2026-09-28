@@ -547,6 +547,22 @@ func TestOrdersWorkflowExample(t *testing.T) {
 	}
 	largeID := fmt.Sprintf("%v", dig(large, "orders", 0, "id"))
 
+	// rules.evaluate (rules/order_policy.bcl, github.com/oarkflow/rules):
+	// a business rule separate from the flow.branch tier boundary above —
+	// $5,000 is a hard self-service cap, denied before the INSERT runs.
+	// A regression test for a real deadlock this same node once caused:
+	// see 09_workflow_example.bcl's "policy" node comment — it must
+	// require [input] only, not [input, validated], or every order
+	// (regardless of amount) is denied.
+	if status, resp := h.do(t, member, "POST", "/api/v1/orders", map[string]any{"amount": 9000}); status != 403 {
+		t.Fatalf("a 9000-unit order = %d %v, want 403 (over the self-service cap)", status, resp)
+	} else if code := dig(resp, "error", "code"); code != "PERMISSION_DENIED" {
+		t.Fatalf("over-cap order error code = %v, want PERMISSION_DENIED: %v", code, resp)
+	}
+	if status, resp := h.do(t, member, "POST", "/api/v1/orders", map[string]any{"amount": 4000}); status != 201 {
+		t.Fatalf("a 4000-unit order = %d %v, want 201 (within the cap)", status, resp)
+	}
+
 	// decision.table + flow.switch: pending -> shipped directly is not a
 	// legal transition, and reject-invalid's validate.expression must catch
 	// it as 422, before any UPDATE runs.
@@ -591,6 +607,38 @@ func TestOrdersWorkflowExample(t *testing.T) {
 	}
 	if status, order := h.do(t, member, "GET", "/api/v1/orders/"+small2ID, nil); status != 200 || dig(order, "order", "status") != "cancelled" {
 		t.Fatalf("GET order after cancel = %d %v, want status cancelled", status, order)
+	}
+}
+
+// TestSecurityGuardBlocksAttackProbe proves security/tcpguard.bcl (loaded by
+// bcl/01_resources.bcl's "guard" resource, evaluated automatically by
+// ref/platform's request pipeline — see platform/resources_security.go and
+// platform/routes.go's serve) actually runs, not just that it compiles: a
+// path-traversal-shaped query string gets refused before the route's own
+// intent ever executes, while an ordinary request to the same route is
+// unaffected.
+func TestSecurityGuardBlocksAttackProbe(t *testing.T) {
+	dir := t.TempDir()
+	bclDir, err := filepath.Abs("bcl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := startApp(t, bclDir, map[string]string{
+		"APP_ENV":        "development",
+		"DB_DSN":         "file:" + filepath.Join(dir, "app.db") + "?_pragma=busy_timeout(5000)",
+		"SESSION_SECRET": "test-session-secret-0123456789ab-0123456789ab",
+		"WEBHOOK_SECRET": "test-webhook-secret-0123456789ab",
+		"NOTIFY_URL":     "http://127.0.0.1:0", // unused by this test
+	})
+	client := h.client(t)
+
+	if status, _ := h.do(t, client, "GET", "/health", nil); status != 200 {
+		t.Fatalf("GET /health = %d, want 200 (an ordinary request must be unaffected)", status)
+	}
+	if status, resp := h.do(t, client, "GET", "/health?x=%27%20or%20%271%27%3D%271", nil); status != 403 {
+		t.Fatalf("GET /livez?x=' or '1'='1 = %d %v, want 403 (application-attack-probe should have matched)", status, resp)
+	} else if code := dig(resp, "error", "code"); code != "REQUEST_BLOCKED" {
+		t.Fatalf("blocked request error code = %v, want REQUEST_BLOCKED: %v", code, resp)
 	}
 }
 

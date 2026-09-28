@@ -110,11 +110,42 @@ intent "orders.create" {
     }
   }
 
+  # --- The business rule ---------------------------------------------------
+  # A `kind decision` node denies the same way auth.require_session does:
+  # `!Allowed` fails this node, and "insert" below (which requires
+  # policy_decision) never runs — no separate validate.expression gate
+  # needed, unlike ops.maintenance_status's `bool` fact. See
+  # rules/orders/policy.bcl for the policy and why it's a second engine
+  # rather than another flow.branch case.
+  #
+  # requires [input] only, deliberately not [input, validated]: "validated"
+  # has no speculation, so its own node cannot run until every decision
+  # node in this intent has resolved (execution/scheduler.go's
+  # isGateEligible — a plain node without post_policy_safe/pre_auth_safe
+  # waits on the full decision verdict). Adding "validated" here would
+  # make this decision node depend, transitively, on a fact that itself
+  # waits on this decision node completing — a real bug, not a slow path:
+  # with "validated" in requires, every /api/v1/orders POST was denied
+  # (generic "access denied", no node past auth.require_session ever ran)
+  # regardless of amount. Verified by reproducing it before landing the
+  # fix without "validated" here.
+  node "policy" {
+    uses "rules.evaluate"
+    resource "policy_engine"
+    kind decision
+    requires [input]
+    provides [policy_decision]
+    config {
+      definition "orders.policy"
+      decision "approval"
+    }
+  }
+
   node "insert" {
     uses "database.query"
     resource "database"
     kind effect
-    requires [user_id, input, classification]
+    requires [user_id, input, classification, policy_decision]
     provides [orders]
     config {
       statement "INSERT INTO orders (owner_id, amount, tier) VALUES ($1, $2, $3) RETURNING id, owner_id, amount, tier, status, priority, created_at"

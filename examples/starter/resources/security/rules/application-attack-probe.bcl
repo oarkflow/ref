@@ -1,0 +1,41 @@
+# A rule in its own file, in a nested directory under security/ — see
+# ../tcpguard.bcl's comment: LoadTCPGuardBundleDir walks "path" recursively,
+# so this merges into the same policy as if it were declared inline there.
+#
+# The one rule that fires from a single request alone, no history needed:
+# a request whose path, query or body contains a path-traversal, SQL/NoSQL
+# injection, XSS or SSRF probe pattern. See
+# github.com/oarkflow/tcpguard's abuse.go detectApplicationAbuse for the
+# exact patterns matched (../, ' or '1'='1, <script, 169.254.169.254, ...).
+rule "application-attack-probe" {
+  status active
+  priority 185
+
+  trigger {
+    on request.received
+  }
+
+  when {
+    any {
+      abuse.application.path_traversal equals true
+      abuse.application.injection_probe equals true
+      abuse.application.xss_probe equals true
+      abuse.application.ssrf_probe equals true
+    }
+  }
+
+  risk {
+    base 90
+    max 100
+  }
+
+  severity {
+    critical when risk.score greater_or_equal 90
+  }
+
+  actions {
+    critical {
+      run block
+    }
+  }
+}

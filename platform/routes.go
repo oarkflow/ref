@@ -379,6 +379,17 @@ func (p *Platform) serve(c fh.Ctx, route compiledRoute) error {
 			Message: fmt.Sprintf("the request body is larger than the %d byte limit", route.spec.MaxBodyBytes)})
 	}
 
+	// The perimeter guard runs before authentication: abuse detection
+	// (credential stuffing, endpoint scanning, attack-shape probes) is
+	// exactly as valuable against an unauthenticated caller, and blocking
+	// here means an authenticator never spends work on a request the guard
+	// already refused.
+	if p.guard != nil {
+		if handled, err := p.guard.check(c); handled {
+			return err
+		}
+	}
+
 	ctx := c.Context()
 	if route.timeout > 0 {
 		var cancel context.CancelFunc

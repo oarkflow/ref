@@ -108,3 +108,39 @@ resource "notifications" {
     allow_private_networks env("NOTIFY_ALLOW_PRIVATE", "true")
   }
 }
+
+# Network/API abuse-detection perimeter guard (github.com/oarkflow/tcpguard,
+# wired into ref/platform's core — platform/resources_security.go). Declaring
+# this resource is the only wiring needed: platform/routes.go's serve()
+# evaluates every request through it before authentication runs. The policy
+# itself — its own BCL dialect, not this one — lives in security/, next to
+# bcl/ rather than inside it, since it is not an application document ref
+# compiles. Like the sqlite DSN in "database" above, this path is resolved
+# against the process's working directory, not this file's — run from
+# examples/starter (as every command in this starter's README does), the
+# same way `.data/starter/app.db` above already assumes.
+resource "guard" {
+  kind "security.tcpguard"
+  config {
+    path "./security"
+    mode env("GUARD_MODE", "enforce")
+  }
+}
+
+# Business-rules engine (github.com/oarkflow/rules, core ref/platform's
+# "rules.engine" resource). `dir` scans ./rules recursively and publishes
+# one definition per ".bcl" file found, named by its path (rules/orders/
+# policy.bcl becomes definition "orders.policy") — a product with many
+# independent policies gets one nested directory per domain instead of a
+# `definition` block per file; an underscore-prefixed file (rules/orders/
+# _schema.bcl) is a fragment another file `import`s, not a definition of
+# its own. See rules/orders/policy.bcl for what's published here and why
+# it's a separate layer from orders.create's own flow.branch/decision.table;
+# see 09_workflow_example.bcl's "policy" node for where it's evaluated.
+resource "policy_engine" {
+  kind "rules.engine"
+  config {
+    environment env("APP_ENV", "development")
+    dir "./rules"
+  }
+}

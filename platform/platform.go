@@ -137,6 +137,11 @@ type Platform struct {
 	currencies *money.Registry
 	residency  *residencyPlan
 
+	// guard is the first security.tcpguard resource found in the document,
+	// if any; serve() (routes.go) evaluates every request through it before
+	// authentication runs. nil when the document declares none.
+	guard *tcpguardWrapper
+
 	background context.CancelFunc
 	wg         sync.WaitGroup
 	closeOnce  sync.Once
@@ -309,6 +314,12 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 	}
 	if err := p.openResources(ctx, doc, opts.Registry); err != nil {
 		return nil, err
+	}
+	for _, resource := range p.resources {
+		if guard, ok := resource.(*tcpguardWrapper); ok {
+			p.guard = guard
+			break
+		}
 	}
 	if p.residency, err = compileResidency(doc, p.resources); err != nil {
 		return nil, err

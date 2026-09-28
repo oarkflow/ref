@@ -4,6 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/oarkflow/rules"
@@ -73,6 +77,7 @@ func registerRulesEngineResource(r *Registry) {
 			{Name: "request_timeout", Type: "duration", Default: "5s", Summary: "Maximum time for a single rule evaluation"},
 			{Name: "max_request_bytes", Type: "int", Default: "1048576", Summary: "Maximum request body size"},
 			{Name: "definition", Type: "block", Summary: `Rule definitions published when the engine opens: definition "name" { version, source or path, tenant_id, run_tests }. An invalid one fails startup`},
+			{Name: "dir", Type: "string", Summary: `Directory to scan (recursively) for one definition per ".bcl" file found, named by its path relative to this directory (slashes become dots, extension stripped) — "orders/refund.bcl" becomes definition "orders.refund". A file that needs to split further can still "import \"./other.bcl\"" (github.com/oarkflow/bcl's own directive) for sibling files within its own definition; "dir" is for independent definitions, "import" is for composing one definition across files. Combines with explicit "definition" blocks; a name collision between the two fails startup.`},
 		},
 	})
 }
@@ -85,7 +90,7 @@ type rulesEngineWrapper struct {
 func openRulesEngine(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("rules.engine", spec.Config,
 		"environment", "default_tenant", "strict_validation", "strict_evaluation",
-		"request_timeout", "max_request_bytes", "definition"); err != nil {
+		"request_timeout", "max_request_bytes", "definition", "dir"); err != nil {
 		return nil, nil, err
 	}
 
@@ -113,6 +118,7 @@ func openRulesEngine(ctx context.Context, spec ResourceSpec) (Resource, io.Close
 	// The store is in memory, so a definition the application depends on is
 	// published here, on every start, rather than by an intent someone has to
 	// remember to call.
+	published := map[string]bool{}
 	for _, block := range configBlocks(spec.Config, "definition") {
 		name, body := Stringify(block["id"]), block
 		if inner, ok := block["body"].(map[string]any); ok {
@@ -137,6 +143,68 @@ func openRulesEngine(ctx context.Context, spec ResourceSpec) (Resource, io.Close
 		}
 		if _, err := svc.Publish(ctx, req); err != nil {
 			return nil, nil, fmt.Errorf("resource %q: definition %q: %w%s", spec.Name, name, err, rulesDiagnostics(ctx, svc, req))
+		}
+		published[name] = true
+	}
+
+	// "dir" auto-discovers definitions rather than naming each one — the
+	// large-ruleset case the "definition" block above does not scale to: a
+	// product with dozens of independent policies gets one directory,
+	// nested however the domain wants, instead of a dozen repetitive
+	// definition blocks. Each ".bcl" file it finds becomes its own
+	// definition, named after its own path so two files never collide
+	// unless the author names them identically.
+	if dir := configString(spec.Config, "dir", ""); dir != "" {
+		info, err := os.Stat(dir)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resource %q: dir %q: %w", spec.Name, dir, err)
+		}
+		if !info.IsDir() {
+			return nil, nil, fmt.Errorf("resource %q: dir %q is not a directory", spec.Name, dir)
+		}
+		var files []string
+		if err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			// An underscore-prefixed file (_shared.bcl) is a fragment another
+			// file "import"s, not a definition of its own — auto-publishing it
+			// too would fail startup on its own missing bcl-version/decision
+			// blocks, or double-publish content another definition already
+			// pulled in.
+			if strings.HasSuffix(path, ".bcl") && !strings.HasPrefix(filepath.Base(path), "_") {
+				files = append(files, path)
+			}
+			return nil
+		}); err != nil {
+			return nil, nil, fmt.Errorf("resource %q: dir %q: %w", spec.Name, dir, err)
+		}
+		sort.Strings(files)
+		for _, path := range files {
+			rel, err := filepath.Rel(dir, path)
+			if err != nil {
+				return nil, nil, fmt.Errorf("resource %q: dir %q: %w", spec.Name, dir, err)
+			}
+			name := strings.TrimSuffix(rel, ".bcl")
+			name = strings.ReplaceAll(name, string(filepath.Separator), ".")
+			if published[name] {
+				return nil, nil, fmt.Errorf("resource %q: dir %q: definition %q (from %s) collides with one already published", spec.Name, dir, name, path)
+			}
+			req := rules.PublishRequest{
+				TenantID: cfg.DefaultTenant,
+				Name:     name,
+				Version:  "1",
+				Path:     path,
+				// A file split out for organization, not authored with its own
+				// test block in mind, should not fail startup for lacking one —
+				// unlike an explicit "definition" block, which opts in by being
+				// hand-written.
+				RunTests: false,
+			}
+			if _, err := svc.Publish(ctx, req); err != nil {
+				return nil, nil, fmt.Errorf("resource %q: dir %q: definition %q: %w%s", spec.Name, dir, name, err, rulesDiagnostics(ctx, svc, req))
+			}
+			published[name] = true
 		}
 	}
 

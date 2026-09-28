@@ -26,7 +26,7 @@ func startCompleteApp(t *testing.T) string {
 	t.Helper()
 	t.Setenv("COMPLETE_SESSION_SECRET", strings.Repeat("s", 48))
 	t.Setenv("COMPLETE_QUEUE_DIR", t.TempDir())
-	t.Setenv("COMPLETE_DATABASE_URL", "file:"+filepath.Join(t.TempDir(), "complete.db")+"?cache=shared&mode=rwc")
+	t.Setenv("COMPLETE_DATABASE_URL", "file:"+filepath.Join(t.TempDir(), "complete.db")+"?cache=shared&mode=rwc&_pragma=busy_timeout(5000)")
 	if err := prepareLocalPaths(); err != nil {
 		t.Fatal(err)
 	}
@@ -155,10 +155,24 @@ func TestCompleteJourney(t *testing.T) {
 	}
 
 	// An amount over 1000 parks at the approval task; a customer cannot decide it.
+	//
+	// "record" -> "approve" and "approve" -> "finish" are each their own
+	// async advance: advanceOrEnqueue (process/signals.go) enqueues a job on
+	// the process's queue resource rather than running inline whenever an
+	// enqueuer is configured (it is, here — "queue \"jobs\"" on
+	// order.fulfil), so both the task's appearance and the run's eventual
+	// "completed" status lag their triggering request by however long the
+	// queue worker takes to pick the job up. The two waits below each get
+	// their own deadline for exactly that reason: sharing one (as this test
+	// used to) let the first wait's jitter eat into the second's budget,
+	// intermittently failing this assertion on an otherwise-correct run that
+	// simply hadn't finished advancing yet — not a bug in the run itself,
+	// visible in the failure's own dump: status "completed" with "approve"
+	// already decided, just one advance behind on reflecting it.
 	bob.json("POST", "/session", `{"user":"bob","roles":["approver"]}`, 200)
 	var taskID string
-	deadline := time.Now().Add(10 * time.Second)
-	for taskID == "" && time.Now().Before(deadline) {
+	taskDeadline := time.Now().Add(10 * time.Second)
+	for taskID == "" && time.Now().Before(taskDeadline) {
 		for _, task := range bob.json("GET", "/tasks", "", 200)["tasks"].([]any) {
 			if task := task.(map[string]any); task["run_id"] == runID && task["step"] == "approve" {
 				taskID, _ = task["task_id"].(string)
@@ -177,7 +191,8 @@ func TestCompleteJourney(t *testing.T) {
 	bob.json("POST", "/tasks/"+taskID+"/decide", `{"action":"approve","note":"reviewed"}`, 200)
 
 	var status map[string]any
-	for time.Now().Before(deadline) {
+	completeDeadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(completeDeadline) {
 		status = alice.json("GET", "/runs/"+runID, "", 200)
 		if status["status"] == "completed" {
 			break

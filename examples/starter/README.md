@@ -169,7 +169,7 @@ common ways to misconfigure either.
 starter/
 ├── bcl/
 │   ├── 00_app.bcl          # name, environment, roles, secrets
-│   ├── 01_resources.bcl    # database, cache, queue, sessions, RBAC, notifications
+│   ├── 01_resources.bcl    # database, cache, queue, sessions, RBAC, notifications, guard, policy_engine
 │   ├── 02_shapes.bcl       # validated input contracts (register, login, ...)
 │   ├── 03_intents.bcl      # business logic — auth.*, dashboard.*, notify.welcome
 │   ├── 04_routes.bcl       # web pages + route_group "api"
@@ -177,23 +177,32 @@ starter/
 │   ├── 06_schedules.bcl    # notify.welcome's cron entry point
 │   ├── 07_triggers.bcl     # notify.welcome's webhook entry point
 │   ├── 08_static.bcl       # /static → static/
-│   ├── 09_workflow_example.bcl  # GUIDE: branching, switch/case, flags, route params
+│   ├── 09_workflow_example.bcl  # GUIDE: branching, switch/case, flags, route params, rules.evaluate
 │   ├── 10_maintenance.bcl  # the admin route that flips maintenance mode
 │   └── 11_environments.bcl # profile "production" { override ... } example
+├── security/                # the "guard" resource's policy — its own BCL dialect, not bcl/'s;
+│   ├── tcpguard.bcl          #   pack/guard/detector — LoadTCPGuardBundleDir walks this dir recursively
+│   └── rules/application-attack-probe.bcl  # a rule, split into its own nested file to prove that
+├── rules/                   # the "policy_engine" resource's policies — also its own BCL dialect;
+│   └── orders/
+│       ├── _schema.bcl       #   a fragment ("orders/*.bcl" auto-discovers definitions; "_"-prefixed = not one)
+│       └── policy.bcl        #   imports _schema.bcl — becomes definition "orders.policy"
+├── migrations/*.bcl         # schema, applied by cmd/migrator — see "Schema migrations" in CONFIGURATION.md
 ├── templates/               # SPL pages: auth/, dashboard/, errors/ (incl. maintenance.html), layouts, components
 ├── static/css/app.css       # the one stylesheet every page shares
 ├── internal/web/
 │   └── renderer.go          # the SPL template engine adapter (Go glue, not business logic)
+├── internal/bootstrap/      # .env loading and CWD-independent directory resolution, shared by both binaries below
 ├── internal/ops/
 │   ├── maintenance.go       # the maintenance gate: middleware, health check, BCL action
 │   └── seed.go              # the dev-admin seeder — env-gated, never runs in production
 ├── cmd/server/
 │   ├── main.go              # bootstrap: .env, config, logging, metrics, LoadDir, mount, listen
-│   ├── dotenv.go            # the .env loader — real env vars always win
-│   ├── logging.go           # the one zlog.Logger every log line goes through (+ webhook plugin)
-│   └── http_adapter.go      # bridges /livez, /readyz, /metrics onto *fh.App
+│   └── logging.go           # the one zlog.Logger every log line goes through (+ webhook plugin)
+├── cmd/migrator/main.go     # applies migrations/*.bcl — see "Schema migrations" in CONFIGURATION.md
 ├── starter_test.go          # compiles bcl/, proves auth + RBAC + route groups + transport reuse +
-│                            # password reset + maintenance-guarded background delivery
+│                            # password reset + maintenance-guarded background delivery +
+│                            # the business rule + the network guard
 ├── Dockerfile               # multi-stage build; run from the repository root
 ├── .env.example             # copy to .env for local development
 ├── README.md                # this file
@@ -222,7 +231,31 @@ curl -X POST $BASE/api/v1/orders -d '{"amount": 900}'                       # fl
 curl -X POST $BASE/api/v1/orders/1/transition -d '{"status": "shipped"}'    # 422: not a legal transition from "pending"
 curl -X POST $BASE/api/v1/orders/1/transition -d '{"status": "paid"}'       # decision.table + flow.switch
 curl -X POST $BASE/api/v1/orders/1/transition -d '{"status": "cancelled"}'  # the "cancel" case, from any non-delivered status
+curl -X POST $BASE/api/v1/orders -d '{"amount": 9000}'                      # rules.evaluate: over the $5,000 self-service cap -> 403
 ```
+
+## Network protection and business rules
+
+Two capabilities that live in core `ref/platform`, wired in by declaring a
+resource — no Go code in this starter or anywhere else:
+
+- **`security.tcpguard`** (the `guard` resource in `bcl/01_resources.bcl`,
+  policy in `security/tcpguard.bcl`): a deployment-wide abuse-detection
+  perimeter guard, evaluated on every request before authentication runs —
+  a different layer from a route's own `rate_limit`, which only counts one
+  route by a fixed window.
+- **`rules.engine`** (`policy_engine`, policy in `rules/orders/policy.bcl`):
+  a second, independently versioned decision engine alongside the built-in
+  `decision.table`, evaluated by `orders.create`'s `policy` node.
+
+```sh
+curl "$BASE/health?x=%27%20or%20%271%27%3D%271"   # a SQLi-shaped query -> 403, blocked before health.ping ever runs
+```
+
+See CONFIGURATION.md's "Network protection and business rules" for what
+each policy file does (and deliberately doesn't), and a real deadlock this
+starter hit and fixed while wiring `rules.evaluate` in as a `kind decision`
+node — worth reading before adding a second one.
 
 ## Maintenance mode, environments, and plugging in a third-party tool
 

@@ -1,0 +1,12 @@
+# A fragment, not a definition: no `bcl { version }` declaration, so
+# "policy_engine" (bcl/01_resources.bcl's rules.engine resource, config
+# `dir "./rules"`) skips it — an underscore-prefixed file is never
+# auto-published on its own (platform/resources_rules_engine.go). It exists
+# to be `import`ed by a real definition in this same directory, the way a
+# large ruleset splits its shared schema out from the policy that uses it.
+
+decision_schema "approval" {
+  effects [allow, deny]
+  default allow
+  strategy first_match
+}
