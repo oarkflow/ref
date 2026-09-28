@@ -139,8 +139,15 @@ curl -X POST $BASE/login -d '{"email":"admin@example.com","password":"Password12
 curl $BASE/api/v1/me                       # any signed-in account
 curl $BASE/api/v1/users                    # admin only
 curl -X POST $BASE/api/v1/notify/welcome -d '{"email":"someone@example.com","name":"Someone"}'
+# 422 "delivery to the notification service failed" by default — expected,
+# not a bug: NOTIFY_URL (.env.example) points at 127.0.0.1:8099, and nothing
+# listens there unless you run one. The point of this line is the 422 itself:
+# a synchronous delivery failure reaches the caller as a real error, not a
+# silent 200 — set NOTIFY_URL at something that answers to see the success path.
 curl -X POST $BASE/api/v1/notify/welcome-async -d '{"email":"someone-else@example.com"}'
-# 202 immediately; resources/config/05_workers.bcl's worker delivers it in the background.
+# 202 immediately; resources/config/05_workers.bcl's worker delivers it in the
+# background, retrying on the same schedule, so this one never surfaces that
+# failure to the caller at all — compare the two.
 
 curl $BASE/livez
 curl $BASE/readyz

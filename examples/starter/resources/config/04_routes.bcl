@@ -158,12 +158,21 @@ route_group "api" {
   prefix "/api/v1"
   session "sessions"
   auth "session_auth"
-  authz { roles ["user"] authorizer "authorization" }
+  # roles ["user", "admin"], not just ["user"]: this is every role the app
+  # has, so the group's default reads as "any signed-in account" the way
+  # "me" below relies on it to. superuser_roles on the "authorization"
+  # resource does NOT do this for you — see CONFIGURATION.md's "RBAC: what
+  # superuser_roles actually does" — a route or group's `roles [...]` is a
+  # literal membership check with no bypass. This starter's own /api/v1/me
+  # 403'd for the seeded admin account (role "admin" only) until this list
+  # was made explicit, the exact bug /dashboard's own roles list (04_routes.bcl,
+  # web section above) already had to fix the same way.
+  authz { roles ["user", "admin"] authorizer "authorization" }
   cache_control "no-store"
 
-  # No authz block of its own: inherits the group's roles ["user"] default,
-  # so any signed-in account reaches it — unlike every other route in this
-  # group, which overrides down to roles ["admin"].
+  # No authz block of its own: inherits the group's roles ["user", "admin"]
+  # default above, so any signed-in account reaches it — unlike every other
+  # route in this group, which overrides down to roles ["admin"] only.
   route "me" {
     method GET
     path "/me"

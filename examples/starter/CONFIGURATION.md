@@ -225,7 +225,7 @@ multi-replica-consistent, not per-process). `01_resources.bcl`'s
 async-delivery intents insert the same four-node chain between validation and
 the final `response` node:
 
-```
+```text
 breaker-guard (circuit_breaker.guard, key "'notifications'")
   -> deliver (service.http, on_error "continue", fallback { delivery { ok false } })
   -> delivery-ok (expression: "delivery.ok != false")
@@ -402,14 +402,27 @@ Re-run it yourself against your own hardware before trusting these numbers
 for capacity planning:
 
 ```sh
+export SESSION_SECRET="$(openssl rand -hex 32)" WEBHOOK_SECRET="$(openssl rand -hex 32)"
 go run ./cmd/migrator cli migrate
-go run ./cmd/server &
-COOKIE=$(curl -s -c - -X POST http://localhost:8080/login \
-  -d '{"email":"admin@example.com","password":"Password123!"}' \
-  | grep -oP 'starter_sid=\S+' || true)
-# simplest: register a throwaway user and read the Set-Cookie header directly
+go run ./cmd/server & SERVER_PID=$!
+until curl -sf -o /dev/null http://localhost:8080/health; do sleep 0.2; done
+
+# A cookie jar file, not a manual header parse: curl writes the exact
+# Set-Cookie value here in a format awk can pull a "name=value" pair out of
+# on any platform — grep -P (Perl-compatible regex) is a GNU extension that
+# does not exist on macOS/BSD grep, so a `grep -oP` one-liner here would
+# work on Linux and fail everywhere else with "invalid option -- P".
+JAR=$(mktemp)
+curl -s -c "$JAR" -X POST http://localhost:8080/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"loadtest@example.com","password":"L0adTest!2345","name":"Load Test"}' >/dev/null
+COOKIE=$(awk '/starter_sid/{print $6"="$7}' "$JAR")
+
 hey -z 15s -c 50 http://localhost:8080/health
 hey -z 15s -c 50 -H "Cookie: $COOKIE" http://localhost:8080/api/v1/me
+
+kill $SERVER_PID
+rm -f "$JAR"
 ```
 
 ## Secrets in production
@@ -465,47 +478,136 @@ introspection route) and are never logged — see its doc comment.
 
 ### Verified end to end against a real Vault
 
-`scripts/render-secrets-from-vault.sh` and `scripts/rotate-secret.sh` (plain
-`curl`+`jq` against Vault's HTTP API — no `vault` CLI required) were run
-against an actual local HashiCorp Vault (`docker run hashicorp/vault:1.17
-server -dev`, KV v2), not simulated:
+Every command below actually ran, in this order, against an actual local
+HashiCorp Vault (`hashicorp/vault:1.17`, dev mode, real KV v2 — not
+simulated). `scripts/render-secrets-from-vault.sh` and
+`scripts/rotate-secret.sh` talk to Vault's HTTP API directly with `curl`+
+`jq`; neither needs the `vault` CLI installed. Run this from
+`examples/starter/`, with `jq` and Docker available.
+
+**If you already have a `.env` with `SESSION_SECRET`/`WEBHOOK_SECRET` set**
+(from the Quick Start), move it aside first —
+`mv .env .env.disabled-for-vault-walkthrough`. `LoadDotenv` runs before the
+file fallback below and, correctly, never overrides a variable that is
+already set (see "Two different resolution paths, not one" above) — which
+means a `.env` supplying these two specifically will make every step below
+*look* like it did nothing: the server keeps using `.env`'s fixed values no
+matter what Vault says, silently. This is not a bug in either mechanism,
+just two real env-var sources that both apply here; restore the file
+(`mv .env.disabled-for-vault-walkthrough .env`) once you're done.
+
+**1. Start Vault and seed the two secrets it doesn't have yet:**
 
 ```sh
 docker run -d --name starter-vault -p 8200:8200 \
   -e VAULT_DEV_ROOT_TOKEN_ID=root hashicorp/vault:1.17 server -dev \
   -dev-listen-address=0.0.0.0:8200
+sleep 2   # give the dev server a moment to finish unsealing
 
 export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=root
 curl -s -H "X-Vault-Token: $VAULT_TOKEN" -X POST \
   -d '{"data":{"session_secret":"'"$(openssl rand -hex 32)"'","webhook_secret":"'"$(openssl rand -hex 32)"'"}}' \
-  $VAULT_ADDR/v1/secret/data/starter
-
-./scripts/render-secrets-from-vault.sh ./.data/secrets
-go run ./cmd/migrator cli migrate
-go run ./cmd/server   # SESSION_SECRET/WEBHOOK_SECRET intentionally unset — forces the file fallback
+  "$VAULT_ADDR/v1/secret/data/starter" >/dev/null
 ```
 
-With the server running purely off the Vault-rendered files (no
-`SESSION_SECRET`/`WEBHOOK_SECRET` in the environment at all): registered a
-user, logged in, confirmed the session cookie authenticates
-(`GET /api/v1/me` → 200). Then, without stopping the server:
+**2. Render the secrets to disk and boot the server on them alone** — no
+`SESSION_SECRET`/`WEBHOOK_SECRET` in the shell at all, which is the point:
 
 ```sh
-./scripts/rotate-secret.sh session_secret ./.data/secrets   # new random value in Vault, re-rendered to disk
+rm -rf .data
+./scripts/render-secrets-from-vault.sh ./.data/secrets
+export DB_DRIVER=sqlite DB_DSN="file:.data/starter/app.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+go build -o ./bin/server ./cmd/server   # a real binary, not `go run`: step 5 needs to kill and
+                                         # restart the exact process listening on :8080, and `go
+                                         # run`'s own PID is a wrapper around a separately-forked
+                                         # child — killing it does not reliably kill the server,
+                                         # so a "restart" can silently no-op and keep serving the
+                                         # generation from before the rotation.
+go run ./cmd/migrator cli migrate
+
+restart_server() {
+  lsof -ti:8080 | xargs -r kill -9 2>/dev/null
+  while lsof -ti:8080 >/dev/null 2>&1; do sleep 0.2; done
+  ./bin/server & SERVER_PID=$!
+  until curl -sf -o /dev/null http://localhost:8080/health; do sleep 0.2; done
+}
+restart_server
 ```
 
-The pre-rotation session cookie **kept working** — expected: `SESSION_SECRET`
-was read into the process environment once, at boot, so a still-running
-generation has no way to notice the file on disk changed underneath it.
-After restarting the server (picking up the rotated `SESSION_SECRET` from
-the file): the pre-rotation cookie was rejected (`401 UNAUTHENTICATED`), and
-a fresh login with the same password produced a new cookie that worked
-(`200`). The same sequence against `webhook_secret` (sign a request with
-`openssl dgst -sha256 -hmac`, matching `platform/trigger.go`'s
-`HMAC-SHA256(secret, timestamp + "." + body)` scheme) showed the same
-result: the pre-rotation signature was accepted before the restart, then
-rejected (`403 PERMISSION_DENIED`, "the request signature could not be
-verified") after it, with the newly-signed request accepted.
+**3. Prove it authenticates, and keep the cookie for later:**
+
+```sh
+JAR=$(mktemp)
+curl -s -c "$JAR" -X POST http://localhost:8080/register -H 'Content-Type: application/json' \
+  -d '{"email":"vaultuser@example.com","password":"VaultTest!2345","name":"Vault User"}' -o /dev/null
+COOKIE=$(awk '/starter_sid/{print $6"="$7}' "$JAR")
+curl -s -H "Cookie: $COOKIE" http://localhost:8080/api/v1/me -w '\nHTTP:%{http_code}\n'   # 200
+```
+
+**4. Rotate `session_secret` in Vault and re-render — without stopping the
+server:**
+
+```sh
+./scripts/rotate-secret.sh session_secret ./.data/secrets
+curl -s -H "Cookie: $COOKIE" http://localhost:8080/api/v1/me -w '\nHTTP:%{http_code}\n'   # still 200
+```
+
+Still `200` here is expected, not a bug: `SESSION_SECRET` was read into the
+process environment once, at boot (see "Two different resolution paths,
+not one" above) — a still-running generation has no way to notice the file
+on disk changed underneath it. Rotation takes effect on the *next* boot,
+which is exactly what step 5 forces:
+
+**5. Restart, and confirm the rotation actually took effect:**
+
+```sh
+restart_server
+
+echo "old cookie after rotation + restart:"
+curl -s -H "Cookie: $COOKIE" http://localhost:8080/api/v1/me -w '\nHTTP:%{http_code}\n'   # 401
+
+echo "fresh login with the rotated secret:"
+curl -s -c "$JAR" -X POST http://localhost:8080/login -H 'Content-Type: application/json' \
+  -d '{"email":"vaultuser@example.com","password":"VaultTest!2345"}' -o /dev/null
+NEW_COOKIE=$(awk '/starter_sid/{print $6"="$7}' "$JAR")
+curl -s -H "Cookie: $NEW_COOKIE" http://localhost:8080/api/v1/me -w '\nHTTP:%{http_code}\n'   # 200
+```
+
+**6. The same rotation, for `webhook_secret`** — signing a request the way
+`platform/trigger.go`'s `verify()` checks it, `HMAC-SHA256(secret,
+timestamp + "." + body)`, hex-encoded, in `X-Signature-256`/`X-Timestamp`:
+
+```sh
+OLD_WEBHOOK_SECRET=$(cat ./.data/secrets/webhook_secret)
+./scripts/rotate-secret.sh webhook_secret ./.data/secrets
+restart_server
+NEW_WEBHOOK_SECRET=$(cat ./.data/secrets/webhook_secret)
+
+TS=$(date +%s)
+BODY='{"email":"webhook-test@example.com","name":"Webhook Test"}'
+OLD_SIG=$(printf '%s.%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac "$OLD_WEBHOOK_SECRET" | sed 's/^.* //')
+NEW_SIG=$(printf '%s.%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac "$NEW_WEBHOOK_SECRET" | sed 's/^.* //')
+
+echo "old signature after rotation + restart (expect 403, signature rejected):"
+curl -s -X POST http://localhost:8080/webhooks/welcome -H 'Content-Type: application/json' \
+  -H "X-Signature-256: $OLD_SIG" -H "X-Timestamp: $TS" -d "$BODY" -w '\nHTTP:%{http_code}\n'
+
+echo "new signature (expect 422 — signature accepted, delivery itself fails with no real notification service running):"
+curl -s -X POST http://localhost:8080/webhooks/welcome -H 'Content-Type: application/json' \
+  -H "X-Signature-256: $NEW_SIG" -H "X-Timestamp: $TS" -d "$BODY" -w '\nHTTP:%{http_code}\n'
+```
+
+**7. Clean up:**
+
+```sh
+lsof -ti:8080 | xargs -r kill -9
+docker rm -f starter-vault
+rm -rf .data bin "$JAR"
+```
+
+This is the exact sequence run to verify this feature, not a paraphrase of
+it — every status code in the comments above is a real response, captured
+while writing this section, not a prediction.
 
 **What this establishes, and what it doesn't**: file-based secret injection
 from a real secrets manager works end to end, and rotation is real —

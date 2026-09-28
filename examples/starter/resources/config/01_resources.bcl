@@ -94,8 +94,14 @@ resource "session_auth" {
   config { session "sessions" roles_claim "roles" }
 }
 
-# Role-based authorization. `superuser_roles` bypasses every `authz {
-# roles [...] }` check — see resources/config/00_app.bcl's "admin" role.
+# Role-based authorization. `superuser_roles` only bypasses an `authz {
+# permissions [...] }` check (via this resource's own HasPermission) — a
+# route or group's `authz { roles [...] }` is a literal membership check
+# with no bypass, checked directly against the principal's roles
+# (platform/actions_decision.go's authzGate.evaluate), never consulting this
+# resource at all. See CONFIGURATION.md's "RBAC: what superuser_roles
+# actually does" — this comment used to claim the opposite, which is
+# exactly the bug 04_routes.bcl's route_group "api" hit (see its comment).
 resource "authorization" {
   kind "authz.rbac"
   config {
