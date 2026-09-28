@@ -62,6 +62,32 @@ type RouteSpec struct {
 	ResponseData *DataSpec        `bcl:"response_data"`
 }
 
+// RouteGroupSpec batches routes that share a path prefix and, optionally, a
+// session/auth/authz/rate-limit default. It exists purely as an authoring
+// convenience: expandRouteGroups (route_group.go) turns each nested route
+// into an ordinary RouteSpec before compilation, so nothing downstream of it
+// — the planner, the validator, the mounter — knows groups ever existed.
+//
+// A nested route's own Session/Auth/Authz/RateLimit/CacheControl/Tags win
+// over the group's when both are set; the group only fills in what a route
+// left empty. AllowAnonymous is the one field a nested route must set for
+// itself when it needs it (e.g. a login route inside an otherwise
+// authenticated group) — it is never inherited, so a group can never make a
+// route more open than the route itself asked to be.
+type RouteGroupSpec struct {
+	Name   string `bcl:",id"`
+	Prefix string `bcl:"prefix"`
+
+	Session      string         `bcl:"session"`
+	Auth         string         `bcl:"auth"`
+	Authz        *AuthzSpec     `bcl:"authz"`
+	RateLimit    *RateLimitSpec `bcl:"rate_limit"`
+	CacheControl string         `bcl:"cache_control"`
+	Tags         []string       `bcl:"tags"`
+
+	Routes []RouteSpec `bcl:"route,block"`
+}
+
 // HTTPParameterSpec declares a stable HTTP input contract for a route.
 type HTTPParameterSpec struct {
 	Name        string   `bcl:",id"`

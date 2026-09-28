@@ -1,0 +1,36 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div style="margin-bottom: 2rem;">
+    <h1 style="font-size: 1.85rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 0.5rem;">
+      Admin portal
+    </h1>
+    <p style="color: var(--text-muted); font-size: 0.95rem;">
+      <code>route "web.admin"</code> requires <code>roles ["admin"]</code>; a signed-in "user"
+      gets HTTP 403 here, before <code>dashboard.admin</code> ever runs.
+    </p>
+  </div>
+
+  <div class="glass-card">
+    <span style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.05em;">Directory</span>
+    <h3 style="font-size: 1.2rem; font-weight: 700; margin-top: 0.2rem; margin-bottom: 1.25rem;">Everyone with an account</h3>
+    <table style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
+      <thead>
+        <tr style="text-align: left; border-bottom: 1px solid var(--border-subtle);">
+          <th style="padding: 0.5rem 0;">Email</th>
+          <th style="padding: 0.5rem 0;">Name</th>
+          <th style="padding: 0.5rem 0;">Roles</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for(u in users) {
+          <tr style="border-bottom: 1px solid var(--border-subtle);">
+            <td style="padding: 0.5rem 0;" class="font-mono">${u.email}</td>
+            <td style="padding: 0.5rem 0;">${u.name}</td>
+            <td style="padding: 0.5rem 0;"><span class="badge badge-${u.roles}">${u.roles}</span></td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </div>
+}

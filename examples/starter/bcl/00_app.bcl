@@ -1,0 +1,42 @@
+# ===========================================================================
+# Application identity, roles and secrets
+#
+# This is the one file every clone of this starter must touch: the name.
+# Everything else in bcl/ is either infrastructure you configure once per
+# environment (01_resources.bcl) or business logic you add to as the product
+# grows (03_intents.bcl onward). None of it should ever require a change to
+# cmd/server/main.go — see the README's "How to add a product" section.
+# ===========================================================================
+
+name "starter"
+version env("APP_VERSION", "0.1.0")
+environment env("APP_ENV", "development")
+
+# Roles referenced by every `authz { roles [...] }` block below and by
+# `resource "authorization"` (01_resources.bcl). Add a role here, then add
+# it to a route's or route_group's `authz` — nothing else to wire.
+role "admin" {
+  description "Full access — the authz.rbac superuser role"
+  permissions ["*"]
+}
+
+role "user" {
+  description "A signed-in member of the product"
+  permissions ["self:read", "self:write"]
+}
+
+# Session cookies are HMAC-signed with this. `openssl rand -hex 32` for a
+# real deployment — the 32-byte minimum is enforced when the session
+# resource opens (01_resources.bcl).
+secret "session_secret" {
+  env "SESSION_SECRET"
+  required true
+}
+
+# The webhook trigger in 07_triggers.bcl needs an HMAC secret. It is its own
+# top-level `secret` block (not an inline env.required(...)) because
+# TriggerSpec.Secret names one by reference.
+secret "webhook_secret" {
+  env "WEBHOOK_SECRET"
+  required true
+}

@@ -1,0 +1,156 @@
+# ===========================================================================
+# HTTP routes
+#
+# Web pages (session cookie + SPL template) and a JSON API (route_group,
+# same session cookie) side by side in one document — nothing stops a
+# product using both. Every route or group below is a thin, declarative
+# binding to an intent; see 03_intents.bcl for the logic.
+# ===========================================================================
+
+route "health.ping" {
+  method GET
+  path "/health"
+  intent "health.ping"
+}
+
+# --- Public pages -----------------------------------------------------------
+
+route "web.index" {
+  method GET
+  path "/"
+  template "pages/auth/login"
+  layout "layouts/auth"
+  allow_anonymous true
+}
+
+route "web.login_page" {
+  method GET
+  path "/login"
+  template "pages/auth/login"
+  layout "layouts/auth"
+  allow_anonymous true
+}
+
+route "web.login_action" {
+  method POST
+  path "/login"
+  intent "auth.login"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+  rate_limit { limiter "limits" limit 10 window 1m message "Too many login attempts. Please wait a minute." }
+}
+
+route "web.register_page" {
+  method GET
+  path "/register"
+  template "pages/auth/register"
+  layout "layouts/auth"
+  allow_anonymous true
+}
+
+route "web.register_action" {
+  method POST
+  path "/register"
+  intent "auth.register"
+  session "sessions"
+  status 201
+  allow_anonymous true
+  cache_control "no-store"
+  rate_limit { limiter "limits" limit 5 window 1h message "Registration rate limit reached." }
+}
+
+route "web.logout_action" {
+  method POST
+  path "/logout"
+  intent "auth.logout"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+}
+
+# --- Protected pages: authz fails closed before dashboard.* ever runs ------
+
+route "web.dashboard" {
+  method GET
+  path "/dashboard"
+  intent "dashboard.index"
+  template "pages/dashboard/index"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  # superuser_roles (01_resources.bcl) does not bypass a roles [...] gate —
+  # list every role meant to reach this page explicitly.
+  authz { roles ["user", "admin"] authorizer "authorization" }
+}
+
+route "web.admin" {
+  method GET
+  path "/dashboard/admin"
+  intent "dashboard.admin"
+  template "pages/dashboard/admin"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz { roles ["admin"] authorizer "authorization" }
+}
+
+route "web.change_password_action" {
+  method POST
+  path "/profile/password"
+  intent "auth.change_password"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+}
+
+# --- JSON API: one route_group, one shared session/auth/authz default -----
+#
+# Every route nested here inherits `session`, `auth`, `authz` and
+# `cache_control` from the group unless it sets its own — see
+# platform/route_group.go for the exact inheritance rule. This is what a
+# "route group" means in this platform: an authoring convenience the
+# compiler expands into ordinary routes before anything else runs, not a
+# separate runtime concept.
+route_group "api" {
+  prefix "/api/v1"
+  session "sessions"
+  auth "session_auth"
+  authz { roles ["user"] authorizer "authorization" }
+  cache_control "no-store"
+
+  # No authz block of its own: inherits the group's roles ["user"] default,
+  # so any signed-in account reaches it — unlike every other route in this
+  # group, which overrides down to roles ["admin"].
+  route "me" {
+    method GET
+    path "/me"
+    intent "api.me"
+  }
+
+  route "notify.welcome" {
+    method POST
+    path "/notify/welcome"
+    intent "notify.welcome"
+    # Overrides the group's default: sending a welcome notification is an
+    # admin action here, not something any signed-in user should trigger.
+    authz { roles ["admin"] authorizer "authorization" }
+  }
+
+  route "notify.welcome_async" {
+    method POST
+    path "/notify/welcome-async"
+    intent "notify.welcome_async"
+    status 202
+    authz { roles ["admin"] authorizer "authorization" }
+  }
+
+  route "users" {
+    method GET
+    path "/users"
+    intent "api.users"
+    authz { roles ["admin"] authorizer "authorization" }
+  }
+}

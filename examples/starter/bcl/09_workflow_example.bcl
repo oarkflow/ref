@@ -1,0 +1,383 @@
+# ===========================================================================
+# WORKFLOW GUIDE: conditional nodes, branching, switch/case, feature flags,
+# and route parameters — all in one self-contained feature.
+#
+# This file is a teaching example, not a dependency of the auth/dashboard
+# feature in 03_intents.bcl/04_routes.bcl. Delete it (and its migration in
+# 01_resources.bcl, and the "orders" table it creates) once you've read it;
+# it exists so the four mechanics below have one worked example each, in one
+# place, instead of being scattered across the repository's other examples.
+#
+# The four mechanics, each demonstrated by exactly one intent below:
+#
+#   1. A conditional (gate) node        -> "validate.schema"/"validate.expression" (orders.create/orders.transition)
+#   2. A compiled if/elseif branch      -> "flow.branch"           (orders.classify)
+#   3. A value-keyed switch/case        -> "decision.table" + "flow.switch" (orders.transition)
+#   4. A feature flag read in an expr   -> "flags.priority_shipping" (orders.transition)
+#   5. An HTTP route parameter          -> route "orders.get"'s `parameter "id"`
+#
+# Read this file top to bottom; it is ordered the same way.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Feature flag.
+#
+# `flag_store "cache"` persists run-time overrides (flag.set, see
+# docs/flags-and-documents.md) in the shared cache.sql resource, so every
+# replica picks up an override within a few seconds instead of only the one
+# instance that received the flag.set call. Omit flag_store entirely and a
+# flag still works — it just can't be overridden at run time across
+# replicas, only its `default`/`rule`s apply.
+#
+# `flags.priority_shipping` is readable in ANY expression in this document
+# from this point on (a node's `condition`, a `validate.expression`, a
+# decision.table rule's `condition` — see orders.transition below).
+# ---------------------------------------------------------------------------
+
+flag_store "cache"
+
+flag "priority_shipping" {
+  description "Ship orders over $500 with priority, without a code change"
+  default false
+  # A rule is tried in order; the first match decides. This one turns the
+  # flag on for every admin, regardless of the order's amount — useful for
+  # an admin to test the priority path on demand.
+  rule "admin_preview" { roles ["admin"] value true }
+  # rollout 25 here would additionally admit 25% of everyone else, stably
+  # per caller — see docs/flags-and-documents.md.
+}
+
+# ---------------------------------------------------------------------------
+# Shape: validated the same way everywhere it's referenced by name.
+# ---------------------------------------------------------------------------
+
+shape "order_input" {
+  kind object
+  description "A new order"
+  prop "amount" {
+    kind number
+    required true
+    min 0.01
+  }
+}
+
+# ---------------------------------------------------------------------------
+# 1 & 2. orders.create — a conditional gate node, then a compiled branch.
+#
+# Every node in an intent's graph runs unconditionally; there is no `if`
+# around a node. What you write instead is a GATE: a node that can fail (or,
+# for a decision node, deny) and is `required` by whatever should not run
+# without it. `flow.branch` is different again — it is one node whose *own*
+# job is to pick among named intents at compile time and dispatch to
+# whichever one's `condition` matches at request time.
+# ---------------------------------------------------------------------------
+
+intent "orders.create" {
+  description "Create an order; classify it as small/large by amount"
+  response "response"
+  timeout 5s
+
+  node "user-id" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+
+  # The shape check IS the conditional gate here: validate.schema fails
+  # (422) rather than denying, and every node below that `requires
+  # [validated]` (directly or transitively) simply never runs if it does.
+  node "validate" {
+    uses "validate.schema"
+    requires [input]
+    provides [validated]
+    config { source_fact "input" shape "order_input" }
+  }
+
+  # --- The branch ---------------------------------------------------------
+  # `flow.branch` evaluates each case's `condition` in order (over the fact
+  # named by `input_fact`, "input" by default) and runs the first match's
+  # `intent` as a child intent — a genuinely separate, independently
+  # testable graph, not an inline branch of this one. `default_intent` runs
+  # when nothing matches; `required false` would let it publish nothing
+  # instead of failing. It publishes `{outcome, case, result}`: `case` is
+  # the matched case's name, `result` is that child intent's own response.
+  node "classify" {
+    family branch
+    uses "flow.branch"
+    requires [input, validated]
+    provides [classification]
+    config {
+      cases [
+        { name "large" condition "input.amount > 500" intent "orders.tier_large" },
+        { name "small" condition "input.amount <= 500" intent "orders.tier_small" }
+      ]
+    }
+  }
+
+  node "insert" {
+    uses "database.query"
+    resource "database"
+    kind effect
+    requires [user_id, input, classification]
+    provides [orders]
+    config {
+      statement "INSERT INTO orders (owner_id, amount, tier) VALUES ($1, $2, $3) RETURNING id, owner_id, amount, tier, status, priority, created_at"
+      args [user_id, input.amount, classification.result]
+    }
+  }
+
+  node "response" { uses "collect" requires [orders] provides [response] }
+}
+
+# orders.tier_large / orders.tier_small are flow.branch's two cases. Each is
+# an ordinary intent — it can have as many nodes as it needs, and is invoked
+# exactly like any other intent (its own route, worker, schedule — nothing
+# about being a branch target is special). Here each just returns a literal
+# tier name, via the same "expression" action used by examples/ref-complete's
+# flow.branch demo, to keep the branch mechanic itself easy to see.
+intent "orders.tier_large" {
+  response "response"
+  node "response" { uses "expression" provides [response] config { expression "'large'" } }
+}
+
+intent "orders.tier_small" {
+  response "response"
+  node "response" { uses "expression" provides [response] config { expression "'small'" } }
+}
+
+# ---------------------------------------------------------------------------
+# orders.get — read one order, scoped to its owner.
+#
+# A path segment is NOT automatically merged into `input` — the request
+# body is `input`; a path/query/header value is read explicitly with
+# "request.param". The route's `parameter "id" { in path ... }` block (this
+# file's routes section) only documents/validates the contract for API
+# consumers and OpenAPI generation; it is this node that actually reads it.
+# ---------------------------------------------------------------------------
+
+intent "orders.get" {
+  description "Read one of the caller's own orders"
+  response "response"
+
+  node "user-id" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+  node "order-id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" from "path" }
+  }
+  node "load" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id, id]
+    provides [rows]
+    config {
+      statement "SELECT id, owner_id, amount, tier, status, priority, created_at FROM orders WHERE id = $1 AND owner_id = $2"
+      args [id, user_id]
+      require_rows true
+      not_found_message "order not found"
+    }
+  }
+  node "order" { uses "data.first" requires [rows] provides [order] config { source_fact "rows" } }
+  node "response" { uses "collect" requires [order] provides [response] }
+}
+
+# ---------------------------------------------------------------------------
+# 3 & 4. orders.transition — decision.table (classify a change into an
+# outcome) + flow.switch (dispatch on that outcome) + a feature flag read
+# inside the table's own condition.
+#
+# This is the general shape for "a status machine with more than two
+# states": one table lists every legal (from, to) pair and what it means: a
+# table your reviewer can read top to bottom; anything not listed is
+# rejected before any write happens, one decision instead of one `if` per
+# transition. The switch that follows fans out to whichever child intent
+# actually performs that outcome's write.
+# ---------------------------------------------------------------------------
+
+intent "orders.transition" {
+  description "Move an order through pending -> paid -> shipped -> delivered, or cancel it"
+  response "response"
+  timeout 5s
+
+  node "user-id" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+  node "order-id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" from "path" }
+  }
+  node "validate" {
+    uses "validate.required"
+    requires [input, id]
+    provides [validated]
+    config { fields [id, input.status] }
+  }
+  node "load" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id, id, validated]
+    provides [rows]
+    config {
+      statement "SELECT id, owner_id, amount, tier, status, priority FROM orders WHERE id = $1 AND owner_id = $2"
+      args [id, user_id]
+      require_rows true
+      not_found_message "order not found"
+    }
+  }
+  node "order" { uses "data.first" requires [rows] provides [order] config { source_fact "rows" } }
+
+  # The table. Each rule's `condition` sees `order` (the row just loaded)
+  # and `input` (the request); `flags.priority_shipping` is available here
+  # exactly like it is in any other expression in this document. A rule
+  # further down the list only matters if every rule above it missed, so
+  # the priority-shipping rule for "pending -> paid" is listed before the
+  # plain one for the same pair — otherwise the plain rule would always win.
+  node "classify" {
+    family decision
+    uses "decision.table"
+    requires [order, input]
+    provides [transition]
+    config {
+      rules [
+        { name "pay_priority" condition "order.status == 'pending' and input.status == 'paid' and flags.priority_shipping and order.amount > 500" outcome "apply_priority" reason "paid with priority shipping" },
+        { name "pay" condition "order.status == 'pending' and input.status == 'paid'" outcome "apply" reason "paid" },
+        { name "ship" condition "order.status == 'paid' and input.status == 'shipped'" outcome "apply" reason "shipped" },
+        { name "deliver" condition "order.status == 'shipped' and input.status == 'delivered'" outcome "apply" reason "delivered" },
+        { name "cancel" condition "order.status != 'delivered' and input.status == 'cancelled'" outcome "cancel" reason "cancelled before delivery" }
+      ]
+      default_outcome "invalid"
+      default_reason "that status change isn't part of this workflow"
+    }
+  }
+
+  node "reject-invalid" {
+    uses "validate.expression"
+    requires [transition]
+    provides [transition_ok]
+    config {
+      expression "transition.outcome != 'invalid'"
+      message "invalid order status transition"
+    }
+  }
+
+  # The switch. `on` is evaluated once; its value is matched against each
+  # case's `label`. Two different outcomes ("apply" and "apply_priority")
+  # both exist so the table above can distinguish *why* a transition is
+  # legal, even though — here — they dispatch to genuinely different child
+  # intents (one additionally stamps `priority`).
+  node "apply" {
+    family switch
+    uses "flow.switch"
+    requires [order, input, transition, transition_ok]
+    provides [applied]
+    config {
+      on "transition.outcome"
+      input_fact "input"
+      cases [
+        { label "apply" intent "orders.apply_status" },
+        { label "apply_priority" intent "orders.apply_priority_status" },
+        { label "cancel" intent "orders.cancel" }
+      ]
+    }
+  }
+
+  node "response" { uses "collect" requires [transition, applied] provides [response] }
+}
+
+# Each of flow.switch's targets is dispatched inside the same HTTP request,
+# so "request.param" resolves the path's :id here exactly as it does in the
+# parent intent — a child intent is not handed a pre-built payload; it reads
+# the same underlying request the same way any other intent would.
+intent "orders.apply_status" {
+  description "Child of orders.transition: a plain status change"
+  response "response"
+  node "order-id" { uses "request.param" provides [id] config { name "id" from "path" } }
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [input, id]
+    provides [updated]
+    config {
+      statement "UPDATE orders SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"
+      args [input.status, id]
+      require_affected true
+      not_found_message "order not found"
+    }
+  }
+  node "response" { uses "collect" requires [updated] provides [response] config { unwrap true } }
+}
+
+intent "orders.apply_priority_status" {
+  description "Child of orders.transition: a status change that also stamps priority shipping"
+  response "response"
+  node "order-id" { uses "request.param" provides [id] config { name "id" from "path" } }
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [input, id]
+    provides [updated]
+    config {
+      statement "UPDATE orders SET status = $1, priority = 1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"
+      args [input.status, id]
+      require_affected true
+      not_found_message "order not found"
+    }
+  }
+  node "response" { uses "collect" requires [updated] provides [response] config { unwrap true } }
+}
+
+intent "orders.cancel" {
+  description "Child of orders.transition: cancel, regardless of the status field the caller sent"
+  response "response"
+  node "order-id" { uses "request.param" provides [id] config { name "id" from "path" } }
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [id]
+    provides [updated]
+    config {
+      statement "UPDATE orders SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = $1"
+      args [id]
+      require_affected true
+      not_found_message "order not found"
+    }
+  }
+  node "response" { uses "collect" requires [updated] provides [response] config { unwrap true } }
+}
+
+# ---------------------------------------------------------------------------
+# Routes. `route_group` (platform/route_group.go, also new in this
+# repository) keeps the shared session/auth/authz default in one place;
+# "orders.get"'s `parameter "id"` block is metadata only — it documents and
+# validates the shape of the path segment for API docs/OpenAPI generation.
+# It does NOT extract the value into a fact — the "order-id" / "request.param"
+# node in each intent above does that (see orders.get's comment). Declare a
+# `parameter` block whenever a route's contract is worth writing down,
+# especially one you'll ever generate an OpenAPI document from
+# (platform.WriteOpenAPI, see the root README).
+# ---------------------------------------------------------------------------
+
+route_group "orders" {
+  prefix "/api/v1/orders"
+  session "sessions"
+  auth "session_auth"
+  authz { roles ["user", "admin"] authorizer "authorization" }
+  cache_control "no-store"
+
+  route "orders.create" { method POST path "" intent "orders.create" status 201 }
+
+  route "orders.get" {
+    method GET
+    path "/:id"
+    intent "orders.get"
+    parameter "id" {
+      in path
+      kind string
+      required true
+      description "The order id"
+    }
+  }
+
+  route "orders.transition" { method POST path "/:id/transition" intent "orders.transition" }
+}
+

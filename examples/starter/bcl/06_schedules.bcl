@@ -1,0 +1,18 @@
+# ===========================================================================
+# Scheduled jobs
+#
+# A schedule enqueues a fixed payload on a fixed cadence and runs the named
+# intent — the third of notify.welcome's four entry points. Jitter spreads
+# firings across replicas so they don't all hit the notification service in
+# the same instant.
+# ===========================================================================
+
+schedule "daily-ops-digest" {
+  description "A daily heartbeat notification, proving the schedule path runs the same intent as the route and the worker"
+  cron "0 8 * * *"
+  timezone "UTC"
+  queue "jobs"
+  intent "notify.welcome"
+  payload { email env("DIGEST_EMAIL", "ops@example.com") name "Ops" }
+  jitter 5m
+}

@@ -92,7 +92,7 @@ func registerDatabaseResources(r *Registry) {
 			{Name: "max_idle_connections", Type: "int"},
 			{Name: "connection_max_lifetime", Type: "duration"},
 			{Name: "connection_max_idle_time", Type: "duration"},
-			{Name: "ping", Type: "bool", Summary: "Verify connectivity before the app starts serving"},
+			{Name: "ping", Type: "bool", Summary: "Verify connectivity before the app starts serving (default true; set false to open lazily, e.g. a throwaway in-memory SQLite)"},
 			{Name: "migrations", Type: "[]string", Summary: "Statements run in order at startup"},
 			{Name: "allowed_statements", Type: "[]string", Summary: "Permitted statement prefixes, e.g. [SELECT INSERT UPDATE]"},
 		},
@@ -155,7 +155,7 @@ func openDatabase(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, 
 		handle.allowlist = append(handle.allowlist, strings.ToUpper(strings.TrimSpace(allowed)))
 	}
 
-	if configBool(spec.Config, "ping", false) {
+	if configBool(spec.Config, "ping", true) {
 		// Ping before migrations so an unreachable database reports as
 		// unreachable rather than as a failed migration.
 		if err := db.PingContext(ctx); err != nil {

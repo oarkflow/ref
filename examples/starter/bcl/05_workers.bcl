@@ -1,0 +1,16 @@
+# ===========================================================================
+# Background queue workers
+#
+# A worker consumes jobs of one job_type from a queue resource and runs the
+# named intent for each. This is the second of notify.welcome's four entry
+# points (route, worker, schedule, webhook trigger — see 02_intents.bcl).
+# ===========================================================================
+
+worker "welcome-delivery" {
+  description "Runs notify.welcome for every job notify.welcome_async enqueues"
+  queue "jobs"
+  job_type "notify.welcome"
+  intent "notify.welcome"
+  max_attempts 5
+  timeout 15s
+}

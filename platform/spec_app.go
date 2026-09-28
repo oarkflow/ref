@@ -28,11 +28,17 @@ type Document struct {
 	Intents   []IntentSpec  `bcl:"intent,block"`
 	Processes []ProcessSpec `bcl:"process,block"`
 
-	Routes    []RouteSpec    `bcl:"route,block"`
-	Static    []StaticSpec   `bcl:"static,block"`
-	Workers   []WorkerSpec   `bcl:"worker,block"`
-	Schedules []ScheduleSpec `bcl:"schedule,block"`
-	Triggers  []TriggerSpec  `bcl:"trigger,block"`
+	Routes []RouteSpec `bcl:"route,block"`
+	// RouteGroups are never compiled directly: expandRouteGroups (route_group.go)
+	// turns each one into ordinary RouteSpecs appended to Routes before
+	// validateDocument ever runs, so a group is purely an authoring
+	// convenience — one prefix, and one session/auth/authz/rate_limit
+	// default, shared by every route nested inside it.
+	RouteGroups []RouteGroupSpec `bcl:"route_group,block"`
+	Static      []StaticSpec     `bcl:"static,block"`
+	Workers     []WorkerSpec     `bcl:"worker,block"`
+	Schedules   []ScheduleSpec   `bcl:"schedule,block"`
+	Triggers    []TriggerSpec    `bcl:"trigger,block"`
 
 	// Pipelines are multi-stage data verification workflows (application →
 	// review → approval → certificate), run by a pipeline.cases resource.

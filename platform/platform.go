@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -100,6 +101,11 @@ type Platform struct {
 	schemas   map[string]*CompiledSchema
 	secrets   map[string]string
 	closers   []io.Closer
+
+	// bulkheads holds one limiter per distinct BulkheadSpec.Name across the
+	// whole document, built once during Compile and read-only thereafter, so
+	// nodes in different intents naming the same limiter share it.
+	bulkheads map[string]*bulkheadLimiter
 
 	routes    []compiledRoute
 	workers   []WorkerSpec
@@ -250,6 +256,7 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 		stepAuthz:         map[string]compiledStepAuthz{},
 		intentIdempotent:  map[string]bool{},
 		advanceRegistered: map[string]bool{},
+		bulkheads:         map[string]*bulkheadLimiter{},
 		replicaID:         opts.ReplicaID,
 	}
 	if p.replicaID == "" {
@@ -285,6 +292,9 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 	if doc, err = expandEntities(doc); err != nil {
 		return nil, err
 	}
+	if doc, err = expandRouteGroups(doc); err != nil {
+		return nil, err
+	}
 	if err := validateDocument(doc, opts.Registry); err != nil {
 		return nil, err
 	}
@@ -294,6 +304,9 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 	// to another intent while it is being built. Publishing it at the end would
 	// leave every such lookup reading an empty document.
 	p.Document = publicDocument(doc)
+	for _, warning := range singleReplicaResourceWarnings(doc, opts) {
+		slog.Warn("ref/platform: " + warning)
+	}
 	if err := p.openResources(ctx, doc, opts.Registry); err != nil {
 		return nil, err
 	}
@@ -480,6 +493,16 @@ func (p *Platform) openResources(ctx context.Context, doc Document, registry *Re
 			config := make(map[string]any, len(spec.Config)+1)
 			maps.Copy(config, spec.Config)
 			config[pipelineDefinitionsKey] = doc.Pipelines
+			spec.Config = config
+		}
+
+		// A crypto.signer needs to know the declared environment so an
+		// ephemeral key can be refused outright in production rather than
+		// only logged as a warning.
+		if spec.Kind == "crypto.signer" {
+			config := make(map[string]any, len(spec.Config)+1)
+			maps.Copy(config, spec.Config)
+			config[environmentKey] = doc.Environment
 			spec.Config = config
 		}
 
@@ -843,6 +866,10 @@ func (p *Platform) compileNode(registry *Registry, build BuildContext, spec Inte
 	if err != nil {
 		return err
 	}
+	bulkhead, err := p.compileBulkhead(what, spec.Name, nodeSpec)
+	if err != nil {
+		return err
+	}
 	residency := p.residency.guardFor(spec.Name, nodeSpec, registry)
 
 	onError := strings.ToLower(strings.TrimSpace(nodeSpec.OnError))
@@ -941,7 +968,7 @@ func (p *Platform) compileNode(registry *Registry, build BuildContext, spec Inte
 		if err := p.residencyCheck(residency, actionCtx); err != nil {
 			return err
 		}
-		result, err := p.runNodeAction(actionCtx, action, node, retry, nodeTimeout)
+		result, err := p.runNodeAction(actionCtx, action, node, retry, nodeTimeout, bulkhead)
 		if err != nil {
 			if onError == "continue" {
 				return publishFallback(nc, node, keys)
@@ -990,9 +1017,40 @@ func (p *Platform) compileNode(registry *Registry, build BuildContext, spec Inte
 	return p.Engine.Capabilities().Register(reg)
 }
 
-// runNodeAction executes an action under its timeout and retry policy.
-func (p *Platform) runNodeAction(ctx *ActionContext, action Action, node NodeSpec, retry *retryPolicy, timeout time.Duration) (ActionResult, error) {
+// compileBulkhead validates a node's BulkheadSpec and returns the shared
+// limiter it names, creating it on first reference. Nodes across any number
+// of intents that name the same limiter share one, so a dependency hit from
+// several intents is capped once.
+func (p *Platform) compileBulkhead(what, intentName string, nodeSpec NodeSpec) (*bulkheadLimiter, error) {
+	spec := nodeSpec.Bulkhead
+	if spec == nil {
+		return nil, nil
+	}
+	if spec.Limit <= 0 {
+		return nil, fmt.Errorf("ref/platform: %s bulkhead: limit must be at least 1, got %d", what, spec.Limit)
+	}
+	name := strings.TrimSpace(spec.Name)
+	if name == "" {
+		name = intentName + "." + nodeSpec.Name
+	}
+	if existing, ok := p.bulkheads[name]; ok {
+		return existing, nil
+	}
+	limiter := newBulkheadLimiter(name, spec.Limit)
+	p.bulkheads[name] = limiter
+	return limiter, nil
+}
+
+// runNodeAction executes an action under its timeout, retry policy and
+// bulkhead concurrency limit.
+func (p *Platform) runNodeAction(ctx *ActionContext, action Action, node NodeSpec, retry *retryPolicy, timeout time.Duration, bulkhead *bulkheadLimiter) (ActionResult, error) {
 	run := func(runCtx context.Context) (ActionResult, error) {
+		if bulkhead != nil {
+			if !bulkhead.tryAcquire() {
+				return ActionResult{}, errBulkheadFull(node.Name, bulkhead.name)
+			}
+			defer bulkhead.release()
+		}
 		scoped := *ctx
 		scoped.Context = runCtx
 		return action.Run(&scoped)
@@ -1182,6 +1240,9 @@ func validateDocument(doc Document, registry *Registry) error {
 			}
 			if node.Resource != "" && !resources[node.Resource] {
 				return fmt.Errorf("ref/platform: intent %q node %q references undeclared resource %q", item.Name, node.Name, node.Resource)
+			}
+			if node.Bulkhead != nil && node.Bulkhead.Limit <= 0 {
+				return fmt.Errorf("ref/platform: intent %q node %q bulkhead: limit must be at least 1, got %d", item.Name, node.Name, node.Bulkhead.Limit)
 			}
 			for _, name := range node.Provides {
 				if owner := provided[name]; owner != "" {

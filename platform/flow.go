@@ -983,6 +983,38 @@ var flowQuorumAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec)
 // Reliability
 // ---------------------------------------------------------------------------
 
+// bulkheadLimiter is a compiled BulkheadSpec: a fail-fast, non-blocking
+// concurrency limiter shared by every node naming the same limiter.
+type bulkheadLimiter struct {
+	name string
+	slot chan struct{}
+}
+
+func newBulkheadLimiter(name string, limit int) *bulkheadLimiter {
+	return &bulkheadLimiter{name: name, slot: make(chan struct{}, limit)}
+}
+
+// tryAcquire returns false immediately, never blocking, when the limiter is
+// already at capacity.
+func (b *bulkheadLimiter) tryAcquire() bool {
+	select {
+	case b.slot <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (b *bulkheadLimiter) release() { <-b.slot }
+
+var errBulkheadFull = func(node, name string) error {
+	return intent.Failure{
+		Code:     "BULKHEAD_FULL",
+		Category: intent.CategoryUnavailable,
+		Message:  fmt.Sprintf("node %q: bulkhead %q is at capacity", node, name),
+	}
+}
+
 // retryPolicy is a compiled RetrySpec.
 type retryPolicy struct {
 	attempts     int

@@ -35,6 +35,10 @@ func (s *Signer) KeySet() *signing.KeySet { return s.keys }
 // JWKS renders the public keys.
 func (s *Signer) JWKS() signing.JWKS { return s.keys.JWKS() }
 
+// environmentKey is the config key the compiler injects the document's
+// declared environment under, mirroring pipelineDefinitionsKey.
+const environmentKey = "__environment"
+
 func registerSignerResources(r *Registry) {
 	mustResource(r, "crypto.signer", ResourceFactoryFunc(openSigner), ResourceKindInfo{
 		Family:   "crypto",
@@ -46,14 +50,15 @@ func registerSignerResources(r *Registry) {
 			{Name: "private_key_file", Type: "string", Summary: "Path to the PEM of the active signing key"},
 			{Name: "key_id", Type: "string", Summary: "kid of the active key (default: its RFC 7638 thumbprint)"},
 			{Name: "keys", Type: "[]object", Summary: `Extra verification keys for rotation: keys [ { key_id … public_key|public_key_file|private_key|private_key_file … algorithm … } … ]`},
-			{Name: "ephemeral", Type: "bool", Default: "false", Summary: "Development only: generate an Ed25519 key at startup when no private key is configured"},
+			{Name: "ephemeral", Type: "bool", Default: "false", Summary: "Development only: generate an Ed25519 key at startup when no private key is configured. Refused at compile time when environment is \"production\""},
 		},
 	})
 }
 
 func openSigner(_ context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
+	environment, _ := spec.Config[environmentKey].(string)
 	if err := rejectUnknownConfig("crypto.signer", spec.Config,
-		"algorithm", "private_key", "private_key_file", "key_id", "keys", "ephemeral"); err != nil {
+		"algorithm", "private_key", "private_key_file", "key_id", "keys", "ephemeral", environmentKey); err != nil {
 		return nil, nil, err
 	}
 	algorithm, err := signing.ParseAlgorithm(configString(spec.Config, "algorithm", ""))
@@ -72,6 +77,9 @@ func openSigner(_ context.Context, spec ResourceSpec) (Resource, io.Closer, erro
 			return nil, nil, fmt.Errorf("crypto.signer %q: %w", spec.Name, err)
 		}
 	case configBool(spec.Config, "ephemeral", false):
+		if environment == "production" {
+			return nil, nil, fmt.Errorf("crypto.signer %q: ephemeral true is refused in a production environment (its key resets on every restart, invalidating every token and signature it issued) — configure private_key or private_key_file", spec.Name)
+		}
 		active, err = signing.GenerateEd25519(configString(spec.Config, "key_id", ""))
 		if err != nil {
 			return nil, nil, fmt.Errorf("crypto.signer %q: %w", spec.Name, err)

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	ocfg "github.com/oarkflow/config"
 )
 
 type testConfig struct {
@@ -179,5 +181,53 @@ func TestWatchDetectsChangeAndSkipsNoop(t *testing.T) {
 	case c := <-changes:
 		t.Fatalf("unexpected second onChange for unchanged content: %+v", c)
 	case <-time.After(80 * time.Millisecond):
+	}
+}
+
+func TestFromOarkflowLayersWithOtherSources(t *testing.T) {
+	cfg := ocfg.New()
+	if err := cfg.Add("app", map[string]any{
+		"port": 9090,
+		"host": "oarkflow.local",
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	got, err := Load[testConfig](
+		FromOarkflow(cfg, "app"),
+		FromEnvFunc("", lookupFrom(map[string]string{"DSN": "postgres://example"})),
+	)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Port != 9090 {
+		t.Errorf("Port = %d, want 9090 from the oarkflow Manager", got.Port)
+	}
+	if got.Host != "oarkflow.local" {
+		t.Errorf("Host = %q, want oarkflow.local from the oarkflow Manager", got.Host)
+	}
+	if got.Debug {
+		t.Errorf("Debug = true, want the default false (Manager has no opinion about it)")
+	}
+}
+
+func TestFromOarkflowOnlySetsFieldsItHas(t *testing.T) {
+	cfg := ocfg.New()
+	if err := cfg.Add("app", map[string]any{"port": 9090}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	got, err := Load[testConfig](
+		FromEnvFunc("", lookupFrom(map[string]string{"HOST": "from-env", "DSN": "postgres://example"})),
+		FromOarkflow(cfg, "app"),
+	)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Host != "from-env" {
+		t.Errorf("Host = %q, want from-env preserved (the Manager has no app.host)", got.Host)
+	}
+	if got.Port != 9090 {
+		t.Errorf("Port = %d, want 9090 from the Manager", got.Port)
 	}
 }

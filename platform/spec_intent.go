@@ -95,6 +95,11 @@ type NodeSpec struct {
 	Retry *RetrySpec `bcl:"retry"`
 	// Timeout bounds this node alone, inside the intent's own budget.
 	Timeout Duration `bcl:"timeout"`
+	// Bulkhead caps how many concurrent calls this node (or every node sharing
+	// its Name) may have in flight, so a slow or flaky dependency cannot
+	// exhaust every worker goroutine. It is the BCL-declarable equivalent of
+	// capability.WithBulkhead, without requiring Go code.
+	Bulkhead *BulkheadSpec `bcl:"bulkhead"`
 
 	// Authz gates this node specifically, as a decision in the plan. Use it
 	// when one graph serves several audiences and only part of it is
@@ -141,6 +146,19 @@ type RetrySpec struct {
 	// internal). Empty means retry only the transient categories — never
 	// invalid_input or permission, which will fail identically forever.
 	RetryOn []string `bcl:"retry_on"`
+}
+
+// BulkheadSpec caps concurrent calls into one node. Nodes across any number
+// of intents that share Name share one limiter, so a single flaky dependency
+// hit from several intents is capped once, in one place.
+type BulkheadSpec struct {
+	// Name identifies the shared limiter. Defaults to the node's own name
+	// (scoped to its intent) when empty, so an unnamed bulkhead is private to
+	// that one node.
+	Name string `bcl:"name"`
+	// Limit is the maximum number of concurrent calls admitted. Required,
+	// must be at least 1.
+	Limit int `bcl:"limit"`
 }
 
 // ---------------------------------------------------------------------------

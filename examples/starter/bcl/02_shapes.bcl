@@ -1,0 +1,68 @@
+# ===========================================================================
+# Reusable structural contracts
+#
+# A shape is validated identically everywhere it's referenced by name
+# (validate.schema nodes, route bodies, CRUD resources). "shape" rather than
+# "schema" because BCL reserves the latter for its own schema support.
+# ===========================================================================
+
+shape "user" {
+  kind object
+  description "A new account"
+
+  prop "email" {
+    kind string
+    required true
+    format email
+  }
+
+  prop "name" {
+    kind string
+    required true
+    min_length 1
+    max_length 255
+  }
+
+  prop "password" {
+    kind string
+    required true
+    min_length 8
+    max_length 128
+    sensitive true
+  }
+}
+
+shape "login_input" {
+  kind object
+  description "Credentials for signing in"
+
+  prop "email" {
+    kind string
+    required true
+    format email
+  }
+
+  prop "password" {
+    kind string
+    required true
+    sensitive true
+  }
+}
+
+shape "change_password_input" {
+  kind object
+  description "Current and new password for an authenticated change"
+
+  prop "current_password" {
+    kind string
+    required true
+    sensitive true
+  }
+
+  prop "new_password" {
+    kind string
+    required true
+    min_length 8
+    sensitive true
+  }
+}

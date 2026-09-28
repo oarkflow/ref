@@ -100,6 +100,11 @@ func Validate(ctx context.Context, src []byte, baseDir string, opts LoadOptions)
 	if err == nil {
 		doc = expanded
 	}
+	grouped, err := expandRouteGroups(doc)
+	fail(err)
+	if err == nil {
+		doc = grouped
+	}
 	fail(validateDocument(doc, opts.Registry))
 	for _, res := range doc.Resources {
 		if _, ok := opts.Registry.resource(res.Kind); !ok {
@@ -120,6 +125,7 @@ func Validate(ctx context.Context, src []byte, baseDir string, opts LoadOptions)
 	}
 	r.Errors = append(r.Errors, validateExpressions(doc, opts.Registry)...)
 	r.Errors = append(r.Errors, validateNotifyChannels(doc)...)
+	r.Warnings = append(r.Warnings, singleReplicaResourceWarnings(doc, opts)...)
 	flagDoc := doc
 	flagDoc.FlagStore = "" // the store is a resource: checked when it opens
 	_, err = compileFlags(flagDoc, nil)
@@ -164,6 +170,45 @@ func validateNotifyChannels(doc Document) []string {
 		}
 	}
 	return errs
+}
+
+// singleReplicaMemoryKinds names every resource kind whose state lives only
+// in this process's memory: invisible to any other replica sharing the same
+// database, queue or load balancer.
+var singleReplicaMemoryKinds = map[string]string{
+	"cache.memory":     "cache.sql or cache.redis",
+	"lock.memory":      "lock.store",
+	"ratelimit.memory": "ratelimit.store",
+}
+
+// singleReplicaResourceWarnings flags cache.memory/lock.memory/ratelimit.memory
+// resources when the document declares a durable process (which is
+// cross-replica by nature) or the caller identified itself as one of several
+// replicas (opts.ReplicaID). Neither condition proves two replicas actually
+// run side by side, so this stays a warning, not a hard error: a single-node
+// deployment that merely names a replica id, or a document that declares a
+// process but is only ever run as one instance, both keep working.
+func singleReplicaResourceWarnings(doc Document, opts LoadOptions) []string {
+	if opts.ReplicaID == "" && len(doc.Processes) == 0 {
+		return nil
+	}
+	var reason string
+	if opts.ReplicaID != "" {
+		reason = "a replica id was given, so this process is meant to run alongside others"
+	} else {
+		reason = "the document declares a durable process, which is cross-replica by nature"
+	}
+	var warnings []string
+	for _, res := range doc.Resources {
+		alt, memoryBacked := singleReplicaMemoryKinds[res.Kind]
+		if !memoryBacked {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"resource %q is process-local (%s): %s; two replicas will not share its state — use %s instead for a multi-replica deployment",
+			res.Name, res.Kind, reason, alt))
+	}
+	return warnings
 }
 
 func summarize(doc Document) DocumentSummary {

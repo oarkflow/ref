@@ -1,0 +1,28 @@
+@extends("layouts/auth.html")
+
+@define("content") {
+  <div class="auth-header">
+    <h1>Welcome back</h1>
+    <p>Sign in to your account</p>
+  </div>
+
+  <form method="POST" action="/login">
+    <input type="hidden" name="redirect" value="${redirect}">
+
+    <div class="form-group">
+      <label class="form-label" for="email">Email address</label>
+      <input type="email" id="email" name="email" class="form-input" placeholder="you@example.com" value="${email}" required autofocus>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label" for="password">Password</label>
+      <input type="password" id="password" name="password" class="form-input" placeholder="••••••••" required>
+    </div>
+
+    <button type="submit" class="btn btn-primary btn-block" style="margin-top: 1.5rem;">Sign in</button>
+  </form>
+
+  <div style="text-align: center; margin-top: 1.5rem; font-size: 0.85rem; color: var(--text-dim);">
+    Don't have an account? <a href="/register">Create one</a>
+  </div>
+}

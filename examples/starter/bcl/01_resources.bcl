@@ -1,0 +1,111 @@
+# ===========================================================================
+# Infrastructure
+#
+# Every backend this document uses is declared here, and every one of them
+# defaults to the variant that is correct when this process runs alongside
+# other replicas: `session.sql`, `cache.sql` and `queue.sql` — not the
+# `.memory`/`.file` variants — all riding on the one `database` resource so
+# a product this size needs no second datastore. See CONFIGURATION.md for
+# what each kind means and the failure you get for the wrong choice.
+#
+# Swapping SQLite for PostgreSQL in production is a two-line change: the
+# `driver`/`dsn` below, plus one blank import in cmd/server/main.go (already
+# there, commented, for exactly this). No other file changes.
+# ===========================================================================
+
+resource "database" {
+  kind "database.sql"
+  description "Users, sessions, jobs and the cache all live in one database — add a second only when you actually need one"
+  config {
+    driver env("DB_DRIVER", "sqlite")
+    dsn env("DB_DSN", "file:.data/starter/app.db?_pragma=busy_timeout(5000)")
+    max_open_connections env("DB_MAX_OPEN_CONNECTIONS", "20")
+    max_idle_connections env("DB_MAX_IDLE_CONNECTIONS", "5")
+    connection_max_lifetime 30m
+    # ping defaults to true as of this starter: an unreachable database is a
+    # startup failure here, never a surprise on the first request. Set
+    # `ping false` only for a throwaway :memory: database in a test.
+    migrations [
+      "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT NOT NULL, password_hash TEXT NOT NULL, roles TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+      "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, actor_id TEXT, detail TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+      "CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_id)",
+      # DEVELOPMENT SEED DATA — an admin account so there's a way in on a
+      # fresh clone. The hash is Argon2id of "Password123!". Delete this
+      # line (or the row, or just change the password immediately after
+      # first login) before a real deployment; nothing else here depends on
+      # it existing.
+      "INSERT OR IGNORE INTO users (id, email, name, password_hash, roles, status) VALUES ('usr_admin_01', 'admin@example.com', 'Admin', '$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg', 'admin', 'active')",
+
+      # --- Orders (bcl/09_workflow_example.bcl) -----------------------------
+      "CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id TEXT NOT NULL, amount REAL NOT NULL, tier TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', priority INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+      "CREATE INDEX IF NOT EXISTS idx_orders_owner ON orders(owner_id)"
+    ]
+  }
+}
+
+# Shared cache. cache.sql is the multi-replica-safe default (as opposed to
+# cache.memory, which is per-process — see CONFIGURATION.md and the startup
+# warning the platform itself now gives you if you use a per-process
+# resource in a multi-replica document).
+resource "cache" {
+  kind "cache.sql"
+  config { database "database" }
+}
+
+# Rate limiting, layered over the same cache so a limit is shared across
+# every replica rather than reset per instance.
+resource "limits" {
+  kind "ratelimit.store"
+  config { cache "cache" }
+}
+
+# Durable, multi-replica-safe job queue. Every worker in 05_workers.bcl and
+# every schedule in 06_schedules.bcl reads from this one queue.
+resource "jobs" {
+  kind "queue.sql"
+  config { database "database" workers 2 max_attempts 5 }
+}
+
+# Signed session cookies. session.sql (not session.file) so every replica
+# behind a load balancer sees the same session state.
+resource "sessions" {
+  kind "session.sql"
+  config {
+    database "database"
+    secret env.required("SESSION_SECRET")
+    cookie "starter_sid"
+    max_age 24h
+    secure env("SESSION_COOKIE_SECURE", "false")
+  }
+}
+
+# Resolves the caller's principal (id, roles) from the signed session
+# cookie. Every protected route names this as its `auth`.
+resource "session_auth" {
+  kind "auth.session"
+  config { session "sessions" roles_claim "roles" }
+}
+
+# Role-based authorization. `superuser_roles` bypasses every `authz {
+# roles [...] }` check — see bcl/00_app.bcl's "admin" role.
+resource "authorization" {
+  kind "authz.rbac"
+  config {
+    superuser_roles ["admin"]
+    default_roles ["user"]
+  }
+}
+
+# Outbound delivery target for notify.welcome (03_intents.bcl) — the intent
+# reused across a route, a worker, a schedule and a webhook trigger. Point
+# it at a real notification service; the default is a loopback echo for
+# local development, refused by allow_private_networks in production.
+resource "notifications" {
+  kind "service.http"
+  config {
+    timeout 10s
+    max_response_bytes 1048576
+    allowed_hosts env("NOTIFY_HOST", "127.0.0.1")
+    allow_private_networks env("NOTIFY_ALLOW_PRIVATE", "true")
+  }
+}

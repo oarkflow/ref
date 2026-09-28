@@ -1,0 +1,21 @@
+# ===========================================================================
+# Webhook triggers
+#
+# An inbound webhook is the fourth entry point for notify.welcome — the
+# same business logic a route, a worker and a schedule already drive, now
+# reachable from an external system (a message broker's HTTP callback, a
+# partner's event, anything that can sign a POST). The signature is
+# mandatory: a webhook trigger with no `secret` is refused at compile time,
+# because an unauthenticated public mutation endpoint is never the intent.
+# ===========================================================================
+
+trigger "welcome_webhook" {
+  description "Inbound webhook — an external system asking us to welcome someone"
+  kind webhook
+  path "/webhooks/welcome"
+  secret "webhook_secret"
+  signature_header "X-Signature-256"
+  timestamp_header "X-Timestamp"
+  tolerance 5m
+  intent "notify.welcome"
+}
