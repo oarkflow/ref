@@ -314,8 +314,10 @@ func (c cacheHandle) delete(ctx context.Context, key string) error {
 //
 // Byte slices become strings: a driver returns TEXT and VARCHAR columns as
 // []byte, which would JSON-encode as base64 and surprise every author who
-// looked at the response. Whatever else a driver hands back is passed through
-// untouched.
+// looked at the response. A DATETIME/TIMESTAMP column becomes an RFC3339
+// string for the same reason a raw time.Time is never left in a fact — see
+// actions_database.go's txQueryRows, which normalizes it identically.
+// Whatever else a driver hands back is passed through untouched.
 func queryRows(ctx context.Context, db execer, statement string, args []any) ([]map[string]any, error) {
 	rows, err := db.QueryContext(ctx, statement, args...)
 	if err != nil {
@@ -338,11 +340,14 @@ func queryRows(ctx context.Context, db execer, statement string, args []any) ([]
 		}
 		row := make(map[string]any, len(columns))
 		for i, column := range columns {
-			if raw, ok := values[i].([]byte); ok {
-				row[column] = string(raw)
-				continue
+			switch v := values[i].(type) {
+			case []byte:
+				row[column] = string(v)
+			case time.Time:
+				row[column] = v.UTC().Format(time.RFC3339Nano)
+			default:
+				row[column] = values[i]
 			}
-			row[column] = values[i]
 		}
 		result = append(result, row)
 	}

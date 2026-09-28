@@ -213,6 +213,117 @@ intent "auth.change_password" {
 }
 
 # ---------------------------------------------------------------------------
+# Password reset — a one-time token, delivered asynchronously.
+#
+# auth.forgot_password never reveals whether the email exists: the
+# INSERT...SELECT below simply inserts nothing when no user matches, and the
+# response is identical either way. The delivery itself is queued (the same
+# queue.publish + worker pattern notify.welcome uses for its async entry
+# point), reusing the "notifications" resource — swap that for a real
+# mailer/SMTP action in production; a webhook target is what this starter
+# ships without adding SMTP as a dependency.
+# ---------------------------------------------------------------------------
+
+intent "auth.forgot_password" {
+  description "Create a one-time reset token and queue its delivery"
+  response "response"
+  timeout 5s
+
+  node "validate" { uses "validate.required" requires [input] provides [validated] config { fields [input.email] } }
+  node "token" { uses "auth.reset_token" requires [validated] provides [reset_token] config { ttl 15m } }
+  node "store-token" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [input, reset_token]
+    provides [token_stored]
+    config {
+      statement "INSERT INTO password_resets (token_hash, user_id, expires_at) SELECT $1, id, $2 FROM users WHERE email = LOWER($3)"
+      args [reset_token.hash, reset_token.expires_at, input.email]
+    }
+  }
+  node "payload" { uses "collect" requires [input, reset_token, token_stored] provides [notification_payload] }
+  node "enqueue" {
+    uses "queue.publish"
+    resource "jobs"
+    kind async_effect
+    requires [notification_payload]
+    provides [notification_job]
+    config { job_type "auth.password_reset" payload_fact "notification_payload" }
+  }
+  node "response" { uses "collect" requires [notification_job] provides [response] }
+}
+
+intent "auth.reset_password" {
+  description "Consume a valid reset token exactly once"
+  response "response"
+  timeout 5s
+
+  node "validate" { uses "validate.schema" requires [input] provides [validated] config { source_fact "input" shape "password_reset_input" } }
+  node "token-hash" { uses "auth.token_hash" requires [input, validated] provides [token_hash] config { value_fact "input.token" } }
+  node "password-hash" {
+    uses "auth.password_hash"
+    requires [input, validated]
+    provides [new_password_hash]
+    config { value_fact "input.new_password" algorithm "argon2id" memory 65536 iterations 3 parallelism 4 min_length 8 }
+  }
+  node "consume-token" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [token_hash, new_password_hash]
+    provides [password_reset]
+    config {
+      statement "UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT user_id FROM password_resets WHERE token_hash = $2 AND expires_at > CURRENT_TIMESTAMP AND used_at IS NULL)"
+      args [new_password_hash, token_hash]
+      require_affected true
+      not_found_message "reset token is invalid or expired"
+    }
+  }
+  node "mark-used" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [token_hash, password_reset]
+    provides [token_consumed]
+    config { statement "UPDATE password_resets SET used_at = CURRENT_TIMESTAMP WHERE token_hash = $1" args [token_hash] }
+  }
+  node "response" { uses "collect" requires [password_reset, token_consumed] provides [response] }
+}
+
+# The worker (bcl/05_workers.bcl) invokes this for job_type
+# "auth.password_reset". Point NOTIFY_URL at a real notification service —
+# the loopback default is for local development only.
+intent "notification.password_reset" {
+  description "Deliver a password-reset token to the notification service"
+  response "response"
+  timeout 15s
+  max_external_io 1
+
+  # The worker that runs this (bcl/05_workers.bcl) bypasses the HTTP
+  # maintenance middleware entirely — this guard is what makes maintenance
+  # mode apply here too. See internal/ops.MaintenanceGate.RegisterAction.
+  node "maintenance" { uses "ops.maintenance_status" provides [maintenance_on] }
+  node "not-in-maintenance" {
+    uses "validate.expression"
+    requires [maintenance_on]
+    provides [maintenance_ok]
+    config { expression "maintenance_on == false" message "maintenance mode is on; delivery is paused" }
+  }
+
+  node "deliver" {
+    uses "service.http"
+    resource "notifications"
+    kind effect
+    requires [input, maintenance_ok]
+    provides [delivery]
+    bulkhead { name "notify-welcome-delivery" limit 5 }
+    config { method POST url env("NOTIFY_URL", "http://127.0.0.1:8099/welcome") body_fact "input" }
+  }
+  node "response" { uses "collect" requires [delivery] provides [response] }
+}
+
+# ---------------------------------------------------------------------------
 # Protected pages
 # ---------------------------------------------------------------------------
 
@@ -318,11 +429,22 @@ intent "notify.welcome" {
     config { fields [input.email] }
   }
 
+  # The worker/schedule/webhook-trigger entry points bypass the HTTP
+  # maintenance middleware entirely — this guard is what makes maintenance
+  # mode apply to them too. See internal/ops.MaintenanceGate.RegisterAction.
+  node "maintenance" { uses "ops.maintenance_status" provides [maintenance_on] }
+  node "not-in-maintenance" {
+    uses "validate.expression"
+    requires [maintenance_on]
+    provides [maintenance_ok]
+    config { expression "maintenance_on == false" message "maintenance mode is on; welcome delivery is paused" }
+  }
+
   node "deliver" {
     uses "service.http"
     resource "notifications"
     kind effect
-    requires [input, validated]
+    requires [input, validated, maintenance_ok]
     provides [delivery]
     bulkhead { name "notify-welcome-delivery" limit 5 }
     config { method POST url env("NOTIFY_URL", "http://127.0.0.1:8099/welcome") body_fact "input" }

@@ -14,3 +14,12 @@ worker "welcome-delivery" {
   max_attempts 5
   timeout 15s
 }
+
+worker "password-reset-delivery" {
+  description "Delivers the token auth.forgot_password queued"
+  queue "jobs"
+  job_type "auth.password_reset"
+  intent "notification.password_reset"
+  max_attempts 5
+  timeout 15s
+}

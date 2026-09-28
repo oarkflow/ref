@@ -66,3 +66,21 @@ shape "change_password_input" {
     sensitive true
   }
 }
+
+shape "password_reset_input" {
+  kind object
+  description "Token and new password for password reset"
+
+  prop "token" {
+    kind string
+    required true
+    sensitive true
+  }
+
+  prop "new_password" {
+    kind string
+    required true
+    min_length 8
+    sensitive true
+  }
+}

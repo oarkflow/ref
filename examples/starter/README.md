@@ -41,22 +41,70 @@ It ships with:
 - **Structured logging and observability for free.** Every HTTP request and
   every DAG node execution (decision, effect, retry, timeout, bulkhead)
   writes through one `zlog.Logger` — see `cmd/server/logging.go`.
+- **Maintenance mode.** One shared toggle (`internal/ops/maintenance.go`)
+  backs an HTTP middleware (503, HTML or JSON depending on the caller), a
+  `/readyz` check, and a BCL admin route (`POST /api/v1/admin/maintenance`)
+  to flip it at runtime — no redeploy.
+- **Environment overlays.** `bcl/11_environments.bcl`'s `profile "production"
+  { override "resource.x" { ... } }` changes resource config per
+  environment, natively, with zero code and zero filename convention.
+- **An easy plugin point for a third-party tool.** Set `LOG_WEBHOOK_URL` and
+  every log line — HTTP access logs and every DAG event — ships to any HTTP
+  log collector (Datadog, Loki, Logtail, ...), with no code change. The
+  maintenance toggle above is the second example of the same underlying
+  mechanism (`platform.RegisterActionDriver`), for anyone building their own.
 - **A bulkhead.** `notify.welcome`'s delivery node caps concurrent calls at
   5, shared by name across every one of its four entry points, so a slow
   notification service cannot exhaust every worker goroutine.
+- **Password reset**, asynchronous like `notify.welcome`: a one-time token,
+  delivered off the request path, that never reveals whether an email
+  address exists (`bcl/03_intents.bcl`'s `auth.forgot_password`).
+- **Metrics.** `/metrics` (Prometheus) counts and times every DAG
+  node/decision/effect/execution, verified with real traffic while building
+  this starter, not just wired and left untested.
+- **Verified against real PostgreSQL**, not just SQLite — see "Switching to
+  PostgreSQL" below, including a real BCL parser gotcha found doing that
+  verification (CONFIGURATION.md).
+- **Docker, and CI.** A working multi-stage `Dockerfile` and a three-job
+  GitHub Actions workflow (`.github/workflows/ci.yml`) — both actually
+  run, not just present.
 
 ## Quick start
+
+Either export the required variables directly:
 
 ```sh
 export SESSION_SECRET="$(openssl rand -hex 32)"
 export WEBHOOK_SECRET="$(openssl rand -hex 32)"
 
+go run ./cmd/migrator cli migrate   # applies migrations/*.bcl — once per schema change
 go run ./cmd/server
 ```
 
-It listens on `:8080` against an embedded SQLite database at
-`.data/starter/app.db` (created on first run, seeded with a development
-admin account — see "Production checklist" before you deploy this). In a
+...or copy `.env.example` to `.env` and fill it in — `cmd/server/main.go`
+(and `cmd/migrator/main.go`) load it automatically (`internal/bootstrap`)
+before anything else runs, including before the BCL document's own
+`env()`/`env.required()` calls:
+
+```sh
+cp .env.example .env
+# edit .env: set real values for SESSION_SECRET and WEBHOOK_SECRET
+go run ./cmd/migrator cli migrate
+go run ./cmd/server
+```
+
+A real environment variable always wins over `.env` — set one in your
+shell, Docker, or CI and the file's value for that key is ignored, so `.env`
+is safe to use in development without it ever fighting a deployment's real
+configuration. `.env` is gitignored; `ENV_FILE=path/to/other.env` points at
+a different file if you don't want `./.env`.
+
+`go run ./cmd/migrator cli migrate` creates `.data/starter/app.db` and
+applies `migrations/*.bcl` to it — schema is owned by that binary, not
+created implicitly by `cmd/server` on first run, so run it once before the
+very first `go run ./cmd/server` and again after adding or editing a
+migration file. `cmd/server` seeds a development admin account into that
+database on boot — see "Production checklist" before you deploy this. In a
 browser: `http://localhost:8080/login`, sign in with
 `admin@example.com` / `Password123!`, and you land on `/dashboard`;
 `/dashboard/admin` is the admin-only page.
@@ -129,19 +177,31 @@ starter/
 │   ├── 06_schedules.bcl    # notify.welcome's cron entry point
 │   ├── 07_triggers.bcl     # notify.welcome's webhook entry point
 │   ├── 08_static.bcl       # /static → static/
-│   └── 09_workflow_example.bcl  # GUIDE: branching, switch/case, flags, route params
-├── templates/               # SPL pages: auth/, dashboard/, errors/, layouts, components
+│   ├── 09_workflow_example.bcl  # GUIDE: branching, switch/case, flags, route params
+│   ├── 10_maintenance.bcl  # the admin route that flips maintenance mode
+│   └── 11_environments.bcl # profile "production" { override ... } example
+├── templates/               # SPL pages: auth/, dashboard/, errors/ (incl. maintenance.html), layouts, components
 ├── static/css/app.css       # the one stylesheet every page shares
 ├── internal/web/
 │   └── renderer.go          # the SPL template engine adapter (Go glue, not business logic)
+├── internal/ops/
+│   ├── maintenance.go       # the maintenance gate: middleware, health check, BCL action
+│   └── seed.go              # the dev-admin seeder — env-gated, never runs in production
 ├── cmd/server/
-│   ├── main.go              # bootstrap: config, logging, LoadDir, mount, listen
-│   ├── logging.go           # the one zlog.Logger every log line goes through
-│   └── http_adapter.go      # bridges /livez, /readyz onto *fh.App
-├── starter_test.go          # compiles bcl/, proves auth + RBAC + route groups + transport reuse
+│   ├── main.go              # bootstrap: .env, config, logging, metrics, LoadDir, mount, listen
+│   ├── dotenv.go            # the .env loader — real env vars always win
+│   ├── logging.go           # the one zlog.Logger every log line goes through (+ webhook plugin)
+│   └── http_adapter.go      # bridges /livez, /readyz, /metrics onto *fh.App
+├── starter_test.go          # compiles bcl/, proves auth + RBAC + route groups + transport reuse +
+│                            # password reset + maintenance-guarded background delivery
+├── Dockerfile               # multi-stage build; run from the repository root
+├── .env.example             # copy to .env for local development
 ├── README.md                # this file
 └── CONFIGURATION.md         # BCL reference + misconfiguration hints
 ```
+
+`.github/workflows/ci.yml` and `.dockerignore` live at the repository root,
+not here, since CI covers both this module and the `ref` core module.
 
 ## Conditional flows, branching, switch/case, flags and parameters
 
@@ -151,10 +211,11 @@ a conditional gate node, a compiled if/elseif branch (`flow.branch`), a
 value-keyed switch/case (`decision.table` + `flow.switch`), a feature flag
 read inside an expression (`flags.priority_shipping`), and an HTTP path
 parameter (`request.param`, plus a documenting `parameter` block). It has its
-own routes under `/api/v1/orders`, its own migration, and its own test
+own routes under `/api/v1/orders`, its own migration
+(`migrations/4_create_orders_table.bcl`), and its own test
 (`TestOrdersWorkflowExample` in `starter_test.go`) — delete the file, its
-migration line in `bcl/01_resources.bcl`, and that test once you've read it;
-nothing else in this starter depends on it.
+migration, and that test once you've read it; nothing else in this starter
+depends on it.
 
 ```sh
 curl -X POST $BASE/api/v1/orders -d '{"amount": 900}'                       # flow.branch -> tier "large"
@@ -163,30 +224,111 @@ curl -X POST $BASE/api/v1/orders/1/transition -d '{"status": "paid"}'       # de
 curl -X POST $BASE/api/v1/orders/1/transition -d '{"status": "cancelled"}'  # the "cancel" case, from any non-delivered status
 ```
 
+## Maintenance mode, environments, and plugging in a third-party tool
+
+**Maintenance mode.** `internal/ops/maintenance.go`'s `MaintenanceGate` is one
+shared toggle behind three things: an `app.Use` middleware (503 to everyone
+except `/health`, `/livez`, `/readyz`, `/static/*` and the toggle route
+itself), a `/readyz` check, and the `ops.maintenance_set` action
+`bcl/10_maintenance.bcl`'s admin-only route calls. A browser gets a real SPL
+page (`templates/pages/errors/maintenance.html`, its own layout, its own
+variables — `message`, `since`, `retryAfterSeconds`); anything else gets the
+same information as JSON.
+
+```sh
+curl -X POST $BASE/api/v1/admin/maintenance \
+  -d '{"on": true, "message": "Upgrading the database", "retry_after_seconds": 120}'
+curl $BASE/dashboard          # 503 — the HTML page, if the client accepts it
+curl $BASE/readyz             # {"status":"down", ...}
+curl -X POST $BASE/api/v1/admin/maintenance -d '{"on": false}'
+```
+
+Boot straight into maintenance mode with `MAINTENANCE=true` (a maintenance
+window that starts before the process does); flip it at runtime through the
+route above, no restart.
+
+**Environments.** See "Conditional flows..." above's neighbour,
+`bcl/11_environments.bcl` — BCL's native `profile "name" { override "type.id"
+{ ... } }`, applied when `platform.LoadOptions.Profile` matches (set from
+`APP_ENV` in `cmd/server/main.go`). No filename convention, no code change.
+
+**A plugin point for a third-party tool.** `LOG_WEBHOOK_URL` (optionally with
+`LOG_WEBHOOK_AUTH` for an API key) ships every log line — HTTP access logs
+and every DAG node/decision/effect event — to any HTTP log collector, as
+JSON, with no code change (`cmd/server/logging.go`'s `webhookWriter`). For a
+deeper integration than "post JSON somewhere," the underlying mechanism is
+`platform.RegisterActionDriver`/`RegisterResourceDriver` — the exact thing
+`internal/ops.MaintenanceGate.RegisterAction` uses to add `ops.maintenance_set`
+as a BCL-reachable action. Follow that file's shape for your own.
+
 ## Switching to PostgreSQL
 
-Set `DB_DRIVER=pgx` and `DB_DSN=postgres://...`, and uncomment the
-`jackc/pgx/v5/stdlib` blank import in `cmd/server/main.go`. That's the whole
-change — `bcl/01_resources.bcl`'s `driver`/`dsn` already read from the
-environment.
+Set `DB_DRIVER=pgx` and `DB_DSN=postgres://...`, uncomment the
+`jackc/pgx/v5/stdlib` blank import in `cmd/server/main.go`, and re-run
+`go run ./cmd/migrator cli migrate` against the new DSN before starting the
+server — `migrations/*.bcl` is dialect-neutral; `cmd/migrator`, built on
+`github.com/oarkflow/migrate`, compiles it to `SERIAL` for PostgreSQL or
+`AUTOINCREMENT`-equivalent DDL for SQLite from the same files. See
+CONFIGURATION.md's "Schema migrations" section for the two things about that
+tool worth knowing before you add your own table.
+
+Both paths were verified end to end against actual running servers, not
+just read for plausibility: registration, login, the orders workflow
+(`flow.branch`, `decision.table` + `flow.switch`, and each dialect's own
+primary-key form — SQLite's rowid alias, PostgreSQL's `SERIAL`), and the
+password-reset flow all run identically on SQLite and PostgreSQL 16.
+
+```sh
+docker run -d --name starter-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=starter -p 5432:5432 postgres:16-alpine
+export DB_DRIVER=pgx DB_DSN="postgres://postgres:postgres@127.0.0.1:5432/starter?sslmode=disable"
+export SESSION_SECRET=... WEBHOOK_SECRET=...
+go run ./cmd/migrator cli migrate
+go run ./cmd/server
+```
+
+## Docker
+
+```sh
+# from the repository root — the Dockerfile's build context must include
+# ../../ because examples/starter/go.mod replaces github.com/oarkflow/ref
+# with a relative path
+docker build -f examples/starter/Dockerfile -t starter .
+docker run -p 8080:8080 -e SESSION_SECRET=... -e WEBHOOK_SECRET=... starter
+```
+
+## CI
+
+`.github/workflows/ci.yml` (at the repository root) runs three jobs on
+every push/PR: the `ref` core module's own build/vet/test/gofmt, this
+starter's (a separate Go module), and a Docker image build.
 
 ## Production checklist
 
-- **Remove or change the seeded admin account.** `bcl/01_resources.bcl`'s
-  migrations insert `admin@example.com` / `Password123!` so a fresh clone
-  has a way in. Change its password immediately after first login in a real
-  deployment, or delete that migration line and create your first admin a
-  different way (register normally, then `UPDATE users SET roles='admin'
-  WHERE email=...` once, by hand).
-- `APP_ENV=production` — recorded on the document; nothing in this starter
-  currently hard-fails on it the way `crypto.signer`'s `ephemeral true`
-  does elsewhere in `ref`, but keep it accurate for your own future checks
-  and for anyone reading logs.
-- `SESSION_SECRET` — `openssl rand -hex 32`; at least 32 bytes, enforced
-  when the `sessions` resource opens.
+- **The seeded admin account is development-only, and enforced as such in
+  Go, not just by convention.** `internal/ops.SeedDevAdmin` refuses to run
+  at all when `APP_ENV=production`, and even outside production it only
+  ever seeds once, when the `users` table is completely empty. There is no
+  migration line to remember to delete.
+- `APP_ENV=production` — checked by the seeding guard above, by
+  `bcl/11_environments.bcl`'s profile override, and by `crypto.signer`'s
+  `ephemeral true` refusal elsewhere in `ref`, if you ever add one.
+- `SESSION_SECRET` / `WEBHOOK_SECRET` — real random values
+  (`openssl rand -hex 32`); at least 32 bytes, enforced when the `sessions`
+  resource opens.
 - `SESSION_COOKIE_SECURE=true` behind HTTPS — the cookie is otherwise sent
-  over plain HTTP too.
-- `WEBHOOK_SECRET` — a real random value; the webhook trigger verifies
-  every inbound request's HMAC against it.
+  over plain HTTP too. `bcl/11_environments.bcl`'s `profile "production"`
+  already forces this regardless of the env var, as a backstop.
 - `DB_DRIVER` / `DB_DSN` — PostgreSQL for anything beyond a single-node
-  deployment.
+  deployment; see "Switching to PostgreSQL" above.
+- **Log delivery, if `LOG_WEBHOOK_URL` is set, is best-effort.** A struggling
+  collector gets its lines dropped rather than blocking request handling;
+  `cmd/server/logging.go`'s `webhookWriter` counts drops and failures and
+  reports the first one and every 100th one after to stderr — watch for
+  that line if a collector goes down.
+- **Maintenance mode pauses more than HTTP.** `notify.welcome` and
+  `notification.password_reset` both check `ops.maintenance_status` before
+  their delivery effect runs, so a worker/schedule/webhook-triggered job
+  queued during a maintenance window waits (and retries) rather than
+  running against a database that might be mid-migration. Apply the same
+  `ops.maintenance_status` + `validate.expression` pattern to any new
+  worker-driven intent that should honor it too.

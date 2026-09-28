@@ -392,11 +392,22 @@ func txQueryRows(ctx context.Context, tx *sql.Tx, statement string, args []any) 
 		}
 		row := make(map[string]any, len(columns))
 		for i, column := range columns {
-			if raw, ok := values[i].([]byte); ok {
-				row[column] = string(raw)
-				continue
+			switch v := values[i].(type) {
+			case []byte:
+				row[column] = string(v)
+			case time.Time:
+				// Never let a raw time.Time reach a fact: its struct has
+				// unexported fields, and at least one downstream consumer
+				// (github.com/oarkflow/interpreter, used by SPL templates)
+				// walks every field of any struct it's handed with
+				// reflect and panics calling Interface() on them —
+				// reproducible with any DATETIME column, since
+				// modernc.org/sqlite scans those as time.Time rather than
+				// a string.
+				row[column] = v.UTC().Format(time.RFC3339Nano)
+			default:
+				row[column] = values[i]
 			}
-			row[column] = values[i]
 		}
 		out = append(out, row)
 	}

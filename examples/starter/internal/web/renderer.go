@@ -60,6 +60,7 @@ func NewSPLRenderer(cfg RendererConfig) (*template.SPLEngine, error) {
 			"redirect":    "/dashboard",
 			"email":       "",
 			"name":        "",
+			"token":       "",
 		},
 	})
 

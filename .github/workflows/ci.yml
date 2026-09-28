@@ -1,0 +1,57 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ref:
+    name: ref (core module)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: |
+          diff <(gofmt -l .) <(echo -n "")
+      - name: go vet
+        run: go vet ./...
+      - name: go build
+        run: go build ./...
+      - name: go test
+        run: go test ./...
+
+  starter:
+    name: examples/starter (separate module)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/starter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: examples/starter/go.mod
+          cache: true
+          cache-dependency-path: examples/starter/go.sum
+      - name: gofmt
+        run: |
+          diff <(gofmt -l .) <(echo -n "")
+      - name: go vet
+        run: go vet ./...
+      - name: go build
+        run: go build ./...
+      - name: go test
+        run: go test ./...
+
+  docker:
+    name: docker build (examples/starter)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build image
+        run: docker build -f examples/starter/Dockerfile -t starter:ci .

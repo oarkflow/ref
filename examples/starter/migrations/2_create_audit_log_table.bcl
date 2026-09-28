@@ -1,0 +1,37 @@
+Migration "2_create_audit_log_table" {
+  Version = "1.0.0"
+  Description = "Create the audit_log table"
+  Connection = "default"
+  Up {
+    CreateTable "audit_log" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "action" {
+        type = "string"
+        size = 255
+      }
+      Field "actor_id" {
+        type = "string"
+        size = 255
+        nullable = true
+        index = true
+      }
+      Field "detail" {
+        type = "text"
+        nullable = true
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+  }
+  Down {
+    DropTable "audit_log" {
+      Cascade = true
+    }
+  }
+}

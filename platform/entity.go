@@ -1132,8 +1132,12 @@ func coerceEntityValue(c *EntityColumn, raw any, re *regexp.Regexp) (any, string
 // decode converts a row to API values (booleans, JSON, numbers).
 func (rt *entityRuntime) decode(row map[string]any) map[string]any {
 	for name, v := range row {
-		if b, ok := v.([]byte); ok {
-			v = string(b)
+		switch t := v.(type) {
+		case []byte:
+			v = string(t)
+			row[name] = v
+		case time.Time:
+			v = t.UTC().Format(time.RFC3339Nano)
 			row[name] = v
 		}
 		c := rt.plan.columns[name]

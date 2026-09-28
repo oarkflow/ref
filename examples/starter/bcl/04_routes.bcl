@@ -69,6 +69,40 @@ route "web.logout_action" {
   cache_control "no-store"
 }
 
+route "web.forgot_password_page" {
+  method GET
+  path "/forgot-password"
+  template "pages/auth/forgot_password"
+  layout "layouts/auth"
+  allow_anonymous true
+}
+
+route "web.forgot_password_action" {
+  method POST
+  path "/forgot-password"
+  intent "auth.forgot_password"
+  allow_anonymous true
+  cache_control "no-store"
+  rate_limit { limiter "limits" limit 5 window 15m message "Too many reset requests. Please wait." }
+}
+
+route "web.reset_password_page" {
+  method GET
+  path "/reset-password"
+  template "pages/auth/reset_password"
+  layout "layouts/auth"
+  allow_anonymous true
+}
+
+route "web.reset_password_action" {
+  method POST
+  path "/reset-password"
+  intent "auth.reset_password"
+  allow_anonymous true
+  cache_control "no-store"
+  rate_limit { limiter "limits" limit 5 window 15m message "Too many reset attempts. Please wait." }
+}
+
 # --- Protected pages: authz fails closed before dashboard.* ever runs ------
 
 route "web.dashboard" {

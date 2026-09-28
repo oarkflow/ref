@@ -1,0 +1,50 @@
+Migration "1_create_users_table" {
+  Version = "1.0.0"
+  Description = "Create the users table"
+  Connection = "default"
+  Up {
+    CreateTable "users" {
+      Field "id" {
+        type = "string"
+        size = 255
+        primary_key = true
+      }
+      Field "email" {
+        type = "string"
+        size = 255
+        unique = true
+      }
+      Field "name" {
+        type = "string"
+        size = 255
+      }
+      Field "password_hash" {
+        type = "string"
+        size = 255
+      }
+      Field "roles" {
+        type = "string"
+        size = 50
+        default = "user"
+      }
+      Field "status" {
+        type = "string"
+        size = 20
+        default = "active"
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+      Field "updated_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+  }
+  Down {
+    DropTable "users" {
+      Cascade = true
+    }
+  }
+}

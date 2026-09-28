@@ -1,0 +1,38 @@
+# ===========================================================================
+# Maintenance mode
+#
+# The gate itself, the HTTP middleware that answers 503 while it's on, and
+# the readiness check are all Go (internal/ops/maintenance.go) — none of
+# that is expressible in BCL, since it's process-wide mutable state shared
+# across requests, not a per-request fact. What IS declared here is the one
+# thing that should be: who may flip it, and how it's reached.
+#
+# "ops.maintenance_set" is registered by internal/ops.MaintenanceGate.
+# RegisterAction in cmd/server/main.go, via platform.RegisterActionDriver —
+# the same extension point a genuine third-party integration would use.
+# From here down it's an ordinary intent and route, RBAC included.
+# ===========================================================================
+
+intent "admin.maintenance" {
+  description "Turn maintenance mode on or off for this process"
+  response "response"
+  node "toggle" {
+    uses "ops.maintenance_set"
+    kind effect
+    requires [input]
+    provides [response]
+  }
+}
+
+# The path here must stay in sync with internal/ops.exemptPrefixes — the
+# toggle route must remain reachable WHILE maintenance is on, or an admin
+# who turned it on could never turn it back off without a restart.
+route "admin.maintenance" {
+  method POST
+  path "/api/v1/admin/maintenance"
+  intent "admin.maintenance"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+  authz { roles ["admin"] authorizer "authorization" }
+}

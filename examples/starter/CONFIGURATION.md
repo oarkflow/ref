@@ -18,6 +18,50 @@ is no single generated reference for all of it yet.
 | `authorization` | `authz.rbac` | `superuser_roles`, `default_roles` | The RBAC engine every route's `authz { authorizer "authorization" }` checks against. **`superuser_roles` does not bypass a route's `roles [...]` gate** — see below. |
 | `notifications` | `service.http` | `allowed_hosts`, `allow_private_networks` | Outbound target for `notify.welcome`. The host allowlist is an SSRF guard: a URL outside it is refused, not attempted. |
 
+## Schema migrations (`migrations/*.bcl`, `cmd/migrator`)
+
+`AUTOINCREMENT` (SQLite) and `SERIAL` (PostgreSQL) have no spelling both
+accept, so schema isn't declared inline on the `database` resource at all —
+it's owned by `migrations/*.bcl`, applied with a separate binary
+(`go run ./cmd/migrator cli migrate`, once per schema change, before
+starting the server) built on `github.com/oarkflow/migrate`, which compiles
+one declarative `Migration { Up { CreateTable ... } }` block per dialect's
+correct DDL. `bcl/01_resources.bcl`'s `database` resource only has
+`driver`/`dsn` — no `migrations` list — because the tool, not the app
+process, owns table creation.
+
+Two things worth knowing about `oarkflow/migrate` (pin at least v0.0.27),
+found while wiring this up — confirmed by reading the generated DDL
+directly with `sqlite3`, not just by reading the docs:
+
+- **v0.0.26 briefly validated `Field` names against a reserved-SQL-keyword
+  list and rejected `action`** (it appears in `... ON DELETE ACTION`-style
+  FK grammar) — reported upstream as a false positive, since `action` is an
+  ordinary, unreserved column identifier in every dialect this tool
+  targets. **Fixed in v0.0.27**: that check was removed from identifier
+  validation (kept only as an opt-in `IsReservedKeyword` helper for callers
+  who want it), so the audit log table's event-type column is named
+  `action` again, as originally intended.
+- **SQLite's rowid-alias auto-increment does *not* require an inline
+  `id INTEGER PRIMARY KEY` column declaration** — a table-level
+  `PRIMARY KEY ("id")` constraint on a single `INTEGER`-typed column (which
+  is exactly what `oarkflow/migrate` emits for
+  `Field "id" { type = "integer" primary_key = true auto_increment = true }`)
+  gets the same treatment per SQLite's own docs. `auto_increment` on a
+  SQLite integer primary key works correctly in this tool as-is; no
+  app-side id generation workaround is needed.
+
+`cmd/migrator/main.go` translates this starter's `DB_DRIVER` value
+(`"pgx"`, matching `database/sql`'s driver name) to the dialect name
+`oarkflow/migrate` expects (`"postgres"`) — the two libraries name
+PostgreSQL differently on purpose (driver name vs. dialect family), so this
+translation is intentional, not a workaround.
+
+If you add your own dialect-sensitive DDL, verify it the same way this
+schema was: `docker run -e POSTGRES_PASSWORD=... -p 5432:5432 postgres:16-alpine`,
+then `DB_DRIVER=pgx DB_DSN=postgres://...` and an actual
+`go run ./cmd/migrator cli migrate`, not just a read of the BCL.
+
 ## Route groups (`bcl/04_routes.bcl`)
 
 ```bcl
@@ -85,6 +129,70 @@ parser into reporting an unrelated `unclosed block` error elsewhere in the
 same file. Keep explanatory prose out of inline template comments; put it
 in this file or the README instead.
 
+**Another one**: `c.Accepts(...)` (used by the maintenance middleware below
+to choose HTML vs JSON) matches offers against Accept header tokens
+literally — offer `"text/html"`, not the bare word `"html"`; the latter
+silently never matches and you always get the JSON branch.
+
+## Maintenance mode (`internal/ops/maintenance.go`, `bcl/10_maintenance.bcl`)
+
+A process-wide `atomic.Bool` + `atomic.Pointer[string]`, behind three
+consumers: `app.Use(gate.Middleware())` in `cmd/server/main.go` (must run
+before `p.Mount`, so it sees a request before any BCL route does),
+`healthRegistry.Register("maintenance", health.Simple(gate.HealthCheck))`
+(readiness only — the process itself is fine, so `/livez` stays up), and
+`gate.RegisterAction()` (installs `ops.maintenance_set`, which
+`bcl/10_maintenance.bcl`'s admin route calls).
+
+Exempt paths (`internal/ops.exemptPrefixes`) must include the toggle route
+itself — `/api/v1/admin/maintenance` — or an admin who turns maintenance on
+can never reach the route that turns it back off without a restart. If you
+move that route, update the prefix list to match.
+
+`MaintenancePage`/`MaintenanceLayout` (package-level vars, not consts) name
+the SPL template the HTML branch renders — repoint them in `main()` if you
+reorganise `templates/`.
+
+## Environments (`bcl/11_environments.bcl`)
+
+`profile "production" { override "resource.sessions" { secure "true" } }`
+merges only the listed keys into that resource's existing config; anything
+`bcl/01_resources.bcl` already set that the profile doesn't mention is
+untouched. It applies only when `platform.LoadOptions.Profile` equals the
+profile's name — `cmd/server/main.go` sets `opts.Profile = boot.Env`, so
+this fires under `APP_ENV=production` and nothing else. There's no
+`*.production.bcl` filename convention; `LoadDir` loads every `*.bcl` file
+unconditionally and profile blocks decide what actually applies once parsed.
+
+## Plugin points: `RegisterActionDriver` / `RegisterResourceDriver` / `Observers`
+
+Three real extension points, all Go-level, all process-wide (not
+per-`Platform`):
+
+- **`platform.RegisterActionDriver(name, factory, info...)`** — adds a new
+  BCL-reachable node action. `internal/ops.MaintenanceGate.RegisterAction`
+  is the worked example. **Must run before the `Registry` is constructed**
+  — before `platform.DefaultLoadOptions()` (which calls `NewRegistry()`
+  internally), or before your own `platform.NewRegistry()` call if you
+  don't use the default. Calling it after `LoadDir` compiled once, or even
+  just after `DefaultLoadOptions()` ran, silently does nothing until the
+  *next* registry is built — the failure is `uses unregistered action
+  "..."` at compile time, which looks like a typo, not an ordering bug.
+- **`platform.RegisterResourceDriver(kind, factory, info...)`** — adds a new
+  resource kind (a Redis cache, a Kafka queue, ...), same ordering rule.
+  Nothing in this starter uses it yet; see `platform/spi/spi.go` at the
+  repository root for the interfaces a driver typically implements.
+- **`platform.LoadOptions.Observers []observer.Observer`** — DAG execution
+  telemetry (node/decision/effect/execution events), set directly on the
+  options struct (no global registration, no ordering trap). This starter
+  wires exactly one: `observer/slog` fed by the same `zlog.Logger`
+  everything else logs through.
+
+For logging specifically, `cmd/server/logging.go`'s `LOG_WEBHOOK_URL`
+plugs into `zlog.NewMultiSink`, one level below all three of the above —
+see the README's "Maintenance mode, environments, and plugging in a
+third-party tool".
+
 ## Misconfiguration hints
 
 Every one of these is caught before the server accepts a request — most at
@@ -105,6 +213,11 @@ which runs the same checks without opening a database or a listener).
 | An `authz` block with no `roles`/`permissions`/`condition`, or no `auth`/`session` resource on the route | Caught at `platform.Validate`/`Compile`, naming the route | Add at least one rule, and an `auth` (or `session`) resource for it to check against. |
 | A webhook `trigger` with no `secret` | Refused at compile time — an unauthenticated public mutation endpoint is never the intent | Declare a `secret` block (see `bcl/00_app.bcl`'s `webhook_secret`) and reference it. |
 | `roles [...]` on a route excludes a role you expected to pass via `superuser_roles` | No error — a silent 403 at request time | See the RBAC section above; list the role explicitly. |
+| `RegisterActionDriver`/`RegisterResourceDriver` called after `platform.DefaultLoadOptions()` (or any `NewRegistry()`) already ran | `uses unregistered action "..."`/`uses unregistered kind "..."` at compile time — reads like a typo | Register before the `Registry` is constructed; see "Plugin points" above. |
+| The maintenance toggle route's own path isn't in `internal/ops.exemptPrefixes` | Turning maintenance on locks out the route that turns it back off; only a restart (or editing the env var) recovers | Keep the two in sync, or don't move the route. |
+| `.env` sets a variable that's already set in the real environment | No error — the real value silently wins, `.env`'s is ignored | Expected behavior (`cmd/server/dotenv.go`), not a bug; unset the real one or edit it directly if you meant to override it locally. |
+| A BCL field does `env(...) == "x" ? A : B` all inline | No error — silently picks the wrong branch | Bind the `env()` call to its own field first, then compare that field, e.g. `db_driver env(...)` then `db_driver == "x" ? A : B`. A real parser quirk in the pinned `github.com/oarkflow/bcl` version, found while this starter still branched migrations by dialect in BCL (since replaced by `cmd/migrator` — see "Schema migrations" above — but the parser behavior itself is unchanged). |
+| A BCL field is a bare reference to another top-level field, inside a nested block or a list element | No error — the field's own *name* becomes its string value | Bare references only resolve reliably as a ternary's condition at the top level; use `env(...)` directly anywhere else. |
 
 ## What's deliberately not here
 

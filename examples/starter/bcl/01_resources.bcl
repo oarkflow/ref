@@ -11,6 +11,15 @@
 # Swapping SQLite for PostgreSQL in production is a two-line change: the
 # `driver`/`dsn` below, plus one blank import in cmd/server/main.go (already
 # there, commented, for exactly this). No other file changes.
+#
+# Schema is owned by cmd/migrator, not by this resource: `AUTOINCREMENT`
+# (SQLite) and `SERIAL` (PostgreSQL) have no spelling both accept, and
+# hand-branching every dialect-sensitive statement in a BCL ternary (an
+# earlier version of this file did exactly that) doesn't scale past the
+# first such column. `../../migrations/*.bcl`, applied with
+# `go run ./cmd/migrator migrate`, describes the schema once and lets
+# github.com/oarkflow/migrate generate the dialect-correct DDL. See
+# CONFIGURATION.md's "Schema migrations" section.
 # ===========================================================================
 
 resource "database" {
@@ -25,21 +34,11 @@ resource "database" {
     # ping defaults to true as of this starter: an unreachable database is a
     # startup failure here, never a surprise on the first request. Set
     # `ping false` only for a throwaway :memory: database in a test.
-    migrations [
-      "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT NOT NULL, password_hash TEXT NOT NULL, roles TEXT NOT NULL DEFAULT 'user', status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)",
-      "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, actor_id TEXT, detail TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)",
-      "CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_id)",
-      # DEVELOPMENT SEED DATA — an admin account so there's a way in on a
-      # fresh clone. The hash is Argon2id of "Password123!". Delete this
-      # line (or the row, or just change the password immediately after
-      # first login) before a real deployment; nothing else here depends on
-      # it existing.
-      "INSERT OR IGNORE INTO users (id, email, name, password_hash, roles, status) VALUES ('usr_admin_01', 'admin@example.com', 'Admin', '$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg', 'admin', 'active')",
-
-      # --- Orders (bcl/09_workflow_example.bcl) -----------------------------
-      "CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id TEXT NOT NULL, amount REAL NOT NULL, tier TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', priority INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)",
-      "CREATE INDEX IF NOT EXISTS idx_orders_owner ON orders(owner_id)"
-    ]
+    #
+    # No `migrations` list here — run `go run ./cmd/migrator migrate`
+    # before starting the server (once per schema change, not once per
+    # process boot). starter_test.go's test harness does the same, against
+    # its own temporary database, before compiling this document.
   }
 }
 

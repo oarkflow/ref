@@ -11,16 +11,57 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/oarkflow/fh"
+	"github.com/oarkflow/ref/examples/starter/internal/ops"
+	"github.com/oarkflow/ref/examples/starter/internal/web"
 	"github.com/oarkflow/ref/platform"
 
 	_ "modernc.org/sqlite"
 )
+
+// runTestMigrations applies migrations/*.bcl against the test's own
+// temporary SQLite database by shelling out to cmd/migrator — the exact
+// same path a real deployment uses (`go run ./cmd/migrator cli migrate`).
+// bcl/01_resources.bcl's database resource no longer carries an inline
+// migrations list (see cmd/migrator/main.go's doc comment), so nothing
+// else creates these tables; running through the real binary here, rather
+// than driving github.com/oarkflow/migrate's Manager directly, keeps the
+// test honest about what a developer actually runs and avoids depending on
+// unexported Manager internals.
+func runTestMigrations(t *testing.T, dsn string) {
+	t.Helper()
+	cmd := exec.Command("go", "run", "./cmd/migrator", "cli", "migrate")
+	cmd.Env = append(os.Environ(), "DB_DRIVER=sqlite", "DB_DSN="+dsn)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("test migrations: %v\n%s", err, out)
+	}
+}
+
+// registerActionsOnce mirrors what cmd/server/main.go does before
+// platform.LoadDir: RegisterActionDriver installs into a process-wide map,
+// so it must run exactly once even though multiple tests each call
+// startApp. testMaintenanceGate is exposed so a test can flip it directly —
+// every compiled document in this test binary shares this one instance,
+// since "ops.maintenance_status" closed over it at registration time.
+var (
+	registerActionsOnce sync.Once
+	testMaintenanceGate *ops.MaintenanceGate
+)
+
+func registerTestActions() {
+	registerActionsOnce.Do(func() {
+		testMaintenanceGate = ops.NewMaintenanceGate(false, "")
+		testMaintenanceGate.RegisterAction()
+	})
+}
 
 // The starter end to end, on an in-process SQLite database:
 //   - session-cookie login, and RBAC that actually denies the wrong role
@@ -36,8 +77,12 @@ type harness struct {
 
 func startApp(t *testing.T, bclDir string, env map[string]string) *harness {
 	t.Helper()
+	registerTestActions()
 	for k, v := range env {
 		t.Setenv(k, v)
+	}
+	if dsn := env["DB_DSN"]; dsn != "" {
+		runTestMigrations(t, dsn)
 	}
 	p, err := platform.LoadDir(context.Background(), bclDir, platform.DefaultLoadOptions())
 	if err != nil {
@@ -45,7 +90,25 @@ func startApp(t *testing.T, bclDir string, env map[string]string) *harness {
 	}
 	t.Cleanup(func() { _ = p.Close() })
 
-	app := fh.NewFast()
+	// Mirrors cmd/server/main.go: the dev admin is seeded in Go, not baked
+	// into a BCL migration, so tests need the same call main() makes.
+	if res, ok := p.Resource("database"); ok {
+		if db, ok := res.(*platform.Database); ok {
+			if err := ops.SeedDevAdmin(context.Background(), db, env["APP_ENV"], "admin@example.com", "Password123!"); err != nil {
+				t.Fatalf("seed dev admin: %v", err)
+			}
+		}
+	}
+
+	templatesDir, err := filepath.Abs("templates")
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer, err := web.NewSPLRenderer(web.RendererConfig{TemplatesDir: templatesDir, IsDev: true, AppName: "starter"})
+	if err != nil {
+		t.Fatalf("template engine: %v", err)
+	}
+	app := fh.NewFast(fh.WithTemplateEngine(renderer))
 	if err := p.Mount(app); err != nil {
 		t.Fatalf("mount: %v", err)
 	}
@@ -100,6 +163,23 @@ func (h *harness) do(t *testing.T, c *http.Client, method, path string, body any
 	var decoded map[string]any
 	_ = json.Unmarshal(raw, &decoded)
 	return resp.StatusCode, decoded
+}
+
+// doRaw is do, for a route that renders HTML (an SPL template) rather than
+// JSON.
+func (h *harness) doRaw(t *testing.T, c *http.Client, method, path string, body io.Reader) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest(method, h.base+path, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(raw)
 }
 
 // welcomeRecorder stands in for the real notification service in
@@ -168,6 +248,23 @@ func TestStarterEndToEnd(t *testing.T) {
 	})
 	if status != 200 {
 		t.Fatalf("admin login = %d %v", status, resp)
+	}
+
+	// The admin-only, server-rendered user directory — a regression test
+	// for a real bug: "users" (bcl/03_intents.bcl's dashboard.admin), unlike
+	// a single-row "user" fact, is a []map[string]any rendered through a
+	// `@for` loop, and any DATETIME column in it used to reach the template
+	// as a raw time.Time (modernc.org/sqlite scans DATETIME that way) —
+	// which panicked github.com/oarkflow/interpreter's reflect-based struct
+	// walk on that value's unexported fields. Fixed in
+	// platform/actions_database.go's txQueryRows (and the same helper in
+	// actions_util.go and entity.go): a DATETIME column is now normalized
+	// to a string before it ever becomes a fact, matching the existing
+	// []byte-to-string normalization.
+	if status, body := h.doRaw(t, admin, "GET", "/dashboard/admin", nil); status != 200 {
+		t.Fatalf("GET /dashboard/admin = %d %s", status, body)
+	} else if !strings.Contains(body, "admin@example.com") {
+		t.Fatalf("GET /dashboard/admin did not render the admin's own row: %s", body)
 	}
 
 	// Transport 1: the synchronous route, inside a route_group, requiring
@@ -241,6 +338,156 @@ func TestStarterEndToEnd(t *testing.T) {
 	anon := h.client(t)
 	if status, resp := h.do(t, anon, "GET", "/api/v1/users", nil); status != 401 {
 		t.Fatalf("GET /api/v1/users anonymous = %d %v, want 401", status, resp)
+	}
+}
+
+// TestPasswordResetFlow proves auth.forgot_password never reveals whether an
+// email exists, that the delivered token actually resets the password (and
+// the new password then signs in), and that a token is single-use.
+func TestPasswordResetFlow(t *testing.T) {
+	recorder := &welcomeRecorder{}
+	notify := httptest.NewServer(recorder.handler())
+	defer notify.Close()
+
+	dir := t.TempDir()
+	bclDir, err := filepath.Abs("bcl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := startApp(t, bclDir, map[string]string{
+		"APP_ENV":        "development",
+		"DB_DSN":         "file:" + filepath.Join(dir, "app.db") + "?_pragma=busy_timeout(5000)",
+		"SESSION_SECRET": "test-session-secret-0123456789ab-0123456789ab",
+		"WEBHOOK_SECRET": "test-webhook-secret-0123456789ab",
+		"NOTIFY_URL":     notify.URL,
+	})
+
+	member := h.client(t)
+	if status, resp := h.do(t, member, "POST", "/register", map[string]any{
+		"email": "reset-me@example.com", "name": "Reset Me", "password": "the original password",
+	}); status != 201 {
+		t.Fatalf("register = %d %v", status, resp)
+	}
+
+	// Both a real and a fake email must produce the identical response —
+	// the whole point of the INSERT...SELECT in auth.forgot_password.
+	anon := h.client(t)
+	statusReal, respReal := h.do(t, anon, "POST", "/forgot-password", map[string]any{"email": "reset-me@example.com"})
+	statusFake, respFake := h.do(t, anon, "POST", "/forgot-password", map[string]any{"email": "no-such-user@example.com"})
+	if statusReal != statusFake {
+		t.Fatalf("forgot-password status differs by whether the email exists: real=%d fake=%d", statusReal, statusFake)
+	}
+	delete(respReal, "notification_job")
+	delete(respFake, "notification_job")
+	if fmt.Sprint(respReal) != fmt.Sprint(respFake) {
+		t.Fatalf("forgot-password body differs by whether the email exists: real=%v fake=%v", respReal, respFake)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && recorder.count() < 1 {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if recorder.count() != 1 {
+		t.Fatalf("expected exactly one delivery (the real email only), got %d: %+v", recorder.count(), recorder.seen)
+	}
+	token := fmt.Sprint(dig(recorder.seen[0], "reset_token", "token"))
+	if token == "" || token == "<nil>" {
+		t.Fatalf("delivered payload had no reset_token.token: %+v", recorder.seen[0])
+	}
+
+	// The old password still works until the token is actually consumed.
+	if status, resp := h.do(t, h.client(t), "POST", "/login", map[string]any{
+		"email": "reset-me@example.com", "password": "the original password",
+	}); status != 200 {
+		t.Fatalf("login with the original password = %d %v", status, resp)
+	}
+
+	if status, resp := h.do(t, anon, "POST", "/reset-password", map[string]any{
+		"token": token, "new_password": "a brand new password",
+	}); status != 200 {
+		t.Fatalf("reset-password = %d %v", status, resp)
+	}
+
+	// The new password signs in; the old one no longer does.
+	if status, resp := h.do(t, h.client(t), "POST", "/login", map[string]any{
+		"email": "reset-me@example.com", "password": "a brand new password",
+	}); status != 200 {
+		t.Fatalf("login with the new password = %d %v", status, resp)
+	}
+	if status, resp := h.do(t, h.client(t), "POST", "/login", map[string]any{
+		"email": "reset-me@example.com", "password": "the original password",
+	}); status == 200 {
+		t.Fatalf("login with the old password still succeeded after reset: %d %v", status, resp)
+	}
+
+	// The token is single-use: replaying it must fail (the row is gone /
+	// already used_at, so the UPDATE's subselect matches no row).
+	if status, resp := h.do(t, anon, "POST", "/reset-password", map[string]any{
+		"token": token, "new_password": "yet another password",
+	}); status == 200 {
+		t.Fatalf("reusing a consumed reset token succeeded: %d %v", status, resp)
+	}
+}
+
+// TestMaintenanceGuardsBackgroundDelivery proves the gap the HTTP
+// middleware alone cannot close: a worker (bcl/05_workers.bcl) runs an
+// intent directly, bypassing that middleware entirely, so notify.welcome's
+// own "ops.maintenance_status" + validate.expression guard
+// (bcl/03_intents.bcl) is what actually stops it from delivering while
+// maintenance mode is on.
+func TestMaintenanceGuardsBackgroundDelivery(t *testing.T) {
+	recorder := &welcomeRecorder{}
+	notify := httptest.NewServer(recorder.handler())
+	defer notify.Close()
+
+	dir := t.TempDir()
+	bclDir, err := filepath.Abs("bcl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := startApp(t, bclDir, map[string]string{
+		"APP_ENV":        "development",
+		"DB_DSN":         "file:" + filepath.Join(dir, "app.db") + "?_pragma=busy_timeout(5000)",
+		"SESSION_SECRET": "test-session-secret-0123456789ab-0123456789ab",
+		"WEBHOOK_SECRET": "test-webhook-secret-0123456789ab",
+		"NOTIFY_URL":     notify.URL,
+	})
+	t.Cleanup(func() { testMaintenanceGate.Set(false, "") }) // never leak into later tests
+
+	admin := h.client(t)
+	if status, resp := h.do(t, admin, "POST", "/login", map[string]any{
+		"email": "admin@example.com", "password": "Password123!",
+	}); status != 200 {
+		t.Fatalf("admin login = %d %v", status, resp)
+	}
+
+	testMaintenanceGate.Set(true, "planned upgrade")
+
+	// notify.welcome_async only enqueues; the worker runs notify.welcome in
+	// the background, which is exactly where the HTTP middleware cannot
+	// reach — this is the call the gap was about.
+	if status, resp := h.do(t, admin, "POST", "/api/v1/notify/welcome-async", map[string]any{
+		"email": "during-maintenance@example.com",
+	}); status != 202 {
+		t.Fatalf("POST /api/v1/notify/welcome-async = %d %v", status, resp)
+	}
+
+	// Give the worker time to try and fail; it must NOT deliver.
+	time.Sleep(300 * time.Millisecond)
+	if recorder.hasEmail("during-maintenance@example.com") {
+		t.Fatalf("the worker delivered while maintenance mode was on: %+v", recorder.seen)
+	}
+
+	testMaintenanceGate.Set(false, "")
+
+	// The job's retry (max_attempts 5, bcl/05_workers.bcl) picks it back up
+	// once the guard passes again.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !recorder.hasEmail("during-maintenance@example.com") {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !recorder.hasEmail("during-maintenance@example.com") {
+		t.Fatalf("the job was never retried successfully after maintenance mode turned off: %+v", recorder.seen)
 	}
 }
 
