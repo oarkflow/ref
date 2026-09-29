@@ -173,7 +173,10 @@ func main() {
 	// is observed through it, in the same structured format as the HTTP
 	// access log below — one logging mechanism, not two, and (with
 	// LOG_WEBHOOK_URL set) one third-party sink for both.
-	slogLogger := slog.New(zlog.NewSlogHandler(logger))
+	// slogDurationFixHandler (logging.go) works around a real gap in
+	// zlog.NewSlogHandler's own encoders: a Duration attr renders as a raw
+	// nanosecond count, not a us/ms/s-suffixed string.
+	slogLogger := slog.New(slogDurationFixHandler{zlog.NewSlogHandler(logger)})
 	// A dedicated registry, not prometheus.DefaultRegisterer: a library that
 	// happens to register its own default-registry metrics never collides
 	// with this one, and /metrics never exposes anything but what this

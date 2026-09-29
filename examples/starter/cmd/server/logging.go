@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"sync/atomic"
@@ -38,6 +40,42 @@ func newLogger(env, level, webhookURL, webhookAuth string) *zlog.Logger {
 		opts.Sink = zlog.NewMultiSink(opts.Sink, webhook)
 	}
 	return zlog.New(opts)
+}
+
+// slogDurationFixHandler wraps an slog.Handler, rewriting every
+// slog.KindDuration attribute into a pre-formatted string before it reaches
+// the wrapped handler.
+//
+// github.com/oarkflow/zlog's own encoders (encoder_logfmt.go and
+// encoder_json.go, both the KindDuration case) render a Duration attr as
+// its raw int64 nanosecond count, not a us/ms/s-suffixed string — the same
+// gap httpAccessLog above already works around for the HTTP access log
+// line. zlog.NewSlogHandler bridges every observer/slog log line (every
+// REF node/decision/effect/execution event) through that same broken
+// encoder, so the workaround has to sit here too, once, rather than at
+// every individual call site that might ever log a Duration.
+type slogDurationFixHandler struct {
+	slog.Handler
+}
+
+func (h slogDurationFixHandler) Handle(ctx context.Context, r slog.Record) error {
+	fixed := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Value.Kind() == slog.KindDuration {
+			a = slog.String(a.Key, a.Value.Duration().String())
+		}
+		fixed.AddAttrs(a)
+		return true
+	})
+	return h.Handler.Handle(ctx, fixed)
+}
+
+func (h slogDurationFixHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return slogDurationFixHandler{h.Handler.WithAttrs(attrs)}
+}
+
+func (h slogDurationFixHandler) WithGroup(name string) slog.Handler {
+	return slogDurationFixHandler{h.Handler.WithGroup(name)}
 }
 
 // webhookWriter is an io.Writer where each Write is one already-encoded log

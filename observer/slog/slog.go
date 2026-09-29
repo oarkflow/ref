@@ -17,6 +17,7 @@ package slogobserver
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/oarkflow/ref/graph"
 	"github.com/oarkflow/ref/observer"
@@ -96,7 +97,11 @@ func (o *Observer) ExecutionFinished(intent string, durationMs float64, err erro
 	level := slog.LevelInfo
 	attrs := []slog.Attr{
 		slog.String("intent", intent),
-		slog.Float64("duration_ms", durationMs),
+		// A properly-typed Duration, not a bare "duration_ms" float — a
+		// slog.Duration attr is a real time.Duration value, so any
+		// well-behaved slog.Handler (including the stdlib Text/JSON ones)
+		// renders it with a us/ms/s unit suffix rather than a bare number.
+		slog.Duration("duration", time.Duration(durationMs*float64(time.Millisecond))),
 	}
 	if err != nil {
 		level = slog.LevelError
