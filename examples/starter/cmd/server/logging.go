@@ -28,7 +28,7 @@ func newLogger(env, level, webhookURL, webhookAuth string) *zlog.Logger {
 	if env == "production" {
 		opts = zlog.ProductionOptions("starter", env)
 	} else {
-		opts = zlog.Options{Level: zlog.DebugLevel, Sink: zlog.NewWriterSink(os.Stderr, zlog.NewConsoleEncoder(), zlog.TraceLevel), AddCaller: true}
+		opts = zlog.Options{Level: zlog.DebugLevel, Sink: zlog.NewWriterSink(os.Stderr, zlog.NewConsoleEncoder(), zlog.TraceLevel)}
 	}
 	if lvl, ok := parseLevel(level); ok {
 		opts.Level = lvl

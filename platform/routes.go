@@ -1392,6 +1392,28 @@ func runView(run *process.Run) map[string]any {
 	return view
 }
 
+// failureRenderer, when set, gets first refusal on every failed request —
+// see RegisterFailureRenderer.
+var failureRenderer func(c fh.Ctx, status int, body map[string]any) bool
+
+// RegisterFailureRenderer lets a host render an HTML error page instead of
+// the default JSON body — e.g. a browser page route's 403/404, rendered
+// through the host's own template engine, while a JSON API route keeps
+// getting JSON. Process-wide, like RegisterActionDriver/RegisterResourceDriver
+// (platform/platform.go): call it once, before mounting, not per-request.
+//
+// fn is asked for every failed request, JSON API routes included — it
+// decides for itself (typically via c.Accepts and the request path) whether
+// this one wants HTML. Returning false falls through to the default JSON
+// body; returning true means fn already wrote the full response (status and
+// body), and projectFailure does nothing further.
+//
+// Without a registered renderer, nothing here changes: every failure is
+// still plain JSON, exactly as before this hook existed.
+func RegisterFailureRenderer(fn func(c fh.Ctx, status int, body map[string]any) bool) {
+	failureRenderer = fn
+}
+
 // projectFailure maps a failure onto an HTTP response.
 //
 // The body carries a code and a message and nothing else. A stack trace, a SQL
@@ -1404,6 +1426,9 @@ func projectFailure(c fh.Ctx, err error) error {
 	}
 	if status == 401 {
 		c.Set("WWW-Authenticate", `Bearer realm="api"`)
+	}
+	if failureRenderer != nil && failureRenderer(c, status, body) {
+		return nil
 	}
 	return c.Status(status).JSON(map[string]any{"error": body})
 }

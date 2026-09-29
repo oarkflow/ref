@@ -7,25 +7,25 @@
   </div>
 
   <form method="POST" action="/register">
-    <div class="form-group">
+    <div class="form-field">
       <label class="form-label" for="name">Name</label>
-      <input type="text" id="name" name="name" class="form-input" placeholder="Your name" value="${name}" required autofocus>
+      <input type="text" id="name" name="name" class="form-control" placeholder="Your name" value="${name}" required autofocus>
     </div>
 
-    <div class="form-group">
+    <div class="form-field">
       <label class="form-label" for="email">Email address</label>
-      <input type="email" id="email" name="email" class="form-input" placeholder="you@example.com" value="${email}" required>
+      <input type="email" id="email" name="email" class="form-control" placeholder="you@example.com" value="${email}" required>
     </div>
 
-    <div class="form-group">
+    <div class="form-field">
       <label class="form-label" for="password">Password</label>
-      <input type="password" id="password" name="password" class="form-input" placeholder="At least 8 characters" required minlength="8">
+      <input type="password" id="password" name="password" class="form-control" placeholder="At least 8 characters" required minlength="8">
     </div>
 
-    <button type="submit" class="btn btn-primary btn-block" style="margin-top: 1.5rem;">Create account</button>
+    <button type="submit" class="btn btn-primary btn-block">Create account</button>
   </form>
 
-  <div style="text-align: center; margin-top: 1.5rem; font-size: 0.85rem; color: var(--text-dim);">
+  <div class="auth-foot">
     Already have an account? <a href="/login">Sign in</a>
   </div>
 }

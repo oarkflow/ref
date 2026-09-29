@@ -1,36 +1,36 @@
 @extends("layouts/base.html")
 
 @define("content") {
-  <div style="margin-bottom: 2rem;">
-    <h1 style="font-size: 1.85rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 0.5rem;">
-      Admin portal
-    </h1>
-    <p style="color: var(--text-muted); font-size: 0.95rem;">
+  <div class="page-head">
+    <h1 class="page-title">Admin portal</h1>
+    <p class="page-subtitle">
       <code>route "web.admin"</code> requires <code>roles ["admin"]</code>; a signed-in "user"
       gets HTTP 403 here, before <code>dashboard.admin</code> ever runs.
     </p>
   </div>
 
-  <div class="glass-card">
-    <span style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.05em;">Directory</span>
-    <h3 style="font-size: 1.2rem; font-weight: 700; margin-top: 0.2rem; margin-bottom: 1.25rem;">Everyone with an account</h3>
-    <table style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
-      <thead>
-        <tr style="text-align: left; border-bottom: 1px solid var(--border-subtle);">
-          <th style="padding: 0.5rem 0;">Email</th>
-          <th style="padding: 0.5rem 0;">Name</th>
-          <th style="padding: 0.5rem 0;">Roles</th>
-        </tr>
-      </thead>
-      <tbody>
-        @for(u in users) {
-          <tr style="border-bottom: 1px solid var(--border-subtle);">
-            <td style="padding: 0.5rem 0;" class="font-mono">${u.email}</td>
-            <td style="padding: 0.5rem 0;">${u.name}</td>
-            <td style="padding: 0.5rem 0;"><span class="badge badge-${u.roles}">${u.roles}</span></td>
+  <div class="panel">
+    <span class="panel-label">Directory</span>
+    <h3 class="panel-title">Everyone with an account</h3>
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Email</th>
+            <th>Name</th>
+            <th>Roles</th>
           </tr>
-        }
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          @for(u in users) {
+            <tr>
+              <td class="font-mono">${u.email}</td>
+              <td>${u.name}</td>
+              <td><span class="badge badge-${u.roles}">${u.roles}</span></td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
   </div>
 }

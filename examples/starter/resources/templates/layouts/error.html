@@ -5,17 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title} — ${appName}</title>
   <link rel="stylesheet" href="/static/css/app.css">
-  @block("head") {}
 </head>
 <body>
-  @include("components/navbar.html")
+  <header class="site-header">
+    <div class="nav-container">
+      <a href="/dashboard" class="brand">
+        <span class="brand-mark">R/</span>
+        <span class="brand-name">${appName}</span>
+      </a>
+    </div>
+  </header>
 
   <main class="page">
-    @include("components/alert.html")
     @block("content") {}
   </main>
 
   @include("components/footer.html")
-  @block("scripts") {}
 </body>
 </html>

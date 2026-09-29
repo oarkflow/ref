@@ -2,25 +2,27 @@
 
 @define("content") {
   <div class="auth-header">
-    <div style="font-size: 2.2rem; margin-bottom: 0.5rem;">🛠️</div>
+    <span class="status-code">Maintenance</span>
     <h1>Down for maintenance</h1>
     <p>${message}</p>
   </div>
 
-  <div class="glass-card" style="text-align: left;">
-    <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.5rem; margin-bottom: 0.5rem;">
-      <span style="color: var(--text-muted);">Since</span>
-      <span class="font-mono">${since}</span>
-    </div>
-    @if(retryAfterSeconds) {
-      <div style="display: flex; justify-content: space-between;">
-        <span style="color: var(--text-muted);">Expected back in</span>
-        <span class="font-mono">${retryAfterSeconds}s</span>
+  <div class="panel">
+    <div class="kv">
+      <div class="kv-row">
+        <span class="kv-key">Since</span>
+        <span class="kv-value font-mono">${since}</span>
       </div>
-    }
+      @if(retryAfterSeconds) {
+        <div class="kv-row">
+          <span class="kv-key">Expected back in</span>
+          <span class="kv-value font-mono">${retryAfterSeconds}s</span>
+        </div>
+      }
+    </div>
   </div>
 
-  <div style="text-align: center; margin-top: 1.5rem; font-size: 0.85rem; color: var(--text-dim);">
+  <div class="auth-foot">
     /health, /livez and /readyz still work — this page is everything else.
   </div>
 }

@@ -2,10 +2,18 @@
 # Static assets — declarative serving, no Go route.
 # ===========================================================================
 
+# "no-cache" (despite the name) still lets the browser cache the file — it
+# just forces a revalidation request (If-None-Match/If-Modified-Since,
+# which fh's static handler answers with a 304 when nothing changed) before
+# ever reusing it. A long max-age here previously meant an edited
+# app.css/template asset could sit stale in a browser for up to a day with
+# no visible sign anything was wrong — no error, just the old CSS quietly
+# still applying. Revalidate-always costs one small round trip per asset
+# per load; that's the right trade for a file with no content hash in its
+# name, in development and in production alike.
 static "assets" {
   prefix "/static"
   root "static"
   compress true
-  max_age 24h
-  cache_control "public, max-age=86400"
+  cache_control env("STATIC_CACHE_CONTROL", "no-cache")
 }

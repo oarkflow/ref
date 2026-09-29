@@ -1,19 +1,22 @@
-<header class="navbar">
+<header class="site-header">
   <div class="nav-container">
     <a href="/dashboard" class="brand">
-      <span class="brand-badge">⚡ starter</span>
-      <span>${appName}</span>
+      <span class="brand-mark">R/</span>
+      <span class="brand-name">${appName}</span>
+      <span class="brand-tag">v${appVersion}</span>
     </a>
 
-    <nav class="nav-links">
+    <nav class="nav">
       @if(user) {
-        <a href="/dashboard" class="nav-item">Dashboard</a>
-        <a href="/dashboard/admin" class="nav-item" style="color: #C084FC;">Admin</a>
-        <form method="POST" action="/logout" style="display: inline; margin-left: 0.5rem;">
-          <button type="submit" class="btn btn-secondary btn-sm">Sign Out</button>
+        <a href="/dashboard" class="nav-link">Dashboard</a>
+        @if(user.roles == "admin") {
+          <a href="/dashboard/admin" class="nav-link">Admin</a>
+        }
+        <form method="POST" action="/logout" class="nav-form">
+          <button type="submit" class="btn btn-secondary btn-sm">Sign out</button>
         </form>
       } @else {
-        <a href="/login" class="nav-item">Sign In</a>
+        <a href="/login" class="nav-link">Sign in</a>
         <a href="/register" class="btn btn-primary btn-sm">Register</a>
       }
     </nav>

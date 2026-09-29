@@ -1,0 +1,16 @@
+@extends("layouts/error.html")
+
+@define("content") {
+  <div class="status-page">
+    <span class="status-code">${status} · ${code}</span>
+    <h1 class="status-title">${title}</h1>
+    <p class="status-message">${message}</p>
+
+    <div class="status-actions">
+      <a href="${primaryHref}" class="btn btn-primary">${primaryLabel}</a>
+      @if(secondaryHref != "") {
+        <a href="${secondaryHref}" class="btn btn-secondary">${secondaryLabel}</a>
+      }
+    </div>
+  </div>
+}

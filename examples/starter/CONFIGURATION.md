@@ -327,6 +327,40 @@ to choose HTML vs JSON) matches offers against Accept header tokens
 literally — offer `"text/html"`, not the bare word `"html"`; the latter
 silently never matches and you always get the JSON branch.
 
+### Error pages (`cmd/server/errors.go`, `pages/errors/error.html`)
+
+Every route failure — an RBAC denial, a validation error, an unmatched
+path — is plain JSON by default: `platform/routes.go`'s `projectFailure`
+produces `{"error":{"code":"...","message":"..."}}` for anything a compiled
+route rejects, and `github.com/oarkflow/fh`'s own default error handler
+produces a similar-shaped body for a path that matches no route at all
+(404) or a method a route doesn't allow (405). Correct for a JSON API, not
+for someone who followed a link in a browser.
+
+`cmd/server/errors.go` renders `pages/errors/error.html` instead, for
+exactly the requests that both prefer HTML (`c.Accepts("text/html",
+"application/json") == "text/html"`) and aren't under `/api/` — two things
+wired at two different levels, because they're two different failure paths
+with no shared code in `platform`:
+
+- `platform.RegisterFailureRenderer` (new; `platform/routes.go`) — a
+  process-wide hook, registered like `RegisterActionDriver`, that
+  `projectFailure` asks first. Catches a real route's own failures: an
+  `authz` denial, a validation error, an idempotency conflict.
+- `fh.WithErrorHandler` (an `fh` option, set on `fh.NewFast(...)` in
+  `cmd/server/main.go`) — catches what `platform` never sees: a genuinely
+  unmatched path, an unsupported method, a recovered panic.
+
+Both call the same `renderHTMLError` helper, so a 403 from an RBAC gate and
+a 404 from a typo'd URL land on the identical page shape. Because the error
+page is rendered directly (`c.Render(...)`, not through a route's own
+`template`/`layout`/intent pipeline), it never has a real session to read —
+`layouts/error.html` is a deliberately minimal layout with a static brand
+header, not `layouts/base.html`'s session-aware navbar, so it never risks
+showing "Sign in" to someone who is, in fact, signed in (a 403 is reachable
+only by an authenticated caller — the RBAC gate ran, it just wouldn't let
+them past).
+
 ## Maintenance mode (`internal/ops/maintenance.go`, `resources/config/10_maintenance.bcl`)
 
 A process-wide `atomic.Bool` + `atomic.Pointer[string]`, behind three
@@ -412,6 +446,7 @@ which runs the same checks without opening a database or a listener).
 | A BCL field does `env(...) == "x" ? A : B` all inline | No error — silently picks the wrong branch | Bind the `env()` call to its own field first, then compare that field, e.g. `db_driver env(...)` then `db_driver == "x" ? A : B`. A real parser quirk in the pinned `github.com/oarkflow/bcl` version, found while this starter still branched migrations by dialect in BCL (since replaced by `cmd/migrator` — see "Schema migrations" above — but the parser behavior itself is unchanged). |
 | A BCL field is a bare reference to another top-level field, inside a nested block or a list element | No error — the field's own *name* becomes its string value | Bare references only resolve reliably as a ternary's condition at the top level; use `env(...)` directly anywhere else. |
 | A `kind decision` node's `requires` names a fact that a plain (non-speculative) node produces | No error — every request silently denied, generically ("access denied"), no node past the deadlock ever runs | The decision node must `requires` only facts that are themselves speculation-free of every other decision node — see "Network protection and business rules" above's `rules.evaluate` note. Give the plain node `speculation pre_auth_safe`, or drop the fact from the decision node's `requires` if it doesn't actually need it. |
+| Edited `resources/static/css/app.css` (or any file under `resources/static/`) and the browser still shows the old version | No error — the old asset is served from the browser's own cache, correctly, per the `Cache-Control` header `08_static.bcl`'s `static "assets"` resource sends | Hard-refresh (Cmd/Ctrl+Shift+R) or open a private window to confirm the server-side content actually changed (`curl -s http://localhost:8080/static/css/app.css \| head`) before assuming the edit didn't take. The default is `cache_control env("STATIC_CACHE_CONTROL", "no-cache")` — revalidate-always, not cache-forever — specifically so this is a one-reload problem, not a wait-24-hours one; override `STATIC_CACHE_CONTROL` for a stronger production cache once assets are served under a content-hashed path. |
 
 ## Load-test baseline
 

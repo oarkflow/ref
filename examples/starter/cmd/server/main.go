@@ -253,7 +253,20 @@ func main() {
 		log.Fatalf("starter: template engine: %v", err)
 	}
 
-	app := fh.NewFast(fh.WithTemplateEngine(renderer))
+	app := fh.NewFast(fh.WithTemplateEngine(renderer), fh.WithErrorHandler(htmlAwareErrorHandler(logger)))
+
+	// Every route failure — an RBAC denial, a 404, a bad request, ... — is
+	// plain JSON by default (platform/routes.go's projectFailure), correct
+	// for the JSON API but not for someone who followed a link in a
+	// browser. registerHTMLErrorPages (errors.go) renders
+	// resources/templates/pages/errors/error.html instead, for exactly the
+	// requests that asked for HTML and aren't hitting /api/*. Must run
+	// before the first request a real listener could receive; there is no
+	// registry-construction ordering rule to respect here (unlike
+	// RegisterActionDriver), but registering it here, alongside every other
+	// piece of request-handling wiring, keeps that obvious.
+	registerHTMLErrorPages()
+
 	app.Use(maintenance.Middleware())
 	app.Use(httpAccessLog(logger))
 	if err := p.Mount(app); err != nil {

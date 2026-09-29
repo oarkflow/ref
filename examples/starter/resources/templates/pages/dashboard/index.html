@@ -1,45 +1,43 @@
 @extends("layouts/base.html")
 
 @define("content") {
-  <div style="margin-bottom: 2rem;">
-    <h1 style="font-size: 1.85rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 0.5rem;">
-      Hello, ${user.name} 👋
-    </h1>
-    <p style="color: var(--text-muted); font-size: 0.95rem;">
-      This is a protected page — it renders only after `authz` on
+  <div class="page-head">
+    <h1 class="page-title">Hello, ${user.name}</h1>
+    <p class="page-subtitle">
+      This is a protected page — it renders only after <code>authz</code> on
       <code>/dashboard</code> confirms your session carries the "user" role.
     </p>
   </div>
 
-  <div class="glass-card" style="margin-bottom: 1.5rem;">
-    <span style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.05em;">Session identity</span>
-    <div style="display: flex; flex-direction: column; gap: 0.75rem; font-size: 0.88rem; margin-top: 1rem;">
-      <div style="display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.5rem;">
-        <span style="color: var(--text-muted);">Email</span>
-        <span class="font-mono">${user.email}</span>
+  <div class="panel">
+    <span class="panel-label">Session identity</span>
+    <div class="kv">
+      <div class="kv-row">
+        <span class="kv-key">Email</span>
+        <span class="kv-value font-mono">${user.email}</span>
       </div>
-      <div style="display: flex; justify-content: space-between;">
-        <span style="color: var(--text-muted);">Role</span>
-        <span class="badge badge-${user.roles}">${user.roles}</span>
+      <div class="kv-row">
+        <span class="kv-key">Role</span>
+        <span class="kv-value"><span class="badge badge-${user.roles}">${user.roles}</span></span>
       </div>
     </div>
   </div>
 
-  <div class="glass-card">
-    <span style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.05em;">Route groups</span>
-    <h3 style="font-size: 1.2rem; font-weight: 700; margin-top: 0.2rem; margin-bottom: 1rem;">Protected routes</h3>
-    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+  <div class="panel">
+    <span class="panel-label">Route groups</span>
+    <h3 class="panel-title">Protected routes</h3>
+    <p class="panel-text">
       Every route under <code>route_group "api"</code> in <code>resources/config/04_routes.bcl</code> shares that
       group's <code>session</code>/<code>auth</code>/<code>authz</code> defaults. The link below is the
       admin-only page — its own <code>authz { roles ["admin"] }</code> is the real gate: a signed-in
       "user" account gets HTTP 403 there, not a hidden link here.
     </p>
-    <a href="/dashboard/admin" class="btn btn-secondary" style="justify-content: flex-start;">
-      <span style="font-size: 1.1rem;">👑</span>
-      <div style="text-align: left;">
-        <div style="font-size: 0.85rem; font-weight: 600; color: #C084FC;">Admin portal</div>
-        <div style="font-size: 0.75rem; color: var(--text-dim);">Requires the "admin" role — see resources/config/00_app.bcl's role block</div>
-      </div>
+    <a href="/dashboard/admin" class="panel-link">
+      <span class="panel-link-icon">→</span>
+      <span class="panel-link-body">
+        <span class="panel-link-title">Admin portal</span>
+        <span class="panel-link-detail">Requires the "admin" role — see resources/config/00_app.bcl's role block</span>
+      </span>
     </a>
   </div>
 }

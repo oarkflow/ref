@@ -8,10 +8,32 @@
   @block("head") {}
 </head>
 <body>
-  <div class="auth-wrapper">
-    <div class="auth-card">
-      @include("components/alert.html")
-      @block("content") {}
+  <div class="auth-shell">
+    <aside class="auth-aside">
+      <a href="/" class="brand">
+        <span class="brand-mark">R/</span>
+        <span class="brand-name">${appName}</span>
+      </a>
+      <div class="auth-aside-body">
+        <h2 class="auth-aside-title">A config-first application starter</h2>
+        <p class="auth-aside-text">
+          Sessions, RBAC, a durable approval workflow and network-abuse
+          protection — declared in BCL, not hand-wired in Go.
+        </p>
+        <ul class="auth-feature-list">
+          <li>Session-cookie auth with Argon2id password hashing</li>
+          <li>Role-based access control on every route</li>
+          <li>A durable, queue-backed approval process</li>
+          <li>Brute-force and request-abuse detection at the perimeter</li>
+        </ul>
+      </div>
+      <span class="auth-aside-foot">${appName} ${appVersion}</span>
+    </aside>
+    <div class="auth-main">
+      <div class="auth-card">
+        @include("components/alert.html")
+        @block("content") {}
+      </div>
     </div>
   </div>
   @block("scripts") {}
