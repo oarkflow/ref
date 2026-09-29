@@ -72,6 +72,11 @@ It ships with:
 - **Password reset**, asynchronous like `notify.welcome`: a one-time token,
   delivered off the request path, that never reveals whether an email
   address exists (`resources/config/03_intents.bcl`'s `auth.forgot_password`).
+- **A durable review-and-approval workflow.** A second teaching example, a
+  TODO item moving `draft → review → approval → done` through the
+  `process`/`step`/`task`/`edge` DSL — role-gated human tasks (`reviewer`,
+  `approver`), an owner-only revision loop, and per-stage SSR field/row/form
+  templates. See "Durable workflow, review and approval" below.
 - **Metrics.** `/metrics` (Prometheus) counts and times every DAG
   node/decision/effect/execution, verified with real traffic while building
   this starter, not just wired and left untested.
@@ -302,6 +307,45 @@ curl -X POST $BASE/api/v1/orders/1/transition -d '{"status": "paid"}'       # de
 curl -X POST $BASE/api/v1/orders/1/transition -d '{"status": "cancelled"}'  # the "cancel" case, from any non-delivered status
 curl -X POST $BASE/api/v1/orders -d '{"amount": 9000}'                      # rules.evaluate: over the $5,000 self-service cap -> 403
 ```
+
+## Durable workflow, review and approval
+
+`resources/config/12_todo_workflow_example.bcl` (JSON API) and
+`resources/config/13_todo_pages.bcl` (the `/todos` SSR pages) are a second
+self-contained teaching feature, alongside "Conditional flows..." above —
+this one for the durable, human-in-the-loop side of the platform the orders
+example doesn't touch: a `process`/`step`/`task`/`edge` state machine, not a
+single request's worth of `flow.branch`/`decision.table`. A TODO item moves
+`draft → in_review → pending_approval → done`, with a `reviewer`-role task,
+an `approver`-role task, and a revision loop assigned back to the specific
+owner (not a role — the other task-assignment mechanism the process DSL
+supports) when changes are requested. Full design rationale, the state
+diagram and the exact file-by-file plan are in `Tasks.md`; delete every file
+it lists (migration, the two BCL files, the templates, the `reviewer`/
+`approver` roles in `00_app.bcl`, `TestTodoWorkflowExample`) to remove the
+whole example.
+
+```sh
+# Draft, then submit — nothing durable starts until submit (process.start).
+# Flat body: matches what a native HTML <form method="POST"> sends, no
+# nested-key reshaping involved.
+curl -b $J -X POST $BASE/api/v1/todos -d '{"title":"Ship it","priority":"high"}'
+curl -b $J -X POST $BASE/api/v1/todos/1/submit
+
+# The process advances asynchronously (the same "jobs" queue notify.welcome
+# uses) — a moment later, a "reviewer"-role account has an open task:
+curl -b $J_REVIEWER $BASE/api/v1/tasks
+curl -b $J_REVIEWER -X POST $BASE/api/v1/tasks/<task_id>/decide -d '{"action":"approve"}'
+# -> status becomes pending_approval; an "approver"-role account decides next
+# the same way, ending in status "done" (or "rejected"), or "request_changes"
+# to loop back to the owner's own "revise" task instead.
+```
+
+See `/todos` (list), `/todos/new` (the two-fieldset create form — a single
+flat body validated independently against two shapes, `todo_details` and
+`todo_assignment`, no nesting/reshaping involved), and `/todos/:id` (every
+field, plus the caller's own in-progress decision form when they have one)
+for the SSR side — the same JSON API, rendered.
 
 ## Network protection and business rules
 

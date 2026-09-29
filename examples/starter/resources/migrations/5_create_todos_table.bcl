@@ -1,0 +1,64 @@
+Migration "5_create_todos_table" {
+  Version = "1.0.0"
+  Description = "Create the todos table (resources/config/12_todo_workflow_example.bcl)"
+  Connection = "default"
+  Up {
+    CreateTable "todos" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "owner_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "title" {
+        type = "string"
+        size = 200
+      }
+      Field "description" {
+        type = "text"
+        nullable = true
+      }
+      Field "assignee_email" {
+        type = "string"
+        size = 255
+        nullable = true
+      }
+      Field "priority" {
+        type = "string"
+        size = 10
+        default = "medium"
+      }
+      Field "due_date" {
+        type = "date"
+        nullable = true
+      }
+      Field "status" {
+        type = "string"
+        size = 20
+        default = "draft"
+      }
+      Field "run_id" {
+        type = "string"
+        size = 255
+        nullable = true
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+      Field "updated_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+  }
+  Down {
+    DropTable "todos" {
+      Cascade = true
+    }
+  }
+}

@@ -1,0 +1,30 @@
+<tr>
+  <td>${todo.title}</td>
+  <td>${todo.owner_id}</td>
+  <td>@include("components/todos/status-badge.html")</td>
+  <td class="font-mono">${todo.due_date}</td>
+  <td>
+    @if(todo.status == "draft" && todo.owner_id == user.id) {
+      <a href="/todos/${todo.id}" class="btn btn-sm btn-secondary">Submit…</a>
+    }
+    <!--
+      "in_review" covers two different open tasks that share this one status
+      value: a reviewer's "review" task, or — after a request_changes loop —
+      the *owner's own* "revise" task instead. todo.list has no per-row task
+      join to tell which one applies here (todo.get does compute the real
+      open_task, per-row, for the show page); this row only needs to decide
+      who's worth sending there at all, so it shows a role-appropriate label
+      and lets the show page's own open_task-gated form resolve the
+      specifics once they land on it.
+    -->
+    @if(todo.status == "in_review" && (user.roles == "reviewer" || user.roles == "admin")) {
+      <a href="/todos/${todo.id}" class="btn btn-sm btn-primary">Review</a>
+    }
+    @if(todo.status == "in_review" && todo.owner_id == user.id) {
+      <a href="/todos/${todo.id}" class="btn btn-sm btn-secondary">View</a>
+    }
+    @if(todo.status == "pending_approval" && (user.roles == "approver" || user.roles == "admin")) {
+      <a href="/todos/${todo.id}" class="btn btn-sm btn-primary">Approve/Reject</a>
+    }
+  </td>
+</tr>

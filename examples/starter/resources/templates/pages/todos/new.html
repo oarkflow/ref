@@ -1,0 +1,49 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div class="page-head">
+    <h1 class="page-title">New todo</h1>
+    <p class="page-subtitle">
+      Saved as a plain <code>draft</code> row (<code>todo.create</code>) — nothing durable starts
+      until you submit it for review.
+    </p>
+  </div>
+
+  <div class="panel">
+    <form method="POST" action="/api/v1/todos">
+      <fieldset class="panel">
+        <legend class="panel-label">Details</legend>
+        <div class="form-field">
+          <label class="form-label" for="title">Title</label>
+          <input type="text" id="title" name="title" class="form-control" placeholder="What needs doing?" required autofocus>
+        </div>
+        <div class="form-field">
+          <label class="form-label" for="description">Description</label>
+          <textarea id="description" name="description" class="form-control" rows="4" placeholder="Optional detail"></textarea>
+        </div>
+      </fieldset>
+
+      <fieldset class="panel">
+        <legend class="panel-label">Assignment</legend>
+        <div class="form-field">
+          <label class="form-label" for="assignee_email">Assignee email</label>
+          <input type="email" id="assignee_email" name="assignee_email" class="form-control" placeholder="teammate@example.com">
+        </div>
+        <div class="form-field">
+          <label class="form-label" for="priority">Priority</label>
+          <select id="priority" name="priority" class="form-control">
+            <option value="low">Low</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label class="form-label" for="due_date">Due date</label>
+          <input type="date" id="due_date" name="due_date" class="form-control">
+        </div>
+      </fieldset>
+
+      <button type="submit" class="btn btn-primary">Save draft</button>
+    </form>
+  </div>
+}

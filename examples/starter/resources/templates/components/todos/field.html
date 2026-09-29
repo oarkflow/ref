@@ -1,0 +1,11 @@
+@if(editable) {
+  <div class="form-field">
+    <label class="form-label" for="${name}">${label}</label>
+    <input type="${type}" id="${name}" name="${name}" class="form-control" value="${value}">
+  </div>
+} @else {
+  <div class="kv-row">
+    <span class="kv-key">${label}</span>
+    <span class="kv-value">${value}</span>
+  </div>
+}

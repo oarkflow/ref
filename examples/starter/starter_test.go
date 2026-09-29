@@ -3,6 +3,7 @@ package starter
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -608,6 +609,205 @@ func TestOrdersWorkflowExample(t *testing.T) {
 	if status, order := h.do(t, member, "GET", "/api/v1/orders/"+small2ID, nil); status != 200 || dig(order, "order", "status") != "cancelled" {
 		t.Fatalf("GET order after cancel = %d %v, want status cancelled", status, order)
 	}
+}
+
+// TestTodoWorkflowExample drives resources/config/12_todo_workflow_example.bcl's
+// full durable workflow end to end: draft -> submit -> review -> approval ->
+// done, the request_changes -> owner-only revise -> resubmit loop, and an
+// RBAC probe that doubles as a regression test for a real platform bug found
+// while building this (platform/actions_process.go's taskFailure didn't
+// recognize ClaimTaskAs's role-mismatch error text, surfacing a genuine
+// permission denial as a generic 500 instead of 403 — fixed alongside this
+// test, not just documented around it).
+//
+// The two role promotions below go straight to the database because there is
+// no UI for it (deliberately — see CONFIGURATION.md's own note on why
+// self-registration can never choose its own role) and re-login afterward
+// because a session's roles claim is captured at login, not read live.
+func TestTodoWorkflowExample(t *testing.T) {
+	dir := t.TempDir()
+	bclDir, err := filepath.Abs("resources/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsn := "file:" + filepath.Join(dir, "app.db") + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	h := startApp(t, bclDir, map[string]string{
+		"APP_ENV":        "development",
+		"DB_DSN":         dsn,
+		"SESSION_SECRET": "test-session-secret-0123456789ab-0123456789ab",
+		"WEBHOOK_SECRET": "test-webhook-secret-0123456789ab",
+		"NOTIFY_URL":     "http://127.0.0.1:0", // unused by this test
+	})
+
+	promoteRole := func(email, role string) {
+		t.Helper()
+		db, err := sql.Open("sqlite", dsn)
+		if err != nil {
+			t.Fatalf("open db for role promotion: %v", err)
+		}
+		defer db.Close()
+		if _, err := db.Exec("UPDATE users SET roles = ? WHERE email = ?", role, email); err != nil {
+			t.Fatalf("promote %s to %s: %v", email, role, err)
+		}
+	}
+
+	owner := h.client(t)
+	if status, resp := h.do(t, owner, "POST", "/register", map[string]any{
+		"email": "owner@example.com", "name": "Owner", "password": "correct horse battery",
+	}); status != 201 {
+		t.Fatalf("register owner = %d %v", status, resp)
+	}
+
+	reviewer := h.client(t)
+	if status, resp := h.do(t, reviewer, "POST", "/register", map[string]any{
+		"email": "reviewer@example.com", "name": "Reviewer", "password": "correct horse battery",
+	}); status != 201 {
+		t.Fatalf("register reviewer = %d %v", status, resp)
+	}
+	promoteRole("reviewer@example.com", "reviewer")
+	if status, resp := h.do(t, reviewer, "POST", "/login", map[string]any{
+		"email": "reviewer@example.com", "password": "correct horse battery",
+	}); status != 200 {
+		t.Fatalf("reviewer re-login = %d %v", status, resp)
+	}
+
+	approver := h.client(t)
+	if status, resp := h.do(t, approver, "POST", "/register", map[string]any{
+		"email": "approver@example.com", "name": "Approver", "password": "correct horse battery",
+	}); status != 201 {
+		t.Fatalf("register approver = %d %v", status, resp)
+	}
+	promoteRole("approver@example.com", "approver")
+	if status, resp := h.do(t, approver, "POST", "/login", map[string]any{
+		"email": "approver@example.com", "password": "correct horse battery",
+	}); status != 200 {
+		t.Fatalf("approver re-login = %d %v", status, resp)
+	}
+
+	// waitForTask polls the given client's open-task queue until it has an
+	// entry, then returns that task's id and step. The process advances
+	// through its queue (resources/config/01_resources.bcl's "jobs"
+	// resource), asynchronously to the request that triggered it — a task
+	// that isn't there yet is the normal case immediately after a submit or
+	// a decision, not a failure.
+	waitForTask := func(c *http.Client) (taskID, step string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if status, resp := h.do(t, c, "GET", "/api/v1/tasks", nil); status == 200 {
+				if id := dig(resp, "tasks", 0, "task_id"); id != nil {
+					return fmt.Sprintf("%v", id), fmt.Sprintf("%v", dig(resp, "tasks", 0, "step"))
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatal("no open task appeared within 5s")
+		return "", ""
+	}
+
+	waitForStatus := func(c *http.Client, todoID, want string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		var last any
+		for time.Now().Before(deadline) {
+			if status, resp := h.do(t, c, "GET", "/api/v1/todos/"+todoID, nil); status == 200 {
+				last = dig(resp, "todo", "status")
+				if last == want {
+					return
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatalf("todo %s status = %v, want %q within 5s", todoID, last, want)
+	}
+
+	// --- Happy path: draft -> in_review -> pending_approval -> done ---
+
+	_, created := h.do(t, owner, "POST", "/api/v1/todos", map[string]any{
+		"title":       "Write the docs",
+		"description": "cover the new workflow",
+		"priority":    "high",
+	})
+	if status := dig(created, "todos", 0, "status"); status != "draft" {
+		t.Fatalf("a fresh todo's status = %v, want \"draft\": %v", status, created)
+	}
+	todoID := fmt.Sprintf("%v", dig(created, "todos", 0, "id"))
+
+	if status, resp := h.do(t, owner, "POST", "/api/v1/todos/"+todoID+"/submit", nil); status != 200 {
+		t.Fatalf("submit = %d %v", status, resp)
+	}
+
+	reviewTask, step := waitForTask(reviewer)
+	if step != "review" {
+		t.Fatalf("reviewer's open task step = %q, want \"review\"", step)
+	}
+
+	// RBAC probe, doubling as a regression test for the taskFailure fix
+	// above: the owner (role "user") cannot decide a task role-gated to
+	// "reviewer", and must be refused with 403, not a generic 500.
+	if status, resp := h.do(t, owner, "POST", "/api/v1/tasks/"+reviewTask+"/decide", map[string]any{"action": "approve"}); status != 403 {
+		t.Fatalf("owner deciding a reviewer-only task = %d %v, want 403", status, resp)
+	} else if code := dig(resp, "error", "code"); code != "PERMISSION_DENIED" {
+		t.Fatalf("owner deciding a reviewer-only task error code = %v, want PERMISSION_DENIED: %v", code, resp)
+	}
+
+	if status, resp := h.do(t, reviewer, "POST", "/api/v1/tasks/"+reviewTask+"/decide", map[string]any{"action": "approve"}); status != 200 {
+		t.Fatalf("reviewer approve = %d %v", status, resp)
+	}
+	waitForStatus(owner, todoID, "pending_approval")
+
+	approvalTask, step := waitForTask(approver)
+	if step != "approval" {
+		t.Fatalf("approver's open task step = %q, want \"approval\"", step)
+	}
+	if status, resp := h.do(t, approver, "POST", "/api/v1/tasks/"+approvalTask+"/decide", map[string]any{"action": "approve"}); status != 200 {
+		t.Fatalf("approver approve = %d %v", status, resp)
+	}
+	waitForStatus(owner, todoID, "done")
+
+	// --- Revision loop: request_changes -> owner-only revise -> resubmit -> review again -> reject ---
+
+	_, created2 := h.do(t, owner, "POST", "/api/v1/todos", map[string]any{
+		"title": "Second item",
+	})
+	todo2ID := fmt.Sprintf("%v", dig(created2, "todos", 0, "id"))
+	if status, resp := h.do(t, owner, "POST", "/api/v1/todos/"+todo2ID+"/submit", nil); status != 200 {
+		t.Fatalf("submit #2 = %d %v", status, resp)
+	}
+
+	reviewTask2, _ := waitForTask(reviewer)
+	if status, resp := h.do(t, reviewer, "POST", "/api/v1/tasks/"+reviewTask2+"/decide", map[string]any{"action": "request_changes", "notes": "needs more detail"}); status != 200 {
+		t.Fatalf("reviewer request_changes = %d %v", status, resp)
+	}
+
+	reviseTask, step := waitForTask(owner)
+	if step != "revise" {
+		t.Fatalf("owner's open task step = %q, want \"revise\"", step)
+	}
+	// The reviewer must not be able to decide the owner-only revise task —
+	// this one is assignee-gated (run.input.owner_id), not role-gated, the
+	// other assignment mechanism process.TaskDefinition supports.
+	if status, resp := h.do(t, reviewer, "POST", "/api/v1/tasks/"+reviseTask+"/decide", map[string]any{"action": "resubmit"}); status != 403 {
+		t.Fatalf("reviewer deciding the owner's revise task = %d %v, want 403", status, resp)
+	}
+	if status, resp := h.do(t, owner, "POST", "/api/v1/tasks/"+reviseTask+"/decide", map[string]any{"action": "resubmit"}); status != 200 {
+		t.Fatalf("owner resubmit = %d %v", status, resp)
+	}
+
+	reviewTask2b, step := waitForTask(reviewer)
+	if step != "review" {
+		t.Fatalf("reviewer's open task step after resubmit = %q, want \"review\" (the loop)", step)
+	}
+	if status, resp := h.do(t, reviewer, "POST", "/api/v1/tasks/"+reviewTask2b+"/decide", map[string]any{"action": "approve"}); status != 200 {
+		t.Fatalf("reviewer approve (after loop) = %d %v", status, resp)
+	}
+	waitForStatus(owner, todo2ID, "pending_approval")
+
+	approvalTask2, _ := waitForTask(approver)
+	if status, resp := h.do(t, approver, "POST", "/api/v1/tasks/"+approvalTask2+"/decide", map[string]any{"action": "reject"}); status != 200 {
+		t.Fatalf("approver reject = %d %v", status, resp)
+	}
+	waitForStatus(owner, todo2ID, "rejected")
 }
 
 // TestSecurityGuardBlocksAttackProbe proves security/tcpguard.bcl (loaded by

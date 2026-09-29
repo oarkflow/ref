@@ -1,0 +1,62 @@
+# ===========================================================================
+# TODO example — SSR page routes only.
+#
+# Pure presentation: session-cookie web pages that render the templates
+# under resources/templates/pages/todos/. No business logic lives here —
+# that's entirely in resources/config/12_todo_workflow_example.bcl (shapes,
+# the durable process, every intent, the JSON `route_group "todos"`, and the
+# task-decision routes). This file only wires GET pages to those intents,
+# the same way `web.dashboard`/`web.admin` do in 04_routes.bcl.
+#
+# Part of the deletable TODO example — see Tasks.md's "What to delete to
+# remove this example" for the exact list; this file is on it.
+# ===========================================================================
+
+route "web.todos_list" {
+  method GET
+  path "/todos"
+  intent "todo.list"
+  template "pages/todos/list"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  # Any signed-in role may see the queue — only the right role can act on a
+  # given row (row.html reveals the right next action per viewer per stage;
+  # the real gate is still each task's own role/authz, server-side).
+  authz { roles ["user", "reviewer", "approver", "admin"] authorizer "authorization" }
+}
+
+route "web.todos_new" {
+  method GET
+  path "/todos/new"
+  # No intent: this page is a bare create form with no server data to load
+  # (mirrors web.login_page/web.register_page in 04_routes.bcl, which also
+  # render a template with no intent because the GET itself needs nothing
+  # from the backend — the form POSTs to /api/v1/todos, handled by
+  # todo.create in 12_todo_workflow_example.bcl).
+  template "pages/todos/new"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz { roles ["user", "reviewer", "approver", "admin"] authorizer "authorization" }
+}
+
+route "web.todos_show" {
+  method GET
+  path "/todos/:id"
+  intent "todo.get"
+  template "pages/todos/show"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  cache_control "private, no-store"
+  authz { roles ["user", "reviewer", "approver", "admin"] authorizer "authorization" }
+  parameter "id" {
+    in path
+    kind string
+    required true
+    description "The todo id"
+  }
+}

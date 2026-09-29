@@ -186,3 +186,15 @@ resource "policy_engine" {
     dir "./resources/rules"
   }
 }
+
+# Durable process store for resources/config/12_todo_workflow_example.bcl's
+# `process "todo.workflow"` — runs, step states, timers and human tasks, all
+# on the same `database` resource (table_prefix keeps them out of the
+# app's own tables, the same convention `store.sql` uses everywhere else in
+# this platform). The process reuses the *existing* `jobs` queue above
+# rather than declaring a second one — see that file's own header comment.
+resource "todo_runs" {
+  kind "store.sql"
+  description "Durable process rows, steps, timers and tasks for the todo workflow example"
+  config { database "database" table_prefix "todo_process" }
+}

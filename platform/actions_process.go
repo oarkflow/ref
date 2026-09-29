@@ -703,7 +703,8 @@ func taskFailure(err error) error {
 	text := err.Error()
 	switch {
 	case strings.Contains(text, "cannot act on"), strings.Contains(text, "assigned to somebody else"),
-		strings.Contains(text, "claimed by somebody else"), strings.Contains(text, "not yours"):
+		strings.Contains(text, "claimed by somebody else"), strings.Contains(text, "not yours"),
+		strings.Contains(text, "is required to claim task"):
 		return permissionDenied(strings.TrimPrefix(text, "ref/process: "))
 	case strings.Contains(text, "already"), strings.Contains(text, "changed while"):
 		return conflict("%s", strings.TrimPrefix(text, "ref/process: "))

@@ -1,0 +1,36 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div class="page-head">
+    <h1 class="page-title">Todos</h1>
+    <p class="page-subtitle">
+      Every todo, at every stage of <code>process "todo.workflow"</code> — draft, in review,
+      pending approval, done, rejected or cancelled. The action shown per row is only a
+      shortcut to the right page; the real gate is each task's own <code>role</code>/<code>authz</code>,
+      server-side.
+    </p>
+  </div>
+
+  <div class="panel">
+    <span class="panel-label">Queue</span>
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Title</th>
+            <th>Owner</th>
+            <th>Status</th>
+            <th>Due</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          @for(todo in todos) {
+            @include("components/todos/row.html")
+          }
+        </tbody>
+      </table>
+    </div>
+    <a href="/todos/new" class="btn btn-primary">New Todo</a>
+  </div>
+}

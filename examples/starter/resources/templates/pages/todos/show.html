@@ -1,0 +1,132 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <!--
+    Coordination note (frontend half, written before the backend half's
+    resources/config/12_todo_workflow_example.bcl existed): `todo.get` is
+    expected to publish a fact describing the caller's own open task on
+    this todo's run, if any — a map with at least `id` (the task id, for
+    the decide-form action), `step` (one of "review"/"approval"/"revise",
+    selecting which decision shape applies), and `actions` (the allowed
+    action values for that step, mirroring review_decision/
+    approval_decision/revise_decision's `action` enum). Absent/empty means
+    the caller has no open task on this run right now.
+
+    Placeholder fact name used below: `open_task`. If the backend lands
+    under a different name, rename every `open_task` reference in this
+    file to match — nothing else here should need to change.
+
+    The decide-form `action` attribute below assumes the task-decide route
+    lives at "/api/v1/tasks/:id/decide" (this starter's existing /api/v1
+    JSON-route convention applied to the generic task-decide pattern from
+    examples/ref-complete's `route "tasks.decide"`, which is NOT prefixed
+    the same way there). Confirm the real path in
+    resources/config/12_todo_workflow_example.bcl once it exists and fix
+    this attribute if it differs.
+  -->
+
+  <div class="page-head">
+    <h1 class="page-title">${todo.title}</h1>
+    <p class="page-subtitle">
+      @include("components/todos/status-badge.html")
+    </p>
+  </div>
+
+  <!--
+    "editable" here means "draft, and this is the owner" — the moment it
+    stops being draft (todo.submit) every field below becomes read-only, and
+    the only editable surface left on the page is the decision form further
+    down, gated by open_task.step instead. Both edits and submit are the
+    owner's actions on the SAME draft row, so they share one <form> (two
+    submit buttons, two form actions via `formaction` — one native HTML
+    form, no JS) rather than two separate forms fighting over the same
+    fields.
+  -->
+  @if(todo.status == "draft" && todo.owner_id == user.id) {
+    <form method="POST" action="/api/v1/todos/${todo.id}/edit">
+      <div class="panel">
+        <span class="panel-label">Details</span>
+        @include("components/todos/field.html", { name: "title", label: "Title", type: "text", value: todo.title, editable: true })
+        @include("components/todos/field.html", { name: "description", label: "Description", type: "text", value: todo.description, editable: true })
+      </div>
+
+      <div class="panel">
+        <span class="panel-label">Assignment</span>
+        @include("components/todos/field.html", { name: "assignee_email", label: "Assignee email", type: "email", value: todo.assignee_email, editable: true })
+        @include("components/todos/field.html", { name: "priority", label: "Priority", type: "text", value: todo.priority, editable: true })
+        @include("components/todos/field.html", { name: "due_date", label: "Due date", type: "date", value: todo.due_date, editable: true })
+      </div>
+
+      <div class="panel">
+        <button type="submit" class="btn btn-secondary">Save changes</button>
+        <button type="submit" formaction="/api/v1/todos/${todo.id}/submit" class="btn btn-primary">Submit for review</button>
+      </div>
+    </form>
+  } @else {
+    <div class="panel">
+      <span class="panel-label">Details</span>
+      @include("components/todos/field.html", { name: "title", label: "Title", type: "text", value: todo.title, editable: false })
+      @include("components/todos/field.html", { name: "description", label: "Description", type: "text", value: todo.description, editable: false })
+    </div>
+
+    <div class="panel">
+      <span class="panel-label">Assignment</span>
+      @include("components/todos/field.html", { name: "assignee_email", label: "Assignee email", type: "email", value: todo.assignee_email, editable: false })
+      @include("components/todos/field.html", { name: "priority", label: "Priority", type: "text", value: todo.priority, editable: false })
+      @include("components/todos/field.html", { name: "due_date", label: "Due date", type: "date", value: todo.due_date, editable: false })
+    </div>
+  }
+
+  @if(open_task) {
+    <div class="panel">
+      <span class="panel-label">Your decision</span>
+
+      @if(open_task.step == "review") {
+        <form method="POST" action="/api/v1/tasks/${open_task.task_id}/decide">
+          <div class="form-field">
+            <label class="form-label" for="action">Decision</label>
+            <select id="action" name="action" class="form-control">
+              <option value="approve">Approve</option>
+              <option value="request_changes">Request changes</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label class="form-label" for="notes">Notes</label>
+            <textarea id="notes" name="notes" class="form-control" rows="3" placeholder="Optional"></textarea>
+          </div>
+          <button type="submit" class="btn btn-primary">Submit decision</button>
+        </form>
+      }
+
+      @if(open_task.step == "approval") {
+        <form method="POST" action="/api/v1/tasks/${open_task.task_id}/decide">
+          <div class="form-field">
+            <label class="form-label" for="action">Decision</label>
+            <select id="action" name="action" class="form-control">
+              <option value="approve">Approve</option>
+              <option value="reject">Reject</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label class="form-label" for="notes">Notes</label>
+            <textarea id="notes" name="notes" class="form-control" rows="3" placeholder="Optional"></textarea>
+          </div>
+          <button type="submit" class="btn btn-primary">Submit decision</button>
+        </form>
+      }
+
+      @if(open_task.step == "revise") {
+        <form method="POST" action="/api/v1/tasks/${open_task.task_id}/decide">
+          <div class="form-field">
+            <label class="form-label" for="action">Decision</label>
+            <select id="action" name="action" class="form-control">
+              <option value="resubmit">Resubmit</option>
+              <option value="cancel">Cancel</option>
+            </select>
+          </div>
+          <button type="submit" class="btn btn-primary">Submit decision</button>
+        </form>
+      }
+    </div>
+  }
+}

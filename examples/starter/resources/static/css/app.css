@@ -783,3 +783,46 @@ a:hover {
     padding: 1.1rem 1.2rem;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Todo workflow example — status badges (see resources/config/
+ * 12_todo_workflow_example.bcl and resources/templates/components/
+ * todos/status-badge.html). Flat solid colors only, reusing the existing
+ * --accent-soft/--success-soft/--error-soft/--bg-inset tokens defined in
+ * :root above — no gradients, matching every other badge in this file.
+ * ------------------------------------------------------------------------- */
+.badge-status-draft {
+  background: var(--bg-inset);
+  color: var(--text-muted);
+  border-color: var(--border-strong);
+}
+
+.badge-status-in_review {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+
+.badge-status-pending_approval {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent-ink);
+}
+
+.badge-status-done {
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.badge-status-rejected {
+  background: var(--error-soft);
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.badge-status-cancelled {
+  background: var(--error-soft);
+  color: var(--error);
+  border-color: var(--error);
+}

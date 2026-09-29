@@ -1,0 +1,800 @@
+# ===========================================================================
+# WORKFLOW GUIDE: a durable, human-in-the-loop review & approval process.
+#
+# This file is a teaching example, not a dependency of the auth/dashboard
+# feature in 03_intents.bcl/04_routes.bcl, nor of the orders example in
+# 09_workflow_example.bcl (which teaches SYNCHRONOUS branching — a decision
+# that resolves within one request). This one teaches the ASYNCHRONOUS
+# side of the same platform: a `process` that outlives any single request,
+# parking on human decisions that can arrive minutes, hours or days later.
+#
+# Delete this file (plus its migration in resources/migrations/, the
+# `todo_runs` resource in 01_resources.bcl, the `role "reviewer"`/
+# `role "approver"` blocks in 00_app.bcl, and the `todos` table itself) to
+# remove the whole example cleanly — see examples/starter/Tasks.md's own
+# "What to delete" section for the exact list.
+#
+# State machine (see Tasks.md's "Design" section for the full diagram):
+#
+#   draft --submit--> review --approve--> (mark pending_approval) --> approval --approve--> done
+#     ^                 |request_changes                                | reject
+#     |                 v                                               v
+#     +---------------revise --resubmit--> review                   rejected
+#                        |cancel
+#                        v
+#                    cancelled
+#
+# - draft is a plain row insert (todo.create) — not part of the durable
+#   process. Nothing durable starts until the owner explicitly submits.
+# - review/approval/revise are `family approval` human task steps: three
+#   stages, two roles, and one step (revise) assigned back to the specific
+#   owner via the `assignee` task field (a templated string, NOT `role`) —
+#   confirmed against platform/spec_process.go's TaskSpec: `Assignee string
+#   `bcl:"assignee"`` sits right next to `Role string `bcl:"role"``, and
+#   both are ordinary task fields; `assignee` supports the same {{ }}
+#   templating as `title`/`instructions`, evaluated over the run's own
+#   `run.input` — see order.fulfil's `title "Approve order {{ run.input.id
+#   }}"` in examples/ref-complete/app.bcl, copied here as
+#   `assignee "{{ run.input.owner_id }}"`.
+# - "pending_approval" is its own tiny action step (mark_pending_approval)
+#   between review and approval, because a task step has no body of its
+#   own to run a database write from — only an action step (one that names
+#   an `intent`) can. Its `input_data` block is how a later step's intent
+#   gets at the ORIGINAL run input (the todo id) rather than just the
+#   previous step's decision payload: a process step's intent receives, by
+#   default, only the result of whatever step immediately preceded it
+#   (confirmed in process/engine.go — frame.Input is the prior step's own
+#   result, not run.input); `input_data { set { id "{{ run.input.id }}" } }`
+#   (StepSpec.InputData, spec_process.go) reshapes that into what this
+#   step's own intent actually needs, evaluated over the step's full scope
+#   (which always has both `run.input` and `result`).
+# - done/rejected/cancelled are `terminal true` action steps, each running
+#   its own tiny intent that updates the denormalized `status` column so
+#   list/row queries never need to join the process store.
+# - The review <-> revise loop is bounded by `max_visits 10` (matching
+#   order.fulfil's own max_visits in examples/ref-complete) — a runaway
+#   back-and-forth fails the run instead of looping forever.
+#
+# JSON routes this file adds (see the bottom of this file for both groups):
+#   /api/v1/todos            (create/list/get/submit — route_group "todos")
+#   /api/v1/tasks             (list/decide open workflow tasks — route_group
+#                              "todo_tasks") — the frontend's show.html page
+#                              posts its inline decision form to
+#                              /api/v1/tasks/:id/decide.
+# No SSR page routes are added here — that is a separate agent's file.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Shapes — two independent form groups (not one shape nesting both — see
+# todo.create's own comment below for why that didn't work), plus one
+# decision shape per human task stage. The grouping is a validation/UI
+# concept: resources/templates/pages/todos/new.html mirrors it with two
+# <fieldset> blocks, one per group shape, but both are checked against the
+# same flat request body — see todo.create.
+# ---------------------------------------------------------------------------
+
+shape "todo_details" {          # form group 1: "What"
+  kind object
+  prop "title" { kind string required true min_length 1 max_length 200 }
+  prop "description" { kind string max_length 4000 }
+}
+
+shape "todo_assignment" {       # form group 2: "Who / when / how urgent"
+  kind object
+  prop "assignee_email" { kind string format email }
+  prop "priority" { kind string enum [low, medium, high] default "medium" }
+  prop "due_date" { kind string format date }
+}
+
+shape "review_decision" {       # task form_schema for the "review" step
+  kind object
+  prop "action" { kind string required true enum [approve, request_changes] }
+  prop "notes" { kind string max_length 2000 }
+}
+
+shape "approval_decision" {     # task form_schema for the "approval" step
+  kind object
+  prop "action" { kind string required true enum [approve, reject] }
+  prop "notes" { kind string max_length 2000 }
+}
+
+shape "revise_decision" {       # task form_schema for the "revise" step
+  kind object
+  prop "action" { kind string required true enum [resubmit, cancel] }
+}
+
+# ---------------------------------------------------------------------------
+# todo.create — a plain row insert. No process, no queue, no task. A draft
+# is cheap, editable and abandonable with no workflow-engine overhead;
+# nothing durable starts until the owner explicitly calls todo.submit.
+# ---------------------------------------------------------------------------
+
+intent "todo.create" {
+  description "Create a draft todo — a plain row insert; nothing durable starts until todo.submit"
+  response "response"
+  timeout 5s
+
+  node "user-id" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+
+  # The wire format is flat (title, description, assignee_email, priority,
+  # due_date as direct top-level fields) — matching every other form this
+  # starter posts (register, login, orders — see
+  # resources/templates/pages/todos/new.html), and matching what a plain
+  # <form method="POST"> actually sends: a native HTML form has no way to
+  # produce a nested JSON body, and application/x-www-form-urlencoded
+  # parsing (platform/routes.go) builds a flat map from form field names,
+  # one level only, no dotted-key nesting.
+  #
+  # Two independent validate.schema checks against that same flat input,
+  # not one shape nesting "details"/"assignment" as sub-objects — found the
+  # hard way while building this. The natural-looking design (a "todo_input"
+  # shape composing both group shapes, one data.transform reshaping the
+  # flat body to match before validating) turns out not to work with this
+  # platform's current data.transform: neither a dotted extract target
+  # (`details.title "input.title"`) nor a nested set block
+  # (`set { details { title "..." } } }`) actually produces correctly
+  # nested, templated output — the BCL block decoder nests a dotted extract
+  # key into a sub-map that Extract's own `map[string]string` can't read
+  # back out, and a nested set sub-block's string values never reach `{{ }}`
+  # template rendering at all (only Set's own top-level string values do).
+  # This starter's own end-to-end test caught it immediately: the create
+  # form 422'd on the very first real submission. validate.schema tolerates
+  # fields a shape doesn't declare (confirmed directly against a running
+  # server before relying on it), so checking the same flat object against
+  # two independent shapes is both simpler and actually correct — no
+  # reshaping step to get wrong, and todo_details/todo_assignment are still
+  # two independently meaningful, independently reusable validation groups,
+  # each still driving its own <fieldset> in
+  # resources/templates/pages/todos/new.html. The grouping was never really
+  # about object nesting on the wire.
+  # An unfilled <input type="email">/<input type="date"> still submits as
+  # an empty string, not an absent field — browsers don't omit unfilled
+  # optional fields from a form post. todo_assignment's `format
+  # email`/`format date` checks reject "" (a real, present value, just not
+  # a valid email/date), even though neither prop is `required` — confirmed
+  # directly: the create form 422'd on exactly this ("assignee_email must
+  # be an email address") the first time it was tested with only the
+  # required title filled in, the single most common real submission.
+  # `null` reads as genuinely absent to a format check (still doesn't
+  # satisfy `required true`, which title alone needs); flat, non-dotted
+  # extract keys are the mechanism proven to work above.
+  node "clean" {
+    uses "data.transform"
+    requires [input]
+    provides [cleaned]
+    config {
+      source_fact "input"
+      data {
+        extract {
+          assignee_email "input.assignee_email != '' ? input.assignee_email : null"
+          due_date "input.due_date != '' ? input.due_date : null"
+        }
+      }
+    }
+  }
+
+  node "validate-details" {
+    uses "validate.schema"
+    requires [cleaned]
+    provides [validated_details]
+    config { source_fact "cleaned" shape "todo_details" }
+  }
+  node "validate-assignment" {
+    uses "validate.schema"
+    requires [cleaned]
+    provides [validated_assignment]
+    config { source_fact "cleaned" shape "todo_assignment" }
+  }
+
+  node "insert" {
+    uses "database.query"
+    resource "database"
+    kind effect
+    requires [user_id, validated_details, validated_assignment]
+    provides [todos]
+    config {
+      # COALESCE(..., 'medium'), not just the column's own DB-level default:
+      # a browser form always submits every field it has, even an unfilled
+      # <select> (which still has whatever option is marked `selected` —
+      # "medium" here — so priority is realistically never actually blank
+      # from this form), but a bare API caller could still omit it
+      # entirely, and an explicit NULL bypasses a column default (a column
+      # default only fires when the column is left out of the INSERT
+      # altogether) — priority has no nullable escape hatch the way
+      # assignee_email/due_date do.
+      statement "INSERT INTO todos (owner_id, title, description, assignee_email, priority, due_date, status) VALUES ($1, $2, $3, $4, COALESCE($5, 'medium'), $6, 'draft') RETURNING id, owner_id, title, description, assignee_email, priority, due_date, status, run_id, created_at, updated_at"
+      args [user_id, validated_details.title, validated_details.description, validated_assignment.assignee_email, validated_assignment.priority, validated_assignment.due_date]
+    }
+  }
+
+  node "response" { uses "collect" requires [todos] provides [response] }
+}
+
+# ---------------------------------------------------------------------------
+# todo.update — edit a draft in place. Same flat body, same two-shape
+# validation and empty-string-to-null cleaning as todo.create; the only
+# difference is an UPDATE gated to the caller's own row and only while it's
+# still a draft (the same "only-draft"-style ownership+status guard
+# todo.submit uses below), so a field this page has already made read-only
+# past "draft" can't be edited by going straight to the API either.
+# ---------------------------------------------------------------------------
+
+intent "todo.update" {
+  description "Edit a draft todo's own fields — owner only, draft status only"
+  response "response"
+  timeout 5s
+
+  node "user-id" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+  node "todo-id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" from "path" }
+  }
+
+  node "load" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id, id]
+    provides [rows]
+    config {
+      statement "SELECT id, owner_id, status FROM todos WHERE id = $1 AND owner_id = $2"
+      args [id, user_id]
+      require_rows true
+      not_found_message "todo not found"
+    }
+  }
+  node "existing" { uses "data.first" requires [rows] provides [existing] config { source_fact "rows" } }
+
+  node "only-draft" {
+    uses "validate.expression"
+    requires [existing]
+    provides [editable]
+    config {
+      expression "existing.status == 'draft'"
+      message "only a draft todo can be edited"
+    }
+  }
+
+  node "clean" {
+    uses "data.transform"
+    requires [input]
+    provides [cleaned]
+    config {
+      source_fact "input"
+      data {
+        extract {
+          assignee_email "input.assignee_email != '' ? input.assignee_email : null"
+          due_date "input.due_date != '' ? input.due_date : null"
+        }
+      }
+    }
+  }
+
+  node "validate-details" {
+    uses "validate.schema"
+    requires [cleaned]
+    provides [validated_details]
+    config { source_fact "cleaned" shape "todo_details" }
+  }
+  node "validate-assignment" {
+    uses "validate.schema"
+    requires [cleaned]
+    provides [validated_assignment]
+    config { source_fact "cleaned" shape "todo_assignment" }
+  }
+
+  # database.query + RETURNING, not database.exec followed by a separate
+  # read — a read node in the same intent runs on its own connection and
+  # doesn't see an effect node's write until the whole intent's transaction
+  # commits (todo.create's own insert node hits this same rule, which is why
+  # it also returns its row via RETURNING instead of a follow-up SELECT).
+  node "update" {
+    uses "database.query"
+    resource "database"
+    kind effect
+    requires [existing, editable, validated_details, validated_assignment]
+    provides [rows2]
+    config {
+      statement "UPDATE todos SET title = $1, description = $2, assignee_email = $3, priority = COALESCE($4, 'medium'), due_date = $5, updated_at = CURRENT_TIMESTAMP WHERE id = $6 RETURNING id, owner_id, title, description, assignee_email, priority, due_date, status, run_id, created_at, updated_at"
+      args [validated_details.title, validated_details.description, validated_assignment.assignee_email, validated_assignment.priority, validated_assignment.due_date, existing.id]
+      require_rows true
+      not_found_message "todo not found"
+    }
+  }
+  node "todo" { uses "data.first" requires [rows2] provides [todo] config { source_fact "rows2" } }
+
+  node "response" { uses "collect" requires [todo] provides [response] }
+}
+
+# ---------------------------------------------------------------------------
+# todo.list / todo.get — read paths. Anyone signed in may see the queue (the
+# RBAC gate that matters is on ACTING, not seeing — see Tasks.md's "Routes &
+# RBAC" table); the human-task engine's own role/assignee check is the real
+# gate on a decision, exactly like CONFIGURATION.md's dashboard note already
+# explains for the admin-portal link.
+# ---------------------------------------------------------------------------
+
+intent "todo.list" {
+  description "List every todo — any signed-in role may see the queue; only the right role can act on a given row"
+  response "response"
+
+  node "user-id" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+  node "todos" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [todos]
+    config {
+      statement "SELECT id, owner_id, title, description, assignee_email, priority, due_date, status, run_id, created_at, updated_at FROM todos ORDER BY created_at DESC LIMIT 50"
+    }
+  }
+  node "response" { uses "collect" requires [todos] provides [response] }
+}
+
+intent "todo.get" {
+  description "Read one todo by id"
+  response "response"
+
+  node "user-id" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+  node "todo-id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" from "path" }
+  }
+  node "load" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id, id]
+    provides [rows]
+    config {
+      statement "SELECT id, owner_id, title, description, assignee_email, priority, due_date, status, run_id, created_at, updated_at FROM todos WHERE id = $1"
+      args [id]
+      require_rows true
+      not_found_message "todo not found"
+    }
+  }
+  node "todo" { uses "data.first" requires [rows] provides [todo] config { source_fact "rows" } }
+
+  # open_task: whichever of the caller's own open tasks (review/approval/
+  # revise, across every process run) belongs to *this* todo's run, if any
+  # — the contract resources/templates/pages/todos/show.html was written
+  # against (see that file's own coordination-note comment): a map with
+  # `task_id`/`step`/`actions` when the caller has a decision to make here
+  # right now, absent otherwise. `data.first`'s `optional true` is what
+  # makes "no open task on this run" a normal, non-error outcome rather
+  # than failing the whole page — a draft (no run_id yet) or a todo
+  # nobody's blocked on both take this path.
+  node "my-tasks" {
+    uses "task.list"
+    kind read
+    requires [user_id]
+    provides [my_tasks]
+    config { process "todo.workflow" scope "mine" }
+  }
+  node "run-tasks" {
+    uses "data.filter"
+    requires [my_tasks, todo]
+    provides [run_tasks]
+    config { source_fact "my_tasks" expression "item.run_id == todo.run_id" }
+  }
+  node "open-task" {
+    uses "data.first"
+    requires [run_tasks]
+    provides [open_task]
+    config { source_fact "run_tasks" optional true }
+  }
+
+  node "response" { uses "collect" requires [todo, open_task] provides [response] }
+}
+
+# ---------------------------------------------------------------------------
+# todo.submit — starts the durable process. This is the one intent that
+# crosses from the "plain row" world into the "process run" world: it loads
+# the caller's own draft, refuses to submit anything else, starts
+# `process "todo.workflow"` (below) with the todo row itself as the run's
+# input, and denormalizes status/run_id back onto the row.
+# ---------------------------------------------------------------------------
+
+intent "todo.submit" {
+  description "Submit a draft todo: starts the review/approval process and marks it in_review"
+  response "response"
+  timeout 5s
+
+  node "user-id" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+  node "todo-id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" from "path" }
+  }
+  node "load" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id, id]
+    provides [rows]
+    config {
+      statement "SELECT id, owner_id, title, description, assignee_email, priority, due_date, status FROM todos WHERE id = $1 AND owner_id = $2"
+      args [id, user_id]
+      require_rows true
+      not_found_message "todo not found"
+    }
+  }
+  node "todo" { uses "data.first" requires [rows] provides [todo] config { source_fact "rows" } }
+
+  node "only-draft" {
+    uses "validate.expression"
+    requires [todo]
+    provides [submittable]
+    config {
+      expression "todo.status == 'draft'"
+      message "only a draft todo can be submitted"
+    }
+  }
+
+  # The todo row itself becomes the run's input — it already has id,
+  # owner_id, title, description, assignee_email, priority and due_date,
+  # everything the process's task titles/assignee templating and the
+  # terminal steps' own input_data blocks need, with nothing to reshape.
+  node "process" {
+    family process
+    uses "process.start"
+    kind effect
+    requires [todo, submittable]
+    provides [run]
+    config {
+      process "todo.workflow"
+      input_fact "todo"
+      idempotency_fact "todo.id"
+      correlation_fact "todo.id"
+      wait false
+    }
+  }
+
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [todo, run]
+    provides [updated]
+    config {
+      statement "UPDATE todos SET status = 'in_review', run_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"
+      args [run.run_id, todo.id]
+      require_affected true
+    }
+  }
+
+  node "response" { uses "collect" requires [run, updated] provides [response] }
+}
+
+# ---------------------------------------------------------------------------
+# The process's own tiny action-step intents. Each does exactly one thing:
+# write the denormalized `status` column. None of them re-validate the
+# workflow transition itself — the process's own edges (below) are what
+# decided this step should run at all.
+# ---------------------------------------------------------------------------
+
+intent "todo.mark_pending_approval" {
+  description "Process step: denormalize status='pending_approval' once the reviewer approves"
+  response "response"
+
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [input]
+    provides [updated]
+    config {
+      statement "UPDATE todos SET status = 'pending_approval', updated_at = CURRENT_TIMESTAMP WHERE id = $1"
+      args [input.id]
+      require_affected true
+      not_found_message "todo not found"
+    }
+  }
+  node "response" { uses "collect" requires [updated] provides [response] config { unwrap true } }
+}
+
+intent "todo.complete" {
+  description "Process step: denormalize status='done' once the approver approves"
+  response "response"
+
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [input]
+    provides [updated]
+    config {
+      statement "UPDATE todos SET status = 'done', updated_at = CURRENT_TIMESTAMP WHERE id = $1"
+      args [input.id]
+      require_affected true
+      not_found_message "todo not found"
+    }
+  }
+  node "response" { uses "collect" requires [updated] provides [response] config { unwrap true } }
+}
+
+intent "todo.reject" {
+  description "Process step: denormalize status='rejected' when the approver rejects"
+  response "response"
+
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [input]
+    provides [updated]
+    config {
+      statement "UPDATE todos SET status = 'rejected', updated_at = CURRENT_TIMESTAMP WHERE id = $1"
+      args [input.id]
+      require_affected true
+      not_found_message "todo not found"
+    }
+  }
+  node "response" { uses "collect" requires [updated] provides [response] config { unwrap true } }
+}
+
+intent "todo.cancel" {
+  description "Process step: denormalize status='cancelled' when the owner cancels from the revise stage"
+  response "response"
+
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [input]
+    provides [updated]
+    config {
+      statement "UPDATE todos SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = $1"
+      args [input.id]
+      require_affected true
+      not_found_message "todo not found"
+    }
+  }
+  node "response" { uses "collect" requires [updated] provides [response] config { unwrap true } }
+}
+
+# ---------------------------------------------------------------------------
+# todo.task_list / todo.task_decide — the generic human-task API, adapted
+# from examples/ref-complete/app.bcl's `intent "task.list"` /
+# `intent "task.decide"` to this starter's own session/auth pattern (roles
+# checked at the route_group's `authz`, not an intent-level `permissions`
+# block — this starter's `authorization` resource is authz.rbac, not the
+# permission-catalog RBAC ref-complete uses).
+#
+# scope "mine" already covers "everything my role could claim" as well as
+# "my own claims" (task.list's own doc comment: "their own, plus their
+# roles' queues") — so the review queue and the approval queue are both
+# just this one intent, filtered by whoever is asking. No separate
+# role-scoped view was needed (Tasks.md's open question #2, resolved).
+#
+# The real authorization gate on a DECISION is task.complete's own
+# ClaimTaskAs/CompleteTask check against the task's role/assignee
+# (platform/actions_process.go) — a reviewer account cannot decide an
+# approval task even though both roles reach this same route.
+# ---------------------------------------------------------------------------
+
+intent "todo.task_list" {
+  description "List the caller's open todo-workflow tasks: their own claims plus their role's queues"
+  response "response"
+
+  node "user" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+  node "tasks" {
+    uses "task.list"
+    kind read
+    requires [user_id]
+    provides [tasks]
+    config { process "todo.workflow" scope "mine" }
+  }
+  node "response" { uses "collect" requires [tasks] provides [response] }
+}
+
+intent "todo.task_decide" {
+  description "Claim and complete an open todo-workflow task (review, approval or revise)"
+  response "response"
+
+  node "user" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+  node "task_id" {
+    uses "request.param"
+    provides [task_id]
+    config { name "id" from "path" }
+  }
+  node "decide" {
+    uses "task.complete"
+    kind effect
+    requires [task_id, input, user_id]
+    provides [task]
+    config { task_id_fact "task_id" action_fact "input.action" payload_fact "input" }
+  }
+  node "response" { uses "collect" requires [task] provides [response] }
+}
+
+# ---------------------------------------------------------------------------
+# The process itself.
+# ---------------------------------------------------------------------------
+
+process "todo.workflow" {
+  description "Durable review -> approval workflow for a submitted todo"
+  store "todo_runs"
+  queue "jobs"
+  start "review"
+  version 1
+  migration_policy pin
+  idempotency "id"
+  max_steps 20
+  max_visits 10
+  retention 24h
+
+  step "review" {
+    family approval
+    task {
+      title "Review todo #{{ run.input.id }}: {{ run.input.title }}"
+      instructions "Approve to send it on for approval, or request changes to send it back to the owner."
+      role "reviewer"
+      actions [approve, request_changes]
+      form_schema "review_decision"
+    }
+  }
+
+  step "mark_pending_approval" {
+    intent "todo.mark_pending_approval"
+    family action
+    input_data { set { id "{{ run.input.id }}" } }
+  }
+
+  step "approval" {
+    family approval
+    task {
+      title "Approve todo #{{ run.input.id }}: {{ run.input.title }}"
+      instructions "Approve to mark it done, or reject it."
+      role "approver"
+      actions [approve, reject]
+      form_schema "approval_decision"
+    }
+  }
+
+  # Assigned to the specific owner via `assignee`, not a role — the other
+  # assignment mechanism TaskDefinition supports (process/definition.go:
+  # `Role string` vs `Assignee Renderer`), demonstrated deliberately once
+  # here alongside `role` above on review/approval.
+  step "revise" {
+    family approval
+    task {
+      title "Revise todo #{{ run.input.id }}: {{ run.input.title }}"
+      instructions "The reviewer requested changes. Resubmit for another review, or cancel this item."
+      assignee "{{ run.input.owner_id }}"
+      actions [resubmit, cancel]
+      form_schema "revise_decision"
+    }
+  }
+
+  step "done" {
+    intent "todo.complete"
+    family action
+    terminal true
+    input_data { set { id "{{ run.input.id }}" } }
+  }
+
+  step "rejected" {
+    intent "todo.reject"
+    family action
+    terminal true
+    input_data { set { id "{{ run.input.id }}" } }
+  }
+
+  step "cancelled" {
+    intent "todo.cancel"
+    family action
+    terminal true
+    input_data { set { id "{{ run.input.id }}" } }
+  }
+
+  edge "review_approved" {
+    kind branch
+    from "review"
+    to "mark_pending_approval"
+    condition "result.action == 'approve'"
+  }
+  edge "review_changes" {
+    kind branch
+    from "review"
+    to "revise"
+    condition "result.action == 'request_changes'"
+  }
+  edge "to_approval" {
+    kind simple
+    from "mark_pending_approval"
+    to "approval"
+  }
+  edge "revise_resubmit" {
+    kind branch
+    from "revise"
+    to "review"
+    condition "result.action == 'resubmit'"
+  }
+  edge "revise_cancel" {
+    kind branch
+    from "revise"
+    to "cancelled"
+    condition "result.action == 'cancel'"
+  }
+  edge "approval_approved" {
+    kind branch
+    from "approval"
+    to "done"
+    condition "result.action == 'approve'"
+  }
+  edge "approval_rejected" {
+    kind branch
+    from "approval"
+    to "rejected"
+    condition "result.action == 'reject'"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Routes. JSON API only — see this file's header for why, and the SSR
+# page routes this starter's frontend half adds separately.
+# ---------------------------------------------------------------------------
+
+route_group "todos" {
+  prefix "/api/v1/todos"
+  session "sessions"
+  auth "session_auth"
+  authz { roles ["user", "reviewer", "approver", "admin"] authorizer "authorization" }
+  cache_control "no-store"
+
+  route "todos.create" { method POST path "" intent "todo.create" status 201 }
+  route "todos.list"   { method GET  path "" intent "todo.list" }
+  route "todos.get" {
+    method GET
+    path "/:id"
+    intent "todo.get"
+    parameter "id" {
+      in path
+      kind string
+      required true
+      description "The todo id"
+    }
+  }
+  route "todos.submit" { method POST path "/:id/submit" intent "todo.submit" }
+  route "todos.update" {
+    method POST
+    path "/:id/edit"
+    intent "todo.update"
+    parameter "id" {
+      in path
+      kind string
+      required true
+      description "The todo id"
+    }
+  }
+}
+
+# Chosen path shape: /api/v1/tasks (list) and /api/v1/tasks/:id/decide
+# (decide), mirroring examples/ref-complete's own /tasks + /tasks/:id/decide
+# pair. The frontend's show.html page is expected to POST its inline
+# review/approval/revise decision form to this same
+# /api/v1/tasks/:id/decide route.
+route_group "todo_tasks" {
+  prefix "/api/v1/tasks"
+  session "sessions"
+  auth "session_auth"
+  authz { roles ["user", "reviewer", "approver", "admin"] authorizer "authorization" }
+  cache_control "no-store"
+
+  route "todo_tasks.list"   { method GET  path "" intent "todo.task_list" }
+  route "todo_tasks.decide" {
+    method POST
+    path "/:id/decide"
+    intent "todo.task_decide"
+    parameter "id" {
+      in path
+      kind string
+      required true
+      description "The task id"
+    }
+  }
+}

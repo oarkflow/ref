@@ -251,6 +251,61 @@ request denied, generically, with no node past the deadlock ever running.
 `orders.create`'s `policy` node hit exactly this requiring `[input,
 validated]` instead of `[input]`; its own comment is the postmortem.
 
+## Durable workflow, review and approval (`resources/config/12_todo_workflow_example.bcl`, `13_todo_pages.bcl`)
+
+`process "todo.workflow"` is this starter's one worked example of the
+`process`/`step`/`task`/`edge` durable-workflow DSL — genuinely different
+from `orders`' `flow.branch`/`decision.table` above: those resolve within
+one request; a process run persists (`todo_runs`, a `store.sql` resource,
+`01_resources.bcl`) and advances asynchronously off the same `jobs` queue
+`notify.welcome` already uses, so a step's own decision can arrive minutes
+or days after the run started, from a different request, a different
+person, entirely.
+
+**Two task-assignment mechanisms, both used**: the `review`/`approval`
+steps use `role "reviewer"`/`role "approver"` — any account with that role
+may claim the task. The `revise` step (reached when a reviewer requests
+changes) uses `assignee "{{ run.input.owner_id }}"` instead — a templated
+string naming one specific principal, not a role; nobody else, admin
+included at the *task* level (route-level `authz` still lists `admin` for
+consistency, but `task.complete`'s own `ClaimTaskAs` check is the real
+gate here, same as every other task). Confirmed via
+`process/definition.go`'s `TaskDefinition` (`Role string` vs
+`Assignee Renderer`) while building this — `title`/`instructions` use the
+identical `{{ ... }}` template syntax, so this generalizes to "any task
+field that should read from the run's own input."
+
+**A real platform bug found and fixed building this**:
+`platform/actions_process.go`'s `taskFailure` mapped a handful of
+`ref/process` error strings to HTTP statuses (`"assigned to somebody
+else"` → 403, etc.) but not `role %q is required to claim task %s` —
+`ClaimTaskAs`'s actual error text for a role mismatch — so a completely
+correct RBAC denial (the claim was genuinely refused) surfaced as a
+generic 500 `INTERNAL_ERROR` instead of 403 `PERMISSION_DENIED`. Fixed in
+core (one more `strings.Contains` case); `TestTodoWorkflowExample`
+(`starter_test.go`) asserts the 403 directly, so this is a regression
+test now, not just a changelog line.
+
+**`open_task`, `todo.get`'s one non-obvious node chain**: a task's own
+`task.list` action has no way to scope itself to one run from BCL config
+(`TaskFilter.RunID` exists in Go, `taskListAction` never wires it) — so
+finding "does the caller have an open task on *this* todo's run" is
+`task.list { scope "mine" }` (every open task the caller could act on,
+across every run) piped through `data.filter` (keep only
+`item.run_id == todo.run_id`) piped through `data.first { optional true }`
+(zero matches is a normal outcome — a draft, or a todo nobody's blocked
+on — not an error). `pages/todos/show.html` renders the matching
+decision form, or nothing, off this one fact.
+
+**Async means a status read immediately after a decision can still show
+the old value** — a decision's own HTTP response is synchronous (the task
+row updates immediately), but the *next* step's task only appears once the
+queue worker picks up the advance job, typically milliseconds later in
+this starter's own tests but not zero. Poll (`GET /api/v1/todos/:id`,
+`GET /api/v1/tasks`) rather than assuming a decision's response already
+reflects the run having moved on — `TestTodoWorkflowExample`'s
+`waitForTask`/`waitForStatus` helpers are the pattern to copy.
+
 ## Circuit breaker (`delivery_breaker` resource, `notify.welcome` / `notification.password_reset`)
 
 `circuit_breaker.store`/`.guard`/`.record` (core `platform/resources_coord.go`,

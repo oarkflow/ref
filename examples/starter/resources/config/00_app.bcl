@@ -25,6 +25,21 @@ role "user" {
   permissions ["self:read", "self:write"]
 }
 
+# The two roles below exist only for resources/config/12_todo_workflow_example.bcl
+# — a durable review/approval workflow genuinely needs more than user/admin to
+# demonstrate role-gated human tasks at more than one stage. Deleting that
+# example (see its own file header for the full list) means deleting these two
+# roles too.
+role "reviewer" {
+  description "Decides the todo workflow's review stage: approve to the approval stage, or request changes back to the owner"
+  permissions ["self:read", "self:write"]
+}
+
+role "approver" {
+  description "Decides the todo workflow's approval stage: approve to done, or reject"
+  permissions ["self:read", "self:write"]
+}
+
 # Session cookies are HMAC-signed with this. `openssl rand -hex 32` for a
 # real deployment — the 32-byte minimum is enforced when the session
 # resource opens (01_resources.bcl).
