@@ -148,6 +148,7 @@ func main() {
 
 	bclDir := bootstrap.ResolveDir("examples/starter/resources/config", "./resources/config", "resources/config")
 	templatesDir := bootstrap.ResolveDir("examples/starter/resources/templates", "./resources/templates", "resources/templates")
+	staticDir := bootstrap.ResolveDir("examples/starter/resources/static", "./resources/static", "resources/static")
 
 	// Maintenance mode: one gate shared by the HTTP middleware below, the
 	// readiness check, and the "ops.maintenance_set" action a BCL admin
@@ -275,6 +276,20 @@ func main() {
 	}
 	app.Get("/livez", wrapHTTPHandler(health.LivenessHandler(healthRegistry)))
 	app.Get("/readyz", wrapHTTPHandler(health.ReadinessHandler(healthRegistry)))
+	// A service worker must be served from the root to get root scope —
+	// resources/config/08_static.bcl's "/static" prefix can't give it that,
+	// so this is the one static asset served directly in Go instead of
+	// through a BCL `static` block, the same reason /livez and /readyz are.
+	// Always no-cache, deliberately stronger than 08_static.bcl's own
+	// default: a stale service worker doesn't just show an old page once,
+	// it can keep controlling every future load until it's explicitly
+	// unregistered — see resources/static/sw.js's own doc comment.
+	swPath := filepath.Join(staticDir, "sw.js")
+	app.Get("/sw.js", func(c fh.Ctx) error {
+		c.Set("Cache-Control", "no-cache")
+		c.Set("Content-Type", "text/javascript; charset=utf-8")
+		return c.SendFile(swPath)
+	})
 	// Every REF node/decision/effect/execution event, counted and timed —
 	// promobserver.New above is the only wiring; nothing in resources/config/ knows
 	// metrics exist. Scrape it like any other Prometheus target.

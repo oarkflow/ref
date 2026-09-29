@@ -327,6 +327,23 @@ to choose HTML vs JSON) matches offers against Accept header tokens
 literally — offer `"text/html"`, not the bare word `"html"`; the latter
 silently never matches and you always get the JSON branch.
 
+**A third, worth knowing if you're on `github.com/oarkflow/template` before
+v0.0.4**: `internal/web/renderer.go` passes `SecureMode: false` to
+`template.SPLConfig`, meaning "script tags are allowed" — but v0.0.3 and
+earlier's `NewSPL()` constructor hardcoded `engine.SecureMode = true`
+before `Config(cfg)` ever ran, and `Config`'s own
+`if cfg.SecureMode { engine.SecureMode = true }` could only ever turn it
+further *on*, never off, so `SecureMode: false` silently never applied and
+any `<script>` tag — inline or `src=` — failed the whole render with
+`script tags are not allowed in secure mode` (`spl`'s
+`ensureSecureRenderedHTML`). **Fixed upstream in `oarkflow/template`
+v0.0.4** (`Config` now does `e.engine.SecureMode = cfg.SecureMode`
+unconditionally, so it's authoritative in both directions) — this starter
+pins v0.0.4+, so this no longer applies here; recorded in case you're
+reading an older `go.mod` or hit the same message on a different SPL
+consumer. `resources/static/js/sw-register.js`'s registration `<script src=...>` (in
+every layout) is what originally surfaced this.
+
 ### Error pages (`cmd/server/errors.go`, `pages/errors/error.html`)
 
 Every route failure — an RBAC denial, a validation error, an unmatched

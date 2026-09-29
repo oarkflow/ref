@@ -7,7 +7,7 @@ require (
 	github.com/oarkflow/fh v0.0.26
 	github.com/oarkflow/migrate v0.0.28
 	github.com/oarkflow/ref v0.0.0
-	github.com/oarkflow/template v0.0.3
+	github.com/oarkflow/template v0.0.4
 	github.com/oarkflow/zlog v0.0.3
 	github.com/prometheus/client_golang v1.24.1
 	go.opentelemetry.io/otel v1.46.0
@@ -45,13 +45,13 @@ require (
 	github.com/oarkflow/convert v0.0.6 // indirect
 	github.com/oarkflow/date v0.0.4 // indirect
 	github.com/oarkflow/expr v0.0.11 // indirect
-	github.com/oarkflow/interpreter v0.0.12 // indirect
+	github.com/oarkflow/interpreter v0.0.13 // indirect
 	github.com/oarkflow/ip v0.0.11 // indirect
 	github.com/oarkflow/jet v0.0.4 // indirect
 	github.com/oarkflow/json v0.0.28 // indirect
 	github.com/oarkflow/log v1.0.84 // indirect
 	github.com/oarkflow/rules v0.0.5 // indirect
-	github.com/oarkflow/spl v0.0.8 // indirect
+	github.com/oarkflow/spl v0.0.10 // indirect
 	github.com/oarkflow/squealx v0.0.78 // indirect
 	github.com/oarkflow/tcpguard v0.0.16 // indirect
 	github.com/oarkflow/wuid v0.0.1 // indirect
