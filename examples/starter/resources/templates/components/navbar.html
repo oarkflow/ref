@@ -7,8 +7,23 @@
     </a>
 
     <nav class="nav">
-      @if(user) {
+      <!--
+        NOTE: no directive keywords (the at-sign forms) written out
+        literally inside this comment — an oarkflow/spl parser quirk scans
+        comment text for those too, misreading one as real syntax and
+        corrupting everything parsed after it.
+
+        "user.email != ''", not a bare "user": a bare-identifier condition
+        paired with an else clause is read by this engine as a
+        client-hydration signal, which has shown real bugs in this
+        codebase with no hydration runtime loaded to back it up (see
+        resources/templates/components/todos/field.html and
+        resources/templates/pages/todos/show.html for two of them). A
+        comparison expression avoids that code path entirely.
+      -->
+      @if(user.email != "") {
         <a href="/dashboard" class="nav-link">Dashboard</a>
+        <a href="/todos" class="nav-link">Todos</a>
         @if(user.roles == "admin") {
           <a href="/dashboard/admin" class="nav-link">Admin</a>
         }

@@ -237,6 +237,15 @@ func main() {
 				logger.Error("seeding dev admin", zlog.Err(err))
 				log.Fatalf("starter: seeding dev admin: %v", err)
 			}
+			// owner@example.com/reviewer@example.com/approver@example.com,
+			// same password as the admin account — see ops.SeedDevTodoRoleAccounts's
+			// own doc comment. Lets the todo workflow example's review/
+			// approval steps be walked by logging in as each role in turn,
+			// with no manual `UPDATE users SET roles = ...`.
+			if err := ops.SeedDevTodoRoleAccounts(ctx, db, boot.Env, boot.AdminPassword); err != nil {
+				logger.Error("seeding dev todo role accounts", zlog.Err(err))
+				log.Fatalf("starter: seeding dev todo role accounts: %v", err)
+			}
 		}
 	}
 
@@ -249,6 +258,7 @@ func main() {
 		IsDev:        boot.Env != "production",
 		AppName:      "starter",
 		AppVersion:   boot.AppVersion,
+		DemoPassword: boot.AdminPassword,
 	})
 	if err != nil {
 		log.Fatalf("starter: template engine: %v", err)

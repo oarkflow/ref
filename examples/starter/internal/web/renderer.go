@@ -20,6 +20,12 @@ type RendererConfig struct {
 	IsDev        bool
 	AppName      string
 	AppVersion   string
+	// DemoPassword is the password internal/ops/seed.go actually seeded the
+	// demo role accounts with (AdminPassword — see cmd/server/main.go).
+	// Passed through as a global so resources/templates/pages/auth/login.html's
+	// one-click demo-login buttons always match what was really seeded,
+	// even when ADMIN_PASSWORD is overridden away from its default.
+	DemoPassword string
 }
 
 // NewSPLRenderer sets up github.com/oarkflow/template with github.com/oarkflow/spl.
@@ -48,19 +54,20 @@ func NewSPLRenderer(cfg RendererConfig) (*template.SPLEngine, error) {
 		SecureMode: false,
 		Reload:     cfg.IsDev,
 		Globals: map[string]any{
-			"title":       "starter",
-			"appName":     cfg.AppName,
-			"appVersion":  cfg.AppVersion,
-			"currentYear": fmt.Sprintf("%d", time.Now().Year()),
-			"environment": ternary(cfg.IsDev, "development", "production"),
-			"error":       "",
-			"success":     "",
-			"user":        map[string]any{},
-			"users":       []map[string]any{},
-			"redirect":    "/dashboard",
-			"email":       "",
-			"name":        "",
-			"token":       "",
+			"title":        "starter",
+			"appName":      cfg.AppName,
+			"appVersion":   cfg.AppVersion,
+			"currentYear":  fmt.Sprintf("%d", time.Now().Year()),
+			"environment":  ternary(cfg.IsDev, "development", "production"),
+			"demoPassword": cfg.DemoPassword,
+			"error":        "",
+			"success":      "",
+			"user":         map[string]any{},
+			"users":        []map[string]any{},
+			"redirect":     "/dashboard",
+			"email":        "",
+			"name":         "",
+			"token":        "",
 		},
 	})
 

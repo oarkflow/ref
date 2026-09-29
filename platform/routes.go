@@ -774,7 +774,15 @@ func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute,
 		if err != nil {
 			p.audit(ctx, route, principal, tenant, body, nil, err)
 			if strings.HasPrefix(route.spec.Name, "web.") && (strings.Contains(c.Get("Accept"), "text/html") || strings.Contains(c.Get("Content-Type"), "application/x-www-form-urlencoded")) {
-				return c.Redirect(route.spec.Path+"?error="+url.QueryEscape(err.Error()), 303)
+				// c.Path(), not route.spec.Path: the route spec still has the
+				// literal ":id"-style placeholder, which would redirect the
+				// browser to a URL that can never resolve. c.Path() is this
+				// request's actual, already-substituted path.
+				target := c.Path()
+				if back := c.Query("redirect"); back != "" {
+					target = back
+				}
+				return c.Redirect(target+"?error="+url.QueryEscape(err.Error()), 303)
 			}
 			return projectFailure(c, err)
 		}

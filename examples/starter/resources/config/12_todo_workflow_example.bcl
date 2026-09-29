@@ -308,6 +308,114 @@ intent "todo.update" {
 }
 
 # ---------------------------------------------------------------------------
+# todo.subtasks.replace — the checklist behind "Rows can be dynamic with
+# Add/Remove... sort Up/Down": a todo's subtasks are edited as a whole list,
+# not one row at a time. A deliberately separate intent/route/table from
+# todo.update, not folded into it, for one specific reason: a native
+# application/x-www-form-urlencoded body has no way to represent a nested
+# array of objects at all (see todo.create's own long comment on this same
+# platform limit), so this endpoint requires a genuine JSON body
+# (`{"subtasks":[{"title":"..."}, ...]}`) — the frontend's dynamic
+# Add/Remove/Up/Down editor is JS-driven for exactly this reason (moving
+# rows client-side, then POSTing the final array as JSON). Keeping it a
+# separate call from the plain-field save means that save path stays exactly
+# what it already was — a native <form>, works with JS off — and this call
+# can never silently wipe the checklist just because a caller's body used a
+# transport that can't carry it.
+#
+# Replace, not append/remove/move as separate calls: the whole list is
+# resent every time (delete every existing row for this todo, reinsert the
+# new list in the order given), so "remove"/"reorder" are pure client-side
+# array edits with no separate wire operation to define, and the row order
+# in the reply is simply insertion order (auto-increment id, ascending) —
+# no explicit `position` column needed since there is never a partial
+# update to reconcile against.
+# ---------------------------------------------------------------------------
+
+intent "todo.subtasks.replace" {
+  description "Replace a draft todo's whole subtask list — owner only, draft status only"
+  response "response"
+  timeout 5s
+
+  node "user-id" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+  node "todo-id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" from "path" }
+  }
+
+  node "load" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id, id]
+    provides [rows]
+    config {
+      statement "SELECT id, owner_id, status FROM todos WHERE id = $1 AND owner_id = $2"
+      args [id, user_id]
+      require_rows true
+      not_found_message "todo not found"
+    }
+  }
+  node "existing" { uses "data.first" requires [rows] provides [existing] config { source_fact "rows" } }
+
+  node "only-draft" {
+    uses "validate.expression"
+    requires [existing]
+    provides [editable]
+    config {
+      expression "existing.status == 'draft'"
+      message "only a draft todo's checklist can be edited"
+    }
+  }
+
+  # Drops blank rows (an empty Add-row the caller never filled in, or one
+  # cleared by a Remove click that wasn't dropped client-side) — the one
+  # piece of server-side validation this needs, since validate.schema checks
+  # one object at a time and has no per-element form for a list.
+  node "clean-subtasks" {
+    uses "data.filter"
+    requires [input]
+    provides [subtasks]
+    config {
+      source_fact "input.subtasks"
+      expression "item.title != null && trim(item.title) != ''"
+    }
+  }
+
+  node "delete-existing" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [existing, editable]
+    provides [deleted]
+    config {
+      statement "DELETE FROM todo_subtasks WHERE todo_id = $1"
+      args [existing.id]
+    }
+  }
+
+  node "insert-new" {
+    uses "database.insert_many"
+    resource "database"
+    kind effect
+    requires [existing, subtasks, deleted]
+    provides [inserted]
+    config {
+      table "todo_subtasks"
+      columns ["title"]
+      rows "subtasks"
+      set { todo_id "existing.id" }
+    }
+  }
+
+  # subtasks (the already-cleaned list just inserted), not a follow-up
+  # SELECT — the same read-after-write rule todo.create/todo.update's own
+  # comments explain: a read node can't see this transaction's own write.
+  node "response" { uses "collect" requires [subtasks, inserted] provides [response] }
+}
+
+# ---------------------------------------------------------------------------
 # todo.list / todo.get — read paths. Anyone signed in may see the queue (the
 # RBAC gate that matters is on ACTING, not seeing — see Tasks.md's "Routes &
 # RBAC" table); the human-task engine's own role/assignee check is the real
@@ -320,6 +428,22 @@ intent "todo.list" {
   response "response"
 
   node "user-id" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+
+  # Loaded so the SSR page's own navbar and row-level owner checks (which
+  # render from this same response) see the signed-in caller, matching
+  # dashboard.index/dashboard.admin's own load-caller-as-user convention —
+  # without this, "user" stays the renderer's empty-map fallback and every
+  # `user.id`/`user.roles` check in the templates silently evaluates false.
+  node "user-rows" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [user_rows]
+    config { statement "SELECT id, email, name, roles, status, created_at FROM users WHERE id = $1 LIMIT 1" args [user_id] }
+  }
+  node "user" { uses "data.first" requires [user_rows] provides [user] config { source_fact "user_rows" } }
+
   node "todos" {
     uses "database.query"
     resource "database"
@@ -330,7 +454,7 @@ intent "todo.list" {
       statement "SELECT id, owner_id, title, description, assignee_email, priority, due_date, status, run_id, created_at, updated_at FROM todos ORDER BY created_at DESC LIMIT 50"
     }
   }
-  node "response" { uses "collect" requires [todos] provides [response] }
+  node "response" { uses "collect" requires [todos, user] provides [response] }
 }
 
 intent "todo.get" {
@@ -338,6 +462,20 @@ intent "todo.get" {
   response "response"
 
   node "user-id" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+
+  # See todo.list's own comment: without this, "user" stays the renderer's
+  # empty-map fallback and every user.id/user.roles check in show.html
+  # (navbar included) silently evaluates false.
+  node "user-rows" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [user_rows]
+    config { statement "SELECT id, email, name, roles, status, created_at FROM users WHERE id = $1 LIMIT 1" args [user_id] }
+  }
+  node "user" { uses "data.first" requires [user_rows] provides [user] config { source_fact "user_rows" } }
+
   node "todo-id" {
     uses "request.param"
     provides [id]
@@ -387,7 +525,22 @@ intent "todo.get" {
     config { source_fact "run_tasks" optional true }
   }
 
-  node "response" { uses "collect" requires [todo, open_task] provides [response] }
+  # The checklist, oldest first — insertion order, which is exactly the
+  # order todo.subtasks.replace's callers submitted it in (see that
+  # intent's own comment on why there's no explicit position column).
+  node "subtasks" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [todo]
+    provides [subtasks]
+    config {
+      statement "SELECT id, title FROM todo_subtasks WHERE todo_id = $1 ORDER BY id ASC"
+      args [todo.id]
+    }
+  }
+
+  node "response" { uses "collect" requires [todo, open_task, subtasks, user] provides [response] }
 }
 
 # ---------------------------------------------------------------------------
@@ -764,6 +917,17 @@ route_group "todos" {
     method POST
     path "/:id/edit"
     intent "todo.update"
+    parameter "id" {
+      in path
+      kind string
+      required true
+      description "The todo id"
+    }
+  }
+  route "todos.subtasks_replace" {
+    method POST
+    path "/:id/subtasks"
+    intent "todo.subtasks.replace"
     parameter "id" {
       in path
       kind string

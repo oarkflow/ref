@@ -1,12 +1,14 @@
 # ===========================================================================
-# TODO example — SSR page routes only.
+# TODO example — SSR page routes, plus browser-form action routes.
 #
 # Pure presentation: session-cookie web pages that render the templates
-# under resources/templates/pages/todos/. No business logic lives here —
-# that's entirely in resources/config/12_todo_workflow_example.bcl (shapes,
-# the durable process, every intent, the JSON `route_group "todos"`, and the
-# task-decision routes). This file only wires GET pages to those intents,
-# the same way `web.dashboard`/`web.admin` do in 04_routes.bcl.
+# under resources/templates/pages/todos/, and the "web."-named POST routes
+# those pages' own <form> elements submit to (see the comment above
+# web.todos_create below for why the action routes exist separately from
+# route_group "todos"/"todo_tasks" in 12_todo_workflow_example.bcl). No
+# business logic lives here — every intent these routes call is defined
+# there; this file only wires pages and forms to those intents, the same
+# way `web.dashboard`/`web.admin`/`web.login_action` do in 04_routes.bcl.
 #
 # Part of the deletable TODO example — see Tasks.md's "What to delete to
 # remove this example" for the exact list; this file is on it.
@@ -58,5 +60,86 @@ route "web.todos_show" {
     kind string
     required true
     description "The todo id"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Browser-form action routes — same intents as route_group "todos"/
+# "todo_tasks" in 12_todo_workflow_example.bcl, but reachable at a bare
+# "web.*"-named path instead of under /api/v1. platform/routes.go only
+# redirects back to a page (instead of returning raw JSON) for a
+# form-urlencoded POST whose ROUTE NAME starts with "web." — every route
+# in that other file is named "todos.*"/"todo_tasks.*", so a native
+# <form method="POST"> submitted straight to /api/v1/todos/... renders the
+# JSON response in the browser, which is what a real user hitting Save/
+# Submit/Decide would see instead of ever landing back on a page. These
+# routes exist only so the templates' own <form action="..."> attributes
+# have somewhere name-"web."-prefixed to point at; /api/v1/todos/... keeps
+# working unchanged for curl/fetch callers (the checklist widget's fetch()
+# call deliberately still targets /api/v1/todos/:id/subtasks directly,
+# since it wants the JSON response, not a redirect).
+#
+# Each form sets its own target via a "redirect" query string on the
+# action URL (e.g. action="/todos/1/edit?redirect=/todos/1") — read by
+# platform/routes.go's generic `c.Query("redirect")` fallback, since none
+# of these route names match its small hardcoded set of special cases
+# (those are only for the auth routes in 04_routes.bcl).
+# ---------------------------------------------------------------------------
+
+route "web.todos_create" {
+  method POST
+  path "/todos"
+  intent "todo.create"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+  authz { roles ["user", "reviewer", "approver", "admin"] authorizer "authorization" }
+}
+
+route "web.todos_edit" {
+  method POST
+  path "/todos/:id/edit"
+  intent "todo.update"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+  authz { roles ["user", "reviewer", "approver", "admin"] authorizer "authorization" }
+  parameter "id" {
+    in path
+    kind string
+    required true
+    description "The todo id"
+  }
+}
+
+route "web.todos_submit" {
+  method POST
+  path "/todos/:id/submit"
+  intent "todo.submit"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+  authz { roles ["user", "reviewer", "approver", "admin"] authorizer "authorization" }
+  parameter "id" {
+    in path
+    kind string
+    required true
+    description "The todo id"
+  }
+}
+
+route "web.todo_tasks_decide" {
+  method POST
+  path "/tasks/:id/decide"
+  intent "todo.task_decide"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+  authz { roles ["user", "reviewer", "approver", "admin"] authorizer "authorization" }
+  parameter "id" {
+    in path
+    kind string
+    required true
+    description "The task id"
   }
 }

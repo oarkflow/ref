@@ -2,27 +2,27 @@
 
 @define("content") {
   <!--
-    Coordination note (frontend half, written before the backend half's
-    resources/config/12_todo_workflow_example.bcl existed): `todo.get` is
-    expected to publish a fact describing the caller's own open task on
-    this todo's run, if any — a map with at least `id` (the task id, for
-    the decide-form action), `step` (one of "review"/"approval"/"revise",
-    selecting which decision shape applies), and `actions` (the allowed
-    action values for that step, mirroring review_decision/
-    approval_decision/revise_decision's `action` enum). Absent/empty means
-    the caller has no open task on this run right now.
+    NOTE: no apostrophes or backticks inside any HTML comment in this file —
+    an oarkflow/spl parser quirk misreads either character in a comment as
+    an attribute-quote opener (it treats the opening "<" of the comment as
+    starting a tag), which then swallows every following brace, including
+    real block terminators, until end of template. Plain rendered text
+    outside an HTML comment tag is not affected. (Also: never write the
+    literal comment-close marker as text inside a comment body — it ends
+    the comment right there, same as a real browser would end it.)
 
-    Placeholder fact name used below: `open_task`. If the backend lands
-    under a different name, rename every `open_task` reference in this
-    file to match — nothing else here should need to change.
+    open_task: a fact todo.get publishes describing the caller own open
+    task on this todo run, if any — a map with at least task_id (for the
+    decide-form action), step (one of "review", "approval" or "revise",
+    selecting which decision shape applies), and actions (the allowed
+    action values for that step, mirroring review_decision,
+    approval_decision and revise_decision action enums). Absent means the
+    caller has no open task on this run right now.
 
-    The decide-form `action` attribute below assumes the task-decide route
-    lives at "/api/v1/tasks/:id/decide" (this starter's existing /api/v1
-    JSON-route convention applied to the generic task-decide pattern from
-    examples/ref-complete's `route "tasks.decide"`, which is NOT prefixed
-    the same way there). Confirm the real path in
-    resources/config/12_todo_workflow_example.bcl once it exists and fix
-    this attribute if it differs.
+    The decide-form action attribute below posts to "/tasks/:id/decide",
+    the web.todo_tasks_decide route in resources/config/13_todo_pages.bcl —
+    not the JSON /api/v1/tasks/:id/decide route, which returns raw JSON
+    instead of redirecting a plain browser form post back to a page.
   -->
 
   <div class="page-head">
@@ -33,17 +33,17 @@
   </div>
 
   <!--
-    "editable" here means "draft, and this is the owner" — the moment it
-    stops being draft (todo.submit) every field below becomes read-only, and
-    the only editable surface left on the page is the decision form further
-    down, gated by open_task.step instead. Both edits and submit are the
-    owner's actions on the SAME draft row, so they share one <form> (two
-    submit buttons, two form actions via `formaction` — one native HTML
-    form, no JS) rather than two separate forms fighting over the same
-    fields.
+    "editable" here means draft status and this viewer is the owner — the
+    moment it stops being draft (todo.submit) every field below becomes
+    read-only, and the only editable surface left on the page is the
+    decision form further down, gated by open_task.step instead. Both edits
+    and submit are the owner actions on the same draft row, so they share
+    one form (two submit buttons, two form actions via formaction, one
+    native HTML form, no JS) rather than two separate forms fighting over
+    the same fields.
   -->
   @if(todo.status == "draft" && todo.owner_id == user.id) {
-    <form method="POST" action="/api/v1/todos/${todo.id}/edit">
+    <form method="POST" action="/todos/${todo.id}/edit?redirect=/todos/${todo.id}">
       <div class="panel">
         <span class="panel-label">Details</span>
         @include("components/todos/field.html", { name: "title", label: "Title", type: "text", value: todo.title, editable: true })
@@ -59,7 +59,7 @@
 
       <div class="panel">
         <button type="submit" class="btn btn-secondary">Save changes</button>
-        <button type="submit" formaction="/api/v1/todos/${todo.id}/submit" class="btn btn-primary">Submit for review</button>
+        <button type="submit" formaction="/todos/${todo.id}/submit?redirect=/todos/${todo.id}" class="btn btn-primary">Submit for review</button>
       </div>
     </form>
   } @else {
@@ -77,12 +77,66 @@
     </div>
   }
 
-  @if(open_task) {
+  <!--
+    Checklist: dynamic rows, Add/Remove/Up/Down, saved as its own request,
+    deliberately not part of the Details/Assignment form above. See
+    resources/config/12_todo_workflow_example.bcl todo.subtasks.replace
+    comment and resources/static/js/todo-subtasks.js own header comment for
+    why: reordering rows only makes sense with JS, and the JSON body it
+    saves cannot be produced by a native form post at all, so this stays a
+    separate, independently-saved widget rather than risking the plain-field
+    Save button silently wiping the checklist on a request that could not
+    carry it.
+  -->
+  @if(todo.status == "draft" && todo.owner_id == user.id) {
+    <div class="panel" id="subtasks-panel" data-todo-id="${todo.id}">
+      <span class="panel-label">Checklist</span>
+      <ul class="subtask-rows" id="subtask-rows">
+        @for(subtask in subtasks) {
+          <li class="subtask-row">
+            <input type="text" class="form-control subtask-title" value="${subtask.title}">
+            <span class="subtask-actions">
+              <button type="button" class="btn btn-sm btn-secondary subtask-up" aria-label="Move up">↑</button>
+              <button type="button" class="btn btn-sm btn-secondary subtask-down" aria-label="Move down">↓</button>
+              <button type="button" class="btn btn-sm btn-secondary subtask-remove" aria-label="Remove">Remove</button>
+            </span>
+          </li>
+        }
+      </ul>
+      <button type="button" class="btn btn-sm btn-secondary" id="subtask-add">Add item</button>
+      <button type="button" class="btn btn-primary" id="subtask-save">Save checklist</button>
+      <span id="subtask-status" class="subtask-hint"></span>
+      <noscript><p class="subtask-hint">Enable JavaScript to add, remove or reorder checklist items.</p></noscript>
+    </div>
+  } @else {
+    @if(subtasks) {
+      <div class="panel">
+        <span class="panel-label">Checklist</span>
+        <ul class="subtask-rows">
+          @for(subtask in subtasks) {
+            <li class="subtask-row">${subtask.title}</li>
+          }
+        </ul>
+      </div>
+    }
+  }
+
+  <!--
+    "!= null", not a bare "open_task": same reason field.html uses
+    "editable == true" instead of a bare "editable" — a bare-identifier
+    condition paired with an else clause is treated by oarkflow/spl as a
+    client-hydration signal, which unconditionally renders BOTH branches
+    server-side (there is no hydration runtime on this page to pick one),
+    including this true-branch body that dereferences open_task.step — a
+    hard error when open_task is actually null. A comparison expression
+    takes the plain server-evaluated path instead.
+  -->
+  @if(open_task != null) {
     <div class="panel">
       <span class="panel-label">Your decision</span>
 
       @if(open_task.step == "review") {
-        <form method="POST" action="/api/v1/tasks/${open_task.task_id}/decide">
+        <form method="POST" action="/tasks/${open_task.task_id}/decide?redirect=/todos/${todo.id}">
           <div class="form-field">
             <label class="form-label" for="action">Decision</label>
             <select id="action" name="action" class="form-control">
@@ -99,7 +153,7 @@
       }
 
       @if(open_task.step == "approval") {
-        <form method="POST" action="/api/v1/tasks/${open_task.task_id}/decide">
+        <form method="POST" action="/tasks/${open_task.task_id}/decide?redirect=/todos/${todo.id}">
           <div class="form-field">
             <label class="form-label" for="action">Decision</label>
             <select id="action" name="action" class="form-control">
@@ -116,7 +170,7 @@
       }
 
       @if(open_task.step == "revise") {
-        <form method="POST" action="/api/v1/tasks/${open_task.task_id}/decide">
+        <form method="POST" action="/tasks/${open_task.task_id}/decide?redirect=/todos/${todo.id}">
           <div class="form-field">
             <label class="form-label" for="action">Decision</label>
             <select id="action" name="action" class="form-control">
@@ -128,5 +182,30 @@
         </form>
       }
     </div>
+  } @else {
+    @if(todo.status != "draft") {
+      <div class="panel">
+        <span class="panel-label">Status</span>
+        @if(todo.status == "in_review") {
+          <p class="panel-text">Waiting on the reviewer — no action needed from you right now.</p>
+        }
+        @if(todo.status == "pending_approval") {
+          <p class="panel-text">Reviewed, and waiting on final approval.</p>
+        }
+        @if(todo.status == "done") {
+          <p class="panel-text">Approved and complete.</p>
+        }
+        @if(todo.status == "rejected") {
+          <p class="panel-text">Rejected by the approver.</p>
+        }
+        @if(todo.status == "cancelled") {
+          <p class="panel-text">Cancelled.</p>
+        }
+      </div>
+    }
   }
+}
+
+@define("scripts") {
+  <script src="/static/js/todo-subtasks.js"></script>
 }

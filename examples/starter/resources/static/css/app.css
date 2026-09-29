@@ -467,6 +467,40 @@ a:hover {
   color: var(--text-dim);
 }
 
+/* Development-only one-click demo logins — internal/ops/seed.go's seeded
+ * accounts, resources/templates/pages/auth/login.html. */
+.demo-accounts {
+  margin-top: 1.75rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.demo-accounts-label {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: 0.4rem;
+}
+
+.demo-accounts-hint {
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  margin-bottom: 0.75rem;
+}
+
+.demo-account-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.demo-account-row form {
+  margin: 0;
+}
+
 @media (max-width: 860px) {
   .auth-shell {
     grid-template-columns: 1fr;
@@ -825,4 +859,36 @@ a:hover {
   background: var(--error-soft);
   color: var(--error);
   border-color: var(--error);
+}
+
+/* Todo checklist — dynamic rows with Add/Remove/reorder controls, wired up
+ * by resources/static/js/todo-subtasks.js. */
+.subtask-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 0.75rem 0;
+  padding: 0;
+}
+
+.subtask-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.subtask-row .subtask-title {
+  flex: 1;
+}
+
+.subtask-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.subtask-hint {
+  color: var(--text-muted);
+  font-size: 0.85rem;
 }

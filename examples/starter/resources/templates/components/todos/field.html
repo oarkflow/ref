@@ -1,4 +1,18 @@
-@if(editable) {
+<!--
+  NOTE: no directive keywords (the at-sign forms) written out literally
+  inside this comment, and no apostrophes or backticks either — an
+  oarkflow/spl parser quirk scans comment text for both, misreading either
+  as real syntax and corrupting everything parsed after it.
+
+  "== true", not a bare "editable": a conditional whose condition is a
+  single bare identifier is treated as a client-hydration signal by this
+  engine. It emits both branches with one hidden via inline style, meant
+  for a runtime script (none is loaded on this page) to toggle later,
+  rather than resolving the boolean now. A comparison expression is not a
+  bare identifier, so it takes the plain server-side evaluation path
+  instead and actually renders the branch this call asked for.
+-->
+@if(editable == true) {
   <div class="form-field">
     <label class="form-label" for="${name}">${label}</label>
     <input type="${type}" id="${name}" name="${name}" class="form-control" value="${value}">

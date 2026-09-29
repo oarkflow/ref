@@ -5,17 +5,26 @@
   <td class="font-mono">${todo.due_date}</td>
   <td>
     @if(todo.status == "draft" && todo.owner_id == user.id) {
-      <a href="/todos/${todo.id}" class="btn btn-sm btn-secondary">Submit…</a>
+      <a href="/todos/${todo.id}" class="btn btn-sm btn-secondary">Edit</a>
     }
     <!--
-      "in_review" covers two different open tasks that share this one status
-      value: a reviewer's "review" task, or — after a request_changes loop —
-      the *owner's own* "revise" task instead. todo.list has no per-row task
-      join to tell which one applies here (todo.get does compute the real
-      open_task, per-row, for the show page); this row only needs to decide
-      who's worth sending there at all, so it shows a role-appropriate label
-      and lets the show page's own open_task-gated form resolve the
-      specifics once they land on it.
+      NOTE: no apostrophes or backticks in this comment — an oarkflow/spl
+      parser quirk misreads either character inside an HTML comment as an
+      attribute-quote opener (it treats everything from the opening "<" of
+      the comment as "inside a tag"), which then swallows every following
+      brace, including real block terminators, until end of template. Plain
+      rendered text outside an HTML comment tag is not affected. (Also:
+      never write the literal comment-close marker as text inside a
+      comment body — it ends the comment right there, same as a real
+      browser would end it.)
+
+      "in_review" covers two different open tasks that share one status
+      value: a reviewer review task, or, after a request_changes loop, the
+      owner own revise task instead. todo.list has no per-row task join to
+      tell which one applies here (todo.get does compute the real open_task,
+      per row, for the show page), so this row only decides who is worth
+      sending there at all, with a role-appropriate label, and lets the show
+      page open_task-gated form resolve the specifics once they land on it.
     -->
     @if(todo.status == "in_review" && (user.roles == "reviewer" || user.roles == "admin")) {
       <a href="/todos/${todo.id}" class="btn btn-sm btn-primary">Review</a>

@@ -121,8 +121,13 @@ route "web.dashboard" {
   auth "session_auth"
   cache_control "private, no-store"
   # superuser_roles (01_resources.bcl) does not bypass a roles [...] gate —
-  # list every role meant to reach this page explicitly.
-  authz { roles ["user", "admin"] authorizer "authorization" }
+  # list every role meant to reach this page explicitly. "reviewer"/
+  # "approver" (added by the todo workflow example, resources/config/00_app.bcl)
+  # belong here too: /dashboard is every signed-in account's landing page
+  # (internal/ops/seed.go's demo-login buttons all redirect here after
+  # login), not an admin-only or plain-user-only page — omitting either
+  # role here 403s that account immediately after a successful login.
+  authz { roles ["user", "reviewer", "approver", "admin"] authorizer "authorization" }
 }
 
 route "web.admin" {

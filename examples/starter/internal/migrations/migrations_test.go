@@ -26,7 +26,7 @@ func TestPendingListsEveryMigrationOnAFreshDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Pending: %v", err)
 	}
-	want := []string{"1_create_users_table", "2_create_audit_log_table", "3_create_password_resets_table", "4_create_orders_table", "5_create_todos_table"}
+	want := []string{"1_create_users_table", "2_create_audit_log_table", "3_create_password_resets_table", "4_create_orders_table", "5_create_todos_table", "6_create_todo_subtasks_table"}
 	if len(pending) != len(want) {
 		t.Fatalf("Pending = %v, want %d entries (%v)", pending, len(want), want)
 	}

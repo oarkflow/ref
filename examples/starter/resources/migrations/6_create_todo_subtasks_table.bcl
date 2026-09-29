@@ -1,0 +1,31 @@
+Migration "6_create_todo_subtasks_table" {
+  Version = "1.0.0"
+  Description = "Create the todo_subtasks table (resources/config/12_todo_workflow_example.bcl) — a todo's dynamic, reorderable checklist"
+  Connection = "default"
+  Up {
+    CreateTable "todo_subtasks" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "todo_id" {
+        type = "integer"
+        index = true
+      }
+      Field "title" {
+        type = "string"
+        size = 200
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+  }
+  Down {
+    DropTable "todo_subtasks" {
+      Cascade = true
+    }
+  }
+}

@@ -28,4 +28,45 @@
   <div class="auth-foot">
     Don't have an account? <a href="/register">Create one</a>
   </div>
+
+  <!--
+    Only in development — internal/ops/seed.go (SeedDevTodoRoleAccounts,
+    plus SeedDevAdmin) creates these four accounts on first boot, never in
+    production, so this panel is gated the same way. Each button is its own
+    tiny form (hidden email/password, no JS) rather than a link, since
+    logging in is a POST, not a GET.
+  -->
+  @if(environment != "production") {
+    <div class="demo-accounts">
+      <span class="demo-accounts-label">Demo accounts (development only)</span>
+      <p class="demo-accounts-hint">
+        One click, no typing — seeded by internal/ops/seed.go. Use these to
+        walk the todo workflow example as every role it gates on: create
+        and submit a todo as Owner, then sign out and log back in as
+        Reviewer to approve it, then Approver to finish it.
+      </p>
+      <div class="demo-account-row">
+        <form method="POST" action="/login">
+          <input type="hidden" name="email" value="admin@example.com">
+          <input type="hidden" name="password" value="${demoPassword}">
+          <button type="submit" class="btn btn-sm btn-secondary">Admin</button>
+        </form>
+        <form method="POST" action="/login">
+          <input type="hidden" name="email" value="owner@example.com">
+          <input type="hidden" name="password" value="${demoPassword}">
+          <button type="submit" class="btn btn-sm btn-secondary">Owner (user)</button>
+        </form>
+        <form method="POST" action="/login">
+          <input type="hidden" name="email" value="reviewer@example.com">
+          <input type="hidden" name="password" value="${demoPassword}">
+          <button type="submit" class="btn btn-sm btn-secondary">Reviewer</button>
+        </form>
+        <form method="POST" action="/login">
+          <input type="hidden" name="email" value="approver@example.com">
+          <input type="hidden" name="password" value="${demoPassword}">
+          <button type="submit" class="btn btn-sm btn-secondary">Approver</button>
+        </form>
+      </div>
+    </div>
+  }
 }

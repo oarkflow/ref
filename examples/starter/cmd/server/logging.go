@@ -150,7 +150,14 @@ func httpAccessLog(logger *zlog.Logger) fh.Handler {
 			zlog.String("method", c.Method()),
 			zlog.String("path", c.Path()),
 			zlog.Int("status", c.StatusCode()),
-			zlog.Duration("duration", time.Since(start)),
+			// zlog.Duration(...) would be the natural call here, but zlog's
+			// logfmt/console encoder (encoder_logfmt.go, KindDuration case)
+			// prints it as a raw int64 nanosecond count, not a unit-suffixed
+			// string — a gap in that third-party encoder this starter has
+			// no way to patch. time.Duration.String() gives us the
+			// us/ns/ms/s/m formatting directly, so log it as a plain string
+			// instead.
+			zlog.String("duration", time.Since(start).String()),
 			zlog.String("ip", c.IP()),
 		}
 		switch {
