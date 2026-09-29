@@ -206,6 +206,16 @@ func main() {
 	opts.HealthRegistry = healthRegistry
 	healthRegistry.Register("maintenance", health.Simple(maintenance.HealthCheck))
 
+	// Checked, and applied if needed, on every boot — see migrate.go's
+	// ensureMigrated doc comment for the three ways this can go depending on
+	// whether anything can answer a prompt. Must run before LoadDir: the
+	// very first thing LoadDir does past compiling the document is seed the
+	// dev admin account (seed.go), which queries the users table directly
+	// and previously turned a forgotten migration into a raw driver error.
+	if err := ensureMigrated(logger); err != nil {
+		log.Fatalf("starter: %v", err)
+	}
+
 	p, err := platform.LoadDir(ctx, bclDir, opts)
 	if err != nil {
 		logger.Error("compiling bcl", zlog.String("path", bclDir), zlog.Err(err))

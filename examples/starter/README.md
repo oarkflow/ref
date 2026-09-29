@@ -85,6 +85,12 @@ It ships with:
 - **Docker, and CI.** A working multi-stage `Dockerfile` and a three-job
   GitHub Actions workflow (`.github/workflows/ci.yml`) — both actually
   run, not just present.
+- **A boot-time migration check, not a boot-time migration surprise.**
+  `go run ./cmd/server` on a fresh checkout notices nothing has been
+  migrated and either asks (an interactive terminal) or applies them
+  automatically (`AUTO_MIGRATE=true`) — never a raw `no such table` from
+  deep inside `LoadDir`. See "Quick start" below and CONFIGURATION.md's
+  "Schema migrations".
 
 ## Quick start
 
@@ -94,8 +100,35 @@ Either export the required variables directly:
 export SESSION_SECRET="$(openssl rand -hex 32)"
 export WEBHOOK_SECRET="$(openssl rand -hex 32)"
 
+go run ./cmd/server
+```
+
+That's it — on a fresh checkout, `go run ./cmd/server` notices the
+database has never been migrated and asks:
+
+```text
+4 pending migration(s) (1_create_users_table, 2_create_audit_log_table,
+3_create_password_resets_table, 4_create_orders_table). Run them now? [y/N]:
+```
+
+Answer `y` and it migrates, then boots. Prefer the two deliberate steps
+instead (a real deployment usually should — see CONFIGURATION.md's "Schema
+migrations" for why cmd/migrator is still the tool for anything beyond a
+forward migration, such as a rollback)? Run the migrator yourself first and
+the server's own check finds nothing pending and boots straight through,
+with no prompt at all:
+
+```sh
 go run ./cmd/migrator cli migrate   # applies resources/migrations/*.bcl — once per schema change
 go run ./cmd/server
+```
+
+Scripting this (CI, a container entrypoint, anywhere nothing can answer a
+prompt)? Set `AUTO_MIGRATE=true` and skip the migrator step entirely —
+`go run ./cmd/server` alone is enough, migration included:
+
+```sh
+AUTO_MIGRATE=true go run ./cmd/server
 ```
 
 ...or copy `.env.example` to `.env` and fill it in — `cmd/server/main.go`
@@ -106,7 +139,6 @@ before anything else runs, including before the BCL document's own
 ```sh
 cp .env.example .env
 # edit .env: set real values for SESSION_SECRET and WEBHOOK_SECRET
-go run ./cmd/migrator cli migrate
 go run ./cmd/server
 ```
 
@@ -116,12 +148,15 @@ is safe to use in development without it ever fighting a deployment's real
 configuration. `.env` is gitignored; `ENV_FILE=path/to/other.env` points at
 a different file if you don't want `./.env`.
 
-`go run ./cmd/migrator cli migrate` creates `.data/starter/app.db` and
-applies `resources/migrations/*.bcl` to it — schema is owned by that binary, not
-created implicitly by `cmd/server` on first run, so run it once before the
-very first `go run ./cmd/server` and again after adding or editing a
-migration file. `cmd/server` seeds a development admin account into that
-database on boot — see "Production checklist" before you deploy this. In a
+Schema is still owned by `resources/migrations/*.bcl`, applied through the
+same `github.com/oarkflow/migrate` machinery either way — `cmd/server`
+checking and applying it on boot (above) is not a second, competing way
+schema gets created, just the same one steps automatically when nothing
+answers a prompt for it or you've said `AUTO_MIGRATE=true`. Add or edit a
+migration file and either binary picks it up: run `go run ./cmd/migrator
+cli migrate` yourself, or just start the server again and answer its
+prompt. `cmd/server` seeds a development admin account into that database
+on boot — see "Production checklist" before you deploy this. In a
 browser: `http://localhost:8080/login`, sign in with
 `admin@example.com` / `Password123!`, and you land on `/dashboard`;
 `/dashboard/admin` is the admin-only page.
@@ -221,12 +256,14 @@ starter/
 │   └── static/css/app.css     # the one stylesheet every page shares
 ├── internal/web/
 │   └── renderer.go          # the SPL template engine adapter (Go glue, not business logic)
-├── internal/bootstrap/      # .env loading and CWD-independent directory resolution, shared by both binaries below
+├── internal/bootstrap/      # .env/secret-file loading and CWD-independent directory resolution, shared by both binaries below
+├── internal/migrations/     # shared Manager construction + Pending/Apply — cmd/server's boot-time check and cmd/migrator both build on this
 ├── internal/ops/
 │   ├── maintenance.go       # the maintenance gate: middleware, health check, BCL action
 │   └── seed.go              # the dev-admin seeder — env-gated, never runs in production
 ├── cmd/server/
-│   ├── main.go              # bootstrap: .env, config, logging, metrics, LoadDir, mount, listen
+│   ├── main.go              # bootstrap: .env, config, logging, metrics, migration check, LoadDir, mount, listen
+│   ├── migrate.go           # ensureMigrated: checks + asks/applies pending migrations on every boot
 │   └── logging.go           # the one zlog.Logger every log line goes through (+ webhook plugin)
 ├── cmd/migrator/main.go     # applies resources/migrations/*.bcl — see "Schema migrations" in CONFIGURATION.md
 ├── scripts/
@@ -370,14 +407,18 @@ go run ./cmd/server
 # with a relative path
 docker build -f examples/starter/Dockerfile -t starter .
 
-# The image ships both binaries; CMD's default is the server, so run the
-# migrator once (schema is not applied automatically on boot — see
-# "Schema migrations" in CONFIGURATION.md) before the first server start,
-# against the same volume/DSN the server will use, and again after any
-# schema change:
+# The image ships both binaries; CMD's default is the server. A detached
+# container has no terminal to answer cmd/server's own migration prompt
+# (see "Schema migrations" in CONFIGURATION.md), so either run the migrator
+# once yourself, against the same volume/DSN the server will use, and again
+# after any schema change:
 docker run --rm -v starter-data:/app/.data -e DB_DSN=... starter /usr/local/bin/migrator cli migrate
 
 docker run -p 8080:8080 -v starter-data:/app/.data -e SESSION_SECRET=... -e WEBHOOK_SECRET=... starter
+
+# ...or skip that step and let the server migrate itself on every start:
+docker run -p 8080:8080 -v starter-data:/app/.data -e AUTO_MIGRATE=true \
+  -e SESSION_SECRET=... -e WEBHOOK_SECRET=... starter
 ```
 
 ## CI

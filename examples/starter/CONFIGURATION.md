@@ -33,6 +33,43 @@ correct DDL. `resources/config/01_resources.bcl`'s `database` resource only has
 `driver`/`dsn` — no `migrations` list — because the tool, not the app
 process, owns table creation.
 
+### `go run ./cmd/server` checks on every boot too
+
+You don't strictly have to run the migrator first. `cmd/server/main.go`'s
+`ensureMigrated` (`cmd/server/migrate.go`) checks `resources/migrations/*.bcl`
+against the database it's about to open, every time it starts — a fresh
+checkout used to fail here with a raw `no such table: users` from the
+seeding step deep inside `LoadDir`; now it turns into one of three clear
+outcomes:
+
+- **An interactive terminal** (you, at a shell): it lists what's pending and
+  asks — `4 pending migration(s) (1_create_users_table, ...). Run them now?
+  [y/N]:` — and only touches the database on `y`/`yes`. Anything else
+  refuses to boot, naming `go run ./cmd/migrator cli migrate` as the manual
+  alternative.
+- **`AUTO_MIGRATE=true`** (or `1`): applies them without asking — the shape
+  a container entrypoint or CI job wants, where nothing can answer a
+  prompt. Set it and `go run ./cmd/server` alone is enough for a fresh
+  checkout, migration included.
+- **Neither** (a service manager with no attached terminal, `AUTO_MIGRATE`
+  unset): refuses to boot with a message naming exactly what's pending and
+  what to run — never a raw driver error.
+
+This check is read-only when nothing is pending (which is the common
+case — an already-migrated database boots exactly as fast as before, no
+prompt, no delay) and, when it does apply something, goes through the same
+idempotent `Manager.ApplyMigration` the CLI itself uses
+(`internal/migrations.Apply`) — so it can never re-apply what's already
+there, and calling it on every boot is safe by construction, not just by
+convention. It is deliberately narrower than the migrator binary itself:
+forward-only, no rollback, no `--force`, no seeding — reach for
+`go run ./cmd/migrator` directly for any of those.
+
+`MIGRATIONS_DIR`/`MIGRATIONS_SEED_DIR` override where it looks, the same
+way `SECRETS_DIR` overrides the secrets-file lookup (see "Secrets in
+production" below) — useful for a nonstandard layout, or a test that can't
+rely on the default resolution matching its own working directory.
+
 Two things worth knowing about `oarkflow/migrate` (pin at least v0.0.27),
 found while wiring this up — confirmed by reading the generated DDL
 directly with `sqlite3`, not just by reading the docs:
