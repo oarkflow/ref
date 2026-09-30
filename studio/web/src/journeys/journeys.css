@@ -1,0 +1,191 @@
+/* User journeys. Everything is scoped under .journeys-page; the cards, edges, toolbar, drawer and
+   colours come from canvas.css (this page is also a .canvas-page), so the two read as one product. */
+
+.journeys-page .cv-stage { container-type: inline-size; }
+
+/* ---- cards ------------------------------------------------------------------ */
+.journeys-page .jn-card { width: 280px; transition: opacity var(--cv-dur) var(--cv-ease), box-shadow var(--cv-dur) var(--cv-ease), border-color var(--cv-dur-fast); }
+.journeys-page .jn-card.jn-dim { opacity: 0.28; }
+.journeys-page .jn-card.jn-hit { border-color: var(--accent); box-shadow: inset 0 3px 0 var(--tone), 0 0 0 2px color-mix(in srgb, var(--accent) 60%, transparent), var(--cv-shadow-hover); }
+.journeys-page .jn-card .cv-head { height: 56px; }
+
+/* second line of a card: addresses, who may open it, label / value facts. Height = model.META_H */
+.jn-meta { display: flex; align-items: center; gap: 6px; height: 36px; box-sizing: border-box; padding: 0 12px; border-top: 1px solid var(--cv-hair); overflow: hidden; white-space: nowrap; }
+.jn-addr { font-family: var(--mono); font-size: 11.5px; font-weight: 500; color: var(--text); background: var(--cv-surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 0 6px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; flex: none; max-width: 150px; }
+.jn-fact { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; }
+.jn-fact .k { color: var(--muted); flex: none; }
+.jn-fact .v { font-weight: 500; }
+.jn-fact code { font-family: var(--mono); font-size: 11.5px; background: var(--cv-surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 0 6px; line-height: 18px; overflow: hidden; text-overflow: ellipsis; }
+.jn-muted { color: var(--muted); font-size: 12px; }
+.cv-more-inline { color: var(--muted); font-size: 11.5px; flex: none; }
+.jn-foot { gap: 6px; }
+.journeys-page .cv-chip.t-ok { color: var(--ok, #17803f); background: var(--ok-soft, #e6f4ea); border-color: color-mix(in srgb, var(--ok, #17803f) 30%, transparent); }
+.journeys-page .cv-chip.t-ok .cv-icon { color: currentColor; }
+.journeys-page .cv-chip.t-info { color: var(--info, #1d5fb4); background: var(--info-soft, #e8f0fb); border-color: color-mix(in srgb, var(--info, #1d5fb4) 28%, transparent); }
+.journeys-page .cv-chip.t-info .cv-icon { color: currentColor; }
+.journeys-page .cv-chip.t-danger { color: var(--danger, #c22f26); background: var(--danger-soft, #fdebe9); border-color: color-mix(in srgb, var(--danger, #c22f26) 35%, transparent); }
+.journeys-page .cv-chip.t-danger .cv-icon { color: currentColor; }
+.jn-verb { font: 600 10.5px/1 var(--mono); letter-spacing: 0.03em; padding: 4px 7px; border-radius: 5px; color: var(--v); background: color-mix(in srgb, var(--v) 14%, transparent); }
+.jn-verb.get { --v: #1d6fd6; } .jn-verb.post { --v: #15803d; } .jn-verb.put { --v: #b45309; } .jn-verb.delete { --v: #c22f26; }
+:root[data-theme="dark"] .jn-verb.get { --v: #6cb0ff; } :root[data-theme="dark"] .jn-verb.post { --v: #4ade80; } :root[data-theme="dark"] .jn-verb.put { --v: #fbbf24; } :root[data-theme="dark"] .jn-verb.delete { --v: #f87171; }
+
+/* ---- the things you can do on a page ------------------------------------------ */
+.jn-rows { list-style: none; margin: 0; padding: 4px 0; border-top: 1px solid var(--cv-hair); }
+.jn-rows ul { list-style: none; margin: 0; padding: 0; }
+.jn-rows.grouped { padding: 4px 0; }
+.jn-rows.grouped section h4 { margin: 0; height: 24px; display: flex; align-items: center; padding: 0 12px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.jn-row { position: relative; height: 30px; }
+.jn-rowbtn { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 8px; width: 100%; height: 30px; padding: 0 14px 0 12px; cursor: pointer; font: 500 12.5px/1 var(--font); color: var(--text); transition: background var(--cv-dur-fast); }
+.jn-rowbtn:hover { background: var(--hover, rgba(0, 0, 0, 0.05)); }
+.jn-rowbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
+.jn-row.selected .jn-rowbtn { background: var(--accent-soft, #eceefc); box-shadow: inset 3px 0 0 var(--accent); }
+.jn-rico { --k: #64748b; flex: none; width: 20px; height: 20px; border-radius: 5px; display: grid; place-items: center; color: color-mix(in srgb, var(--k) 78%, var(--text)); background: color-mix(in srgb, var(--k) 15%, transparent); }
+.jn-row.kind-form .jn-rico { --k: #4f46e5; } .jn-row.kind-button .jn-rico { --k: #d97706; } .jn-row.kind-fetch .jn-rico { --k: #0d9488; }
+.jn-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jn-row.guessed .jn-label { color: var(--muted); font-style: italic; font-weight: 400; }
+.jn-method { flex: none; font: 600 10px/1 var(--mono); letter-spacing: 0.03em; color: var(--muted); background: var(--cv-surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 3px 5px; }
+.jn-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--danger, #c22f26); }
+.jn-row.bad .jn-label { color: var(--danger, #c22f26); }
+.journeys-page .jn-row .react-flow__handle { right: -6px; }
+.jn-summary { padding: 6px 12px 8px; border-top: 1px solid var(--cv-hair); color: var(--muted); font-size: 12px; height: 38px; box-sizing: border-box; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; line-height: 26px; }
+.jn-toggle { all: unset; cursor: pointer; font: 600 11.5px/1 var(--font); color: var(--accent); padding: 5px 8px; border-radius: 5px; }
+.jn-toggle:hover { background: var(--accent-soft, #eceefc); }
+
+/* a call nothing answers */
+.journeys-page .jn-card.jn-unresolved { border-style: dashed; border-color: var(--danger, #c22f26); background: color-mix(in srgb, var(--danger, #c22f26) 4%, var(--cv-card)); }
+.jn-fix { all: unset; margin-left: auto; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px; border-radius: 6px; font: 600 11.5px/1 var(--font); color: #fff; background: var(--danger, #c22f26); }
+.jn-fix:hover { filter: brightness(1.08); }
+.jn-fix:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---- lines ---------------------------------------------------------------------- */
+.journeys-page .cv-edge { --cv-line: #8fa3bd; }
+:root[data-theme="dark"] .journeys-page .cv-edge { --cv-line: #5f6f86; }
+.journeys-page .cv-elabel-text { font-weight: 500; }
+
+/* ---- top chrome ---------------------------------------------------------------- */
+.jn-crumb h1 { display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
+.jn-crumb-link { all: unset; cursor: pointer; color: var(--muted); font-weight: 500; }
+.jn-crumb-link:hover { color: var(--text); text-decoration: underline; }
+.jn-sep { color: var(--faint, #98a1b2); }
+.jn-focus { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jn-depth { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); padding-left: 10px; border-left: 1px solid var(--border); }
+.jn-depth select { height: 26px; font-size: 12px; }
+.jn-updating { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.jn-updating i { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: jn-pulse 1.1s ease-in-out infinite; }
+@keyframes jn-pulse { 50% { opacity: 0.25; scale: 0.7; } }
+.jn-search { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px; border-radius: 7px; background: var(--cv-surface-2); color: var(--muted); }
+.jn-search input { all: unset; width: 170px; font: 400 12.5px/1 var(--font); color: var(--text); }
+.jn-search input::placeholder { color: var(--muted); }
+.jn-search:focus-within { box-shadow: 0 0 0 2px var(--accent); }
+.jn-count { font-size: 11px; font-weight: 600; color: var(--accent); }
+.jn-toolbar button { position: relative; white-space: nowrap; }
+.jn-toolbar .cv-textbtn { gap: 6px; display: inline-flex; align-items: center; }
+.jn-pip { position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.jn-notes b { position: absolute; top: 2px; right: 0; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--muted); color: var(--cv-surface); font: 600 10px/15px var(--font); text-align: center; }
+.jn-notes.has b { background: var(--accent); color: #fff; }
+/* with no room beside the title, the tools take a second row */
+@container (max-width: 1130px) {
+  .jn-toolbar { top: 60px; left: 60px; right: auto; }
+  .jn-legend, .jn-filters, .jn-warnings { top: 108px; }
+}
+.drawer-open .jn-legend, .drawer-open .jn-filters, .drawer-open .jn-warnings { top: 108px; }
+
+/* panels over the map sit under the toolbar, at its right */
+.jn-legend, .jn-filters, .jn-warnings { left: auto; right: 64px; transform: none; top: 64px; width: 380px; max-height: calc(100% - 140px); overflow: auto; }
+.jn-legend button, .jn-filters > button, .jn-warnings > button { margin-top: 12px; }
+.jn-flow-hint { margin: 0 0 12px !important; }
+.jn-legend-list { grid-template-columns: 1fr !important; gap: 10px !important; }
+.jn-legend-list li { align-items: flex-start !important; }
+.jn-legend-list .sw { margin-top: 2px; }
+.jn-legend-list span { display: grid; gap: 1px; }
+.jn-legend-list em { font-style: normal; color: var(--muted); }
+.jn-legend-lines { grid-template-columns: 1fr !important; margin-bottom: 4px !important; }
+.jn-legend-lines .line.faint { border-top-style: dotted; opacity: 0.6; }
+.jn-legend-lines .line.back { border-top-color: var(--accent); }
+.jn-check { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; cursor: pointer; border-bottom: 1px solid var(--cv-hair); }
+.jn-check:last-of-type { border-bottom: 0; }
+.jn-check input { margin-top: 2px; }
+.jn-check span { display: grid; gap: 2px; font-size: 12.5px; }
+.jn-check em { font-style: normal; color: var(--muted); font-size: 12px; }
+.jn-wlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.jn-wlist > li { display: grid; gap: 4px; }
+.jn-wlist p { margin: 0; color: var(--muted); font-size: 12px; }
+.jn-wlist ul { list-style: none; margin: 4px 0 0; padding: 0 0 0 20px; display: grid; gap: 2px; font-size: 12px; }
+.jn-whead { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.jn-whead .n { margin-left: auto; font-size: 11px; font-weight: 600; background: var(--cv-surface-2); border-radius: 9px; padding: 1px 7px; }
+.jn-wlist li.warning .jn-whead { color: var(--danger, #c22f26); }
+.journeys-page .link { all: unset; cursor: pointer; color: var(--accent); font-size: 12px; }
+.journeys-page .link:hover { text-decoration: underline; }
+
+/* ---- details drawer --------------------------------------------------------------- */
+.jn-drawer, .jn-drawer-empty { display: flex; flex-direction: column; min-height: 100%; }
+.jn-drawer-empty { padding: 28px 22px; color: var(--muted); }
+.jn-drawer-empty h3 { margin: 0 0 6px; color: var(--text); font-size: 14px; text-transform: none; letter-spacing: 0; }
+.jn-dhead { display: flex; align-items: center; gap: 12px; height: 64px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--border); flex: none; position: sticky; top: 0; background: var(--cv-surface); z-index: 2; }
+.jn-dhead .cv-ico { --tone: var(--t-compute); }
+.jn-x { all: unset; margin-left: auto; cursor: pointer; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 6px; color: var(--muted); }
+.jn-x:hover { background: var(--hover); color: var(--text); }
+.jn-dbody { padding: 16px; display: grid; gap: 16px; align-content: start; }
+.jn-lead { margin: 0; font-size: 13px; line-height: 1.5; color: var(--text); }
+.jn-note { margin: 0; font-size: 12px; color: var(--muted); background: var(--cv-surface-2); border-radius: 6px; padding: 8px 10px; }
+.jn-dchips { display: flex; flex-wrap: wrap; gap: 6px; }
+.jn-dsec h4 { margin: 0 0 8px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.jn-where { margin: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.jn-where code { font-family: var(--mono); font-size: 12px; color: var(--text); background: var(--cv-surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; overflow-wrap: anywhere; }
+.jn-links { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.jn-links button { all: unset; box-sizing: border-box; width: 100%; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 12.5px; }
+.jn-links button:hover { background: var(--hover); }
+.jn-links button:focus-visible { outline: 2px solid var(--accent); }
+.jn-links .t { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.jn-links .n { margin-left: auto; color: var(--muted); font-size: 11.5px; flex: none; white-space: nowrap; }
+.jn-mini { --tone: var(--t-compute); flex: none; width: 20px; height: 20px; border-radius: 5px; display: grid; place-items: center; background: var(--tone); color: var(--tone-ink); }
+.jn-problems { background: var(--danger-soft, #fdebe9); border: 1px solid color-mix(in srgb, var(--danger, #c22f26) 30%, transparent); border-radius: 8px; padding: 10px 12px; }
+.jn-problems h4 { color: var(--danger, #c22f26); }
+.jn-problems ul { margin: 0; padding-left: 18px; font-size: 12.5px; }
+.jn-dact { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 4px; }
+.jn-dact button, .jn-trace button:not(.jn-x):not(.link), .jn-legend > button, .jn-filters > button, .jn-warnings > button, .jn-empty button { height: 32px; padding: 0 12px; border-radius: 7px; font-size: 12.5px; font-weight: 500; }
+.jn-dact .primary, .jn-trace .primary { background: var(--accent); color: var(--accent-text, #fff); border-color: transparent; }
+
+/* ---- follow the user ---------------------------------------------------------------- */
+.jn-trace { position: absolute; z-index: 30; bottom: 18px; left: 50%; transform: translateX(-50%); width: min(600px, calc(100% - 140px)); padding: 12px 16px 14px; background: var(--cv-surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--cv-shadow-3); display: grid; gap: 10px; animation: cv-slide var(--cv-dur) var(--cv-ease) both; }
+.drawer-open .jn-trace { left: calc(50% - 210px); }
+.jn-trace-head { display: flex; align-items: center; justify-content: space-between; font-size: 13px; }
+.jn-trace-head strong { display: inline-flex; align-items: center; gap: 6px; }
+.jn-trace-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.jn-trace-pick label { display: grid; gap: 4px; font-size: 11px; color: var(--muted); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.jn-trace-pick select { height: 32px; font-size: 12.5px; text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--text); }
+.jn-steps { list-style: none; margin: 0; padding: 0; display: flex; align-items: center; gap: 0; }
+.jn-steps li { display: flex; align-items: center; }
+.jn-steps li + li::before { content: ""; width: 18px; height: 2px; background: var(--border); }
+.jn-steps li.done + li::before, .jn-steps li.on::before { background: var(--accent); }
+.jn-steps button { all: unset; cursor: pointer; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font: 600 11px/1 var(--font); border: 1.5px solid var(--border); color: var(--muted); background: var(--cv-surface); transition: background var(--cv-dur-fast), border-color var(--cv-dur-fast), color var(--cv-dur-fast); }
+.jn-steps li.done button { border-color: var(--accent); color: var(--accent); }
+.jn-steps li.on button { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); }
+.jn-steps button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.jn-trace-note { margin: 0; font-size: 14px; font-weight: 500; line-height: 1.4; min-height: 20px; }
+.jn-trace-nav { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--muted); }
+
+/* ---- states --------------------------------------------------------------------------- */
+.jn-hiddenbar { position: absolute; z-index: 10; left: 50%; transform: translateX(-50%); bottom: 16px; white-space: nowrap; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; max-width: calc(100% - 420px); padding: 7px 12px; border-radius: 10px; font-size: 12px; background: var(--cv-surface); border: 1px solid var(--border); box-shadow: var(--cv-shadow-1); }
+.jn-empty { position: absolute; inset: 0; z-index: 5; display: grid; place-content: center; justify-items: center; gap: 8px; text-align: center; pointer-events: none; }
+.jn-empty > * { pointer-events: auto; }
+.jn-empty h2 { margin: 0; font-size: 18px; }
+.jn-empty p { margin: 0 0 8px; color: var(--muted); max-width: 360px; font-size: 13px; line-height: 1.5; }
+.jn-skeleton { display: grid; grid-auto-flow: column; gap: 40px; padding: 60px 40px; align-items: start; }
+.jn-skeleton i { display: block; width: 280px; height: 180px; border-radius: 8px; background: linear-gradient(100deg, var(--cv-surface-2) 30%, var(--hover, #eef0f4) 50%, var(--cv-surface-2) 70%); background-size: 200% 100%; animation: jn-shimmer 1.3s linear infinite; }
+.jn-skeleton i:nth-child(2n) { height: 120px; margin-top: 50px; }
+@keyframes jn-shimmer { to { background-position: -200% 0; } }
+.cv-static .jn-skeleton i, .cv-static .jn-updating i { animation: none; }
+@media (prefers-reduced-motion: reduce) { .jn-skeleton i, .jn-updating i { animation: none; } }
+
+.drawer-open .jn-hiddenbar { left: calc(50% - 210px); }
+
+/* with the drawer open there is less room: the tools shrink before they collide with it */
+.drawer-open .jn-search input { width: 120px; }
+.drawer-open .jn-toolbar .cv-speed { display: none; }
+
+/* the notes list is one column (the legend it borrows its frame from is two) */
+.jn-warnings .jn-wlist, .jn-warnings .jn-wlist ul { grid-template-columns: 1fr; }
+.jn-warnings .jn-wlist > li { display: grid; align-items: start; }
+.jn-warnings .jn-wlist ul li { display: block; }
+.jn-whead strong { font-weight: 600; flex: 1; min-width: 0; }

@@ -1,0 +1,483 @@
+/* =============================================================================
+   Canvas. Scoped under .canvas-page (or a cv-* class) so nothing leaks into the
+   shared styles. Colours derive from the app tokens (styles/tokens.css); the
+   step palette below is the only thing the canvas adds. Motion tokens alias the
+   shared ones in styles/motion.css.
+   ============================================================================= */
+.canvas-page {
+  --cv-dur-fast: var(--dur-fast, 120ms);
+  --cv-dur: var(--dur-base, 200ms);
+  --cv-dur-slow: var(--dur-slow, 320ms);
+  --cv-ease: var(--ease-out, cubic-bezier(0.16, 1, 0.3, 1));
+  --cv-ease-spring: var(--ease-spring, cubic-bezier(0.34, 1.56, 0.64, 1));
+
+  --cv-canvas: var(--bg, #f5f6f8);
+  --cv-card: var(--surface, #fff);
+  --cv-surface: var(--surface, #fff);
+  --cv-surface-2: var(--surface-2, #f2f4f7);
+  --cv-hair: color-mix(in srgb, var(--border, #e2e5eb) 80%, transparent);
+  --cv-edge: #94a3b8;
+  --cv-line: var(--cv-edge);
+  --cv-arrow: #94a3b8;
+  --cv-arrow-error: #dc2626;
+  --cv-node-border: #cfd5df;
+  --cv-shadow-1: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.05);
+  --cv-shadow-hover: 0 2px 4px rgba(15, 23, 42, 0.06), 0 8px 20px rgba(15, 23, 42, 0.1);
+  --cv-shadow-2: var(--shadow-2, 0 4px 12px rgba(16, 24, 40, 0.1));
+  --cv-shadow-3: var(--shadow-3, 0 16px 40px rgba(16, 24, 40, 0.2));
+  --cv-grid: rgba(100, 116, 139, 0.28);
+
+  /* the step palette: one solid colour per kind of step */
+  --t-compute: #475569; --t-process: #7c3aed; --t-watch: #64748b; --t-identity: #0891b2; --t-flow: #4f46e5;
+  --t-data: #0d9488; --t-safety: #ea580c; --t-ai: #c026d3; --t-decision: #d97706; --t-plug: #2563eb; --t-message: #db2777;
+  --t-end: #475569; --t-end-success: #16a34a; --t-end-cancelled: #64748b; --t-end-failed: #dc2626; --t-end-neutral: #475569;
+  --t-start: #16a34a;
+  --tone-ink: #fff;
+
+  position: relative;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  height: calc(100dvh - var(--topbar-h, 52px));
+  display: flex;
+  font-family: var(--font);
+}
+:root[data-theme="dark"] .canvas-page {
+  --cv-canvas: #0e1116;
+  --cv-card: #181d27;
+  --cv-edge: #64748b;
+  --cv-arrow: #7b8aa0;
+  --cv-arrow-error: #f87171;
+  --cv-node-border: #2d3545;
+  --cv-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.35);
+  --cv-shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.5), 0 10px 24px rgba(0, 0, 0, 0.5);
+  --cv-grid: rgba(148, 163, 184, 0.16);
+  --t-compute: #94a3b8; --t-process: #a78bfa; --t-watch: #94a3b8; --t-identity: #22d3ee; --t-flow: #818cf8;
+  --t-data: #2dd4bf; --t-safety: #fb923c; --t-ai: #e879f9; --t-decision: #fbbf24; --t-plug: #60a5fa; --t-message: #f472b6;
+  --t-end: #94a3b8; --t-end-success: #4ade80; --t-end-cancelled: #94a3b8; --t-end-failed: #f87171; --t-end-neutral: #94a3b8;
+  --t-start: #4ade80;
+  --tone-ink: #0b1220;
+}
+.canvas-page .tone-compute { --tone: var(--t-compute); }
+.canvas-page .tone-process { --tone: var(--t-process); }
+.canvas-page .tone-watch { --tone: var(--t-watch); }
+.canvas-page .tone-identity { --tone: var(--t-identity); }
+.canvas-page .tone-flow { --tone: var(--t-flow); }
+.canvas-page .tone-data { --tone: var(--t-data); }
+.canvas-page .tone-safety { --tone: var(--t-safety); }
+.canvas-page .tone-ai { --tone: var(--t-ai); }
+.canvas-page .tone-decision { --tone: var(--t-decision); }
+.canvas-page .tone-plug { --tone: var(--t-plug); }
+.canvas-page .tone-message { --tone: var(--t-message); }
+.canvas-page .tone-end { --tone: var(--t-end); }
+.canvas-page .tone-end-success { --tone: var(--t-end-success); }
+.canvas-page .tone-end-cancelled { --tone: var(--t-end-cancelled); }
+.canvas-page .tone-end-failed { --tone: var(--t-end-failed); }
+.canvas-page .tone-end-neutral { --tone: var(--t-end-neutral); }
+.canvas-page .tone-start { --tone: var(--t-start); }
+
+.cv-stage { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden; background: var(--cv-canvas); }
+.cv-stage .react-flow { position: absolute; inset: 0; --xy-background-color: transparent; --xy-background-pattern-color: var(--cv-grid); }
+
+/* ---- floating chrome -------------------------------------------------------- */
+.cv-crumb, .cv-toolbar, .cv-railtoggle, .cv-drawertoggle {
+  position: absolute; z-index: 20; background: var(--cv-surface); border: 1px solid var(--border);
+  box-shadow: var(--cv-shadow-1), 0 4px 14px rgba(15, 23, 42, 0.06); border-radius: 10px;
+}
+.cv-crumb { top: 12px; left: 60px; height: 40px; display: flex; align-items: center; gap: 12px; padding: 0 14px 0 12px; max-width: calc(100% - 140px); transition: transform var(--cv-dur) var(--cv-ease); }
+.cv-crumb h1 { font-size: 13.5px; margin: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: -0.005em; }
+.cv-crumb h1 span { color: var(--muted); font-weight: 500; margin-right: 6px; }
+.cv-crumb h1 code { font-family: var(--mono); font-size: 12px; font-weight: 500; background: var(--cv-surface-2); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; }
+.cv-back { text-decoration: none; display: inline-flex; align-items: center; gap: 2px; font-size: 13px; color: var(--muted); padding-right: 12px; border-right: 1px solid var(--border); height: 20px; }
+.cv-back:hover { color: var(--text); }
+.cv-back .cv-icon { transform: rotate(90deg); }
+.cv-warnbtn { height: 26px; padding: 0 10px; font-size: 12px; border-radius: 6px; border-color: color-mix(in srgb, var(--danger, #c22f26) 45%, var(--border)); background: var(--danger-soft, #fdebe9); color: var(--danger, #c22f26); display: inline-flex; gap: 5px; align-items: center; }
+
+.cv-toolbar { top: 12px; left: 50%; transform: translateX(-50%); height: 40px; display: flex; align-items: center; gap: 2px; padding: 4px; }
+.cv-toolbar button { border: 0; background: transparent; box-shadow: none; width: 32px; height: 32px; padding: 0; display: inline-grid; place-items: center; border-radius: 7px; color: var(--text-2, var(--text)); transition: background var(--cv-dur-fast), color var(--cv-dur-fast); }
+.cv-toolbar button:hover:not(:disabled) { background: var(--hover, rgba(0, 0, 0, 0.06)); color: var(--text); }
+.cv-toolbar button:active:not(:disabled) { background: var(--surface-3, #e8ebf0); }
+.cv-toolbar button[aria-pressed="true"] { background: var(--accent-soft, #eceefc); color: var(--accent); }
+.cv-toolbar button:disabled { opacity: 0.35; }
+.cv-toolbar .cv-textbtn { width: auto; padding: 0 10px; font-size: 12.5px; font-weight: 500; }
+.cv-toolbar .sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
+.cv-edgekind { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); padding: 0 6px 0 4px; }
+.cv-edgekind select { max-width: 170px; height: 28px; font-size: 12.5px; }
+
+/* zoom controls, bottom-left */
+.cv-stage .react-flow__controls { left: 12px; bottom: 12px; margin: 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--border); box-shadow: var(--cv-shadow-1), 0 4px 14px rgba(15, 23, 42, 0.06); background: var(--cv-surface); display: flex; flex-direction: column; }
+.cv-stage .react-flow__controls-button { width: 32px; height: 32px; border: 0; border-bottom: 1px solid var(--border); background: var(--cv-surface); color: var(--text-2, var(--text)); padding: 0; display: grid; place-items: center; }
+.cv-stage .react-flow__controls-button:last-child { border-bottom: 0; }
+.cv-stage .react-flow__controls-button:hover { background: var(--hover); color: var(--text); }
+.cv-stage .react-flow__controls-button svg { width: 14px; height: 14px; fill: currentColor; max-width: none; max-height: none; }
+
+/* left rail */
+.cv-railtoggle { top: 12px; left: 12px; width: 40px; height: 40px; display: grid; place-items: center; padding: 0; color: var(--text-2, var(--text)); }
+.cv-railtoggle:hover { background: var(--hover); color: var(--text); }
+.cv-rail[data-open="true"] .cv-railtoggle { background: var(--accent-soft, #eceefc); color: var(--accent); border-color: transparent; }
+.cv-railbody {
+  position: absolute; z-index: 19; top: 60px; left: 12px; bottom: 12px; width: 304px; padding: 16px 14px; overflow: auto;
+  background: var(--cv-surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--cv-shadow-3);
+  transform: translateX(calc(-100% - 24px)); opacity: 0; pointer-events: none;
+  transition: transform var(--cv-dur-slow) var(--cv-ease), opacity var(--cv-dur) var(--cv-ease);
+}
+.cv-rail[data-open="true"] .cv-railbody { transform: none; opacity: 1; pointer-events: auto; }
+.cv-railbody h3 { margin: 2px 0 2px; font-size: 14px; font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--text); }
+.cv-railhint { margin: 0 0 14px; color: var(--muted); font-size: 12px; }
+
+/* right drawer */
+.cv-drawer {
+  position: absolute; z-index: 25; top: 0; right: 0; bottom: 0; width: min(420px, 94vw); background: var(--cv-surface);
+  border-left: 1px solid var(--border); box-shadow: -8px 0 32px rgba(15, 23, 42, 0.1); transform: translateX(102%);
+  transition: transform var(--cv-dur-slow) var(--cv-ease); visibility: hidden;
+}
+.cv-drawer[data-open="true"] { transform: none; visibility: visible; }
+.cv-drawerbody { height: 100%; overflow: auto; }
+.cv-drawertoggle { top: 12px; right: 12px; width: 40px; height: 40px; display: grid; place-items: center; padding: 0; z-index: 26; color: var(--text-2, var(--text)); transition: transform var(--cv-dur-slow) var(--cv-ease); }
+.cv-drawertoggle:hover { background: var(--hover); color: var(--text); }
+.drawer-open .cv-drawertoggle { transform: translateX(calc(-1 * min(420px, 94vw) - 8px)); }
+.cv-stage .react-flow__minimap { transition: transform var(--cv-dur-slow) var(--cv-ease), opacity var(--cv-dur); border-radius: 10px; overflow: hidden; border: 1px solid var(--border); box-shadow: var(--cv-shadow-1), 0 4px 14px rgba(15, 23, 42, 0.06); background: var(--cv-surface); width: 176px; height: 112px; margin: 0 12px 12px 0; }
+.cv-stage .react-flow__minimap-mask { fill: color-mix(in srgb, var(--cv-canvas) 72%, transparent); }
+.drawer-open .react-flow__minimap { transform: translateX(calc(-1 * min(420px, 94vw))); }
+.cv-hint { position: absolute; inset: 45% 0 auto; text-align: center; color: var(--muted); pointer-events: none; }
+.cv-unlinked { position: absolute; left: 60px; bottom: 14px; max-width: 60%; background: var(--cv-surface); border: 1px solid var(--warn, #a35f00); border-radius: 10px; padding: 6px 10px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; z-index: 5; }
+
+/* ---- legend ------------------------------------------------------------------ */
+.cv-legend { position: absolute; z-index: 30; top: 60px; left: 50%; transform: translateX(-50%); width: 320px; padding: 14px 16px 16px; background: var(--cv-surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--cv-shadow-3); animation: cv-slide var(--cv-dur) var(--cv-ease) both; }
+.cv-legend h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--text); }
+.cv-legend ul { list-style: none; margin: 0 0 12px; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.cv-legend li { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2, var(--text)); }
+.cv-legend .sw { width: 14px; height: 14px; border-radius: 4px; background: var(--tone); flex: none; }
+.cv-legend .line { width: 22px; height: 0; border-top: 1.5px solid var(--cv-line); flex: none; }
+.cv-legend .line.err { border-top: 1.5px dashed var(--cv-arrow-error); }
+.cv-legend p { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+/* ---- nodes ------------------------------------------------------------------ */
+/* One card for every step. Height = header 56 + optional sections of 24px rows + 36px footer (layout.cardSize). */
+.cv-node {
+  --tone: var(--t-compute);
+  --tone-text: color-mix(in srgb, var(--tone) 82%, var(--text));
+  position: relative; width: 264px; box-sizing: border-box; background: var(--cv-card); color: var(--text);
+  border: 1px solid var(--cv-node-border); border-radius: 8px; font-size: 12px; line-height: 1.35;
+  box-shadow: inset 0 3px 0 var(--tone), var(--cv-shadow-1);
+  transition: box-shadow var(--cv-dur) var(--cv-ease), border-color var(--cv-dur-fast);
+}
+.cv-node:hover { box-shadow: inset 0 3px 0 var(--tone), var(--cv-shadow-hover); }
+.cv-node.selected { border-color: var(--accent); box-shadow: inset 0 3px 0 var(--tone), 0 0 0 2px var(--accent), 0 8px 24px color-mix(in srgb, var(--accent) 28%, transparent); }
+.cv-node.has-error { border-color: var(--danger, #c22f26); box-shadow: inset 0 3px 0 var(--danger, #c22f26), var(--cv-shadow-1); }
+.cv-node.has-error.selected { box-shadow: inset 0 3px 0 var(--danger, #c22f26), 0 0 0 2px var(--accent), 0 8px 24px color-mix(in srgb, var(--accent) 28%, transparent); }
+.cv-node.request { width: 264px; }
+
+.cv-head { display: flex; align-items: center; gap: 12px; height: 56px; box-sizing: border-box; padding: 3px 10px 0 12px; }
+.cv-ico { flex: none; width: 32px; height: 32px; display: inline-grid; place-items: center; border-radius: 6px; background: var(--tone); color: var(--tone-ink); }
+.cv-ico.big { width: 40px; height: 40px; border-radius: 8px; }
+.cv-titles { min-width: 0; flex: 1; display: grid; gap: 1px; }
+.cv-titles strong { font-size: 14px; font-weight: 600; letter-spacing: -0.005em; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-titles small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 500; letter-spacing: 0.005em; }
+.cv-headtools { display: flex; align-items: center; gap: 6px; flex: none; }
+.cv-start { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px 0 6px; border-radius: 5px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--t-start); background: color-mix(in srgb, var(--t-start) 14%, transparent); }
+:root:not([data-theme="dark"]) .canvas-page .cv-start { color: #15803d; }
+.cv-collapse { flex: none; width: 22px; height: 22px; padding: 0; border: 0; background: transparent; box-shadow: none; display: inline-grid; place-items: center; border-radius: 5px; color: var(--faint, var(--muted)); transition: transform var(--cv-dur) var(--cv-ease), background var(--cv-dur-fast); }
+.cv-collapse:hover { background: var(--hover); color: var(--text); }
+.cv-collapse[aria-expanded="false"] { transform: rotate(-90deg); }
+/* a small toolbar that floats above a card on hover */
+.cv-hovertools { position: absolute; right: 8px; top: -30px; display: flex; gap: 4px; padding: 3px; background: var(--cv-card); border: 1px solid var(--cv-node-border); border-radius: 8px; box-shadow: var(--cv-shadow-hover); opacity: 0; translate: 0 4px; pointer-events: none; transition: opacity var(--cv-dur-fast), translate var(--cv-dur) var(--cv-ease); z-index: 3; }
+.cv-node:hover .cv-hovertools, .cv-hovertools:focus-within { opacity: 1; translate: 0 0; pointer-events: all; }
+.cv-mini { height: 22px; padding: 0 8px; font-size: 11.5px; font-weight: 500; border-radius: 5px; background: transparent; border: 0; box-shadow: none; color: var(--text-2, var(--text)); }
+.cv-mini:hover { background: var(--hover); color: var(--text); }
+/* a step that ends the run has nothing after it */
+.cv-node.is-terminal .react-flow__handle-right { display: none; }
+
+.cv-diag { display: inline-flex; gap: 3px; }
+.cv-badge { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; color: #fff; font-size: 10.5px; font-weight: 600; text-align: center; line-height: 18px; }
+.cv-badge.error { background: var(--danger, #c22f26); }
+.cv-badge.warn { background: var(--warn, #a35f00); }
+.cv-diag.ok { color: var(--ok, #17803f); }
+.fx-shake .cv-diag { animation: cv-shake 480ms var(--cv-ease) 1; }
+.fx-ok .cv-diag { animation: cv-tick 700ms var(--cv-ease-spring) 1; }
+
+/* facts under the header */
+.cv-body { padding: 4px 12px; border-top: 1px solid var(--cv-hair); }
+.cv-rows, .cv-cases { list-style: none; margin: 0; padding: 0; }
+.cv-row { display: flex; align-items: center; gap: 8px; height: 24px; min-width: 0; }
+.cv-row .k { flex: none; width: 62px; color: var(--muted); font-size: 12px; }
+.cv-row .v { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-row .v code, .cv-cases em code { font-family: var(--mono); font-size: 11.5px; font-weight: 500; color: var(--text); background: var(--cv-surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 0 6px; line-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-row.wait .v { color: var(--t-process); }
+.cv-row .v .link { padding: 0; height: auto; border: 0; background: none; box-shadow: none; color: var(--accent); font-weight: 500; font-size: 12px; text-decoration: none; }
+.cv-row .v .link:hover { text-decoration: underline; }
+.cv-cases li { display: flex; align-items: center; gap: 8px; height: 24px; min-width: 0; }
+.cv-cases i { width: 8px; height: 8px; border-radius: 50%; background: var(--tone); flex: none; }
+.cv-cases span { font-weight: 600; white-space: nowrap; }
+.cv-cases em { color: var(--muted); font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; min-width: 0; }
+.cv-more { height: 24px; display: flex; align-items: center; color: var(--muted); font-size: 11.5px; padding-left: 70px; }
+
+.cv-foot { display: flex; align-items: center; gap: 6px; height: 36px; box-sizing: border-box; padding: 0 12px; border-top: 1px solid var(--cv-hair); overflow: hidden; flex-wrap: nowrap; }
+.cv-chip { display: inline-flex; align-items: center; gap: 4px; flex: none; height: 22px; padding: 0 8px 0 6px; border-radius: 6px; background: var(--cv-surface-2); border: 1px solid var(--border); color: var(--text-2, var(--text)); font-size: 11px; font-weight: 500; white-space: nowrap; }
+.cv-chip .cv-icon { color: var(--muted); }
+.cv-chip.t-warn { background: var(--warn-soft, #fdf1dc); border-color: color-mix(in srgb, var(--warn, #a35f00) 30%, transparent); color: var(--warn, #a35f00); }
+.cv-chip.t-warn .cv-icon { color: currentColor; }
+.cv-end { display: inline-flex; align-items: center; gap: 6px; flex: none; height: 22px; padding: 0 9px 0 7px; border-radius: 6px; font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--tone-text); background: color-mix(in srgb, var(--tone) 14%, transparent); }
+
+/* ports: what a step needs (left) and produces (right) */
+.cv-ports { position: relative; border-top: 1px solid var(--cv-hair); }
+.cv-port { position: absolute; left: 0; right: 0; display: flex; align-items: center; font-size: 12px; color: var(--text-2, var(--text)); pointer-events: none; }
+.cv-port span { pointer-events: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46%; }
+.cv-port.in span { margin-left: 16px; }
+.cv-port.out { justify-content: flex-end; }
+.cv-port.out span { margin-right: 16px; }
+.cv-port.unresolved span { color: var(--danger, #c22f26); font-weight: 600; }
+.cv-port.new span { color: var(--faint, #98a1b2); }
+
+.cv-node .react-flow__handle {
+  /* React Flow adds bare "source"/"target" classes to handles; the app's own .source rule must not apply */
+  box-sizing: border-box; padding: 0; width: 10px; height: 10px; min-width: 0; min-height: 0; border-radius: 50%;
+  background: var(--cv-card); border: 2px solid var(--tone); pointer-events: all;
+  transition: opacity var(--cv-dur) var(--cv-ease), scale var(--cv-dur-fast) var(--cv-ease), box-shadow var(--cv-dur-fast), background var(--cv-dur-fast);
+}
+.cv-node .react-flow__handle-left { left: -6px; }
+.cv-node .react-flow__handle-right { right: -6px; }
+.cv-node .react-flow__handle:hover { scale: 1.45; background: var(--tone); box-shadow: 0 0 0 4px color-mix(in srgb, var(--tone) 22%, transparent); }
+.cv-node .react-flow__handle.unresolved { border-color: var(--danger, #c22f26); background: var(--danger-soft, #fdebe9); }
+.cv-node .react-flow__handle.new { background: var(--cv-card); border: 2px dashed var(--faint, #98a1b2); }
+.cv-node .react-flow__handle.dim { opacity: 0.2; }
+.cv-node .react-flow__handle.connectingto.valid, .cv-node .react-flow__handle.valid { background: var(--ok, #17803f); border-color: var(--ok, #17803f); scale: 1.6; box-shadow: 0 0 0 5px color-mix(in srgb, var(--ok, #17803f) 28%, transparent); }
+
+.cv-details { display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--cv-dur-slow) var(--cv-ease), opacity var(--cv-dur) var(--cv-ease); }
+.cv-details[data-open="false"] { grid-template-rows: 0fr; opacity: 0; }
+.cv-details-inner { overflow: hidden; min-height: 0; }
+
+.cv-append {
+  position: absolute; right: -34px; top: 30px; width: 24px; height: 24px; margin-top: -12px; padding: 0; border-radius: 50%; display: grid; place-items: center;
+  background: var(--cv-card); color: var(--accent); border: 1.5px solid var(--accent); box-shadow: var(--cv-shadow-1);
+  opacity: 0; scale: 0.6; transition: opacity var(--cv-dur) var(--cv-ease), scale var(--cv-dur) var(--cv-ease-spring), background var(--cv-dur-fast), color var(--cv-dur-fast);
+}
+.cv-append:hover { background: var(--accent); color: var(--accent-text, #fff); }
+.cv-node:hover .cv-append, .cv-append:focus-visible { opacity: 1; scale: 1; }
+.cv-move { display: inline-flex; gap: 2px; opacity: 0; transition: opacity var(--cv-dur-fast); }
+.cv-node:hover .cv-move, .cv-move:focus-within { opacity: 1; }
+.cv-move button { width: 22px; height: 22px; padding: 0; border: 0; background: transparent; box-shadow: none; display: grid; place-items: center; border-radius: 5px; color: var(--muted); }
+.cv-move button:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.cv-move button:first-child .cv-icon { transform: rotate(90deg); }
+.cv-move button:last-child .cv-icon { transform: rotate(-90deg); }
+.cv-move button:disabled { opacity: 0.3; }
+
+/* ---- edges ------------------------------------------------------------------ */
+.cv-stage .react-flow__edges { transition: opacity var(--cv-dur-slow) var(--cv-ease); }
+.cv-edge path.react-flow__edge-path { stroke: var(--cv-line); stroke-width: 1.5; stroke-linecap: round; transition: stroke var(--cv-dur-fast), stroke-width var(--cv-dur-fast); }
+.cv-edge.hover path.react-flow__edge-path, .react-flow__edge.selected path.react-flow__edge-path { stroke: var(--accent); stroke-width: 2; }
+.cv-edge.kind-error path.react-flow__edge-path { stroke: var(--cv-dot-error, var(--cv-arrow-error)); stroke-dasharray: 6 4; }
+.cv-edge.kind-request path.react-flow__edge-path { stroke-dasharray: 2 5; }
+.cv-edge.focus path.react-flow__edge-path { stroke: var(--accent); stroke-width: 2; }
+.cv-edge.dim { opacity: 0.4; }
+.cv-edge { transition: opacity var(--cv-dur) var(--cv-ease); }
+.react-flow__edge.animated path.react-flow__edge-path { stroke-dasharray: 6 5; animation: cv-flow 700ms linear infinite; stroke: var(--accent); }
+.react-flow__edge.cv-edge-active path.react-flow__edge-path { stroke: var(--accent); stroke-width: 2.6; }
+.react-flow__edgelabel-renderer { z-index: 1001; }
+
+/* labels: small square chips, above every step */
+.cv-elabel { position: absolute; display: flex; align-items: center; pointer-events: all; z-index: 5; transition: opacity var(--cv-dur) var(--cv-ease); }
+.cv-elabel.dim { opacity: 0.5; }
+.cv-elabel-text { height: 22px; max-width: 184px; padding: 0 9px; display: inline-flex; align-items: center; background: var(--cv-card); border: 1px solid var(--cv-node-border); border-radius: 6px; font: 500 11px/1 var(--font); letter-spacing: 0.005em; color: var(--text-2, var(--text)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-shadow: var(--cv-shadow-1); cursor: pointer; transition: border-color var(--cv-dur-fast), box-shadow var(--cv-dur-fast), color var(--cv-dur-fast); }
+.cv-elabel.open .cv-elabel-text, .cv-elabel-text:hover { border-color: var(--accent); color: var(--text); box-shadow: var(--cv-shadow-hover); }
+.cv-elabel-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cv-card); border: 1.5px solid var(--cv-line); transition: scale var(--cv-dur) var(--cv-ease-spring), border-color var(--cv-dur-fast), background var(--cv-dur-fast); }
+.cv-elabel.open .cv-elabel-dot { scale: 1.7; border-color: var(--accent); }
+.cv-elabel-tools { position: absolute; left: calc(100% + 4px); top: 50%; display: flex; gap: 4px; translate: 0 -50%; scale: 0.5; opacity: 0; pointer-events: none; transform-origin: left center; transition: scale var(--cv-dur) var(--cv-ease-spring), opacity var(--cv-dur-fast); }
+.cv-elabel:not(.has-text) .cv-elabel-tools { left: 50%; top: calc(100% + 6px); translate: -50% 0; transform-origin: center top; }
+.cv-elabel.open .cv-elabel-tools { scale: 1; opacity: 1; pointer-events: all; }
+.cv-elabel-tools button { width: 22px; height: 22px; padding: 0; border-radius: 6px; display: grid; place-items: center; background: var(--cv-card); border: 1px solid var(--cv-node-border); color: var(--text-2, var(--text)); box-shadow: var(--cv-shadow-1); }
+.cv-elabel-tools .ins { background: var(--accent); color: var(--accent-text, #fff); border-color: var(--accent); }
+.cv-elabel-tools .del:hover { background: var(--danger-soft, #fdebe9); color: var(--danger, #c22f26); border-color: var(--danger, #c22f26); }
+.cv-elabel.plain { pointer-events: none; }
+
+.cv-connline path { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 6 5; animation: cv-flow 600ms linear infinite; }
+.cv-connline circle { fill: var(--accent); }
+.cv-connline.valid path { stroke: var(--ok, #17803f); }
+.cv-connline.valid circle { fill: var(--ok, #17803f); }
+.cv-connline.invalid path { stroke: var(--danger, #c22f26); opacity: 0.55; }
+.cv-connline.invalid circle { fill: var(--danger, #c22f26); opacity: 0.55; }
+
+.cv-guide { position: absolute; left: 0; top: 0; background: var(--accent); opacity: 0.55; pointer-events: none; z-index: 2000; }
+.cv-guide.v { width: 1px; height: 200000px; }
+.cv-guide.h { height: 1px; width: 200000px; }
+
+/* laying out again glides nodes to their new places; lines fade while they travel */
+.cv-tween .react-flow__node { transition: transform 460ms cubic-bezier(0.22, 0.9, 0.26, 1); }
+.cv-tween .react-flow__edges, .cv-tween .cv-elabel { opacity: 0.1; }
+
+/* ---- data flow ---------------------------------------------------------------- */
+/* Still until a step is selected: then its own connections carry moving dots. */
+.cv-dots { pointer-events: none; transition: opacity 200ms ease-out; }
+.cv-dot { fill: var(--cv-dot, var(--accent)); }
+.cv-dots.error .cv-dot { fill: var(--cv-dot-error, var(--cv-arrow-error)); }
+.cv-dot.hollow { fill: var(--cv-card); stroke: var(--cv-dot, var(--accent)); stroke-width: 1.6; }
+.cv-dots.park .cv-dot.hollow { stroke: var(--cv-dot-park, var(--t-process)); }
+.cv-dots.request .cv-dot.hollow { stroke: var(--cv-edge); stroke-dasharray: 2 2; }
+/* no travelling dots (reduced motion, or switched off): the highlight alone shows what is connected */
+.cv-speed select { border: 0; background: transparent; font-size: 12px; padding: 0 4px; height: 30px; color: var(--muted); width: auto; }
+.cv-speed select:hover { color: var(--text); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* ---- motion ------------------------------------------------------------------ */
+@keyframes cv-pop { from { opacity: 0; scale: 0.94; } to { opacity: 1; scale: 1; } }
+@keyframes cv-out { to { opacity: 0; scale: 0.92; } }
+@keyframes cv-flow { to { stroke-dashoffset: -22; } }
+@keyframes cv-shake { 0%, 100% { translate: 0 0; } 20% { translate: -3px 0; } 40% { translate: 3px 0; } 60% { translate: -2px 0; } 80% { translate: 2px 0; } }
+@keyframes cv-tick { 0% { scale: 0.3; opacity: 0; } 70% { scale: 1.3; opacity: 1; } 100% { scale: 1; opacity: 1; } }
+@keyframes cv-slide { from { opacity: 0; translate: 0 6px; scale: 0.97; } to { opacity: 1; translate: 0 0; scale: 1; } }
+/* `backwards`, not `both`: a fill that outlives the animation keeps every card on its own compositor layer for good */
+.cv-ready .cv-node { animation: cv-pop var(--cv-dur) var(--cv-ease-spring) backwards; }
+.cv-ready .cv-node.exiting { animation: cv-out 200ms ease-in both; }
+
+.cv-static *, .cv-static *::before, .cv-static *::after { animation: none !important; transition: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .canvas-page *, .canvas-page *::before, .canvas-page *::after { animation: none !important; transition: none !important; }
+}
+
+/* ---- details drawer ---------------------------------------------------------- */
+.cv-panel { padding: 0 0 28px; display: grid; gap: 0; align-content: start; }
+.cv-panel-head { position: sticky; top: 0; z-index: 3; display: flex; gap: 14px; align-items: center; padding: 16px 56px 14px 20px; background: var(--cv-surface); border-bottom: 1px solid var(--border); margin-bottom: 4px; flex-wrap: wrap; }
+.cv-panel-head .cv-ico { background: var(--tone, var(--accent)); color: var(--tone-ink, #fff); }
+.cv-panel-title { flex: 1; min-width: 140px; }
+.cv-panel-title h2 { margin: 2px 0 0; font-size: 16px; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; letter-spacing: -0.005em; }
+.cv-panel-title .crumb { margin: 0; color: var(--muted); font-size: 11.5px; font-weight: 500; }
+.cv-panel-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.cv-panel > *:not(.cv-panel-head) { margin-left: 20px; margin-right: 20px; }
+.cv-intro { display: flex; gap: 12px; padding: 12px 14px; border-radius: 8px; background: color-mix(in srgb, var(--tone, var(--accent)) 8%, var(--cv-surface)); border: 1px solid color-mix(in srgb, var(--tone, var(--accent)) 20%, var(--border)); margin-top: 12px; margin-bottom: 12px; }
+.cv-intro p { margin: 2px 0 0; color: var(--text-2, var(--muted)); font-size: 12.5px; line-height: 1.5; }
+.cv-intro .muted { color: var(--muted); }
+.cv-intro .cv-ico.big { background: var(--tone, var(--accent)); color: var(--tone-ink, #fff); }
+
+.cv-sec { border: 0; border-top: 1px solid var(--border); border-radius: 0; margin: 0; background: transparent; }
+.cv-sec > summary { cursor: pointer; padding: 14px 4px; font-weight: 600; font-size: 13px; display: flex; align-items: baseline; gap: 10px; list-style: none; border-radius: 6px; }
+.cv-sec > summary:hover { color: var(--accent); }
+.cv-sec > summary::-webkit-details-marker { display: none; }
+.cv-sec > summary::before { content: ""; width: 6px; height: 6px; border-right: 1.6px solid var(--muted); border-bottom: 1.6px solid var(--muted); rotate: -45deg; transition: rotate var(--cv-dur) var(--cv-ease); margin-right: 2px; align-self: center; }
+.cv-sec[open] > summary::before { rotate: 45deg; }
+.cv-sec > summary small { color: var(--muted); font-weight: 400; font-size: 12px; }
+.cv-sec-body { padding: 2px 4px 18px; display: grid; gap: 16px; }
+.cv-row-2, .cv-row { }
+.cv-panel .cv-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; height: auto; }
+.cv-field { display: grid; gap: 6px; }
+.cv-field > label { font-size: 12.5px; font-weight: 600; }
+.cv-field > label small { font-weight: 400; color: var(--muted); }
+.cv-field small { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.cv-field small.bad { color: var(--danger, #c22f26); }
+.cv-field textarea, .cv-field select, .cv-field input { width: 100%; }
+.cv-toggle { display: grid; gap: 4px; }
+.cv-toggle label { display: flex; gap: 10px; align-items: center; font-size: 13px; line-height: 1.4; }
+.cv-toggles { display: grid; gap: 12px; }
+.cv-group { display: grid; gap: 14px; }
+.cv-indent { display: grid; gap: 16px; padding-left: 16px; border-left: 2px solid var(--border); margin-left: 4px; }
+.cv-none { margin: 0; color: var(--muted); font-size: 12.5px; }
+.cv-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.cv-chips li { display: inline-flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border-radius: 6px; background: var(--cv-surface-2); border: 1px solid var(--border); font-family: var(--mono); font-size: 11.5px; }
+.cv-chips li.bad { border-color: var(--danger, #c22f26); color: var(--danger, #c22f26); background: var(--danger-soft, #fdebe9); }
+.cv-chips button { border: 0; background: transparent; box-shadow: none; padding: 0 6px; line-height: 1.4; border-radius: 4px; color: var(--muted); }
+.cv-chips button:hover { color: var(--danger, #c22f26); }
+.cv-add { display: flex; gap: 8px; }
+.cv-add input { flex: 1; min-width: 0; }
+.cv-objlist { display: grid; gap: 12px; }
+.cv-objrow { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px 12px; margin: 0; min-width: 0; background: var(--cv-surface-2); }
+.cv-objrow legend { font-size: 12px; color: var(--muted); padding: 0 8px; display: flex; gap: 8px; }
+.cv-objrow legend em { color: var(--text); font-style: normal; font-weight: 600; }
+.cv-objgrid { display: grid; gap: 12px; }
+.cv-cell { display: grid; gap: 6px; }
+.cv-cell span { font-size: 12px; font-weight: 600; }
+.cv-cell input, .cv-cell textarea, .cv-cell select { width: 100%; }
+.cv-rowtools { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.cv-addrow { justify-self: start; }
+.cv-problems { padding: 18px 20px 28px; border-top: 1px solid var(--border); margin: 8px 0 0 !important; }
+.cv-problems h3 { margin: 0 0 12px; font-size: 12px; }
+.cv-problems ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.cv-problems .problem { width: 100%; text-align: left; border: 1px solid var(--border); background: var(--cv-surface-2); padding: 10px 12px; line-height: 1.4; border-radius: 8px; }
+.cv-problems .problem.error { border-left: 3px solid var(--danger, #c22f26); }
+.cv-problems .problem.warning { border-left: 3px solid var(--warn, #a35f00); }
+
+/* ---- step list (rail + popover) ----------------------------------------------- */
+.cv-typelist { display: grid; gap: 12px; }
+.cv-typelist input[type="search"] { width: 100%; }
+.cv-typelist h4 { margin: 4px 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.cv-typelist ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.cv-typelist details > summary { cursor: pointer; font-size: 12.5px; font-weight: 600; padding: 8px 0; color: var(--text-2, var(--text)); }
+.cv-typebtn { --tone: var(--t-compute); width: 100%; display: flex; align-items: center; gap: 12px; text-align: left; padding: 7px 8px; border-radius: 8px; cursor: grab; border: 1px solid transparent; background: transparent; box-shadow: none; transition: background var(--cv-dur-fast), border-color var(--cv-dur-fast); }
+.cv-typebtn:hover:not(:disabled) { background: color-mix(in srgb, var(--tone) 8%, transparent); border-color: color-mix(in srgb, var(--tone) 30%, var(--border)); }
+.cv-typebtn .cv-ico { width: 28px; height: 28px; }
+.cv-typetext { display: grid; min-width: 0; flex: 1; }
+.cv-typetext strong { font-size: 13px; font-weight: 600; }
+.cv-typetext small { color: var(--muted); font-size: 11.5px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.cv-popover { position: fixed; z-index: 3000; background: var(--cv-surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--cv-shadow-3); padding: 14px; overflow: auto; animation: cv-slide var(--cv-dur) var(--cv-ease) both; }
+.cv-popover h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--text); }
+.cv-popover.above { transform-origin: bottom center; }
+
+/* nothing loops in a hidden tab; one-shot entrances are skipped so cards are never left half-drawn */
+.cv-paused .cv-connline path, .cv-paused .react-flow__edge.animated path.react-flow__edge-path { animation-play-state: paused; }
+.cv-paused .cv-node { animation: none; }
+
+/* the request feeds most steps: draw it faintly, and in full only while it matters */
+.cv-edge.quiet path.react-flow__edge-path { stroke-opacity: 0.32; stroke-dasharray: 2 5; }
+.cv-edge.quiet.focus path.react-flow__edge-path, .cv-edge.quiet.hover path.react-flow__edge-path { stroke-opacity: 1; stroke-dasharray: none; }
+.cv-edge.quiet.dim { opacity: 0.25; }
+/* "+ needs" is a quiet hint that fades in fully when you reach for it (an invisible row would read as a gap) */
+.cv-port.new span { opacity: 0.5; transition: opacity var(--cv-dur-fast); }
+.cv-node .react-flow__handle.new { opacity: 0.55; }
+.cv-node:hover .cv-port.new span, .cv-node.selected .cv-port.new span { opacity: 1; }
+.cv-node:hover .react-flow__handle.new, .cv-node.selected .react-flow__handle.new, .react-flow.connecting .react-flow__handle.new { opacity: 1; }
+
+/* ---- big graphs ---------------------------------------------------------------- */
+/* Measured, not assumed: `will-change: transform` on the viewport and `contain` on the cards both made panning a
+   120-step flow slower (one enormous compositor layer; extra paint chunks), so neither is used. */
+/* far zoomed out the text is unreadable anyway: cards draw as coloured tiles with a name (see nodes.tsx, edges.tsx) */
+.cv-node.compact { box-shadow: inset 0 3px 0 var(--tone); }
+.cv-node.compact .cv-head { height: 44px; padding-right: 8px; }
+.cv-node.compact .cv-ico { width: 28px; height: 28px; }
+.cv-node.compact .cv-titles strong { font-size: 15px; }
+.cv-node.compact .cv-ports { border-top: 0; }
+
+/* required settings, marked without changing the label's text */
+.cv-field > label.is-required::after { content: " *"; color: var(--danger, #c22f26); }
+
+/* to-do list at the top of a step's settings */
+.cv-todo { margin: 12px 0 4px; padding: 10px 12px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--warn, #a35f00) 35%, var(--border)); background: var(--warn-soft, #fdf1dc); font-size: 12.5px; }
+.cv-todo strong { display: block; margin-bottom: 4px; color: var(--warn, #a35f00); font-size: 12px; }
+.cv-todo ul { margin: 0; padding-left: 18px; }
+.cv-note { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--cv-surface-2); color: var(--text-2, var(--text)); font-size: 12.5px; line-height: 1.5; }
+.cv-other { display: grid; gap: 12px; }
+
+/* condition builder */
+.cv-cond-body { display: grid; gap: 8px; }
+.cv-cond-join { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2, var(--text)); }
+.cv-cond-join select { width: auto; height: 28px; }
+.cv-clause { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1.1fr) 24px; gap: 6px; align-items: center; }
+.cv-clause input, .cv-clause select { width: 100%; height: 30px; font-size: 12.5px; }
+.cv-clause-gap { display: block; }
+.cv-x { width: 24px; height: 24px; padding: 0; border: 0; background: transparent; box-shadow: none; border-radius: 6px; color: var(--muted); display: grid; place-items: center; }
+.cv-x:hover { background: var(--danger-soft, #fdebe9); color: var(--danger, #c22f26); }
+.cv-cond-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 20px; }
+.cv-reads { color: var(--text-2, var(--muted)); font-weight: 500; }
+.cv-cond .cv-addrow { justify-self: start; display: inline-flex; align-items: center; gap: 6px; }
+
+/* map editor */
+.cv-kv { display: grid; gap: 8px; }
+.cv-kvrow { display: grid; grid-template-columns: minmax(70px, 0.5fr) minmax(0, 1.5fr) 24px; gap: 8px; align-items: start; }
+.cv-kvkey { font: 500 12px/30px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2, var(--text)); }
+
+/* insert-a-value chips under a formula */
+.cv-insert { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 11.5px; color: var(--muted); }
+.cv-chipbtn { height: 22px; padding: 0 8px; border-radius: 6px; font: 500 11px var(--mono); background: var(--cv-surface-2); border: 1px solid var(--border); box-shadow: none; color: var(--text-2, var(--text)); }
+.cv-chipbtn:hover { border-color: var(--accent); color: var(--text); }
+
+/* Connection popover: what one line says, and the few settings that change it. */
+.cv-edgepop { display: grid; gap: 10px; }
+.cv-edgepop h3 { margin: 0; }
+.cv-edgepop-sub { margin: -4px 0 0; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cv-edgepop-body { display: grid; gap: 12px; overflow: auto; padding-right: 2px; }
+.cv-edgepop-actions { display: flex; justify-content: space-between; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.cv-edgepop-actions .primary { background: var(--accent, #4f46e5); color: #fff; border-color: transparent; }
+.cv-chip.todo { color: var(--warn-text, #8a5a00); background: var(--warn-bg, #fdf3dc); }
+
+/* The toolbar sits to the right of the title so the two never overlap; with the drawer open it drops below the title. */
+.cv-toolbar { left: auto; right: 64px; transform: none; transition: right var(--cv-dur-slow) var(--cv-ease), top var(--cv-dur-slow) var(--cv-ease); }
+.drawer-open .cv-toolbar { right: auto; left: 60px; top: 60px; }
+.cv-edgekind { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; font-size: 12.5px; color: var(--muted); }
+.cv-edgekind select { width: auto; min-width: 96px; }

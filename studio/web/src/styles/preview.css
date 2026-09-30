@@ -1,0 +1,57 @@
+/* Live preview panel + request console (moved out of the global stylesheet). */
+/* ---- preview panel ---------------------------------------------------------- */
+.preview { background: var(--panel); min-height: 0; min-width: 0; display: flex; position: relative; }
+.preview.dock-right { border-left: 1px solid var(--border); flex-direction: row; width: var(--preview-size, 480px); flex: none; }
+.preview.dock-bottom { border-top: 1px solid var(--border); flex-direction: column; height: var(--preview-size, 320px); flex: none; }
+.preview-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.preview-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.preview-tools { display: flex; gap: 6px; align-items: center; margin-left: auto; flex-wrap: wrap; }
+.preview-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.preview-body[hidden] { display: none; }
+.preview-msg { margin: 0; }
+.preview-note { margin: 0; padding: 4px 10px; font-size: 12.5px; color: var(--warn); background: var(--panel-2); border-bottom: 1px solid var(--border); }
+.resize-handle { flex: none; background: transparent; z-index: 2; touch-action: none; }
+.resize-handle.vertical { width: 6px; margin-left: -3px; cursor: col-resize; }
+.resize-handle.horizontal { height: 6px; margin-top: -3px; cursor: row-resize; }
+.resize-handle:hover, .resize-handle:focus-visible { background: var(--accent); opacity: 0.55; }
+body.resizing { user-select: none; cursor: col-resize; }
+body.resizing iframe { pointer-events: none; }
+
+a.button { display: inline-block; padding: 5px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: inherit; text-decoration: none; }
+
+.urlbar { display: flex; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.urlbar input { flex: 1; font-family: var(--mono); font-size: 12.5px; }
+.frame-wrap { flex: 1; min-height: 0; overflow: auto; background: var(--bg); display: flex; justify-content: center; }
+.frame { width: 100%; height: 100%; min-height: 0; }
+.frame-wrap.device-tablet .frame, .frame-wrap.device-mobile .frame { margin: 10px 0; height: calc(100% - 20px); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12); }
+.frame iframe { width: 100%; height: 100%; border: 0; background: #fff; display: block; }
+.preview-fail { padding: 8px 12px; }
+.preview-fail.banner { background: var(--del-bg); border-bottom: 1px solid var(--border); max-height: 34%; overflow: auto; }
+.preview-fail ul { margin: 4px 0 0; padding-left: 18px; }
+.preview-fail li { margin: 2px 0; font-size: 12.5px; }
+
+.console { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.console-tools { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.console-tools input[type="search"] { flex: 1 1 100%; }
+.console-scroll { flex: 1; min-height: 0; overflow: auto; container-type: inline-size; }
+.console-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.console-table th { position: sticky; top: 0; background: var(--panel-2); text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); font-weight: 600; white-space: nowrap; }
+.console-table td { padding: 3px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.console-table td.time, .console-table td.duration { white-space: nowrap; color: var(--muted); }
+.console-table td.url { min-width: 160px; }
+.console-table td.url code { overflow-wrap: anywhere; }
+@container (max-width: 640px) {
+  .console-table .intent, .console-table .duration { display: none; }
+}
+.console-table tr.jumpable { cursor: pointer; }
+.console-table tr.jumpable:hover, .console-table tr.jumpable:focus-visible { background: var(--panel-2); }
+.console-table tr.status-client td.status, .console-table tr.status-server td.status { color: var(--danger); font-weight: 600; }
+.console-table tr.status-ok td.status { color: var(--ok); }
+.console-table tr.outbound { background: var(--panel-2); }
+.tag { border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; font-size: 11.5px; }
+.payload { margin-top: 2px; }
+.payload pre { margin: 0; white-space: pre-wrap; word-break: break-all; color: var(--muted); }
+@media (max-width: 1000px) {
+  .preview.dock-right { height: 60vh; }
+  .resize-handle.vertical { display: none; }
+}
