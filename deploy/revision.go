@@ -37,12 +37,25 @@ const (
 
 // Revision is one version of an application's document.
 type Revision struct {
-	ID        string `json:"id"`
-	App       string `json:"app"`
-	Seq       int64  `json:"seq"`
-	Source    string `json:"source"`
-	Checksum  string `json:"checksum"`
-	Signature string `json:"signature,omitempty"`
+	ID  string `json:"id"`
+	App string `json:"app"`
+	Seq int64  `json:"seq"`
+	// Source is the document the compiler reads. For a bundle revision it is
+	// derived from Files (they joined in path order) and re-derived whenever
+	// the revision is verified.
+	Source string `json:"source"`
+	// Files is set on a bundle revision (Manager.ProposeBundle): the BCL files
+	// in path order. A revision without Files predates bundles or was
+	// proposed as a single document, and is signed and checked exactly as it
+	// always was — see bundle.go.
+	Files []platform.BundleFile `json:"files,omitempty"`
+	// Assets is set on a bundle revision that also carries page templates and
+	// static files (Manager.ProposeBundleAssets): path-ordered, each under
+	// "templates/" or "static/". A revision with assets is a v3 revision: its
+	// checksum and signatures cover the assets too. It is always a bundle.
+	Assets    []platform.BundleFile `json:"assets,omitempty"`
+	Checksum  string                `json:"checksum"`
+	Signature string                `json:"signature,omitempty"`
 	// KeySignature is an asymmetric (Ed25519 or RSA) signature over
 	// SigningPayload, made by the Manager's Signer. Unlike the HMAC, anyone
 	// with the public key can check it, and the key that verifies cannot sign.
@@ -60,11 +73,16 @@ type Revision struct {
 	CreatedAt            time.Time          `json:"created_at"`
 	// BaseID is the revision that was active when this one was proposed;
 	// Changes is the block-level diff against it.
-	BaseID    string                    `json:"base_id,omitempty"`
-	Changes   []platform.DocumentChange `json:"changes,omitempty"`
-	Warnings  []string                  `json:"warnings,omitempty"`
-	Approvals []Decision                `json:"approvals,omitempty"`
-	Rejection *Decision                 `json:"rejection,omitempty"`
+	BaseID  string                    `json:"base_id,omitempty"`
+	Changes []platform.DocumentChange `json:"changes,omitempty"`
+	// ChangedFiles lists the files of a bundle revision that differ from the
+	// base revision's. It is review metadata, not part of what is signed.
+	ChangedFiles []FileChange `json:"changed_files,omitempty"`
+	// ChangedAssets is the same for the assets.
+	ChangedAssets []FileChange `json:"changed_assets,omitempty"`
+	Warnings      []string     `json:"warnings,omitempty"`
+	Approvals     []Decision   `json:"approvals,omitempty"`
+	Rejection     *Decision    `json:"rejection,omitempty"`
 	// ActivatedAt/By record the latest activation (a rollback re-activates).
 	ActivatedAt *time.Time `json:"activated_at,omitempty"`
 	ActivatedBy string     `json:"activated_by,omitempty"`
@@ -122,6 +140,10 @@ type Manager struct {
 	// Validate checks a document statically (platform.Validate with the
 	// deployment's load options).
 	Validate func(ctx context.Context, src []byte) platform.ValidationReport
+	// ValidateBundle checks a bundle proposal (platform.ValidateBundle with
+	// the deployment's load options), so diagnostics name files. When nil, a
+	// bundle is checked with Validate over its joined source.
+	ValidateBundle func(ctx context.Context, b platform.Bundle) platform.ValidationReport
 	// Secret signs revisions (HMAC-SHA256), so a source edited in the store
 	// cannot be activated.
 	Secret []byte
@@ -170,7 +192,7 @@ type Verifier interface {
 // sequence and the source checksum, under a domain prefix so the signature
 // cannot be replayed as a signature over anything else.
 func SigningPayload(r *Revision) []byte {
-	return fmt.Appendf(nil, "ref-revision/v1|%s|%d|%s", r.App, r.Seq, r.Checksum)
+	return fmt.Appendf(nil, "ref-revision/%s|%s|%d|%s", r.payloadVersion(), r.App, r.Seq, r.Checksum)
 }
 
 // ApprovalPayload is what a revision's approval signatures cover: the app,
@@ -183,7 +205,7 @@ func ApprovalPayload(r *Revision) []byte {
 	}
 	slices.Sort(approvers)
 	list, _ := json.Marshal(approvers)
-	return fmt.Appendf(nil, "ref-revision-approval/v1|%s|%d|%s|%s|%s", r.App, r.Seq, r.Checksum, StatusApproved, list)
+	return fmt.Appendf(nil, "ref-revision-approval/%s|%s|%d|%s|%s|%s", r.payloadVersion(), r.App, r.Seq, r.Checksum, StatusApproved, list)
 }
 
 func (m *Manager) verifier() Verifier {
@@ -201,7 +223,11 @@ func (m *Manager) sign(r *Revision) string {
 		return ""
 	}
 	mac := hmac.New(sha256.New, m.Secret)
-	fmt.Fprintf(mac, "%s|%d|%s", r.App, r.Seq, r.Checksum)
+	if r.IsBundle() {
+		fmt.Fprintf(mac, "bundle/%s|%s|%d|%s", r.payloadVersion(), r.App, r.Seq, r.Checksum)
+	} else {
+		fmt.Fprintf(mac, "%s|%d|%s", r.App, r.Seq, r.Checksum)
+	}
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
@@ -262,14 +288,19 @@ func (m *Manager) VerifyActivation(r *Revision) error {
 	return fmt.Errorf("%w: revision %d has no valid approval signature", ErrTampered, r.Seq)
 }
 
-// Verify checks that a revision's source matches its checksum and that it
+// Verify checks that a revision's content matches its checksum (for a bundle
+// revision: that its files are well-formed and canonical, that Source is
+// exactly those files joined, and that the bundle checksum matches) and that it
 // carries a valid signature: the asymmetric key signature (with a Verifier)
 // or the HMAC (with a Secret) — either one is enough, so revisions signed
 // before a key was introduced keep verifying. With neither configured only
 // the checksum is checked.
 func (m *Manager) Verify(r *Revision) error {
-	sum := sha256.Sum256([]byte(r.Source))
-	if hex.EncodeToString(sum[:]) != r.Checksum {
+	want, err := r.contentChecksum()
+	if err != nil {
+		return err
+	}
+	if want != r.Checksum {
 		return ErrTampered
 	}
 	verifier := m.verifier()
@@ -300,14 +331,64 @@ func (m *Manager) Active(ctx context.Context) (*Revision, error) {
 }
 
 // Propose validates a document and records it as a pending revision (or an
-// approved one when no approvals are required).
+// approved one when no approvals are required). The revision is a legacy,
+// single-document one; use ProposeBundle to keep the files apart.
 func (m *Manager) Propose(ctx context.Context, src []byte, author, message string) (*Revision, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.propose(ctx, nil, nil, src, author, message)
+}
+
+// ProposeBundle is Propose for an application that is several BCL files. The
+// files are validated together (as the document they join into), and the
+// revision records them, so reviewers see which files changed and the
+// signatures cover the file layout, not just the joined text.
+func (m *Manager) ProposeBundle(ctx context.Context, files []platform.BundleFile, author, message string) (*Revision, error) {
+	return m.ProposeBundleAssets(ctx, files, nil, author, message)
+}
+
+// ProposeBundleAssets is ProposeBundle for an application that also changes
+// page templates or static files. The assets (paths under "templates/" or
+// "static/", see platform.NewAssets) are recorded with the revision and
+// covered by its checksum and signatures. With no assets the revision is
+// exactly the one ProposeBundle records.
+//
+// Assets in a revision are overrides: a host reads them over its own files on
+// disk, so a revision names only the templates it changes.
+func (m *Manager) ProposeBundleAssets(ctx context.Context, files, assets []platform.BundleFile, author, message string) (*Revision, error) {
+	b, err := platform.NewBundle(files)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	a, err := platform.NewAssets(assets)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.propose(ctx, b, a, b.Source(), author, message)
+}
+
+// ValidateFiles checks a bundle the way ProposeBundle would.
+func (m *Manager) ValidateFiles(ctx context.Context, b platform.Bundle) platform.ValidationReport {
+	if m.ValidateBundle != nil {
+		return m.ValidateBundle(ctx, b)
+	}
+	return m.Validate(ctx, b.Source())
+}
+
+// propose records a revision of src; a non-nil b makes it a bundle revision.
+// The caller holds m.mu.
+func (m *Manager) propose(ctx context.Context, b platform.Bundle, assets platform.Assets, src []byte, author, message string) (*Revision, error) {
 	if strings.TrimSpace(author) == "" {
 		return nil, fmt.Errorf("%w: an author is required", ErrForbidden)
 	}
-	report := m.Validate(ctx, src)
+	var report platform.ValidationReport
+	if b != nil {
+		report = m.ValidateFiles(ctx, b)
+	} else {
+		report = m.Validate(ctx, src)
+	}
 	if !report.Valid {
 		return nil, &InvalidError{Report: report}
 	}
@@ -315,10 +396,10 @@ func (m *Manager) Propose(ctx context.Context, src []byte, author, message strin
 	if err != nil {
 		return nil, err
 	}
-	sum := sha256.Sum256(src)
 	now := m.now()
-	r := &Revision{ID: newID(), App: m.App, Seq: seq, Source: string(src), Checksum: hex.EncodeToString(sum[:]),
+	r := &Revision{ID: newID(), App: m.App, Seq: seq, Source: string(src), Files: clonedFiles(b), Assets: clonedFiles(assets),
 		Author: author, Message: message, Status: StatusPending, CreatedAt: now, Warnings: report.Warnings}
+	r.Checksum, _ = r.contentChecksum()
 	r.Signature = m.sign(r)
 	if m.Signer != nil {
 		sig, err := m.Signer.Sign(SigningPayload(r))
@@ -339,6 +420,20 @@ func (m *Manager) Propose(ctx context.Context, src []byte, author, message strin
 		}
 	}
 	r.Changes = platform.DiffDocuments(base, report.Document)
+	if b != nil {
+		var baseFiles []platform.BundleFile
+		if active != nil {
+			baseFiles = active.Files
+		}
+		r.ChangedFiles = diffFiles(baseFiles, r.Files)
+		var baseAssets []platform.BundleFile
+		if active != nil {
+			baseAssets = active.Assets
+		}
+		// Assets are overrides, so against a base without any, every asset
+		// is new (diffFiles' "added").
+		r.ChangedAssets = diffFiles(baseAssets, r.Assets)
+	}
 	r.History = append(r.History, Event{At: now, By: author, Action: "proposed", Note: message})
 	if m.Approvals <= 0 {
 		r.Status = StatusApproved

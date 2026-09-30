@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/oarkflow/ref/platform"
 )
 
 // MemoryStore keeps revisions in memory (tests, single-process demos).
@@ -125,46 +127,138 @@ func (s *SQLStore) q(stmt string) string {
 	return b.String()
 }
 
-// Migrate creates the table.
+// Migrate creates the table, and adds the files and assets columns to a table
+// created before bundle revisions (files) or assets existed. It is safe to run
+// repeatedly.
 func (s *SQLStore) Migrate(ctx context.Context) error {
 	key, text := "TEXT", "TEXT"
 	if s.dialect == "mysql" {
 		key, text = "VARCHAR(191)", "LONGTEXT"
 	}
+	// files holds a bundle revision's files (JSON) and assets its templates and
+	// static files (JSON); each is NULL for a revision with none, which is
+	// every row written before they existed.
 	_, err := s.db.ExecContext(ctx, s.q(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS {t} (
 		id %[1]s PRIMARY KEY, app %[1]s NOT NULL, seq BIGINT NOT NULL, status %[1]s NOT NULL, doc %[2]s NOT NULL,
+		files %[2]s NULL,
+		assets %[2]s NULL,
 		UNIQUE (app, seq))`, key, text)))
-	return err
-}
-
-func (s *SQLStore) Create(ctx context.Context, r *Revision) error {
-	doc, err := json.Marshal(r)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, s.q(`INSERT INTO {t} (id, app, seq, status, doc) VALUES (?, ?, ?, ?, ?)`), r.ID, r.App, r.Seq, r.Status, string(doc))
+	for _, col := range []string{"files", "assets"} {
+		has, err := s.hasColumn(ctx, col)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, s.q(fmt.Sprintf(`ALTER TABLE {t} ADD COLUMN %s %s NULL`, col, text))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// hasColumn asks the catalog whether the table already has the column, so an
+// ALTER runs only for a table that predates it. col is one of this package's
+// own column names, never caller input.
+func (s *SQLStore) hasColumn(ctx context.Context, col string) (bool, error) {
+	var stmt string
+	var args []any
+	switch s.dialect {
+	case "sqlite":
+		stmt, args = `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, []any{s.table, col}
+	case "postgres":
+		stmt, args = `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = lower(?) AND column_name = ?`, []any{s.table, col}
+	default: // mysql
+		stmt, args = `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`, []any{s.table, col}
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, s.q(stmt), args...).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// encodeRevision splits a revision into its JSON document and its files and
+// assets columns. Files and assets live only in their columns, so a bundle's
+// content is stored once beside Source rather than twice inside the document.
+func encodeRevision(r *Revision) (doc string, files, assets sql.NullString, err error) {
+	stripped := *r
+	stripped.Files, stripped.Assets = nil, nil
+	raw, err := json.Marshal(&stripped)
+	if err != nil {
+		return "", files, assets, err
+	}
+	column := func(v []platform.BundleFile) (sql.NullString, error) {
+		if len(v) == 0 {
+			return sql.NullString{}, nil
+		}
+		b, err := json.Marshal(v)
+		if err != nil {
+			return sql.NullString{}, err
+		}
+		return sql.NullString{String: string(b), Valid: true}, nil
+	}
+	if files, err = column(r.Files); err != nil {
+		return "", files, assets, err
+	}
+	if assets, err = column(r.Assets); err != nil {
+		return "", files, assets, err
+	}
+	return string(raw), files, assets, nil
+}
+
+func decodeRevision(doc string, files, assets sql.NullString) (*Revision, error) {
+	var r Revision
+	if err := json.Unmarshal([]byte(doc), &r); err != nil {
+		return nil, err
+	}
+	if files.Valid && files.String != "" {
+		if err := json.Unmarshal([]byte(files.String), &r.Files); err != nil {
+			return nil, err
+		}
+	}
+	if assets.Valid && assets.String != "" {
+		if err := json.Unmarshal([]byte(assets.String), &r.Assets); err != nil {
+			return nil, err
+		}
+	}
+	return &r, nil
+}
+
+func (s *SQLStore) Create(ctx context.Context, r *Revision) error {
+	doc, files, assets, err := encodeRevision(r)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, s.q(`INSERT INTO {t} (id, app, seq, status, doc, files, assets) VALUES (?, ?, ?, ?, ?, ?, ?)`), r.ID, r.App, r.Seq, r.Status, doc, files, assets)
 	return err
 }
 
 func (s *SQLStore) Get(ctx context.Context, id string) (*Revision, error) {
-	var doc string
-	err := s.db.QueryRowContext(ctx, s.q(`SELECT doc FROM {t} WHERE id = ?`), id).Scan(&doc)
+	var (
+		doc           string
+		files, assets sql.NullString
+	)
+	err := s.db.QueryRowContext(ctx, s.q(`SELECT doc, files, assets FROM {t} WHERE id = ?`), id).Scan(&doc, &files, &assets)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: revision %q", ErrNotFound, id)
 	}
 	if err != nil {
 		return nil, err
 	}
-	var r Revision
-	return &r, json.Unmarshal([]byte(doc), &r)
+	return decodeRevision(doc, files, assets)
 }
 
 func (s *SQLStore) Update(ctx context.Context, r *Revision) error {
-	doc, err := json.Marshal(r)
+	doc, files, assets, err := encodeRevision(r)
 	if err != nil {
 		return err
 	}
-	res, err := s.db.ExecContext(ctx, s.q(`UPDATE {t} SET status = ?, doc = ? WHERE id = ?`), r.Status, string(doc), r.ID)
+	res, err := s.db.ExecContext(ctx, s.q(`UPDATE {t} SET status = ?, doc = ?, files = ?, assets = ? WHERE id = ?`), r.Status, doc, files, assets, r.ID)
 	if err != nil {
 		return err
 	}
@@ -175,7 +269,7 @@ func (s *SQLStore) Update(ctx context.Context, r *Revision) error {
 }
 
 func (s *SQLStore) List(ctx context.Context, app string, limit int) ([]*Revision, error) {
-	stmt := `SELECT doc FROM {t} WHERE app = ? ORDER BY seq DESC`
+	stmt := `SELECT doc, files, assets FROM {t} WHERE app = ? ORDER BY seq DESC`
 	args := []any{app}
 	if limit > 0 {
 		stmt += ` LIMIT ?`
@@ -188,15 +282,18 @@ func (s *SQLStore) List(ctx context.Context, app string, limit int) ([]*Revision
 	defer rows.Close()
 	var out []*Revision
 	for rows.Next() {
-		var doc string
-		if err := rows.Scan(&doc); err != nil {
+		var (
+			doc           string
+			files, assets sql.NullString
+		)
+		if err := rows.Scan(&doc, &files, &assets); err != nil {
 			return nil, err
 		}
-		var r Revision
-		if err := json.Unmarshal([]byte(doc), &r); err != nil {
+		r, err := decodeRevision(doc, files, assets)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, &r)
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }

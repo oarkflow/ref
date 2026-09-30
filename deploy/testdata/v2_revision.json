@@ -1,0 +1,99 @@
+{
+  "approval_payload": "ref-revision-approval/v2|hello|1|00e077576e91334d1334a589eb0cdefb631ab38ea1d162bb797d7e3c125f6c57|approved|[\"bob\"]",
+  "jwks": {
+    "keys": [
+      {
+        "kty": "OKP",
+        "kid": "fixture-key",
+        "alg": "EdDSA",
+        "use": "sig",
+        "crv": "Ed25519",
+        "x": "TY7S1MaRTdaReBF6nBmPtB18WGIa_SHk2W4P5zGAXzU"
+      }
+    ]
+  },
+  "revision": {
+    "id": "rev_8f4400eb3d645976c514",
+    "app": "hello",
+    "seq": 1,
+    "source": "name \"hello\"\nversion \"v1\"\n\nintent \"hello\" {\n  response \"msg\"\n  node \"msg\" {\n    uses \"constant\"\n    provides [msg]\n    config {\n      value \"hello from v1\"\n    }\n  }\n}\n\nroute \"hello\" {\n  method GET\n  path \"/hello\"\n  intent \"hello\"\n}\n\n",
+    "files": [
+      {
+        "path": "00_app.bcl",
+        "content": "name \"hello\"\nversion \"v1\"\n"
+      },
+      {
+        "path": "10_intent.bcl",
+        "content": "intent \"hello\" {\n  response \"msg\"\n  node \"msg\" {\n    uses \"constant\"\n    provides [msg]\n    config {\n      value \"hello from v1\"\n    }\n  }\n}\n"
+      },
+      {
+        "path": "20_route.bcl",
+        "content": "route \"hello\" {\n  method GET\n  path \"/hello\"\n  intent \"hello\"\n}\n"
+      }
+    ],
+    "checksum": "00e077576e91334d1334a589eb0cdefb631ab38ea1d162bb797d7e3c125f6c57",
+    "signature": "afb7c644bf6496b4ef5eff1d0837789e3d91ccf10e0c9d84949e64298fa39aef",
+    "key_signature": {
+      "alg": "EdDSA",
+      "kid": "fixture-key",
+      "sig": "SAOUtS7Z9vVrtLceqZqSyNWBw5Du_wm-SyeMkOt1iRWtiv520r5hoZ-EOQe-wPyrZEfxmnQbrkS8AvzRLOY0DA"
+    },
+    "approval_signature": "55cca7d0354c1180a0b433e74243bda0acb744ab6115c68a5f69da6630419451",
+    "approval_key_signature": {
+      "alg": "EdDSA",
+      "kid": "fixture-key",
+      "sig": "RRZi_wRIE68sqnJpMOYNKU7Cw_VHhmvqRkJVgBmwV_WOU4F4hoSO0iMqHuTLtQCU010Y3KUqnLvoMqPTm6yFBg"
+    },
+    "author": "alice",
+    "message": "pinned v2 fixture",
+    "status": "approved",
+    "created_at": "2026-01-02T03:04:05Z",
+    "changes": [
+      {
+        "kind": "intent",
+        "name": "hello",
+        "change": "added"
+      },
+      {
+        "kind": "route",
+        "name": "hello",
+        "change": "added"
+      }
+    ],
+    "changed_files": [
+      {
+        "path": "00_app.bcl",
+        "status": "added"
+      },
+      {
+        "path": "10_intent.bcl",
+        "status": "added"
+      },
+      {
+        "path": "20_route.bcl",
+        "status": "added"
+      }
+    ],
+    "approvals": [
+      {
+        "by": "bob",
+        "at": "2026-01-02T03:04:05Z"
+      }
+    ],
+    "history": [
+      {
+        "at": "2026-01-02T03:04:05Z",
+        "by": "alice",
+        "action": "proposed",
+        "note": "pinned v2 fixture"
+      },
+      {
+        "at": "2026-01-02T03:04:05Z",
+        "by": "bob",
+        "action": "approved"
+      }
+    ]
+  },
+  "secret": "deploy-test-secret-0123456789abcd",
+  "signing_payload": "ref-revision/v2|hello|1|00e077576e91334d1334a589eb0cdefb631ab38ea1d162bb797d7e3c125f6c57"
+}

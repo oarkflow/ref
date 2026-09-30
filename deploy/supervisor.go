@@ -32,6 +32,23 @@ type Supervisor struct {
 	// requests (default 30s).
 	Drain time.Duration
 	Logf  func(format string, args ...any)
+	// NewApp, when set, creates each generation's fh.App (for template
+	// engines, error handlers and other app options). Default: fh.New with the
+	// startup banner disabled.
+	NewApp func() *fh.App
+	// Mount, when set, replaces p.Mount(app) so a host can register its own
+	// middleware and routes (health, metrics, static files) around the
+	// platform's. It must call p.Mount(app) itself.
+	Mount func(app *fh.App, p *platform.Platform) error
+	// NewAppFor and MountFor are NewApp and Mount for a host that needs the
+	// revision being built (for example to read its Assets). When set they
+	// are used instead of NewApp and Mount.
+	NewAppFor func(rev *Revision) *fh.App
+	MountFor  func(app *fh.App, p *platform.Platform, rev *Revision) error
+	// Closed, when set, is called once a generation has drained and its
+	// resources are closed, so a host can release what it made for that
+	// revision (a materialized template directory, say).
+	Closed func(rev *Revision)
 
 	mu      sync.Mutex
 	current *generation
@@ -164,9 +181,27 @@ func (s *Supervisor) start(ctx context.Context, rev *Revision, addr net.Addr) (*
 	}
 	// Graceful mode: at a swap, in-flight requests finish and answer
 	// "Connection: close" so clients reconnect to the new generation.
-	app := fh.New(fh.WithStartupBannerDisabled(true))
-	if err := p.Mount(app); err != nil {
+	var app *fh.App
+	switch {
+	case s.NewAppFor != nil:
+		app = s.NewAppFor(rev)
+	case s.NewApp != nil:
+		app = s.NewApp()
+	default:
+		app = fh.New(fh.WithStartupBannerDisabled(true))
+	}
+	mount := s.Mount
+	switch {
+	case s.MountFor != nil:
+		mount = func(app *fh.App, p *platform.Platform) error { return s.MountFor(app, p, rev) }
+	case mount == nil:
+		mount = func(app *fh.App, p *platform.Platform) error { return p.Mount(app) }
+	}
+	if err := mount(app, p); err != nil {
 		_ = p.Close()
+		if s.Closed != nil {
+			s.Closed(rev)
+		}
 		return nil, err
 	}
 	gen := &generation{rev: rev, p: p, app: app, ln: newChanListener(addr), done: make(chan struct{})}
@@ -193,6 +228,9 @@ func (s *Supervisor) stop(g *generation, grace time.Duration) {
 	_ = g.ln.Close()
 	<-g.done
 	_ = g.p.Close()
+	if s.Closed != nil {
+		s.Closed(g.rev)
+	}
 }
 
 // acceptLoop hands each accepted connection to the current generation.

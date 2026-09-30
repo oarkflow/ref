@@ -1,0 +1,73 @@
+{
+  "approval_payload": "ref-revision-approval/v1|hello|1|3b1196f8fd9ec6c4101342ddcd3919173ae1cf1c508f6c809203c4a6f6de4d1c|approved|[\"bob\"]",
+  "jwks": {
+    "keys": [
+      {
+        "kty": "OKP",
+        "kid": "legacy-key",
+        "alg": "EdDSA",
+        "use": "sig",
+        "crv": "Ed25519",
+        "x": "p5g1HJxVFe35psi4G7SyT-Ci2pbmCUxejhcGiCWAJdU"
+      }
+    ]
+  },
+  "revision": {
+    "id": "rev_dfbef5fca1c11dda2631",
+    "app": "hello",
+    "seq": 1,
+    "source": "\nname \"hello\"\nversion \"legacy\"\n\nintent \"hello\" {\n  response \"msg\"\n  node \"msg\" {\n    uses \"constant\"\n    provides [msg]\n    config {\n      value \"hello from legacy\"\n    }\n  }\n}\n\nroute \"hello\" {\n  method GET\n  path \"/hello\"\n  intent \"hello\"\n}\n",
+    "checksum": "3b1196f8fd9ec6c4101342ddcd3919173ae1cf1c508f6c809203c4a6f6de4d1c",
+    "signature": "3a6dc61d05350ba152e316ea03a074cf06e931f83d1b85ded569c52b70c6628d",
+    "key_signature": {
+      "alg": "EdDSA",
+      "kid": "legacy-key",
+      "sig": "6dG8RqNjGwh9zufor8EzbkMSX8vijdRHLgqxFnDgDqGDOk1QzZzC67i96tU2zT_09EDngUvDolNj3LSkl5RABQ"
+    },
+    "approval_signature": "7e96d0ddc58ac10e1110f65bfcd60609ac91060a37da9fd0e1f2600e50b6ef38",
+    "approval_key_signature": {
+      "alg": "EdDSA",
+      "kid": "legacy-key",
+      "sig": "WQ360q-hn9T37TxUH5kVgoPgSyZvvUMa5qSmMw2kL-GpVDRqyKTs0qxVuqZrXWucs0rMDF6MQtYj4kgXtf2kCg"
+    },
+    "author": "alice",
+    "message": "pre-bundle",
+    "status": "approved",
+    "created_at": "2026-09-30T14:29:08.291232682Z",
+    "changes": [
+      {
+        "kind": "intent",
+        "name": "hello",
+        "change": "added"
+      },
+      {
+        "kind": "route",
+        "name": "hello",
+        "change": "added"
+      }
+    ],
+    "approvals": [
+      {
+        "by": "bob",
+        "at": "2026-09-30T14:29:08.292054204Z",
+        "comment": "ok"
+      }
+    ],
+    "history": [
+      {
+        "at": "2026-09-30T14:29:08.291232682Z",
+        "by": "alice",
+        "action": "proposed",
+        "note": "pre-bundle"
+      },
+      {
+        "at": "2026-09-30T14:29:08.292054204Z",
+        "by": "bob",
+        "action": "approved",
+        "note": "ok"
+      }
+    ]
+  },
+  "secret": "deploy-test-secret-0123456789abcd",
+  "signing_payload": "ref-revision/v1|hello|1|3b1196f8fd9ec6c4101342ddcd3919173ae1cf1c508f6c809203c4a6f6de4d1c"
+}
