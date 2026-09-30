@@ -1,7 +1,6 @@
 package platform
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -76,6 +75,12 @@ type LoadOptions struct {
 	// HealthRegistry, when set, is attached to the REF engine and retrievable
 	// through Platform.Engine.Health().
 	HealthRegistry *health.Registry
+	// Mutate, when set, may rewrite the decoded document before anything is
+	// validated or opened. It is how a host compiles a sandboxed variant of an
+	// application (Studio's preview swaps real datastores for temp-dir ones and
+	// drops workers) without touching the BCL source. A non-nil error aborts
+	// Compile.
+	Mutate func(*Document) error
 }
 
 // DefaultLoadOptions returns production-oriented defaults for trusted application
@@ -206,17 +211,22 @@ func LoadFiles(ctx context.Context, paths []string, opts LoadOptions) (*Platform
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("ref/platform: no BCL files provided")
 	}
-	var buf bytes.Buffer
+	files := make([]BundleFile, 0, len(paths))
 	baseDir := filepath.Dir(paths[0])
 	for _, p := range paths {
 		data, err := os.ReadFile(p)
 		if err != nil {
 			return nil, fmt.Errorf("ref/platform: read BCL file %q: %w", p, err)
 		}
-		buf.Write(data)
-		buf.WriteString("\n")
+		files = append(files, BundleFile{Path: p, Content: string(data)})
 	}
-	return Compile(ctx, buf.Bytes(), baseDir, opts)
+	// JoinBundle is the same concatenation Bundle.Source uses, so a bundle
+	// revision compiles to exactly what loading its directory would.
+	p, err := Compile(ctx, JoinBundle(files), baseDir, opts)
+	if err != nil {
+		return nil, remapCompileError(files, err)
+	}
+	return p, nil
 }
 
 // Compile builds an immutable REF generation from BCL source.
@@ -238,6 +248,11 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 		Strict:         opts.Strict,
 	}); err != nil {
 		return nil, fmt.Errorf("ref/platform: compile BCL: %w", err)
+	}
+	if opts.Mutate != nil {
+		if err := opts.Mutate(&doc); err != nil {
+			return nil, fmt.Errorf("ref/platform: %w", err)
+		}
 	}
 
 	engineOpts := make([]runtime.Option, 0, len(opts.Observers)+1)

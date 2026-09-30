@@ -11,7 +11,7 @@ require (
 	github.com/oarkflow/fh v0.0.26
 	github.com/oarkflow/rules v0.0.5
 	github.com/oarkflow/tcpguard v0.0.16
-	github.com/oarkflow/template v0.0.3
+	github.com/oarkflow/template v0.0.4
 	github.com/oarkflow/zlog v0.0.3
 	github.com/prometheus/client_golang v1.24.1
 	github.com/redis/go-redis/v9 v9.22.0
@@ -40,9 +40,9 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/oarkflow/config v0.0.1 // indirect
 	github.com/oarkflow/convert v0.0.6 // indirect
-	github.com/oarkflow/interpreter v0.0.12 // indirect
+	github.com/oarkflow/interpreter v0.0.13 // indirect
 	github.com/oarkflow/ip v0.0.11 // indirect
-	github.com/oarkflow/spl v0.0.8 // indirect
+	github.com/oarkflow/spl v0.0.10
 	github.com/oarkflow/wuid v0.0.1 // indirect
 	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.71.0 // indirect

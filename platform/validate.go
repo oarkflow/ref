@@ -16,10 +16,14 @@ import (
 // document: everything Compile checks before it opens a resource, plus the
 // pipelines, entities, flags and every expression they declare.
 type ValidationReport struct {
-	Valid    bool            `json:"valid"`
-	Errors   []string        `json:"errors,omitempty"`
-	Warnings []string        `json:"warnings,omitempty"`
-	Summary  DocumentSummary `json:"summary"`
+	Valid    bool     `json:"valid"`
+	Errors   []string `json:"errors,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
+	// Diagnostics is Errors and Warnings again, structured: each carries the
+	// block/field path and source span when they could be determined. It is
+	// additive; Errors and Warnings remain populated identically.
+	Diagnostics []Diagnostic    `json:"diagnostics,omitempty"`
+	Summary     DocumentSummary `json:"summary"`
 	// Document is the parsed model (not serialised), for diffing.
 	Document *Document `json:"-"`
 }
@@ -68,6 +72,7 @@ func Validate(ctx context.Context, src []byte, baseDir string, opts LoadOptions)
 		ResolveImports: opts.ResolveImports, Strict: opts.Strict,
 	}); err != nil {
 		r.Errors = append(r.Errors, fmt.Sprintf("parse: %v", err))
+		r.Diagnostics = buildDiagnostics(src, err, r.Errors, r.Warnings)
 		return r
 	}
 	fail := func(err error) {
@@ -132,6 +137,7 @@ func Validate(ctx context.Context, src []byte, baseDir string, opts LoadOptions)
 	fail(err)
 
 	sort.Strings(r.Errors)
+	r.Diagnostics = buildDiagnostics(src, nil, r.Errors, r.Warnings)
 	r.Valid = len(r.Errors) == 0
 	r.Summary = summarize(doc)
 	r.Document = &doc

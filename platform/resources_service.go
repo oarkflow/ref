@@ -134,7 +134,7 @@ type HTTPResponse struct {
 	Text    string            `json:"text,omitempty"`
 }
 
-func openHTTPService(_ context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
+func openHTTPService(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("service.http", spec.Config,
 		"base_url", "allowed_hosts", "timeout", "max_response_bytes", "headers",
 		"retry_attempts", "retry_backoff", "allow_private_networks",
@@ -182,9 +182,18 @@ func openHTTPService(_ context.Context, spec ResourceSpec) (Resource, io.Closer,
 		service.signSecret = []byte(secret)
 	}
 
-	transport, err := buildTransport(spec, service.allowPrivate)
-	if err != nil {
-		return nil, nil, fmt.Errorf("resource %q: %w", spec.Name, err)
+	var transport http.RoundTripper
+	if off, ok := offlineFrom(ctx); ok && off.transport != nil {
+		// Offline generation: the allowlist above still applies, but nothing is
+		// resolved or dialled, so private-network checks have nothing to check.
+		service.allowPrivate = true
+		transport = off.transport
+	} else {
+		var err error
+		transport, err = buildTransport(spec, service.allowPrivate)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resource %q: %w", spec.Name, err)
+		}
 	}
 	service.client = &http.Client{
 		Timeout:   timeout,
@@ -530,7 +539,7 @@ type smtpService struct {
 	insecure bool
 }
 
-func openSMTPService(_ context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
+func openSMTPService(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("service.smtp", spec.Config,
 		"host", "port", "username", "password", "from", "timeout", "tls", "insecure_skip_verify"); err != nil {
 		return nil, nil, err
@@ -571,6 +580,9 @@ func openSMTPService(_ context.Context, spec ResourceSpec) (Resource, io.Closer,
 		// PlainAuth refuses to send credentials over an unencrypted connection,
 		// which is the behaviour we want: if TLS is off, so is authentication.
 		service.auth = smtp.PlainAuth("", username, password, host)
+	}
+	if off, ok := offlineFrom(ctx); ok && off.mailer != nil {
+		return offlineMailer{from: from, mailer: off.mailer}, nil, nil
 	}
 	return service, nil, nil
 }

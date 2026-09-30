@@ -3,3 +3,4 @@
 *.db
 .env
 /examples/starter/bin/
+node_modules

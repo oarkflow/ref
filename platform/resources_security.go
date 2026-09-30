@@ -52,6 +52,7 @@ func registerSecurityResources(r *Registry) {
 			{Name: "path", Type: "string", Summary: "Directory tcpguard.LoadTCPGuardBundleDir reads (a pack + rule files, optionally an .authz file). Mutually exclusive with source."},
 			{Name: "source", Type: "string", Summary: "Inline tcpguard BCL policy source, as an alternative to path for a single-file policy."},
 			{Name: "mode", Type: "string", Default: "enforce", Summary: "\"enforce\" to actually block/throttle, \"monitor\" to only record findings and let every request through."},
+			{Name: "geoip", Type: "bool", Default: "true", Summary: "Enrich each request with GeoIP data. The first use downloads a database into the user's home directory; set false to avoid the download (rules keyed on country then see no location)."},
 			{Name: "identity_fields", Type: "[]string", Summary: "Top-level JSON body field names tried in order (e.g. [\"email\", \"username\"]) to populate the per-request identity a rule's abuse.auth.user_failures/distinct_users signals key on. Without this every request's identity is empty, and every account's failures are counted together under that one empty key — the per-account half of a rate check degrades to a no-op; the per-IP half is unaffected."},
 		},
 	})
@@ -138,7 +139,7 @@ func jsonIdentityExtractor(fields []string) func(*http.Request, *tcpguard.Contex
 }
 
 func openTCPGuard(_ context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
-	if err := rejectUnknownConfig("security.tcpguard", spec.Config, "path", "source", "mode", "identity_fields"); err != nil {
+	if err := rejectUnknownConfig("security.tcpguard", spec.Config, "path", "source", "mode", "identity_fields", "geoip"); err != nil {
 		return nil, nil, err
 	}
 	path := configString(spec.Config, "path", "")
@@ -158,6 +159,9 @@ func openTCPGuard(_ context.Context, spec ResourceSpec) (Resource, io.Closer, er
 	}
 	builder := tcpguard.HTTPContextBuilder{
 		IdentityExtractor: jsonIdentityExtractor(configStrings(spec.Config, "identity_fields")),
+		// GeoIP enrichment downloads and caches a database under the user's home
+		// directory on first use; a host that must not do that turns it off.
+		DisableGeoIP: !configBool(spec.Config, "geoip", true),
 	}
 
 	ctx := context.Background()
