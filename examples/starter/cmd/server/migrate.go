@@ -42,8 +42,7 @@ func ensureMigrated(logger *zlog.Logger) error {
 	// useful for a nonstandard layout, and for a test that must not rely on
 	// bootstrap.ResolveDir's CWD-based guessing matching go test's own CWD
 	// (cmd/server's own package directory, which none of its candidates do).
-	migrationDir := env("MIGRATIONS_DIR", bootstrap.ResolveDir("examples/starter/resources/migrations", "./resources/migrations", "resources/migrations"))
-	seedDir := env("MIGRATIONS_SEED_DIR", bootstrap.ResolveDir("examples/starter/resources/migrations/seeds", "./resources/migrations/seeds", "resources/migrations/seeds"))
+	migrationDir, seedDir := migrationDirs()
 
 	if fi, err := os.Stat(migrationDir); err != nil || !fi.IsDir() {
 		// ListMigrationMap silently reports zero declared migrations for a
@@ -124,6 +123,32 @@ var promptYesNo = func(prompt string) bool {
 	default:
 		return false
 	}
+}
+
+// migrationDirs resolves the migration and seed directories; MIGRATIONS_DIR
+// and MIGRATIONS_SEED_DIR override the CWD-based guess.
+func migrationDirs() (migrationDir, seedDir string) {
+	migrationDir = env("MIGRATIONS_DIR", bootstrap.ResolveDir("examples/starter/resources/migrations", "./resources/migrations", "resources/migrations"))
+	seedDir = env("MIGRATIONS_SEED_DIR", bootstrap.ResolveDir("examples/starter/resources/migrations/seeds", "./resources/migrations/seeds", "resources/migrations/seeds"))
+	return migrationDir, seedDir
+}
+
+// migrateSQLite applies every declared migration to the SQLite database at
+// dsn. Studio's preview uses it to give a sandboxed (empty) database the
+// starter's schema; unlike ensureMigrated it never asks and never touches the
+// database the process itself serves.
+func migrateSQLite(dsn string) error {
+	migrationDir, seedDir := migrationDirs()
+	if fi, err := os.Stat(migrationDir); err != nil || !fi.IsDir() {
+		return fmt.Errorf("migration directory %q does not exist (MIGRATIONS_DIR to override)", migrationDir)
+	}
+	mgr, _, err := migrations.NewManager(migrations.Config{
+		Driver: "sqlite", DSN: dsn, MigrationDir: migrationDir, SeedDir: seedDir,
+	})
+	if err != nil {
+		return fmt.Errorf("connecting to the preview database: %w", err)
+	}
+	return migrations.Apply(mgr)
 }
 
 func env(key, fallback string) string {

@@ -28,7 +28,6 @@ import (
 	"github.com/oarkflow/fh"
 	"github.com/oarkflow/zlog"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	refconfig "github.com/oarkflow/ref/config"
 	"github.com/oarkflow/ref/examples/starter/internal/bootstrap"
@@ -220,6 +219,28 @@ func main() {
 		log.Fatalf("starter: %v", err)
 	}
 
+	deps := starterDeps{
+		logger: logger, boot: boot, health: healthRegistry, maintenance: maintenance,
+		promRegistry: promRegistry, staticDir: staticDir, templatesDir: templatesDir,
+	}
+
+	// STARTER_SUPERVISOR=1 serves the document through deploy.Supervisor
+	// instead of loading it once: revisions can then be proposed, approved,
+	// activated and rolled back at runtime through the admin API, and the
+	// swap refuses no connection. Off by default; see supervised.go.
+	if os.Getenv("STARTER_SUPERVISOR") == "1" {
+		err := runSupervised(ctx, deps, bclDir, opts)
+		if tracerShutdown != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = tracerShutdown(shutdownCtx)
+			cancel()
+		}
+		if err != nil {
+			log.Fatalf("starter: supervisor: %v", err)
+		}
+		return
+	}
+
 	p, err := platform.LoadDir(ctx, bclDir, opts)
 	if err != nil {
 		logger.Error("compiling bcl", zlog.String("path", bclDir), zlog.Err(err))
@@ -227,29 +248,9 @@ func main() {
 	}
 	defer p.Close()
 
-	// The "database" resource (resources/config/01_resources.bcl) is a database.sql
-	// resource; a readiness check that cannot ping it means requests that
-	// touch the database would fail too, so /readyz should say so before a
-	// load balancer routes traffic here.
-	if res, ok := p.Resource("database"); ok {
-		if db, ok := res.(*platform.Database); ok {
-			healthRegistry.Register("database", health.Simple(func(ctx context.Context) error {
-				return db.PingContext(ctx)
-			}))
-			if err := ops.SeedDevAdmin(ctx, db, boot.Env, boot.AdminEmail, boot.AdminPassword); err != nil {
-				logger.Error("seeding dev admin", zlog.Err(err))
-				log.Fatalf("starter: seeding dev admin: %v", err)
-			}
-			// owner@example.com/reviewer@example.com/approver@example.com,
-			// same password as the admin account — see ops.SeedDevTodoRoleAccounts's
-			// own doc comment. Lets the todo workflow example's review/
-			// approval steps be walked by logging in as each role in turn,
-			// with no manual `UPDATE users SET roles = ...`.
-			if err := ops.SeedDevTodoRoleAccounts(ctx, db, boot.Env, boot.AdminPassword); err != nil {
-				logger.Error("seeding dev todo role accounts", zlog.Err(err))
-				log.Fatalf("starter: seeding dev todo role accounts: %v", err)
-			}
-		}
+	if err := prepareGeneration(ctx, p, deps); err != nil {
+		logger.Error("preparing generation", zlog.Err(err))
+		log.Fatalf("starter: %v", err)
 	}
 
 	// The SPL renderer is Go glue a BCL document has no way to name — see
@@ -281,32 +282,10 @@ func main() {
 	// piece of request-handling wiring, keeps that obvious.
 	registerHTMLErrorPages()
 
-	app.Use(maintenance.Middleware())
-	app.Use(httpAccessLog(logger))
-	if err := p.Mount(app); err != nil {
+	if err := mountStarter(app, p, deps); err != nil {
 		logger.Error("mounting bcl routes", zlog.Err(err))
 		log.Fatalf("starter: mount: %v", err)
 	}
-	app.Get("/livez", wrapHTTPHandler(health.LivenessHandler(healthRegistry)))
-	app.Get("/readyz", wrapHTTPHandler(health.ReadinessHandler(healthRegistry)))
-	// A service worker must be served from the root to get root scope —
-	// resources/config/08_static.bcl's "/static" prefix can't give it that,
-	// so this is the one static asset served directly in Go instead of
-	// through a BCL `static` block, the same reason /livez and /readyz are.
-	// Always no-cache, deliberately stronger than 08_static.bcl's own
-	// default: a stale service worker doesn't just show an old page once,
-	// it can keep controlling every future load until it's explicitly
-	// unregistered — see resources/static/sw.js's own doc comment.
-	swPath := filepath.Join(staticDir, "sw.js")
-	app.Get("/sw.js", func(c fh.Ctx) error {
-		c.Set("Cache-Control", "no-cache")
-		c.Set("Content-Type", "text/javascript; charset=utf-8")
-		return c.SendFile(swPath)
-	})
-	// Every REF node/decision/effect/execution event, counted and timed —
-	// promobserver.New above is the only wiring; nothing in resources/config/ knows
-	// metrics exist. Scrape it like any other Prometheus target.
-	app.Get("/metrics", wrapHTTPHandler(promhttp.HandlerFor(promRegistry, promhttp.HandlerOpts{})))
 
 	addr := ":" + boot.Port
 	go func() {

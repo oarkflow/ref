@@ -463,6 +463,82 @@ this fires under `APP_ENV=production` and nothing else. There's no
 `*.production.bcl` filename convention; `LoadDir` loads every `*.bcl` file
 unconditionally and profile blocks decide what actually applies once parsed.
 
+## Studio: the visual editor (`STARTER_SUPERVISOR=1 STARTER_STUDIO=1`, `cmd/server/studio.go`)
+
+Studio (`studio/` at the repository root) edits this document without
+editing BCL by hand: forms and a graph canvas over `resources/config/`, page
+templates, a live preview, and a review-and-activate flow. It is off by
+default. Turn it on together with the supervisor, because activating a
+change is `deploy.Supervisor` swapping in the new generation:
+
+```
+STARTER_SUPERVISOR=1 STARTER_STUDIO=1 \
+STARTER_ADMIN_TOKEN=<16+ chars> STARTER_REVIEWER_TOKEN=<16+ chars> STARTER_EDITOR_TOKEN=<16+ chars> \
+go run ./cmd/server
+# studio available  url=http://127.0.0.1:8081/studio/
+```
+
+| Variable | Meaning |
+|---|---|
+| `STARTER_SUPERVISOR=1` | Serve the document through `deploy.Supervisor` (required). |
+| `STARTER_STUDIO=1` | Mount Studio under `/studio/` on the admin listener. |
+| `STARTER_ADMIN_ADDR` | Admin listener, default `127.0.0.1:8081`. Keep it off the public network. |
+| `STARTER_ADMIN_TOKEN` | **admin**: everything, including rollback and the audit log. At least 16 characters. |
+| `STARTER_REVIEWER_TOKEN` | **reviewer**: approve, reject and activate revisions. |
+| `STARTER_EDITOR_TOKEN` | **editor**: edit drafts, preview, submit for review. Cannot approve. |
+| `STARTER_STUDIO_PERSIST=1` | Keep drafts, undo history, the audit log and revision comments in the app database (`studio_*` tables, created on first use). Default: in memory. |
+| `STARTER_STUDIO_SRC` | Path of a `ref` checkout; block documentation is then read from its Go doc comments. |
+| `STARTER_REVISION_SECRET` | Sign revisions (HMAC). |
+| `STARTER_ALLOW_SELF_APPROVAL=1` | Let one person approve their own revision. Development only. |
+
+A token that is set but shorter than 16 characters, or that repeats another
+role's token, stops the server at boot with a message naming the variable.
+Sign in to the web app with a token; the role decides what the buttons do.
+The author of a revision can never approve it (unless
+`STARTER_ALLOW_SELF_APPROVAL=1`), which is why the reviewer is a separate token.
+
+**What it edits.** A draft starts from the files in `resources/config/` (or
+from a past revision). Pages and static files live in `resources/templates/`
+and `resources/static/`: Studio lists them, analyses which variables each
+needs and which routes use it, and lets a draft *override* a file. The disk
+stays the base, so a revision carries only what it changes.
+Activating a revision swaps the running generation with no restart and rolling
+back returns to the previous templates and config.
+
+**Preview.** `Preview` in a draft builds the draft as a separate, sandboxed
+copy of the app, served at `/studio/preview/<draft>/` (no extra port):
+
+- The database is an empty SQLite file in a temp directory. Studio applies
+  `resources/migrations/` to it and creates the dev accounts (`ADMIN_EMAIL` /
+  `ADMIN_PASSWORD`, and the todo role accounts), so login and the todo
+  workflow work. The application database is never opened.
+- Outbound HTTP and email are answered by recording stubs; workers,
+  schedules and webhook triggers are switched off.
+- It has its own maintenance gate, readiness checks and metrics. An
+  `ops.maintenance_set` call in a previewed route flips the preview's gate,
+  not the live one.
+- It renders with the starter's own renderer (`internal/web`) and mount code
+  (`mountStarter`), so a draft's template override looks in preview exactly as
+  it will live.
+
+Preview is a guard against accidents, not a security boundary: an editor is
+trusted with the document, and a document can read host files (rule
+directories, key files). Give the editor token only to people you would give
+the repository.
+
+**Revisions.** Revisions themselves (`deploy.Manager`) stay in memory: the
+files in `resources/config/` are the durable source, and a restart boots
+from them and starts a fresh revision list. With `STARTER_STUDIO_PERSIST=1`
+drafts are reloaded (they are stored with their own base files), but a
+revision a draft was started from is no longer listed. To keep the history,
+give the manager a `deploy.SQLStore`.
+
+**Programmatic access.** The same revision workflow is available without the
+web app: `deploy.Admin` at `http://$STARTER_ADMIN_ADDR/` (`/revisions`,
+`/validate`, ...) and Studio's JSON API under `/studio/api/v1/`
+(`docs/studio-api.md`). `go test ./cmd/server -run TestStudioEndToEnd` with
+`STARTER_STUDIO_E2E=1` walks the whole flow against a real boot.
+
 ## Plugin points: `RegisterActionDriver` / `RegisterResourceDriver` / `Observers`
 
 Three real extension points, all Go-level, all process-wide (not
@@ -770,8 +846,8 @@ because they're bigger commitments than a starter should make by default:
   into a grace window instead of a hard cut, at the cost of the rotation
   script also needing to shift the old value into that list rather than
   discard it.
-- `docs/deploy.md`'s `deploy.Supervisor` hot-swap (already used nowhere in
-  this starter — see its "What's deliberately not here" entry below) builds
+- `docs/deploy.md`'s `deploy.Supervisor` hot-swap (opt-in here with
+  `STARTER_SUPERVISOR=1`, see "Studio" above) builds
   a new `Platform` generation and cuts connections over to it with zero
   refused connections; a rotation would re-render the secret files and
   propose+activate a new (functionally, if not textually, different)

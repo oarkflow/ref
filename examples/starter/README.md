@@ -473,6 +473,16 @@ every push/PR: the `ref` core module's own build/vet/test/gofmt (plus
 (a separate Go module, its own `govulncheck` run), and a Docker image
 build.
 
+## Visual editor (Studio)
+
+`STARTER_SUPERVISOR=1 STARTER_STUDIO=1` (plus admin, reviewer and editor
+tokens) serves a browser-based editor for this configuration at
+`http://127.0.0.1:8081/studio/`: forms and a graph canvas instead of BCL
+text, page-template overrides, a sandboxed live preview, and a
+review-and-activate flow that swaps the running app with no restart. It is
+off by default. Setup, roles and the preview's guarantees are in
+CONFIGURATION.md's "Studio" section.
+
 ## Production checklist
 
 - **The seeded admin account is development-only, and enforced as such in

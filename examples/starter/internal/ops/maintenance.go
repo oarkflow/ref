@@ -161,59 +161,75 @@ func (g *MaintenanceGate) HealthCheck(context.Context) error {
 // Go function, registered once, then reachable from BCL like any built-in
 // action.
 func (g *MaintenanceGate) RegisterAction() {
-	platform.RegisterActionDriver("ops.maintenance_set",
-		platform.ActionFactoryFunc(func(_ platform.BuildContext, spec platform.NodeSpec) (platform.Action, error) {
-			return platform.ActionFunc(func(ctx *platform.ActionContext) (platform.ActionResult, error) {
-				input, _ := ctx.Inputs["input"].(map[string]any)
-				on, _ := input["on"].(bool)
-				message, _ := input["message"].(string)
-				if seconds, ok := input["retry_after_seconds"].(float64); ok {
-					g.RetryAfterSeconds = int(seconds)
-				}
-				g.Set(on, message)
-				if len(spec.Provides) == 0 {
-					return platform.ActionResult{}, nil
-				}
-				return platform.ActionResult{Outputs: map[string]any{
-					spec.Provides[0]: map[string]any{
-						"maintenance":         g.On(),
-						"message":             g.Message(),
-						"retry_after_seconds": g.RetryAfterSeconds,
-					},
-				}}, nil
-			}), nil
-		}),
-		platform.ActionInfo{
-			Family:   "ops",
-			Summary:  "Toggle maintenance mode for the whole process",
-			Kind:     "effect",
-			Provides: "{ maintenance, message }",
-		},
-	)
+	platform.RegisterActionDriver("ops.maintenance_set", g.setFactory(), setInfo)
+	platform.RegisterActionDriver("ops.maintenance_status", g.statusFactory(), statusInfo)
+}
 
-	// "ops.maintenance_status" is the other half of the same story: the HTTP
-	// middleware already refuses every route while maintenance is on, but a
-	// worker, a schedule or a webhook trigger runs an intent directly,
-	// bypassing HTTP entirely — nothing stops a background job from writing
-	// to a database mid-migration just because maintenance mode is "on".
-	// A node using this action, required by whatever should pause, closes
-	// that gap explicitly per intent (see resources/config/03_intents.bcl's
-	// notify.welcome and notification.password_reset for the pattern:
-	// requires it, then a validate.expression node gates on it).
-	platform.RegisterActionDriver("ops.maintenance_status",
-		platform.ActionFactoryFunc(func(_ platform.BuildContext, spec platform.NodeSpec) (platform.Action, error) {
-			return platform.ActionFunc(func(*platform.ActionContext) (platform.ActionResult, error) {
-				if len(spec.Provides) == 0 {
-					return platform.ActionResult{}, nil
-				}
-				return platform.ActionResult{Outputs: map[string]any{spec.Provides[0]: g.On()}}, nil
-			}), nil
-		}),
-		platform.ActionInfo{
-			Family:   "ops",
-			Summary:  "Whether maintenance mode is currently on",
-			Kind:     "pure",
-			Provides: "bool",
-		},
-	)
+// ReplaceActionsOn rebinds "ops.maintenance_set" and "ops.maintenance_status"
+// on one Registry to this gate. RegisterAction installs them process-wide,
+// bound to the live gate; a Registry that must not reach the live one (Studio's
+// sandboxed previews) replaces them with a gate of its own.
+func (g *MaintenanceGate) ReplaceActionsOn(r *platform.Registry) error {
+	if err := r.Replace("ops.maintenance_set", g.setFactory()); err != nil {
+		return err
+	}
+	return r.Replace("ops.maintenance_status", g.statusFactory())
+}
+
+var setInfo = platform.ActionInfo{
+	Family:   "ops",
+	Summary:  "Toggle maintenance mode for the whole process",
+	Kind:     "effect",
+	Provides: "{ maintenance, message }",
+}
+
+var statusInfo = platform.ActionInfo{
+	Family:   "ops",
+	Summary:  "Whether maintenance mode is currently on",
+	Kind:     "pure",
+	Provides: "bool",
+}
+
+func (g *MaintenanceGate) setFactory() platform.ActionFactory {
+	return platform.ActionFactoryFunc(func(_ platform.BuildContext, spec platform.NodeSpec) (platform.Action, error) {
+		return platform.ActionFunc(func(ctx *platform.ActionContext) (platform.ActionResult, error) {
+			input, _ := ctx.Inputs["input"].(map[string]any)
+			on, _ := input["on"].(bool)
+			message, _ := input["message"].(string)
+			if seconds, ok := input["retry_after_seconds"].(float64); ok {
+				g.RetryAfterSeconds = int(seconds)
+			}
+			g.Set(on, message)
+			if len(spec.Provides) == 0 {
+				return platform.ActionResult{}, nil
+			}
+			return platform.ActionResult{Outputs: map[string]any{
+				spec.Provides[0]: map[string]any{
+					"maintenance":         g.On(),
+					"message":             g.Message(),
+					"retry_after_seconds": g.RetryAfterSeconds,
+				},
+			}}, nil
+		}), nil
+	})
+}
+
+// statusFactory is "ops.maintenance_status", the other half of the same
+// story: the HTTP middleware already refuses every route while maintenance is
+// on, but a worker, a schedule or a webhook trigger runs an intent directly,
+// bypassing HTTP entirely — nothing stops a background job from writing to a
+// database mid-migration just because maintenance mode is "on". A node using
+// this action, required by whatever should pause, closes that gap explicitly
+// per intent (see resources/config/03_intents.bcl's notify.welcome and
+// notification.password_reset for the pattern: requires it, then a
+// validate.expression node gates on it).
+func (g *MaintenanceGate) statusFactory() platform.ActionFactory {
+	return platform.ActionFactoryFunc(func(_ platform.BuildContext, spec platform.NodeSpec) (platform.Action, error) {
+		return platform.ActionFunc(func(*platform.ActionContext) (platform.ActionResult, error) {
+			if len(spec.Provides) == 0 {
+				return platform.ActionResult{}, nil
+			}
+			return platform.ActionResult{Outputs: map[string]any{spec.Provides[0]: g.On()}}, nil
+		}), nil
+	})
 }
