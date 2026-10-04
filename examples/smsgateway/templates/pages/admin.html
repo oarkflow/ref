@@ -1,21 +1,35 @@
 @extends("layouts/base.html")
 
 @define("content") {
-  <section class="card">
-    <h1>Operator</h1>
-    <h2>Providers</h2>
-    <table id="providers"><thead><tr><th>Id</th><th>Kind</th><th>State</th><th>Quality</th><th>Countries</th><th>OK</th><th>Failed</th><th></th></tr></thead><tbody></tbody></table>
+  <div class="pagehead">
+    <div><h1>Operator overview</h1><p>Traffic, money, provider health and what is waiting for you, refreshed every few seconds.</p></div>
+    <div class="row" style="margin:0"><span class="pill ok" id="live"><span class="dot ok pulse"></span> Live</span><span class="muted" id="updated"></span><button type="button" class="secondary small" id="refresh"><span data-icon="refresh" data-size="16"></span> Refresh</button></div>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="cols two">
+    <section class="card"><div class="split"><h2>Messages in the last 24 hours</h2><span class="muted" id="hourly-note"></span></div><div id="hourly"></div></section>
+    <section class="card"><h2>Messages by state</h2><div id="states" class="donutwrap"></div></section>
+  </div>
+
+  <div class="cols two">
+    <section class="card flush">
+      <div class="cardhead"><h2>Providers</h2><a href="/admin/providers" class="btnlink">Manage</a></div>
+      <div id="providers"></div>
+    </section>
+    <section class="card flush">
+      <div class="cardhead"><h2>Waiting for approval</h2><span class="pill warn" id="approval-count" hidden></span></div>
+      <div id="approvals"></div>
+    </section>
+  </div>
+
+  <section class="card flush">
+    <div class="cardhead"><h2>Recent messages</h2><a href="/admin/rules" class="btnlink">Routing rules</a></div>
+    <div id="recent"></div>
   </section>
-  <section class="card">
-    <h2>Campaigns waiting for approval</h2>
-    <table id="approvals"><thead><tr><th>Campaign</th><th>Requested by</th><th></th></tr></thead><tbody></tbody></table>
-  </section>
-  <section class="card">
-    <h2>Traffic</h2>
-    <pre id="stats" class="out"></pre>
-  </section>
-  <section class="card">
-    <h2>Recent messages</h2>
-    <table id="allmessages"><thead><tr><th>Id</th><th>Account</th><th>State</th><th>Provider</th><th>To</th><th>Error</th></tr></thead><tbody></tbody></table>
-  </section>
+}
+
+@define("scripts") {
+  <script src="/static/js/admin.js?v=${asset_version}"></script>
 }

@@ -17,7 +17,7 @@ intent "console.page" {
   response "page"
   node "page" {
     uses "constant" kind pure provides [page]
-    config { value { app_name "SMS Gateway" asset_version "19" title "Console" templates ["otp_login", "payment_received", "spring_sale"] } }
+    config { value { app_name "SMS Gateway" asset_version "22" title "Console" templates ["otp_login", "payment_received", "spring_sale"] } }
   }
 }
 

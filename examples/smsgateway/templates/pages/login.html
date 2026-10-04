@@ -1,15 +1,44 @@
 @extends("layouts/plain.html")
 
 @define("content") {
-  <section class="card">
-    <h1>${app_name}</h1>
-    <p class="muted">Sign in to send messages, run campaigns and manage providers.</p>
-    <form id="loginform">
-      <label>Email <input name="email" type="email" autocomplete="username" required></label>
-      <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
-      <div class="row"><button type="submit">Sign in</button></div>
-    </form>
-    <pre id="result" class="out"></pre>
-    <p class="muted">Development accounts: demo@example.com / demo-pass-123 (an account) and operator@example.com / operator-pass-123 (the operator).</p>
-  </section>
+  <div class="auth">
+    <section class="hero">
+      <div class="row" style="margin:0;gap:12px">
+        <div class="logo" data-icon="chat" data-size="20"></div>
+        <strong style="font-size:18px">${app_name}</strong>
+      </div>
+      <div>
+        <h2>Send every message the right way.</h2>
+        <ul>
+          <li><span data-icon="send" data-size="18"></span> SMPP and vendor APIs behind one console</li>
+          <li><span data-icon="sliders" data-size="18"></span> Routing rules by account, country, recipient and content</li>
+          <li><span data-icon="megaphone" data-size="18"></span> Bulk campaigns with per-recipient fields and phone checks</li>
+          <li><span data-icon="shield" data-size="18"></span> Exactly-once billing with full delivery history</li>
+        </ul>
+      </div>
+      <small style="color:#c7d2fe">Development build: sandbox carriers are stand-ins.</small>
+    </section>
+    <section class="formside">
+      <div class="box">
+        <h1>Welcome back</h1>
+        <p class="muted">Sign in to send messages, run campaigns and manage providers.</p>
+        <form id="loginform" novalidate>
+          <label>Email <input name="email" type="email" autocomplete="username" required placeholder="you@company.com"></label>
+          <label>Password <input name="password" type="password" autocomplete="current-password" required placeholder="Your password"></label>
+          <div class="row"><button type="submit" style="width:100%">Sign in</button></div>
+        </form>
+        <div id="result" class="out" hidden></div>
+        <hr>
+        <p class="muted" style="margin-bottom:6px">Development accounts, one click:</p>
+        <div class="quick">
+          <button type="button" class="secondary small" data-email="demo@example.com" data-pass="demo-pass-123"><span data-icon="user" data-size="16"></span> Account (demo)</button>
+          <button type="button" class="secondary small" data-email="operator@example.com" data-pass="operator-pass-123"><span data-icon="shield" data-size="16"></span> Operator</button>
+        </div>
+      </div>
+    </section>
+  </div>
+}
+
+@define("scripts") {
+  <script src="/static/js/login.js?v=${asset_version}"></script>
 }

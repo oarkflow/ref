@@ -1,38 +1,67 @@
 @extends("layouts/base.html")
 
 @define("content") {
-  <section class="card">
-    <h1>Send a message</h1>
-    <p class="muted">Use Explain to see how a message would be routed and priced without sending it.</p>
-    <form id="sendform">
-      <label>To <input name="to" placeholder="+977 984 123 4567" required></label>
-      <label>Template
-        <select name="template" id="template"><option value="">(plain text)</option></select>
-      </label>
-      <p id="template-note" class="muted" hidden></p>
-      <div id="plain">
-        <label>Text <textarea name="body" rows="4" placeholder="Hello"></textarea></label>
-        <p class="muted" id="plain-count"></p>
-      </div>
-      <fieldset id="placeholders" class="fields" hidden>
-        <legend>Placeholders</legend>
-        <div id="fieldlist"></div>
-      </fieldset>
-      <div id="preview" class="preview" hidden>
-        <h2>Preview</h2>
-        <pre id="preview-text" class="out"></pre>
-        <p class="muted" id="preview-meta"></p>
-      </div>
-      <label>Reference <input name="reference" placeholder="optional idempotency key"></label>
-      <div class="row">
-        <button type="submit">Send</button>
-        <button type="button" id="explain" class="secondary">Explain</button>
-      </div>
-    </form>
-    <div id="result" class="out"></div>
-  </section>
-  <section class="card">
-    <h2>Balance</h2>
-    <pre id="balance" class="out"></pre>
-  </section>
+  <div class="pagehead">
+    <div>
+      <h1>Send a message</h1>
+      <p>Compose a message, check the route and the price, and send. The route preview updates as you type.</p>
+    </div>
+    <div id="balance-mini" class="pill brand"></div>
+  </div>
+
+  <div class="cols two">
+    <div>
+      <section class="card">
+        <form id="sendform" novalidate>
+          <label>To
+            <input name="to" placeholder="+977 984 123 4567" required autocomplete="off" inputmode="tel">
+            <small id="to-hint">Any written form: 9841234567, +977 984-123-4567, 009779841234567.</small>
+          </label>
+
+          <div class="tabs sub" id="mode" role="tablist" style="margin-top:16px">
+            <button type="button" class="tab active" data-mode="text" role="tab">Write a message</button>
+            <button type="button" class="tab" data-mode="template" role="tab">Use a template</button>
+          </div>
+
+          <div id="pane-text">
+            <label>Message <textarea name="body" rows="5" placeholder="Hello! Your order has shipped."></textarea></label>
+            <div class="split" style="margin-top:6px"><small class="muted" id="count"></small><small class="muted" id="encoding"></small></div>
+            <div class="gauge" id="gauge"><span style="width:0"></span></div>
+          </div>
+
+          <div id="pane-template" hidden>
+            <label>Template <select name="template" id="template"><option value="">Choose a template</option></select></label>
+            <p class="muted" id="template-note" style="margin-top:6px"></p>
+            <fieldset id="placeholders" class="fields" hidden><legend>Placeholders</legend><div id="fieldlist" class="grid2"></div></fieldset>
+            <div id="preview" class="banner infob" hidden><span data-icon="eye" data-size="18"></span><div><strong>Preview</strong><div id="preview-text"></div><small id="preview-meta"></small></div></div>
+          </div>
+
+          <div class="grid2" style="margin-top:6px">
+            <label>Sender id <input name="from" maxlength="16" placeholder="optional, e.g. ACMEBANK"></label>
+            <label>Reference <input name="reference" placeholder="optional idempotency key"><small>The same reference never sends or charges twice.</small></label>
+          </div>
+          <div class="row">
+            <button type="submit" id="send"><span data-icon="send" data-size="16"></span> Send message</button>
+            <button type="button" class="secondary" id="explain"><span data-icon="refresh" data-size="16"></span> Check the route</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card" id="sent" hidden>
+        <div class="split"><h2>Message sent</h2><span id="sent-state"></span></div>
+        <div id="sent-body"></div>
+      </section>
+    </div>
+
+    <aside style="position:sticky;top:76px;align-self:start">
+      <section class="card" id="route-card">
+        <div class="split"><h2>Route preview</h2><span class="muted" id="route-status"></span></div>
+        <div id="route"><div class="empty"><div class="ico" data-icon="activity" data-size="44"></div><strong>Where will it go?</strong>Enter a number and a message to see the providers it would try, in order, and the price.</div></div>
+      </section>
+    </aside>
+  </div>
+}
+
+@define("scripts") {
+  <script src="/static/js/send.js?v=${asset_version}"></script>
 }

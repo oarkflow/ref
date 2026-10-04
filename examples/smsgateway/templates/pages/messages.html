@@ -1,12 +1,29 @@
 @extends("layouts/base.html")
 
 @define("content") {
-  <section class="card">
-    <h1>Messages</h1>
-    <table id="messages"><thead><tr><th>Id</th><th>To</th><th>State</th><th>Via</th><th>Segments</th><th>Price</th></tr></thead><tbody></tbody></table>
+  <div class="pagehead">
+    <div><h1>Messages</h1><p>Everything you have sent, with its delivery state. Open a message for its attempts and cost.</p></div>
+    <div class="row" style="margin:0"><span class="pill ok" id="live"><span class="dot ok pulse"></span> Live</span><button type="button" class="secondary small" id="refresh"><span data-icon="refresh" data-size="16"></span> Refresh</button></div>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="tabs" id="tabs"><button type="button" class="tab active" data-tab="messages">Messages</button><button type="button" class="tab" data-tab="ledger">Ledger</button></div>
+
+  <section class="card flush" id="tab-messages">
+    <div class="cardhead">
+      <div class="row" style="margin:0" id="filters"></div>
+      <input id="search" type="search" placeholder="Search number or id" style="max-width:240px;margin:0" aria-label="Search messages">
+    </div>
+    <div id="list"></div>
   </section>
-  <section class="card">
-    <h2>Ledger</h2>
-    <table id="ledger"><thead><tr><th>Message</th><th>Kind</th><th>Amount</th></tr></thead><tbody></tbody></table>
+
+  <section class="card flush" id="tab-ledger" hidden>
+    <div class="cardhead"><h2>Ledger</h2><small class="muted">Holds, charges, refunds and releases, newest first.</small></div>
+    <div id="ledger"></div>
   </section>
+}
+
+@define("scripts") {
+  <script src="/static/js/messages.js?v=${asset_version}"></script>
 }

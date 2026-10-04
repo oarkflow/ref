@@ -490,7 +490,7 @@
 
   // ----------------------------------------------------------------- tabs
   function activate(name) {
-    all('.tab').forEach(function (t) { t.classList.toggle('active', t.dataset.tab === name); });
+    all('#rr-tabs .tab').forEach(function (t) { t.classList.toggle('active', t.dataset.tab === name); });
     ['routing', 'generated', 'definitions'].forEach(function (n) { $('#tab-' + n).hidden = n !== name; });
     if (name === 'generated') loadGenerated();
     if (name === 'definitions') loadDefinitions();
@@ -501,10 +501,7 @@
   call('GET', '/ui/me').then(function (me) {
     var roles = (me.body && me.body.roles) || [];
     if (roles.indexOf('admin') < 0) { $('main').textContent = ''; $('main').appendChild(el('section', { class: 'card' }, [el('h1', { text: 'Operator only' }), el('p', { class: 'muted', text: 'Sign in as the operator to see this page.' })])); return; }
-    $('#who').textContent = me.body.name || me.body.id; $('#logout').hidden = false;
-    $('#logout').addEventListener('click', function () { call('POST', '/logout').then(function () { location.href = '/login'; }); });
-    all('.admin-only').forEach(function (e) { e.hidden = false; });
-    all('.tab').forEach(function (t) { t.addEventListener('click', function () { activate(t.dataset.tab); }); });
+    all('#rr-tabs .tab').forEach(function (t) { t.addEventListener('click', function () { activate(t.dataset.tab); }); });
     $('#rr-new').addEventListener('click', showPresets);
     $('#rr-tryform').addEventListener('submit', runTry);
     $('#rr-search').addEventListener('input', function (e) { state.search = e.target.value; renderList(); });

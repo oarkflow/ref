@@ -1,37 +1,13 @@
 @extends("layouts/base.html")
 
 @define("content") {
-  <section class="card">
-    <div class="split"><h1>Accounts</h1><button type="button" id="new-account">New account</button></div>
-    <table id="account-table"><thead><tr><th>Id</th><th>Name</th><th>Status</th><th>Balance</th><th>Daily limit</th><th>Plan</th><th></th></tr></thead><tbody></tbody></table>
-  </section>
-  <section class="card" id="account-editor" hidden>
-    <h2 id="account-title">Account</h2>
-    <form id="accountform" class="grid2">
-      <label>Id <input name="id" required pattern="[a-z0-9_]+" title="lowercase letters, digits and underscores"></label>
-      <label>Name <input name="name"></label>
-      <label>Tenant <input name="tenant" placeholder="defaults to the id"></label>
-      <label>Status <select name="status"><option>active</option><option>suspended</option></select></label>
-      <label>Default sender <input name="default_sender"></label>
-      <label>Allowed senders <input name="senders" placeholder="empty: any"></label>
-      <label>Allowed countries <input name="countries" placeholder="NP, IN (empty: any)"></label>
-      <label>Objective <select name="objective"><option value="">(rules decide)</option><option>delivery</option><option>cost</option><option>balanced</option></select></label>
-      <label>Daily limit (0: none) <input name="daily_limit" type="number" min="0" value="0"></label>
-      <label>Price cap per message (0: none) <input name="max_price" type="number" step="any" min="0" value="0"></label>
-      <label>Rate per second (0: none) <input name="rate_per_second" type="number" min="0" value="0"></label>
-      <label>Plan <input name="plan"></label>
-      <div class="row wide"><button type="submit">Save account</button><button type="button" class="secondary" id="cancel-account">Close</button></div>
-    </form>
-    <div id="account-result" class="out"></div>
-    <div id="account-tools" hidden>
-      <h2>Routing</h2>
-      <p class="muted">Rules that choose which provider this account's messages use: by country, recipient, content, size and more.</p>
-      <div class="row"><a id="account-rules" class="secondary btnlink" href="/admin/rules">Routing rules for this account</a></div>
-      <h2>Money</h2>
-      <form id="topupform" class="row"><input name="amount" type="number" step="any" min="0.01" placeholder="amount" required style="max-width:140px"><input name="reference" placeholder="reference (unique)" required><button type="submit">Top up</button></form>
-      <h2>Sign-in and API key</h2>
-      <form id="loginform2" class="row"><input name="email" type="email" placeholder="email" required><input name="password" type="password" placeholder="new password (10+)" minlength="10" required><button type="submit">Set sign-in</button></form>
-      <div class="row"><button type="button" class="secondary" id="issue-key">Issue a new API key</button></div>
-    </div>
-  </section>
+  <div class="pagehead">
+    <div><h1>Accounts</h1><p>Who can send, with what limits and how much money. Open an account to set limits, top up, sign-in and API key.</p></div>
+    <button type="button" id="new-account"><span data-icon="plus" data-size="16"></span> New account</button>
+  </div>
+  <section class="card flush"><div class="cardhead"><input id="search" type="search" placeholder="Search accounts" style="max-width:260px;margin:0" aria-label="Search accounts"><span class="muted" id="count"></span></div><div id="list"></div></section>
+}
+
+@define("scripts") {
+  <script src="/static/js/accounts.js?v=${asset_version}"></script>
 }

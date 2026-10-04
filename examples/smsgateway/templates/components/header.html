@@ -1,18 +1,23 @@
-<header class="bar">
-  <a class="brand" href="/">${app_name}</a>
-  <nav id="nav">
-    <a href="/">Send</a>
-    <a href="/messages">Messages</a>
-    <a href="/campaigns">Campaigns</a>
-    <a href="/audiences">Audiences</a>
-    <a href="/notifications" id="bell" title="Notifications">Notifications <span class="count" id="bell-count" hidden></span></a>
-    <a href="/admin" class="admin-only" hidden>Operator</a>
-    <a href="/admin/providers" class="admin-only" hidden>Providers</a>
-    <a href="/admin/rules" class="admin-only" hidden>Rules</a>
-    <a href="/admin/accounts" class="admin-only" hidden>Accounts</a>
-  </nav>
-  <div class="key">
-    <span id="who" class="muted"></span>
-    <button type="button" id="logout" class="secondary" hidden>Sign out</button>
+<aside class="sidebar" id="sidebar" aria-label="Main">
+  <div class="brandrow">
+    <div class="logo" data-icon="chat" data-size="18"></div>
+    <div class="brandname">${app_name}<small>Messaging console</small></div>
   </div>
-</header>
+  <nav class="nav">
+    <div class="navgroup">Messaging</div>
+    <a class="navlink" href="/"><span data-icon="send"></span><span class="navlabel">Send</span></a>
+    <a class="navlink" href="/messages"><span data-icon="list"></span><span class="navlabel">Messages</span></a>
+    <a class="navlink" href="/campaigns"><span data-icon="megaphone"></span><span class="navlabel">Campaigns</span></a>
+    <a class="navlink" href="/audiences"><span data-icon="users"></span><span class="navlabel">Audiences</span></a>
+    <a class="navlink" href="/notifications"><span data-icon="bell"></span><span class="navlabel">Notifications</span></a>
+    <div class="navgroup admin-only" hidden>Operator</div>
+    <a class="navlink admin-only" href="/admin" hidden><span data-icon="grid"></span><span class="navlabel">Overview</span></a>
+    <a class="navlink admin-only" href="/admin/providers" hidden><span data-icon="server"></span><span class="navlabel">Providers</span></a>
+    <a class="navlink admin-only" href="/admin/rules" hidden><span data-icon="sliders"></span><span class="navlabel">Rules</span></a>
+    <a class="navlink admin-only" href="/admin/accounts" hidden><span data-icon="user"></span><span class="navlabel">Accounts</span></a>
+  </nav>
+  <div class="sidefoot row" style="margin:0;justify-content:space-between">
+    <button type="button" class="iconbtn" id="theme" aria-label="Toggle dark mode"></button>
+    <button type="button" class="iconbtn" id="collapse" aria-label="Collapse the sidebar" data-icon="chevron"></button>
+  </div>
+</aside>

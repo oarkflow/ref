@@ -1,11 +1,11 @@
 @extends("layouts/base.html")
 
 @define("content") {
-  <section class="card">
-    <div class="split"><h1>Notifications</h1><button type="button" class="secondary" id="read-all">Mark all as read</button></div>
-    <p class="muted">What happened to your campaigns: accepted with invalid numbers skipped, sent, or rejected.</p>
-    <div id="notes"></div>
-  </section>
+  <div class="pagehead">
+    <div><h1>Notifications</h1><p>What happened to your campaigns: accepted with invalid numbers skipped, sent, or rejected.</p></div>
+    <button type="button" class="secondary" id="read-all"><span data-icon="check" data-size="16"></span> Mark all as read</button>
+  </div>
+  <section class="card flush"><div id="notes"></div></section>
 }
 
 @define("scripts") {
