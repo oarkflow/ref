@@ -1,0 +1,13 @@
+# Routing example.
+#
+# One message goes in, and the chain of providers it would be sent through comes
+# out, with the reason for every provider that was left out. No Go, no sending: the
+# whole decision is the rules in ../rules, and this directory only gathers the facts
+# they read. Run it with
+#
+#   make run dir=./examples/rules
+#
+# and see README.md for what to ask it.
+
+name "routing-example"
+environment env("APP_ENV", "development")

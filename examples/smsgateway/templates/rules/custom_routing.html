@@ -7,33 +7,37 @@ module "custom_routing" {
   version "1"
   environment "production"
 
-  decision_schema "custom" { effects [allow, deny] default allow strategy first_match }
-  decision_table "custom" {
+  # One decision per provider, holding only the rules that name it: a message
+  # is checked against the rules of each candidate, not against all of them.
+  # "placeholder" is never evaluated; a definition must hold one decision, and with
+  # no rules enabled this is it.
+  decision_schema "placeholder" { effects [allow] default allow strategy first_match }
+  decision_table "placeholder" {
     default allow
     hit_policy first
+  }
 @for(r in rules) {
-    row "${r.id}" {
-      priority ${r.table_priority}
+  ${raw r.open}    row "${raw r.id}" {
+      priority ${raw r.table_priority}
       when {
         all {
-          provider.id == "${r.provider}"
-@if(r.account != "") {          user.id == "${r.account}"
-}@if(r.tenant != "") {          user.tenant == "${r.tenant}"
-}@if(r.countries != "") {          message.country matches "^(${r.countries})$"
-}@if(r.recipients != "") {          message.to matches "^(${r.recipients})$"
-}@if(r.templates != "") {          message.template matches "^(${r.templates})$"
-}@if(r.recipient_prefix != "") {          message.to matches "^${r.recipient_prefix}"
-}@if(r.recipient_pattern != "") {          message.to matches "${r.recipient_pattern}"
-}@if(r.sender_pattern != "") {          message.from matches "${r.sender_pattern}"
-}@if(r.content_words != "") {          message.text matches "(?i)(${r.content_words})"
-}@if(r.content_pattern != "") {          message.text matches "${r.content_pattern}"
-}@if(r.types != "") {          message.type matches "^(${r.types})$"
-}@if(r.min_segments > 0) {          message.segments >= ${r.min_segments}
-}@if(r.max_segments > 0) {          message.segments <= ${r.max_segments}
+          provider.id == "${raw r.provider}"
+@if(r.account != "") {          user.id == "${raw r.account}"
+}@if(r.tenant != "") {          user.tenant == "${raw r.tenant}"
+}@if(r.countries != "") {          message.country matches "^(${raw r.countries})$"
+}@if(r.recipients != "") {          message.to matches "^(${raw r.recipients})$"
+}@if(r.templates != "") {          message.template matches "^(${raw r.templates})$"
+}@if(r.recipient_prefix != "") {          message.to matches "^${raw r.recipient_prefix}"
+}@if(r.recipient_pattern != "") {          message.to matches "${raw r.recipient_pattern}"
+}@if(r.sender_pattern != "") {          message.from matches "${raw r.sender_pattern}"
+}@if(r.content_words != "") {          message.text matches "(?i)(${raw r.content_words})"
+}@if(r.content_pattern != "") {          message.text matches "${raw r.content_pattern}"
+}@if(r.types != "") {          message.type matches "^(${raw r.types})$"
+}@if(r.min_segments > 0) {          message.segments >= ${raw r.min_segments}
+}@if(r.max_segments > 0) {          message.segments <= ${raw r.max_segments}
 }        }
       }
-      then { outcome { decision ${r.effect} reason "${r.reason}" attributes { tier "rule" priority ${r.score} exclusive ${r.exclusive} rule_id "${r.id}" } } }
+      then { outcome { decision ${raw r.effect} reason "${raw r.reason}" attributes { tier "rule" priority ${raw r.score} exclusive ${raw r.exclusive} rule_id "${raw r.id}" } } }
     }
-}
-  }
+${raw r.close}}
 }

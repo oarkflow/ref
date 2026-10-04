@@ -235,6 +235,7 @@ func registerDataActions(r *Registry) {
 		Config: []ConfigField{
 			{Name: "expression", Type: "expression", Required: true},
 			{Name: "message", Type: "string", Summary: "Caller-facing message when the check fails"},
+			{Name: "message_expression", Type: "expression", Summary: "An expression for the message, when it should name what failed; evaluated only on failure, and message is used when it yields nothing"},
 		},
 	})
 }
@@ -876,13 +877,25 @@ var validateExpressionAction = ActionFactoryFunc(func(_ BuildContext, spec NodeS
 		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
 	}
 	message := configString(spec.Config, "message", "the request did not pass validation")
+	var messageExpr *Expression
+	if text := configString(spec.Config, "message_expression", ""); text != "" {
+		if messageExpr, err = CompileExpr(text); err != nil {
+			return nil, fmt.Errorf("node %q: message_expression: %w", spec.Name, err)
+		}
+	}
 
 	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
-		ok, err := expr.Bool(actionEnv(ctx))
+		env := actionEnv(ctx)
+		ok, err := expr.Bool(env)
 		if err != nil {
 			return ActionResult{}, err
 		}
 		if !ok {
+			if messageExpr != nil {
+				if v, err := messageExpr.Eval(env); err == nil && strings.TrimSpace(Stringify(v)) != "" {
+					return ActionResult{}, invalidInput("%s", Stringify(v))
+				}
+			}
 			return ActionResult{}, invalidInput("%s", message)
 		}
 		return acknowledgement(spec, true), nil

@@ -1,0 +1,203 @@
+bcl { version "1.0" }
+
+# Routing rules written by an operator, on top of routing.bcl.
+#
+# routing.bcl decides which providers MAY carry a message and ranks them by tier,
+# quality, price and health. These rules are the exceptions an operator adds: for
+# one account, a number range, a word in the text, a template, a size. Each
+# provider has its own decision, named for_<provider id>; when a message is
+# routed, only the decisions of the candidates are evaluated, so thousands of rules
+# cost no more than the few that name a provider.
+#
+# A row says, for ONE provider and any combination of conditions:
+#
+#   decision allow  the provider is used first; the others stay as fall-backs. It is
+#                   also ADMITTED if only assignment kept it out (np_reserved below):
+#                   a rule may name a provider an account would never get on its own.
+#                   The provider's own limits (paused, circuit open, no Unicode,
+#                   an OTP quality floor) still apply, and so does the country it serves.
+#   ... exclusive true   use only this one: everything of a lower priority is dropped.
+#   decision deny   never use this provider for these messages.
+#
+# `priority` (the row's) decides between two rules that name the SAME provider for
+# the same message: the highest wins. The tier priority in attributes ranks the
+# providers against each other: 200000 + 1000 * the row priority, above every tier in
+# routing.bcl, so a rule always outranks quality and price. Keep the two in step.
+#
+# Conditions read message.* (to, country, text, from, type, template, segments,
+# unicode), user.* (id, tenant) and provider.*. `matches` is an unanchored regular
+# expression (Go syntax, linear time); to match a whole value write ^( ... )$.
+# message.to is international digits, whatever way the sender wrote the number.
+#
+# Edit it while the application runs: PUT /rules/overrides (see README.md). The
+# engine checks it first and keeps a mistake out.
+
+module "overrides" {
+  version "1"
+  environment "production"
+
+  # "placeholder" is never evaluated; a definition must hold one decision.
+  decision_schema "placeholder" { effects [allow] default allow strategy first_match }
+  decision_table "placeholder" {
+    default allow
+    hit_policy first
+  }
+
+  # ---- np_telecom: the primary Nepal route -----------------------------------------
+  decision_schema "for_np_telecom" { effects [allow, deny] default allow strategy first_match }
+  decision_table "for_np_telecom" {
+    default allow
+    hit_policy first
+
+    # Content: gambling is never carried on this route, for any account.
+    row "no-gambling" {
+      priority 1095
+      when {
+        all {
+          provider.id == "np_telecom"
+          message.text matches "(?i)(casino|lottery|betting)"
+        }
+      }
+      then { outcome { decision deny reason "gambling is not carried on this route" attributes { tier "rule" priority 295000 exclusive false rule_id "no-gambling" } } }
+    }
+  }
+
+  # ---- np_reserved: assigned to nobody ----------------------------------------------
+  decision_schema "for_np_reserved" { effects [allow, deny] default allow strategy first_match }
+  decision_table "for_np_reserved" {
+    default allow
+    hit_policy first
+
+    # Account + recipient: one account's important number goes over the reserved
+    # route, which no other message may use.
+    row "bob-vip-number" {
+      priority 1090
+      when {
+        all {
+          provider.id == "np_reserved"
+          user.id == "bob"
+          message.to == "9779841234567"
+        }
+      }
+      then { outcome { decision allow reason "bob's VIP number uses the reserved route" attributes { tier "rule" priority 290000 exclusive false rule_id "bob-vip-number" } } }
+    }
+  }
+
+  # ---- np_budget: cheap, plain text only ---------------------------------------------
+  decision_schema "for_np_budget" { effects [allow, deny] default allow strategy first_match }
+  decision_table "for_np_budget" {
+    default allow
+    hit_policy first
+
+    # Type + country: promotions go over the cheapest route. Its own limits still
+    # apply, so a promotion with an emoji or a long one never reaches it.
+    row "promotions-over-the-cheap-route" {
+      priority 1040
+      when {
+        all {
+          provider.id == "np_budget"
+          message.country matches "^(NP)$"
+          message.type matches "^(promotional)$"
+        }
+      }
+      then { outcome { decision allow reason "promotions use the cheap route" attributes { tier "rule" priority 240000 exclusive false rule_id "promotions-over-the-cheap-route" } } }
+    }
+  }
+
+  # ---- np_premium: assigned to the acme tenant ---------------------------------------
+  decision_schema "for_np_premium" { effects [allow, deny] default allow strategy first_match }
+  decision_table "for_np_premium" {
+    default allow
+    hit_policy first
+
+    # Tenant + number range: acme's messages to 985xxxxxxx use the premium route.
+    row "acme-985-range" {
+      priority 1060
+      when {
+        all {
+          provider.id == "np_premium"
+          user.tenant == "acme"
+          message.to matches "^977985"
+        }
+      }
+      then { outcome { decision allow reason "acme to the 985 range uses the premium route" attributes { tier "rule" priority 260000 exclusive false rule_id "acme-985-range" } } }
+    }
+  }
+
+  # ---- np_mobile_range: a bought operator range --------------------------------------
+  decision_schema "for_np_mobile_range" { effects [allow, deny] default allow strategy first_match }
+  decision_table "for_np_mobile_range" {
+    default allow
+    hit_policy first
+
+    # Size: messages of three or more segments.
+    row "long-messages" {
+      priority 1030
+      when {
+        all {
+          provider.id == "np_mobile_range"
+          message.segments >= 3
+        }
+      }
+      then { outcome { decision allow reason "long messages use the range route" attributes { tier "rule" priority 230000 exclusive false rule_id "long-messages" } } }
+    }
+  }
+
+  # ---- in_shared: public India route ---------------------------------------------------
+  decision_schema "for_in_shared" { effects [allow, deny] default allow strategy first_match }
+  decision_table "for_in_shared" {
+    default allow
+    hit_policy first
+
+    # Tenant: acme never uses the shared India route.
+    row "acme-not-on-shared-india" {
+      priority 1080
+      when {
+        all {
+          provider.id == "in_shared"
+          user.tenant == "acme"
+        }
+      }
+      then { outcome { decision deny reason "acme does not use the shared India route" attributes { tier "rule" priority 280000 exclusive false rule_id "acme-not-on-shared-india" } } }
+    }
+  }
+
+  # ---- global_fallback: the catch-all ----------------------------------------------------
+  decision_schema "for_global_fallback" { effects [allow, deny] default allow strategy first_match }
+  decision_table "for_global_fallback" {
+    default allow
+    hit_policy first
+
+    # Template + exclusive: a legal notice is sent over this one route only.
+    row "legal-notices-only-here" {
+      priority 1070
+      when {
+        all {
+          provider.id == "global_fallback"
+          message.template matches "^(legal_notice)$"
+        }
+      }
+      then { outcome { decision allow reason "legal notices use one audited route" attributes { tier "rule" priority 270000 exclusive true rule_id "legal-notices-only-here" } } }
+    }
+  }
+
+  # ---- otp_gateway: one-time codes -----------------------------------------------------------
+  decision_schema "for_otp_gateway" { effects [allow, deny] default allow strategy first_match }
+  decision_table "for_otp_gateway" {
+    default allow
+    hit_policy first
+
+    # Sender + content: a bank's codes go first over the gateway.
+    row "bank-codes" {
+      priority 1050
+      when {
+        all {
+          provider.id == "otp_gateway"
+          message.from matches "^BANK"
+          message.text matches "\\d{4,8}"
+        }
+      }
+      then { outcome { decision allow reason "bank codes use the OTP gateway" attributes { tier "rule" priority 250000 exclusive false rule_id "bank-codes" } } }
+    }
+  }
+}

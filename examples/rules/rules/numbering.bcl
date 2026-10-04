@@ -1,0 +1,76 @@
+bcl { version "1.0" }
+
+# Numbering plan.
+#
+# number_form reads `typed` (what the caller wrote, separators stripped, an
+# optional leading +) and says how to turn it into international digits.
+# number_country reads `digits` and names the country. A routing rule that names
+# a recipient is matched against these digits, so +977 984-123-4567, 009779841234567
+# and 9841234567 are all the same recipient, 9779841234567.
+#
+# To serve another country, add a row to number_country (the longest calling code
+# has the highest priority, so 971 is tried before 97).
+
+module "numbering" {
+  version "1"
+  environment "production"
+
+  # How the number was written.
+  decision_schema "number_form" { effects [allow, deny] default deny strategy first_match }
+  decision_table "number_form" {
+    default deny
+    hit_policy first
+
+    row "unexpected-character" {
+      priority 100
+      when { typed.invalid != "" }
+      then { outcome { decision deny reason "the number contains a character that is not a digit, space, dash, dot or bracket" attributes { code "INVALID_NUMBER" status 422 } } }
+    }
+    row "empty" {
+      priority 95
+      when { typed.clean == "" }
+      then { outcome { decision deny reason "the number is empty" attributes { code "INVALID_NUMBER" status 422 } } }
+    }
+    row "plus-prefix" {
+      priority 90
+      when { typed.clean starts_with "+" }
+      then { outcome { decision allow attributes { form "international" strip 1 dial "" trunk "" } } }
+    }
+    row "idd-prefix" {
+      priority 80
+      when { typed.clean starts_with "00" }
+      then { outcome { decision allow attributes { form "international" strip 2 dial "" trunk "" } } }
+    }
+    # A national-format number written with the home country code already on it.
+    row "home-country-code" {
+      priority 70
+      when { typed.clean starts_with "977" }
+      then { outcome { decision allow attributes { form "international" strip 0 dial "" trunk "" } } }
+    }
+    # Everything else is read as a number of the home country (Nepal): drop the
+    # trunk 0 and put the country code on.
+    row "home-country-national" {
+      priority 10
+      when { typed.clean != "" }
+      then { outcome { decision allow attributes { form "national" strip 0 dial "977" trunk "0" } } }
+    }
+  }
+
+  # Which country the international digits belong to.
+  decision_schema "number_country" { effects [allow, deny] default deny strategy first_match }
+  decision_table "number_country" {
+    default deny
+    hit_policy first
+
+    row "NP" { priority 300 when { digits.digits starts_with "977" } then { outcome { decision allow attributes { country "NP" dial "977" } } } }
+    row "AE" { priority 300 when { digits.digits starts_with "971" } then { outcome { decision allow attributes { country "AE" dial "971" } } } }
+    row "IN" { priority 200 when { digits.digits starts_with "91" } then { outcome { decision allow attributes { country "IN" dial "91" } } } }
+    row "GB" { priority 200 when { digits.digits starts_with "44" } then { outcome { decision allow attributes { country "GB" dial "44" } } } }
+    row "US" { priority 100 when { digits.digits starts_with "1" } then { outcome { decision allow attributes { country "US" dial "1" } } } }
+    row "unsupported" {
+      priority 1
+      when { digits.digits != "" }
+      then { outcome { decision deny reason "this destination is not served" attributes { code "UNSUPPORTED_DESTINATION" status 422 } } }
+    }
+  }
+}

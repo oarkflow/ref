@@ -14,11 +14,13 @@ bcl { version "1.0" }
 #                      The chain a message follows, and fails over along, is that
 #                      order.
 #
-# Facts: message, user, and provider (the candidate): id, kind, state,
-# circuit_open, quality, delivery_rate, cost_per_segment, cost (this message),
-# countries, message_types, owner, users, tenants, assigned_only, prefix_pattern,
-# supports_unicode / _dlr / _alpha / _long, sender_countries, successes, failures,
-# consecutive_failures. Lists are written |a|b| so a row can test membership.
+# Facts: message (to, country, text, from, sender_kind, type, template, dlr,
+# unicode, segments), user (id, tenant, objective), and provider (the candidate):
+# id, state, circuit_open, quality, delivery_rate, cost_per_segment, cost (this
+# message), countries, message_types, owner, users, tenants, assigned_only,
+# prefix_pattern, supports_unicode / _dlr / _alpha / _long, consecutive_failures.
+# Lists are written |a|b| so a row can test membership. A routing rule that names
+# the provider (overrides.bcl) also sets provider.granted, below.
 #
 # Priorities are scores added to a candidate in its ranking, and they are far
 # larger than anything else in a score, so a tier always outranks the next.
@@ -94,19 +96,6 @@ module "routing" {
         }
       }
       then { outcome { decision deny reason "the provider does not carry this message type" attributes { code "TYPE_NOT_CARRIED" } } }
-    }
-    row "sender-country-not-supported" {
-      priority 930
-      when {
-        all {
-          provider.sender_countries != ""
-          message.sender_country != ""
-          not {
-            contains(provider.sender_countries, "|" + message.sender_country + "|")
-          }
-        }
-      }
-      then { outcome { decision deny reason "the provider cannot send from a number registered in the sender's country" attributes { code "SENDER_COUNTRY" } } }
     }
     # An OTP is not worth sending through a provider that drops messages.
     row "otp-quality-floor" {

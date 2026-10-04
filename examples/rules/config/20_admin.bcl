@@ -1,0 +1,88 @@
+# What an operator changes while the application runs: a provider's state, its
+# health (a circuit that is open, failures in a row), and the rules themselves.
+# All of it takes effect on the very next message. These routes need the key
+# (X-API-Key: dev-admin-key-change-me-0123, or ROUTING_ADMIN_KEY).
+
+shape "provider_state" {
+  additional_properties false
+  prop "state" { kind string required true enum ["active", "paused", "disabled"] }
+}
+shape "provider_health" {
+  additional_properties false
+  prop "consecutive_failures" { kind int min 0 max 1000 }
+  prop "circuit_open"         { kind bool }
+}
+shape "rule_source" {
+  additional_properties false
+  prop "source" { kind string required true max_length 200000 }
+}
+
+intent "providers.list" {
+  response "rows"
+  node "rows" {
+    uses "database.query" resource "db" kind read provides [rows]
+    config { statement "SELECT p.id, p.state, p.quality, p.delivery_rate, p.countries, p.message_types, p.tenants, p.users, p.owner, p.assigned_only, p.description, COALESCE(h.consecutive_failures, 0) AS consecutive_failures, COALESCE(h.circuit_open, 0) AS circuit_open FROM providers p LEFT JOIN provider_health h ON h.provider = p.id ORDER BY p.id" }
+  }
+}
+route "providers.list" { method GET path "/providers" intent "providers.list" cache_control "no-store" }
+
+intent "providers.state" {
+  response "result"
+  input_schema "provider_state"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "changed" {
+    uses "database.transaction" resource "db" kind effect requires [id, input] provides [changed]
+    config { statements [ { name "set" sql "UPDATE providers SET state = $1 WHERE id = $2" args [input.state, id] require_affected true failure { code "NOT_FOUND" status 404 message "no such provider" } } ] }
+  }
+  node "result" { uses "data.transform" kind pure requires [id, input, changed] provides [result] config { data { extract { id "id" state "input.state" } pick ["id", "state"] } } }
+}
+route "providers.state" { method PUT path "/providers/:id/state" intent "providers.state" auth "admin_auth" cache_control "no-store" }
+
+intent "providers.health" {
+  response "result"
+  input_schema "provider_health"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "given" {
+    uses "data.transform" kind pure requires [input] provides [given]
+    config { source_fact "input" data { defaults { consecutive_failures 0 circuit_open false } } }
+  }
+  node "values" {
+    uses "data.transform" kind pure requires [given] provides [values]
+    config { data { extract { failures "given.consecutive_failures" open "given.circuit_open ? 1 : 0" } } }
+  }
+  node "changed" {
+    uses "database.transaction" resource "db" kind effect requires [id, values] provides [changed]
+    config {
+      statements [
+        { name "known" sql "SELECT id FROM providers WHERE id = $1" args [id] require_rows true failure { code "NOT_FOUND" status 404 message "no such provider" } },
+        { name "set" sql "INSERT INTO provider_health (provider, consecutive_failures, circuit_open) VALUES ($1, $2, $3) ON CONFLICT (provider) DO UPDATE SET consecutive_failures = excluded.consecutive_failures, circuit_open = excluded.circuit_open" args [id, values.failures, values.open] }
+      ]
+    }
+  }
+  node "result" { uses "data.transform" kind pure requires [id, values, changed] provides [result] config { data { extract { id "id" consecutive_failures "values.failures" circuit_open "values.open == 1" } pick ["id", "consecutive_failures", "circuit_open"] } } }
+}
+route "providers.health" { method PUT path "/providers/:id/health" intent "providers.health" auth "admin_auth" cache_control "no-store" }
+
+# The rules, as text: read one, change one. A change is checked by the engine
+# before it is kept, so a mistake is refused with the line it is on.
+intent "rules.read" {
+  response "rule"
+  node "name" { uses "request.param" kind pure provides [name] config { name "name" } }
+  node "rule" { uses "rules.source" resource "policy" kind read requires [name] provides [rule] config { name_fact "name" } }
+}
+route "rules.read" { method GET path "/rules/:name" intent "rules.read" auth "admin_auth" cache_control "no-store" }
+
+intent "rules.write" {
+  response "rule"
+  input_schema "rule_source"
+  node "name" { uses "request.param" kind pure provides [name] config { name "name" } }
+  node "rule" { uses "rules.save" resource "policy" kind effect requires [name, input] provides [rule] config { name_fact "name" source_fact "input.source" } }
+}
+route "rules.write" { method PUT path "/rules/:name" intent "rules.write" auth "admin_auth" cache_control "no-store" }
+
+intent "rules.reset" {
+  response "rule"
+  node "name" { uses "request.param" kind pure provides [name] config { name "name" } }
+  node "rule" { uses "rules.reset" resource "policy" kind effect requires [name] provides [rule] config { name_fact "name" } }
+}
+route "rules.reset" { method DELETE path "/rules/:name" intent "rules.reset" auth "admin_auth" cache_control "no-store" }

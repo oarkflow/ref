@@ -188,7 +188,7 @@ intent "sms.prepare" {
   node "candidates" {
     uses "database.query" resource "db" kind read requires [message] provides [candidates]
     config {
-      statement "SELECT p.id, p.kind, p.channel, p.sandbox AS sandbox, p.state, p.quality, p.delivery_rate, p.countries, p.message_types, p.owner, p.tenants, p.users, p.assigned_only, p.supports_unicode, p.supports_dlr, p.supports_alpha, p.supports_long, p.sender_countries, p.prefix_pattern, p.max_attempts, p.backoff_initial_s, p.backoff_max_s, p.backoff_factor, COALESCE(c.per_segment, d.per_segment, 0) AS cost_per_segment, COALESCE(c.per_segment, d.per_segment, 0) * $4 AS cost, COALESCE(h.successes, 0) AS successes, COALESCE(h.failures, 0) AS failures, COALESCE(h.consecutive_failures, 0) AS consecutive_failures, CASE WHEN COALESCE(h.open_until_ms, 0) > $3 THEN 1 ELSE 0 END AS circuit_open FROM providers p LEFT JOIN provider_costs c ON c.provider = p.id AND c.country = $1 LEFT JOIN provider_costs d ON d.provider = p.id AND d.country = '*' LEFT JOIN provider_health h ON h.provider = p.id AND h.route = $2"
+      statement "SELECT p.id, p.kind, p.channel, p.sandbox AS sandbox, p.state, p.quality, p.delivery_rate, p.countries, p.message_types, p.owner, p.tenants, p.users, p.assigned_only, p.supports_unicode, p.supports_dlr, p.supports_alpha, p.supports_long, p.sender_countries, p.prefix_pattern, p.max_attempts, p.backoff_initial_s, p.backoff_max_s, p.backoff_factor, COALESCE(c.per_segment, d.per_segment, 0) AS cost_per_segment, COALESCE(c.per_segment, d.per_segment, 0) * $4 AS cost, COALESCE(h.successes, 0) AS successes, COALESCE(h.failures, 0) AS failures, COALESCE(h.consecutive_failures, 0) AS consecutive_failures, CASE WHEN COALESCE(h.open_until_ms, 0) > $3 THEN 1 ELSE 0 END AS circuit_open FROM providers p LEFT JOIN provider_costs c ON c.provider = p.id AND c.country = $1 LEFT JOIN provider_costs d ON d.provider = p.id AND d.country = '*' LEFT JOIN provider_health h ON h.provider = p.id AND h.route = $2 ORDER BY p.id"
       args [message.country, message.route_key, message.now_ms, message.segments]
     }
   }
@@ -198,7 +198,7 @@ intent "sms.prepare" {
   }
   node "route" {
     uses "rules.rank" resource "policy" kind read requires [message, user, candidates, objective] provides [route]
-    config { definition "routing" candidates_fact "candidates" eligibility "route_eligibility" eligibility_extra ["custom_routing/custom"] ranking_fact "objective.ranking" }
+    config { definition "routing" candidates_fact "candidates" eligibility "route_eligibility" eligibility_extra ["custom_routing/for_{id}"] ranking_fact "objective.ranking" }
   }
 
   # ---- Price ---------------------------------------------------------------

@@ -59,7 +59,7 @@ func registerRulesDecideActions(r *Registry) {
 			{Name: "candidates_fact", Type: "fact", Default: "candidates", Summary: "A list of { id, facts }, or of rows with an id (a query result)"},
 			{Name: "eligibility", Type: "string", Summary: `Decision run once per candidate with the candidate as "provider"; a deny rejects it, and an allow's attributes (priority, tier, exclusive, …) are merged into the candidate's facts`},
 			{Name: "ranking", Type: "string", Summary: "Ranking decision that orders the eligible candidates"},
-			{Name: "eligibility_extra", Type: "[]string", Summary: `Further per-candidate decisions, "definition/decision", run after eligibility (usually in a definition generated at runtime). A deny rejects the candidate; an allow that matched a rule sets the candidate's fact granted for the main decision to honour, and its attributes (priority, exclusive, tier) override the main decision's`},
+			{Name: "eligibility_extra", Type: "[]string", Summary: `Further per-candidate decisions, "definition/decision", run after eligibility (usually in a definition generated at runtime). A decision name may hold {id}, the candidate's id: "custom/for_{id}" runs the decision written for that candidate alone, and a candidate without one is simply not affected, so a large rule set is searched per candidate, not in full. A deny rejects the candidate; an allow that matched a rule sets the candidate's fact granted for the main decision to honour, and its attributes (priority, exclusive, tier) override the main decision's`},
 			{Name: "ranking_fact", Type: "fact", Summary: "Fact path holding the ranking name, to choose it per request"},
 			{Name: "limit", Type: "int", Summary: "Keep at most this many"},
 		},
@@ -82,10 +82,8 @@ func decisionFor(build BuildContext, spec NodeSpec, definition string) (*bcl.Dec
 	return record.Program, nil
 }
 
-var decisionOptions = &bcl.Options{AllowTime: true}
-
 func evaluateDecision(program *bcl.DecisionProgram, decision string, input map[string]any, explain bool) (*bcl.DecisionResult, error) {
-	engine := bcl.NewDecisionEngine(program, decisionOptions)
+	engine := bcl.NewDecisionEngine(program, optionsFor(program))
 	return engine.EvaluateWithOptions(decision, input, bcl.DecisionEvaluateOptions{Explain: explain})
 }
 
@@ -273,14 +271,17 @@ var rulesRankAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) 
 	// run after the main one, usually in a definition an operator generates at
 	// runtime. A deny rejects the candidate; an allow that matched a rule (not
 	// the default) merges its attributes into the candidate's facts.
-	type extraRule struct{ definition, decision string }
+	type extraRule struct {
+		definition, decision string
+		perCandidate         bool
+	}
 	var extras []extraRule
 	for _, ref := range configStrings(spec.Config, "eligibility_extra") {
 		def, dec, ok := strings.Cut(ref, "/")
 		if !ok || def == "" || dec == "" {
 			return nil, fmt.Errorf("node %q: eligibility_extra %q must read definition/decision", spec.Name, ref)
 		}
-		extras = append(extras, extraRule{def, dec})
+		extras = append(extras, extraRule{def, dec, strings.Contains(dec, "{id}")})
 	}
 
 	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
@@ -314,6 +315,9 @@ var rulesRankAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) 
 			rejected []any
 			trans    bool
 		)
+		// One environment serves every candidate: only "provider" changes, and an
+		// evaluation does not keep a reference to its input.
+		env := copyMap(base)
 		for _, item := range list {
 			m, ok := item.(map[string]any)
 			if !ok {
@@ -340,11 +344,17 @@ var rulesRankAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) 
 				if perr != nil {
 					return ActionResult{}, fmt.Errorf("rules.rank: %w", perr)
 				}
-				env := copyMap(base)
+				decision := extra.decision
+				if extra.perCandidate {
+					decision = strings.ReplaceAll(decision, "{id}", c.id)
+					if _, found := extraProgram.Decisions[decision]; !found {
+						continue
+					}
+				}
 				env["provider"] = c.facts
-				res, err := evaluateDecision(extraProgram, extra.decision, env, false)
+				res, err := evaluateDecision(extraProgram, decision, env, false)
 				if err != nil {
-					return ActionResult{}, fmt.Errorf("rules.rank %s/%s for %q: %w", extra.definition, extra.decision, c.id, err)
+					return ActionResult{}, fmt.Errorf("rules.rank %s/%s for %q: %w", extra.definition, decision, c.id, err)
 				}
 				if !res.Allowed {
 					rejected = append(rejected, map[string]any{
@@ -363,7 +373,6 @@ var rulesRankAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) 
 				continue
 			}
 			if eligibility != "" {
-				env := copyMap(base)
 				env["provider"] = c.facts
 				res, err := evaluateDecision(program, eligibility, env, false)
 				if err != nil {
@@ -416,35 +425,40 @@ var rulesRankAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) 
 			eligible = kept
 		}
 
-		// Best first, by repeated selection: each pass ranks what is left.
-		var chain []any
-		remaining := append([]cand(nil), eligible...)
-		for len(remaining) > 0 && (limit <= 0 || len(chain) < limit) {
-			env := copyMap(base)
-			cs := make([]any, 0, len(remaining))
-			for _, c := range remaining {
-				cs = append(cs, map[string]any{"id": c.id, "facts": c.facts})
-			}
-			env["candidates"] = cs
+		// Best first. A candidate's score does not depend on the others, so each is
+		// scored once (n evaluations, where selecting the best of what is left again
+		// and again would take n(n+1)/2) and the chain is the stable order by score:
+		// equal scores keep the order the candidates arrived in, which is exactly what
+		// selecting the first best each time gives.
+		type scored struct {
+			facts map[string]any
+			id    string
+			score float64
+		}
+		ranked := make([]scored, 0, len(eligible))
+		delete(env, "provider")
+		for _, c := range eligible {
+			env["candidates"] = []any{map[string]any{"id": c.id, "facts": c.facts}}
 			res, err := evaluateDecision(program, name, env, false)
 			if err != nil {
-				return ActionResult{}, fmt.Errorf("rules.rank %s/%s: %w", definition, name, err)
+				return ActionResult{}, fmt.Errorf("rules.rank %s/%s for %q: %w", definition, name, c.id, err)
 			}
 			if res.Rank == nil {
-				for _, c := range remaining {
-					rejected = append(rejected, map[string]any{"id": c.id, "rule": name, "reason": "no ranking rule accepts this candidate", "reason_code": "UNRANKED"})
-				}
-				break
+				rejected = append(rejected, map[string]any{"id": c.id, "rule": name, "reason": "no ranking rule accepts this candidate", "reason_code": "UNRANKED"})
+				continue
 			}
-			idx := slices.IndexFunc(remaining, func(c cand) bool { return c.id == res.Rank.ID })
-			if idx < 0 {
-				break
-			}
-			entry := copyMap(remaining[idx].facts)
-			entry["id"] = res.Rank.ID
-			entry["score"] = res.Rank.Score
+			ranked = append(ranked, scored{facts: c.facts, id: c.id, score: res.Rank.Score})
+		}
+		sort.SliceStable(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })
+		if limit > 0 && len(ranked) > limit {
+			ranked = ranked[:limit]
+		}
+		chain := make([]any, 0, len(ranked))
+		for _, r := range ranked {
+			entry := copyMap(r.facts)
+			entry["id"] = r.id
+			entry["score"] = r.score
 			chain = append(chain, entry)
-			remaining = slices.Delete(remaining, idx, idx+1)
 		}
 		sort.SliceStable(rejected, func(i, j int) bool {
 			return Stringify(rejected[i].(map[string]any)["id"]) < Stringify(rejected[j].(map[string]any)["id"])

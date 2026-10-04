@@ -1,0 +1,77 @@
+# The catalogue the rules choose from: providers, their prices and health, and the
+# accounts that send. It lives in an in-memory SQLite database, seeded below, so
+# the example starts clean every time. Point ROUTING_DSN at a file to keep changes.
+
+resource "db" {
+  kind "database.sql"
+  description "Providers, prices, health and accounts"
+  config {
+    driver "sqlite"
+    dsn env("ROUTING_DSN", "file:routing?mode=memory&cache=shared&_pragma=busy_timeout(5000)")
+    max_open_connections "1"
+    ping true
+    migrations [
+      "CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, tenant TEXT NOT NULL, objective TEXT NOT NULL DEFAULT '')",
+      # Lists are stored |a|b| so that a rule can test membership with contains().
+      "CREATE TABLE IF NOT EXISTS providers (id TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT 'active', quality DOUBLE PRECISION NOT NULL, delivery_rate DOUBLE PRECISION NOT NULL, countries TEXT NOT NULL DEFAULT '', message_types TEXT NOT NULL DEFAULT '', tenants TEXT NOT NULL DEFAULT '', users TEXT NOT NULL DEFAULT '', owner TEXT NOT NULL DEFAULT '', assigned_only INTEGER NOT NULL DEFAULT 0, prefix_pattern TEXT NOT NULL DEFAULT '', supports_unicode INTEGER NOT NULL DEFAULT 1, supports_dlr INTEGER NOT NULL DEFAULT 1, supports_alpha INTEGER NOT NULL DEFAULT 1, supports_long INTEGER NOT NULL DEFAULT 1, description TEXT NOT NULL DEFAULT '')",
+      "CREATE TABLE IF NOT EXISTS provider_costs (provider TEXT NOT NULL, country TEXT NOT NULL, per_segment DOUBLE PRECISION NOT NULL, PRIMARY KEY (provider, country))",
+      "CREATE TABLE IF NOT EXISTS provider_health (provider TEXT PRIMARY KEY, consecutive_failures BIGINT NOT NULL DEFAULT 0, circuit_open INTEGER NOT NULL DEFAULT 0)",
+
+      "INSERT INTO accounts (id, tenant, objective) VALUES ('alice', 'globex', '') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO accounts (id, tenant, objective) VALUES ('bob', 'acme', '') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO accounts (id, tenant, objective) VALUES ('acme_boss', 'acme', '') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO accounts (id, tenant, objective) VALUES ('thrifty', 'globex', 'lowest_cost') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO accounts (id, tenant, objective) VALUES ('careful', 'globex', 'highest_delivery') ON CONFLICT (id) DO NOTHING",
+
+      # Public routes, by what they are good for.
+      "INSERT INTO providers (id, quality, delivery_rate, countries, description) VALUES ('np_telecom', 92, 0.97, '|NP|', 'Primary Nepal route') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO providers (id, quality, delivery_rate, countries, supports_unicode, supports_long, supports_dlr, description) VALUES ('np_budget', 70, 0.90, '|NP|', 0, 0, 0, 'Cheap Nepal route: plain short text only, no receipts') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO providers (id, quality, delivery_rate, countries, prefix_pattern, description) VALUES ('np_mobile_range', 90, 0.96, '|NP|', '^97798[012][0-9]{7}$', 'A route bought for one operator''s number range (980, 981 and 982)') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO providers (id, quality, delivery_rate, countries, description) VALUES ('in_shared', 80, 0.93, '|IN|', 'Shared India route') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO providers (id, quality, delivery_rate, description) VALUES ('global_fallback', 70, 0.90, 'Catch-all for every destination') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO providers (id, quality, delivery_rate, message_types, description) VALUES ('otp_gateway', 97, 0.995, '|otp|', 'Carries one-time codes, nothing else, anywhere') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO providers (id, state, quality, delivery_rate, countries, description) VALUES ('np_old', 'paused', 85, 0.95, '|NP|', 'Switched off by the operator') ON CONFLICT (id) DO NOTHING",
+      # Private routes: nobody may use them unless assigned, owned, or named by a rule.
+      "INSERT INTO providers (id, quality, delivery_rate, countries, tenants, assigned_only, description) VALUES ('np_premium', 98, 0.995, '|NP|', '|acme|', 1, 'Premium Nepal route, assigned to the acme tenant') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO providers (id, quality, delivery_rate, countries, users, assigned_only, description) VALUES ('in_vendor', 88, 0.95, '|IN|', '|alice|', 1, 'India vendor, assigned to alice') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO providers (id, quality, delivery_rate, owner, assigned_only, description) VALUES ('boss_own', 90, 0.95, 'acme_boss', 1, 'Owned by acme_boss, who uses nothing else') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO providers (id, quality, delivery_rate, countries, assigned_only, description) VALUES ('np_reserved', 99, 0.999, '|NP|', 1, 'Reserved: only a routing rule can name it') ON CONFLICT (id) DO NOTHING",
+
+      "INSERT INTO provider_costs (provider, country, per_segment) VALUES ('np_telecom', 'NP', 0.011) ON CONFLICT (provider, country) DO NOTHING",
+      "INSERT INTO provider_costs (provider, country, per_segment) VALUES ('np_budget', 'NP', 0.006) ON CONFLICT (provider, country) DO NOTHING",
+      "INSERT INTO provider_costs (provider, country, per_segment) VALUES ('np_mobile_range', 'NP', 0.009) ON CONFLICT (provider, country) DO NOTHING",
+      "INSERT INTO provider_costs (provider, country, per_segment) VALUES ('np_premium', 'NP', 0.02) ON CONFLICT (provider, country) DO NOTHING",
+      "INSERT INTO provider_costs (provider, country, per_segment) VALUES ('np_reserved', 'NP', 0.03) ON CONFLICT (provider, country) DO NOTHING",
+      "INSERT INTO provider_costs (provider, country, per_segment) VALUES ('np_old', 'NP', 0.01) ON CONFLICT (provider, country) DO NOTHING",
+      "INSERT INTO provider_costs (provider, country, per_segment) VALUES ('in_shared', 'IN', 0.008) ON CONFLICT (provider, country) DO NOTHING",
+      "INSERT INTO provider_costs (provider, country, per_segment) VALUES ('in_vendor', 'IN', 0.012) ON CONFLICT (provider, country) DO NOTHING",
+      "INSERT INTO provider_costs (provider, country, per_segment) VALUES ('global_fallback', '*', 0.05) ON CONFLICT (provider, country) DO NOTHING",
+      "INSERT INTO provider_costs (provider, country, per_segment) VALUES ('otp_gateway', '*', 0.04) ON CONFLICT (provider, country) DO NOTHING",
+      "INSERT INTO provider_costs (provider, country, per_segment) VALUES ('boss_own', '*', 0.02) ON CONFLICT (provider, country) DO NOTHING"
+    ]
+  }
+}
+
+# The rules. Operators may change them while it runs (PUT /rules/overrides), and
+# what they save is kept in the database and published again at the next start.
+resource "policy" {
+  kind "rules.engine"
+  description "Decision tables and rankings"
+  config {
+    dir env("ROUTING_RULES_DIR", "rules")
+    environment "production"
+    strict_validation true
+    overrides "db"
+    overrides_table "rule_overrides"
+  }
+}
+
+resource "admin_auth" {
+  kind "auth.api_key"
+  description "Operator key (X-API-Key or Authorization: Bearer)"
+  config {
+    key env("ROUTING_ADMIN_KEY", "dev-admin-key-change-me-0123")
+    principal_id "operator"
+    roles ["admin"]
+  }
+}

@@ -145,3 +145,19 @@ func TestAugmentConcatAndTextRender(t *testing.T) {
 		t.Fatalf("render: %v %v", res.Outputs, err)
 	}
 }
+
+func TestValidationMessageExpression(t *testing.T) {
+	ctx := &ActionContext{Context: context.Background(), Inputs: map[string]any{"bad": "+977 12", "n": 3}}
+	check, err := validateExpressionAction(BuildContext{}, NodeSpec{Name: "v", Config: map[string]any{
+		"expression": "n > 5", "message": "too small", "message_expression": "'bad value ' + bad"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := check.Run(ctx); err == nil || err.Error() != "bad value +977 12" {
+		t.Fatalf("message_expression: %v", err)
+	}
+	plain, _ := validateExpressionAction(BuildContext{}, NodeSpec{Name: "v", Config: map[string]any{"expression": "n > 5", "message": "too small"}})
+	if _, err := plain.Run(ctx); err == nil || err.Error() != "too small" {
+		t.Fatalf("message: %v", err)
+	}
+}

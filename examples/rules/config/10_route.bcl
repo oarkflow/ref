@@ -1,0 +1,144 @@
+# route: the whole decision for one message.
+#
+#   number ── country ──┐
+#   account ───────────┼─ message facts ─ candidates ─┐
+#   text ── size ──────┘                               ├─ rank ─ answer
+#                                      objective ──────┘
+#
+# Nothing is sent and nothing is stored. Every judgement is in ../rules:
+#   numbering.bcl  how a number is written, and which country it belongs to
+#   routing.bcl    which providers may carry the message, and in what order
+#   overrides.bcl  per-provider rules an operator adds on top (who, where, what)
+
+shape "route_request" {
+  additional_properties false
+  prop "account"  { kind string required true max_length 60 description "Who sends: alice, bob, acme_boss, thrifty or careful" }
+  prop "to"       { kind string required true max_length 40 description "The recipient, written any way: 9841234567, +977 984-123-4567, 009779841234567" }
+  prop "text"     { kind string max_length 1600 }
+  prop "from"     { kind string max_length 16 description "Sender id; default SMS" }
+  prop "type"     { kind string enum ["transactional", "otp", "promotional"] }
+  prop "template" { kind string max_length 60 description "A template name; rules may route by it" }
+  prop "dlr"      { kind bool description "Whether delivery receipts are wanted; default true" }
+}
+
+intent "route" {
+  description "Which providers would carry this message, in order, and why the others would not"
+  response "result"
+  input_schema "route_request"
+
+  # ---- The recipient number --------------------------------------------------
+  node "typed" {
+    uses "data.transform" kind pure requires [input] provides [typed]
+    config { data { extract { clean "regex_replace(input.to, '[ ().-]', '')" invalid "regex_replace(input.to, '[0-9+ ().-]', '')" } } }
+  }
+  node "form" {
+    uses "rules.decide" resource "policy" kind read requires [typed] provides [form]
+    config { definition "numbering" decision "number_form" fail_on ["deny"] }
+  }
+  node "recipient" {
+    uses "data.transform" kind pure requires [typed, form] provides [recipient]
+    config { data { extract { digits "form.form == 'national' ? form.dial + trim_prefix(typed.clean, form.trunk) : substr(typed.clean, form.strip, len(typed.clean))" } } }
+  }
+  node "destination" {
+    uses "rules.decide" resource "policy" kind read requires [recipient] provides [destination]
+    input_data { extract { digits "recipient" } pick ["digits"] }
+    config { definition "numbering" decision "number_country" fail_on ["deny"] }
+  }
+
+  # ---- The account ------------------------------------------------------------
+  node "user_rows" {
+    uses "database.query" resource "db" kind read requires [input] provides [user_rows]
+    config {
+      statement "SELECT id, tenant, objective FROM accounts WHERE id = $1"
+      args [input.account]
+      require_rows true
+      not_found_message "there is no such account; try alice, bob, acme_boss, thrifty or careful"
+    }
+  }
+  node "user" { uses "data.first" requires [user_rows] provides [user] config { source_fact "user_rows" } }
+
+  # ---- The message facts the rules read -----------------------------------------
+  # Size follows the GSM rules: 160 characters in one segment (153 each when
+  # joined); text with any non-ASCII character is Unicode: 70, or 67 each.
+  node "body" {
+    uses "data.transform" kind pure requires [input] provides [body]
+    config { data { extract { text "input.text != nil ? input.text : ''" } } }
+  }
+  node "size" {
+    uses "data.transform" kind pure requires [body] provides [size]
+    config { data { extract { chars "len(body.text)" unicode "body.text matches '[^[:ascii:]]'" } } }
+  }
+  node "segments" {
+    uses "expression" kind pure requires [size] provides [segments]
+    config { expression "size.chars == 0 ? 1 : (size.unicode ? (size.chars <= 70 ? 1 : ceil(size.chars / 67)) : (size.chars <= 160 ? 1 : ceil(size.chars / 153)))" }
+  }
+  node "message" {
+    uses "data.transform" kind pure requires [input, recipient, destination, body, size, segments] provides [message]
+    config {
+      data {
+        extract {
+          to "recipient.digits"
+          country "destination.country"
+          text "body.text"
+          from "input.from != nil and input.from != '' ? input.from : 'SMS'"
+          sender_kind "input.from != nil and input.from matches '^[A-Za-z]' ? 'alpha' : 'numeric'"
+          type "input.type != nil ? input.type : 'transactional'"
+          template "input.template != nil ? input.template : ''"
+          dlr "coalesce(input.dlr, true)"
+          unicode "size.unicode"
+          segments "segments"
+        }
+      }
+    }
+  }
+
+  # ---- Every provider with its price and health for this destination ---------------
+  node "candidates" {
+    uses "database.query" resource "db" kind read requires [message] provides [candidates]
+    config {
+      statement "SELECT p.id, p.state, p.quality, p.delivery_rate, p.countries, p.message_types, p.tenants, p.users, p.owner, p.assigned_only, p.prefix_pattern, p.supports_unicode, p.supports_dlr, p.supports_alpha, p.supports_long, p.description, COALESCE(c.per_segment, d.per_segment, 0) AS cost_per_segment, COALESCE(c.per_segment, d.per_segment, 0) * $2 AS cost, COALESCE(h.consecutive_failures, 0) AS consecutive_failures, COALESCE(h.circuit_open, 0) AS circuit_open FROM providers p LEFT JOIN provider_costs c ON c.provider = p.id AND c.country = $1 LEFT JOIN provider_costs d ON d.provider = p.id AND d.country = '*' LEFT JOIN provider_health h ON h.provider = p.id ORDER BY p.id"
+      args [message.country, message.segments]
+    }
+  }
+  node "objective" {
+    uses "rules.decide" resource "policy" kind read requires [message, user] provides [objective]
+    config { definition "routing" decision "route_objective" }
+  }
+
+  # ---- The decision ----------------------------------------------------------------
+  # eligibility: may this provider carry this message, and in which tier?
+  # eligibility_extra: the rules an operator wrote for this one provider, if any
+  # (overrides.bcl holds one decision per provider, named for_<id>).
+  node "route" {
+    uses "rules.rank" resource "policy" kind read requires [message, user, candidates, objective] provides [route]
+    config {
+      definition "routing"
+      candidates_fact "candidates"
+      eligibility "route_eligibility"
+      eligibility_extra ["overrides/for_{id}"]
+      ranking_fact "objective.ranking"
+    }
+  }
+  node "ids" { uses "data.map" kind pure requires [route] provides [ids] config { source_fact "route.chain" expression "item.id" } }
+  node "result" {
+    uses "data.transform" kind pure requires [message, user, objective, route, ids] provides [result]
+    config {
+      data {
+        extract {
+          to "message.to"
+          country "message.country"
+          segments "message.segments"
+          unicode "message.unicode"
+          account "user.id"
+          tenant "user.tenant"
+          objective "objective.ranking"
+          first "len(ids) > 0 ? ids[0] : ''"
+          order "ids"
+          chain "route.chain"
+          rejected "route.rejected"
+        }
+      }
+    }
+  }
+}
+route "route" { method POST path "/route" intent "route" cache_control "no-store" }
