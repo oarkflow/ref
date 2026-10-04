@@ -1,0 +1,38 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <section class="card">
+    <h1>Send a message</h1>
+    <p class="muted">Use Explain to see how a message would be routed and priced without sending it.</p>
+    <form id="sendform">
+      <label>To <input name="to" placeholder="+977 984 123 4567" required></label>
+      <label>Template
+        <select name="template" id="template"><option value="">(plain text)</option></select>
+      </label>
+      <p id="template-note" class="muted" hidden></p>
+      <div id="plain">
+        <label>Text <textarea name="body" rows="4" placeholder="Hello"></textarea></label>
+        <p class="muted" id="plain-count"></p>
+      </div>
+      <fieldset id="placeholders" class="fields" hidden>
+        <legend>Placeholders</legend>
+        <div id="fieldlist"></div>
+      </fieldset>
+      <div id="preview" class="preview" hidden>
+        <h2>Preview</h2>
+        <pre id="preview-text" class="out"></pre>
+        <p class="muted" id="preview-meta"></p>
+      </div>
+      <label>Reference <input name="reference" placeholder="optional idempotency key"></label>
+      <div class="row">
+        <button type="submit">Send</button>
+        <button type="button" id="explain" class="secondary">Explain</button>
+      </div>
+    </form>
+    <div id="result" class="out"></div>
+  </section>
+  <section class="card">
+    <h2>Balance</h2>
+    <pre id="balance" class="out"></pre>
+  </section>
+}

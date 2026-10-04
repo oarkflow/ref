@@ -1,0 +1,208 @@
+# ---------------------------------------------------------------------------
+# Routing rules: which provider a message uses, decided by who sends it, where
+# it goes, what it says and how big it is. An operator manages them one by one
+# on /admin/rules (and per account from /admin/accounts); this file stores them,
+# checks them, and turns the enabled ones into a decision table.
+#
+#   routing_rules (table)  ──►  custom_routing (a rules definition, generated)
+#                                     │ evaluated for every candidate provider,
+#                                     │ after routing.bcl has allowed it
+#                                     ▼
+#                         allow  = use this provider first (priority) or alone (exclusive)
+#                         deny   = never use it for this message
+#
+# A rule has conditions (all optional, all must hold) and an action:
+#   conditions  account, tenant, countries, recipient numbers (any written form),
+#               number prefix / pattern, message templates, sender pattern, words or
+#               a pattern in the text, message types, segments
+#   action      use  : put the provider first, the others stay as fall-backs
+#               only : use only this provider
+#               avoid: never use this provider
+# A rule that uses or reserves a provider also ADMITS it: a provider assigned to
+# other accounts can be named for an account, a number or a template. The
+# provider's own limits (paused, circuit open, no unicode, OTP quality) still apply.
+# The rule with the highest priority that matches a provider decides for it, and
+# a rule's priority outweighs everything else about a provider (quality, cost).
+# The console suggests a priority from how specific the rule is (an account
+# counts for more than a country, a recipient for more than a content word), and
+# lets the operator change it.
+#
+# The generated source is rendered from templates/rules/custom_routing.html and
+# published with rules.save, so it is checked by the engine, effective at once,
+# and kept across restarts. It can be read (never edited) under "Generated rules".
+# ---------------------------------------------------------------------------
+
+shape "routing_rule" {
+  additional_properties false
+  prop "name"              { kind string required true min_length 1 max_length 120 }
+  prop "enabled"           { kind bool }
+  prop "account"           { kind string max_length 60 }
+  prop "tenant"            { kind string max_length 60 }
+  prop "countries"         { kind array items string }
+  prop "recipients"        { kind array items string description "Numbers in any form: +977 9856034616, 009779856034616, 977..., or national 98... (the default country is Nepal)" }
+  prop "templates"         { kind array items string description "Names of message templates, such as otp_login" }
+  prop "recipient_prefix"  { kind string max_length 20 pattern "^[0-9]*$" }
+  prop "recipient_pattern" { kind string max_length 200 }
+  prop "sender_pattern"    { kind string max_length 200 }
+  prop "content_words"     { kind array items string }
+  prop "content_pattern"   { kind string max_length 300 }
+  prop "types"             { kind array items string }
+  prop "min_segments"      { kind int min 0 max 100 }
+  prop "max_segments"      { kind int min 0 max 100 }
+  prop "mode"              { kind string required true enum ["use", "only", "avoid"] }
+  prop "provider"          { kind string required true max_length 60 }
+  prop "priority"          { kind int min 0 max 9999 }
+  prop "note"              { kind string max_length 300 }
+}
+
+shape "routing_rule_enabled" { additional_properties false  prop "enabled" { kind bool required true } }
+
+intent "admin.routing_rules.list" {
+  response "rows"
+  node "rows" {
+    uses "database.query" resource "db" kind read provides [rows]
+    config { statement "SELECT id, name, enabled, account, tenant, countries, recipients, templates, recipient_prefix, recipient_pattern, sender_pattern, content_words, content_pattern, types, min_segments, max_segments, mode, provider, priority, note, updated_ms FROM routing_rules ORDER BY priority DESC, name LIMIT 2000" }
+  }
+}
+
+# Render the enabled rules (or, for a check, just the one being saved) as the
+# definition's source. The same query serves both: strings are escaped here, in
+# SQL, so what reaches the template is already safe inside a quoted BCL string.
+intent "routing_rules.publish" {
+  description "Generate custom_routing from the enabled routing rules and publish it"
+  response "rule"
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [input] provides [rows]
+    config {
+      statement "SELECT r.id, REPLACE(REPLACE(r.provider, '\\', '\\\\'), '\"', '\\\"') AS provider, REPLACE(REPLACE(r.account, '\\', '\\\\'), '\"', '\\\"') AS account, REPLACE(REPLACE(r.tenant, '\\', '\\\\'), '\"', '\\\"') AS tenant, REPLACE(REPLACE(r.countries, '\\', '\\\\'), '\"', '\\\"') AS countries, REPLACE(REPLACE(r.recipient_prefix, '\\', '\\\\'), '\"', '\\\"') AS recipient_prefix, REPLACE(REPLACE(r.recipients, '\\', '\\\\'), '\"', '\\\"') AS recipients, REPLACE(REPLACE(r.templates, '\\', '\\\\'), '\"', '\\\"') AS templates, REPLACE(REPLACE(r.recipient_pattern, '\\', '\\\\'), '\"', '\\\"') AS recipient_pattern, REPLACE(REPLACE(r.sender_pattern, '\\', '\\\\'), '\"', '\\\"') AS sender_pattern, REPLACE(REPLACE(r.content_words, '\\', '\\\\'), '\"', '\\\"') AS content_words, REPLACE(REPLACE(r.content_pattern, '\\', '\\\\'), '\"', '\\\"') AS content_pattern, REPLACE(REPLACE(r.types, '\\', '\\\\'), '\"', '\\\"') AS types, r.min_segments, r.max_segments, CASE r.mode WHEN 'avoid' THEN 'deny' ELSE 'allow' END AS effect, CASE r.mode WHEN 'only' THEN 'true' ELSE 'false' END AS exclusive, REPLACE(REPLACE('routing rule: ' || r.name, '\\', '\\\\'), '\"', '\\\"') AS reason, 200000 + r.priority * 1000 AS score, 1000 + r.priority AS table_priority FROM routing_rules r WHERE r.enabled = 1 ORDER BY r.priority DESC, r.id"
+    }
+  }
+  node "vars" { uses "data.transform" kind pure requires [rows] provides [vars] config { data { extract { rules "rows" } pick ["rules"] } } }
+  node "source" {
+    uses "template.render" kind pure requires [vars] provides [source]
+    config { template "rules/custom_routing" vars_fact "vars" }
+  }
+  node "defname" { uses "expression" kind pure provides [defname] config { expression "'custom_routing'" } }
+  node "rule" {
+    uses "rules.save" resource "policy" kind effect requires [source, defname] provides [rule]
+    config { name_fact "defname" source_fact "source.text" }
+  }
+}
+
+intent "admin.routing_rules.put" {
+  description "Create or change one routing rule; checked before it is stored, effective at once"
+  response "result"
+  input_schema "routing_rule"
+  timeout 20s
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" required false default "" } }
+  node "body" {
+    uses "data.transform" kind pure requires [input] provides [body]
+    config {
+      source_fact "input"
+      data { defaults { enabled true account "" tenant "" countries [] recipients [] templates [] recipient_prefix "" recipient_pattern "" sender_pattern "" content_words [] content_pattern "" types [] min_segments 0 max_segments 0 priority 0 note "" } }
+    }
+  }
+  # Numbers are matched as they reach the router, in international digits, so a
+  # rule written as 9856034616, +977 9856034616 or 00977... is the same rule.
+  # A number typed with + or 00 is taken as international; one starting 977 is
+  # taken as Nepali international; any other number is national, in the default
+  # country (Nepal, dial code 977).
+  node "recipients_clean" { uses "data.map" kind pure requires [body] provides [recipients_clean] config { source_fact "body.recipients" expression "regex_replace(trim(item), '[^0-9+]', '')" } }
+  node "recipients_norm" {
+    uses "data.map" kind pure requires [recipients_clean] provides [recipients_norm]
+    config { source_fact "recipients_clean" expression "item matches '^[+]' ? regex_replace(item, '^[+]', '') : (item matches '^00' ? regex_replace(item, '^00', '') : (item matches '^977' ? item : (item == '' ? '' : '977' + regex_replace(item, '^0', ''))))" }
+  }
+  node "templates_clean" { uses "data.map" kind pure requires [body] provides [templates_clean] config { source_fact "body.templates" expression "regex_replace(trim(item), '[^a-z0-9_]', '')" } }
+  node "row" {
+    uses "data.transform" kind pure requires [id, body, recipients_norm, templates_clean] provides [row]
+    config {
+      data {
+        extract {
+          id "id != '' ? id : 'rr_' + replace(uuid(), '-', '')"
+          name "trim(body.name)"
+          enabled "body.enabled ? 1 : 0"
+          account "trim(body.account)"
+          tenant "trim(body.tenant)"
+          countries "upper(join(body.countries, '|'))"
+          recipients "join(recipients_norm, '|')"
+          templates "join(templates_clean, '|')"
+          recipient_prefix "body.recipient_prefix"
+          recipient_pattern "body.recipient_pattern"
+          sender_pattern "body.sender_pattern"
+          content_words "join(body.content_words, '|')"
+          content_pattern "body.content_pattern"
+          types "join(body.types, '|')"
+          min_segments "body.min_segments"
+          max_segments "body.max_segments"
+          mode "body.mode"
+          provider "body.provider"
+          priority "body.priority"
+          note "body.note"
+          now_ms "unix_millis()"
+        }
+      }
+    }
+  }
+  # Every pattern must be a valid regular expression. The engine does not check
+  # them when a definition is published: an invalid one would fail on the first
+  # message that reaches it. So each is tried here, as it will be used.
+  node "patterns" {
+    uses "data.transform" kind pure requires [row] provides [patterns]
+    config {
+      data {
+        extract {
+          recipients "row.recipients != '' ? '^(' + row.recipients + ')$' : ''"
+          templates "row.templates != '' ? '^(' + row.templates + ')$' : ''"
+          recipient_pattern "row.recipient_pattern"
+          sender_pattern "row.sender_pattern"
+          content_pattern "row.content_pattern"
+          content_words "row.content_words != '' ? '(?i)(' + row.content_words + ')' : ''"
+          countries "row.countries != '' ? '^(' + row.countries + ')$' : ''"
+          types "row.types != '' ? '^(' + row.types + ')$' : ''"
+        }
+      }
+    }
+  }
+  node "pattern_check" {
+    uses "validate.regex" kind pure requires [patterns] provides [pattern_check]
+    config { fields ["patterns.recipients", "patterns.templates", "patterns.recipient_pattern", "patterns.sender_pattern", "patterns.content_pattern", "patterns.content_words", "patterns.countries", "patterns.types"] }
+  }
+  node "checked" {
+    uses "database.transaction" resource "db" kind effect requires [row, pattern_check] provides [checked]
+    config {
+      statements [
+        { name "provider" sql "SELECT id FROM providers WHERE id = $1" args [row.provider] require_rows true failure { code "UNKNOWN_PROVIDER" status 422 message "there is no such provider" } },
+        { name "account" sql "SELECT id FROM users WHERE id = $1 OR $1 = ''" args [row.account] require_rows true failure { code "UNKNOWN_ACCOUNT" status 422 message "there is no such account" } },
+        { name "range" sql "SELECT 1 WHERE $1 = 0 OR $2 = 0 OR $1 <= $2" args [row.min_segments, row.max_segments] require_rows true failure { code "BAD_RANGE" status 422 message "the minimum number of segments is above the maximum" } },
+        { name "save" sql "INSERT INTO routing_rules (id, name, enabled, account, tenant, countries, recipients, templates, recipient_prefix, recipient_pattern, sender_pattern, content_words, content_pattern, types, min_segments, max_segments, mode, provider, priority, note, updated_ms) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) ON CONFLICT (id) DO UPDATE SET name = excluded.name, enabled = excluded.enabled, account = excluded.account, tenant = excluded.tenant, countries = excluded.countries, recipients = excluded.recipients, templates = excluded.templates, recipient_prefix = excluded.recipient_prefix, recipient_pattern = excluded.recipient_pattern, sender_pattern = excluded.sender_pattern, content_words = excluded.content_words, content_pattern = excluded.content_pattern, types = excluded.types, min_segments = excluded.min_segments, max_segments = excluded.max_segments, mode = excluded.mode, provider = excluded.provider, priority = excluded.priority, note = excluded.note, updated_ms = excluded.updated_ms"
+          args [row.id, row.name, row.enabled, row.account, row.tenant, row.countries, row.recipients, row.templates, row.recipient_prefix, row.recipient_pattern, row.sender_pattern, row.content_words, row.content_pattern, row.types, row.min_segments, row.max_segments, row.mode, row.provider, row.priority, row.note, row.now_ms] }
+      ]
+    }
+  }
+  node "published" { uses "flow.subflow" kind effect requires [checked, input] provides [published] config { intent "routing_rules.publish" input { go "yes" } } }
+  node "result" { uses "data.transform" kind pure requires [row, published] provides [result] config { data { extract { id "row.id" name "row.name" } pick ["id", "name"] } } }
+}
+
+intent "admin.routing_rules.enabled" {
+  response "result"
+  input_schema "routing_rule_enabled"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "flag" { uses "data.transform" kind pure requires [input] provides [flag] config { data { extract { enabled "input.enabled ? 1 : 0" now_ms "unix_millis()" } } } }
+  node "saved" {
+    uses "database.transaction" resource "db" kind effect requires [id, flag] provides [saved]
+    config { statements [ { name "set" sql "UPDATE routing_rules SET enabled = $1, updated_ms = $2 WHERE id = $3" args [flag.enabled, flag.now_ms, id] require_affected true failure { code "NOT_FOUND" status 404 message "no such rule" } } ] }
+  }
+  node "published" { uses "flow.subflow" kind effect requires [saved] provides [published] config { intent "routing_rules.publish" input { go "yes" } } }
+  node "result" { uses "data.transform" kind pure requires [id, flag, published] provides [result] config { data { extract { id "id" enabled "flag.enabled == 1" } pick ["id", "enabled"] } } }
+}
+
+intent "admin.routing_rules.delete" {
+  response "result"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "gone" {
+    uses "database.transaction" resource "db" kind effect requires [id] provides [gone]
+    config { statements [ { name "del" sql "DELETE FROM routing_rules WHERE id = $1" args [id] require_affected true failure { code "NOT_FOUND" status 404 message "no such rule" } } ] }
+  }
+  node "published" { uses "flow.subflow" kind effect requires [gone] provides [published] config { intent "routing_rules.publish" input { go "yes" } } }
+  node "result" { uses "data.transform" kind pure requires [id, published] provides [result] config { data { extract { id "id" deleted "true" } pick ["id", "deleted"] } } }
+}

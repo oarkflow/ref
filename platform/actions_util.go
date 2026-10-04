@@ -473,3 +473,7 @@ func internalTransport(ctx *ActionContext) bool {
 	}
 	return false
 }
+
+// ResolvePath reads a dotted path ("input.rows.0.name") from facts, for actions
+// registered by other modules.
+func ResolvePath(root map[string]any, path string) (any, bool) { return resolvePath(root, path) }

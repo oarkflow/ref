@@ -1,0 +1,38 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <section class="card">
+    <h1>Audiences</h1>
+    <p class="muted">A saved list of recipients with their fields, checked once. Start a campaign from it on the <a href="/campaigns">Campaigns</a> page instead of pasting the list again. A campaign copies the list when it is created, so changing an audience later does not change a campaign already waiting for approval.</p>
+    <form id="audienceform">
+      <label>Name <input name="name" required maxlength="120"></label>
+      <div class="tabs sub" id="src-tabs">
+        <button type="button" class="tab active" data-src="list">Numbers</button>
+        <button type="button" class="tab" data-src="csv">CSV</button>
+      </div>
+      <div data-pane="list"><label>Phone numbers, one per line <textarea name="numbers" rows="5"></textarea></label></div>
+      <div data-pane="csv" hidden>
+        <label>CSV with a header line <textarea name="csv" rows="7" class="code" spellcheck="false" placeholder="phone,name&#10;9841234567,Asha"></textarea></label>
+        <div class="row"><label class="filebtn">Upload a CSV file <input type="file" id="csvfile" accept=".csv,text/csv,text/plain"></label></div>
+        <div class="grid2"><label>Column with the phone number <select name="phone_field"><option value="phone">phone</option></select></label></div>
+      </div>
+      <div class="grid2"><label>Country for numbers written without a country code <input name="region" value="NP" maxlength="2" pattern="[A-Za-z]{2}"></label></div>
+      <div class="row"><button type="button" class="secondary" id="preview">Check recipients</button><button type="submit">Save audience</button></div>
+    </form>
+    <div id="preview-out" class="out" hidden></div>
+    <div id="result" class="out" hidden></div>
+  </section>
+  <section class="card">
+    <h2>Saved audiences</h2>
+    <table id="audiences"><thead><tr><th>Name</th><th>Recipients</th><th>Valid</th><th>Skipped</th><th>Country</th><th></th></tr></thead><tbody></tbody></table>
+  </section>
+  <section class="card" id="detail" hidden>
+    <div class="split"><h2 id="detail-title">Audience</h2><button type="button" class="secondary small" id="detail-close">Close</button></div>
+    <label>Show <select id="detail-filter"><option value="">all recipients</option><option>pending</option><option>skipped</option></select></label>
+    <table id="detail-table"><thead><tr><th>#</th><th>Number</th><th>Dialled as</th><th>State</th><th>Reason</th><th>Fields</th></tr></thead><tbody></tbody></table>
+  </section>
+}
+
+@define("scripts") {
+  <script src="/static/js/bulk.js?v=${asset_version}"></script>
+}

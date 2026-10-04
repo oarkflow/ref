@@ -1,0 +1,37 @@
+# ---------------------------------------------------------------------------
+# The web console: SPL pages (templates/) and static assets (static/). Pages are
+# shells; they call the JSON API with the key the user enters, so a page itself
+# exposes nothing.
+# ---------------------------------------------------------------------------
+
+static "assets" {
+  prefix "/static"
+  root "static"
+  compress true
+  # Revalidate on every load (ETag), so a changed script or stylesheet is never
+  # served stale next to a changed page. Raise max_age for production.
+  cache_control "no-cache"
+}
+
+intent "console.page" {
+  response "page"
+  node "page" {
+    uses "constant" kind pure provides [page]
+    config { value { app_name "SMS Gateway" asset_version "19" title "Console" templates ["otp_login", "payment_received", "spring_sale"] } }
+  }
+}
+
+# asset_version in console.page is part of the script and stylesheet URLs: change it
+# when static files change, so a browser that cached an older copy fetches the new one.
+# Pages are shells: they hold nothing private. Their script calls /ui/me and goes
+# to /login without a session; every /ui and /login call is checked server side.
+route "console.login"     { method GET path "/login"     intent "console.page" template "pages/login"     layout "layouts/plain" allow_anonymous true }
+route "console.send"      { method GET path "/"          intent "console.page" template "pages/send"      layout "layouts/base"  allow_anonymous true }
+route "console.messages"  { method GET path "/messages"  intent "console.page" template "pages/messages"  layout "layouts/base"  allow_anonymous true }
+route "console.campaigns" { method GET path "/campaigns" intent "console.page" template "pages/campaigns" layout "layouts/base"  allow_anonymous true }
+route "console.providers" { method GET path "/admin/providers" intent "console.page" template "pages/providers" layout "layouts/base"  allow_anonymous true }
+route "console.rules"     { method GET path "/admin/rules"     intent "console.page" template "pages/rules"     layout "layouts/base"  allow_anonymous true }
+route "console.accounts"  { method GET path "/admin/accounts"  intent "console.page" template "pages/accounts"  layout "layouts/base"  allow_anonymous true }
+route "console.audiences" { method GET path "/audiences" intent "console.page" template "pages/audiences" layout "layouts/base"  allow_anonymous true }
+route "console.notifications" { method GET path "/notifications" intent "console.page" template "pages/notifications" layout "layouts/base" allow_anonymous true }
+route "console.admin"     { method GET path "/admin"     intent "console.page" template "pages/admin"     layout "layouts/base"  allow_anonymous true }

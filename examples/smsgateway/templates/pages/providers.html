@@ -1,0 +1,79 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <section class="card">
+    <div class="split"><h1>Providers</h1><button type="button" id="new-provider">New provider</button></div>
+    <p class="muted">A provider is a route: where it applies, who may use it, what it costs, how it retries. Its channel is the connection it sends over. Changes apply to the next message.</p>
+    <table id="provider-table"><thead><tr><th>Id</th><th>Channel</th><th>Mode</th><th>State</th><th>Quality</th><th>Countries</th><th>Assigned</th><th>OK</th><th>Failed</th><th></th></tr></thead><tbody></tbody></table>
+  </section>
+  <section class="card" id="editor" hidden>
+    <h2 id="editor-title">Provider</h2>
+    <form id="providerform" class="grid2">
+      <label>Id <input name="id" required pattern="[a-z0-9_]+" title="lowercase letters, digits and underscores"></label>
+      <label>Channel <select name="channel" required></select></label>
+      <label>Kind <select name="kind"><option>smpp</option><option>http</option></select></label>
+      <label>State <select name="state"><option>active</option><option>paused</option><option>disabled</option></select></label>
+      <label>Quality (0-100) <input name="quality" type="number" step="any" min="0" max="100" value="80"></label>
+      <label>Delivery rate (0-1) <input name="delivery_rate" type="number" step="any" min="0" max="1" value="0.95"></label>
+      <label>Countries <input name="countries" placeholder="NP, IN (empty: every country)"></label>
+      <label>Message types <input name="message_types" placeholder="otp, promotional (empty: all)"></label>
+      <label>Tenants <input name="tenants" placeholder="acme"></label>
+      <label>Accounts <input name="users" placeholder="acme_alice"></label>
+      <label>Owner account <input name="owner" placeholder="exclusive to one account"></label>
+      <label>Sender countries <input name="sender_countries" placeholder="restrict by sender id country"></label>
+      <label>Number prefix pattern <input name="prefix_pattern" placeholder="regular expression, optional"></label>
+      <label>Max attempts <input name="max_attempts" type="number" min="1" max="12" value="3"></label>
+      <label>Backoff start (s) <input name="backoff_initial_s" type="number" step="any" value="1"></label>
+      <label>Backoff max (s) <input name="backoff_max_s" type="number" step="any" value="60"></label>
+      <label>Backoff factor <input name="backoff_factor" type="number" step="any" value="2"></label>
+      <label>Description <input name="description"></label>
+      <div class="checks">
+        <label><input type="checkbox" name="sandbox" checked> Sandbox (talks to a stand-in; nothing leaves this machine)</label>
+        <label><input type="checkbox" name="assigned_only"> Only for the tenants and accounts above</label>
+        <label><input type="checkbox" name="supports_unicode" checked> Unicode</label>
+        <label><input type="checkbox" name="supports_dlr" checked> Delivery receipts</label>
+        <label><input type="checkbox" name="supports_alpha" checked> Alphanumeric sender</label>
+        <label><input type="checkbox" name="supports_long" checked> Long messages</label>
+      </div>
+      <div class="row wide"><button type="submit">Save provider</button><button type="button" class="secondary" id="cancel-provider">Close</button></div>
+    </form>
+    <div id="provider-result" class="out"></div>
+    <h2>Settings</h2>
+    <p class="muted" id="settings-note"></p>
+    <form id="settingsform" class="grid2"><div id="settingfields" class="wide grid2"></div>
+      <div class="row wide"><button type="submit">Save settings</button></div>
+    </form>
+    <div id="settings-result" class="out"></div>
+    <h2>Credentials</h2>
+
+    <p class="muted">The accounts this provider sends with. One active account is used per message, the least recently used first. If the provider refuses an account, it rests for five minutes and the next one is tried at once. Secrets are stored sealed and are never shown again; leave a secret blank to keep it.</p>
+    <table id="accounts"><thead><tr><th>Account</th><th>State</th><th>Settings</th><th>Secrets</th><th>Used</th><th>Refused</th><th>Resting until</th><th></th></tr></thead><tbody></tbody></table>
+    <form id="accountform" class="grid2">
+      <label>Account name <input name="name" required pattern="[a-zA-Z0-9_-]+" title="letters, digits, - and _"></label>
+      <label>State <select name="state"><option>active</option><option>disabled</option></select></label>
+      <div id="credfields" class="wide grid2"></div>
+      <label>Note <input name="note"></label>
+      <div class="checks"><label><input type="checkbox" name="clear_rest"> Clear failures and the rest period</label></div>
+      <div class="row wide"><button type="submit">Save account</button><button type="button" class="secondary" id="new-cred">New account</button></div>
+    </form>
+    <div id="account-result" class="out"></div>
+    <div id="test-panel" class="card" hidden>
+      <h3 id="test-title">Test credentials</h3>
+      <p class="muted">Sends one message through this account only: no routing, no payment, no record. For a live provider this sends a real message, so use your own number.</p>
+      <form id="testform" class="grid2">
+        <label>To <input name="to" placeholder="+977 984 123 4567" required></label>
+        <label>Text <input name="text" value="Credential test from the SMS gateway" maxlength="160"></label>
+        <div class="row wide"><button type="submit">Send test message</button><button type="button" class="secondary" id="test-close">Close</button></div>
+      </form>
+      <div id="test-result" class="out"></div>
+    </div>
+    <h2>Price per segment</h2>
+    <p class="muted">By destination country; <code>*</code> is the price for every country not listed.</p>
+    <table id="costs"><thead><tr><th>Country</th><th>Price</th><th></th></tr></thead><tbody></tbody></table>
+    <form id="costform" class="row">
+      <input name="country" placeholder="NP or *" required style="max-width:120px">
+      <input name="per_segment" type="number" step="any" min="0" placeholder="0.011" required style="max-width:140px">
+      <button type="submit">Set price</button>
+    </form>
+  </section>
+}

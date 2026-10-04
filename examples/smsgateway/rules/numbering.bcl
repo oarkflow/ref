@@ -1,0 +1,441 @@
+bcl { version "1.0" }
+
+# Numbering plan.
+#
+# number_form reads `typed` (what the caller wrote, separators stripped, an
+# optional leading +) and says how to turn it into international digits.
+# number_country reads `digits` and names the country, its calling code and the
+# length of a national number there. The pipeline uses the answers; it owns no numbering
+# knowledge. To serve a new country, add a row.
+
+module "numbering" {
+  version "1"
+  environment "production"
+
+  # How the number was written.
+  decision_schema "number_form" { effects [allow, deny] default deny strategy first_match }
+  decision_table "number_form" {
+    default deny
+    hit_policy first
+
+    row "unexpected-character" {
+      priority 100
+      when { typed.invalid != "" }
+      then { outcome { decision deny reason "the number contains a character that is not a digit, space, dash, dot or bracket" attributes { code "INVALID_NUMBER" status 422 } } }
+    }
+    row "empty" {
+      priority 95
+      when { typed.clean == "" }
+      then { outcome { decision deny reason "the number is empty" attributes { code "INVALID_NUMBER" status 422 } } }
+    }
+    row "plus-prefix" {
+      priority 90
+      when { typed.clean starts_with "+" }
+      then { outcome { decision allow attributes { form "international" strip 1 dial "" trunk "" } } }
+    }
+    row "idd-prefix" {
+      priority 80
+      when { typed.clean starts_with "00" }
+      then { outcome { decision allow attributes { form "international" strip 2 dial "" trunk "" } } }
+    }
+    # A national-format number written with the home country code already on it.
+    row "home-country-code" {
+      priority 70
+      when { typed.clean starts_with "977" }
+      then { outcome { decision allow attributes { form "international" strip 0 dial "" trunk "" } } }
+    }
+    # Everything else is read as a number of the home country (Nepal): drop the
+    # trunk 0 and put the country code on.
+    row "home-country-national" {
+      priority 10
+      when { typed.clean != "" }
+      then { outcome { decision allow attributes { form "national" strip 0 dial "977" trunk "0" } } }
+    }
+  }
+
+  # Which country the international digits belong to. Longest calling code wins
+  # (priority is the code's length).
+  decision_schema "number_country" { effects [allow, deny] default deny strategy first_match }
+  decision_table "number_country" {
+    default deny
+    hit_policy first
+
+    row "US" {
+      priority 100
+      when { digits.e164 starts_with "1" }
+      then { outcome { decision allow attributes { country "US" dial "1" min 10 max 10 } } }
+    }
+
+    row "RU" {
+      priority 100
+      when { digits.e164 starts_with "7" }
+      then { outcome { decision allow attributes { country "RU" dial "7" min 10 max 10 } } }
+    }
+
+    row "EG" {
+      priority 200
+      when { digits.e164 starts_with "20" }
+      then { outcome { decision allow attributes { country "EG" dial "20" min 9 max 10 } } }
+    }
+
+    row "ZA" {
+      priority 200
+      when { digits.e164 starts_with "27" }
+      then { outcome { decision allow attributes { country "ZA" dial "27" min 9 max 9 } } }
+    }
+
+    row "GR" {
+      priority 200
+      when { digits.e164 starts_with "30" }
+      then { outcome { decision allow attributes { country "GR" dial "30" min 10 max 10 } } }
+    }
+
+    row "NL" {
+      priority 200
+      when { digits.e164 starts_with "31" }
+      then { outcome { decision allow attributes { country "NL" dial "31" min 9 max 9 } } }
+    }
+
+    row "BE" {
+      priority 200
+      when { digits.e164 starts_with "32" }
+      then { outcome { decision allow attributes { country "BE" dial "32" min 8 max 9 } } }
+    }
+
+    row "FR" {
+      priority 200
+      when { digits.e164 starts_with "33" }
+      then { outcome { decision allow attributes { country "FR" dial "33" min 9 max 9 } } }
+    }
+
+    row "ES" {
+      priority 200
+      when { digits.e164 starts_with "34" }
+      then { outcome { decision allow attributes { country "ES" dial "34" min 9 max 9 } } }
+    }
+
+    row "IT" {
+      priority 200
+      when { digits.e164 starts_with "39" }
+      then { outcome { decision allow attributes { country "IT" dial "39" min 9 max 11 } } }
+    }
+
+    row "RO" {
+      priority 200
+      when { digits.e164 starts_with "40" }
+      then { outcome { decision allow attributes { country "RO" dial "40" min 9 max 9 } } }
+    }
+
+    row "CH" {
+      priority 200
+      when { digits.e164 starts_with "41" }
+      then { outcome { decision allow attributes { country "CH" dial "41" min 9 max 9 } } }
+    }
+
+    row "AT" {
+      priority 200
+      when { digits.e164 starts_with "43" }
+      then { outcome { decision allow attributes { country "AT" dial "43" min 10 max 13 } } }
+    }
+
+    row "GB" {
+      priority 200
+      when { digits.e164 starts_with "44" }
+      then { outcome { decision allow attributes { country "GB" dial "44" min 10 max 10 } } }
+    }
+
+    row "DK" {
+      priority 200
+      when { digits.e164 starts_with "45" }
+      then { outcome { decision allow attributes { country "DK" dial "45" min 8 max 8 } } }
+    }
+
+    row "SE" {
+      priority 200
+      when { digits.e164 starts_with "46" }
+      then { outcome { decision allow attributes { country "SE" dial "46" min 7 max 13 } } }
+    }
+
+    row "NO" {
+      priority 200
+      when { digits.e164 starts_with "47" }
+      then { outcome { decision allow attributes { country "NO" dial "47" min 8 max 8 } } }
+    }
+
+    row "PL" {
+      priority 200
+      when { digits.e164 starts_with "48" }
+      then { outcome { decision allow attributes { country "PL" dial "48" min 9 max 9 } } }
+    }
+
+    row "DE" {
+      priority 200
+      when { digits.e164 starts_with "49" }
+      then { outcome { decision allow attributes { country "DE" dial "49" min 10 max 11 } } }
+    }
+
+    row "PE" {
+      priority 200
+      when { digits.e164 starts_with "51" }
+      then { outcome { decision allow attributes { country "PE" dial "51" min 9 max 9 } } }
+    }
+
+    row "MX" {
+      priority 200
+      when { digits.e164 starts_with "52" }
+      then { outcome { decision allow attributes { country "MX" dial "52" min 10 max 10 } } }
+    }
+
+    row "AR" {
+      priority 200
+      when { digits.e164 starts_with "54" }
+      then { outcome { decision allow attributes { country "AR" dial "54" min 10 max 11 } } }
+    }
+
+    row "BR" {
+      priority 200
+      when { digits.e164 starts_with "55" }
+      then { outcome { decision allow attributes { country "BR" dial "55" min 10 max 11 } } }
+    }
+
+    row "CL" {
+      priority 200
+      when { digits.e164 starts_with "56" }
+      then { outcome { decision allow attributes { country "CL" dial "56" min 9 max 9 } } }
+    }
+
+    row "CO" {
+      priority 200
+      when { digits.e164 starts_with "57" }
+      then { outcome { decision allow attributes { country "CO" dial "57" min 10 max 10 } } }
+    }
+
+    row "MY" {
+      priority 200
+      when { digits.e164 starts_with "60" }
+      then { outcome { decision allow attributes { country "MY" dial "60" min 9 max 10 } } }
+    }
+
+    row "AU" {
+      priority 200
+      when { digits.e164 starts_with "61" }
+      then { outcome { decision allow attributes { country "AU" dial "61" min 9 max 9 } } }
+    }
+
+    row "ID" {
+      priority 200
+      when { digits.e164 starts_with "62" }
+      then { outcome { decision allow attributes { country "ID" dial "62" min 9 max 12 } } }
+    }
+
+    row "PH" {
+      priority 200
+      when { digits.e164 starts_with "63" }
+      then { outcome { decision allow attributes { country "PH" dial "63" min 10 max 10 } } }
+    }
+
+    row "NZ" {
+      priority 200
+      when { digits.e164 starts_with "64" }
+      then { outcome { decision allow attributes { country "NZ" dial "64" min 8 max 10 } } }
+    }
+
+    row "SG" {
+      priority 200
+      when { digits.e164 starts_with "65" }
+      then { outcome { decision allow attributes { country "SG" dial "65" min 8 max 8 } } }
+    }
+
+    row "TH" {
+      priority 200
+      when { digits.e164 starts_with "66" }
+      then { outcome { decision allow attributes { country "TH" dial "66" min 9 max 9 } } }
+    }
+
+    row "JP" {
+      priority 200
+      when { digits.e164 starts_with "81" }
+      then { outcome { decision allow attributes { country "JP" dial "81" min 9 max 10 } } }
+    }
+
+    row "KR" {
+      priority 200
+      when { digits.e164 starts_with "82" }
+      then { outcome { decision allow attributes { country "KR" dial "82" min 9 max 10 } } }
+    }
+
+    row "VN" {
+      priority 200
+      when { digits.e164 starts_with "84" }
+      then { outcome { decision allow attributes { country "VN" dial "84" min 9 max 10 } } }
+    }
+
+    row "CN" {
+      priority 200
+      when { digits.e164 starts_with "86" }
+      then { outcome { decision allow attributes { country "CN" dial "86" min 11 max 11 } } }
+    }
+
+    row "TR" {
+      priority 200
+      when { digits.e164 starts_with "90" }
+      then { outcome { decision allow attributes { country "TR" dial "90" min 10 max 10 } } }
+    }
+
+    row "IN" {
+      priority 200
+      when { digits.e164 starts_with "91" }
+      then { outcome { decision allow attributes { country "IN" dial "91" min 10 max 10 } } }
+    }
+
+    row "PK" {
+      priority 200
+      when { digits.e164 starts_with "92" }
+      then { outcome { decision allow attributes { country "PK" dial "92" min 10 max 10 } } }
+    }
+
+    row "AF" {
+      priority 200
+      when { digits.e164 starts_with "93" }
+      then { outcome { decision allow attributes { country "AF" dial "93" min 9 max 9 } } }
+    }
+
+    row "LK" {
+      priority 200
+      when { digits.e164 starts_with "94" }
+      then { outcome { decision allow attributes { country "LK" dial "94" min 9 max 9 } } }
+    }
+
+    row "MM" {
+      priority 200
+      when { digits.e164 starts_with "95" }
+      then { outcome { decision allow attributes { country "MM" dial "95" min 8 max 10 } } }
+    }
+
+    row "IR" {
+      priority 200
+      when { digits.e164 starts_with "98" }
+      then { outcome { decision allow attributes { country "IR" dial "98" min 10 max 10 } } }
+    }
+
+    row "GH" {
+      priority 300
+      when { digits.e164 starts_with "233" }
+      then { outcome { decision allow attributes { country "GH" dial "233" min 9 max 9 } } }
+    }
+
+    row "NG" {
+      priority 300
+      when { digits.e164 starts_with "234" }
+      then { outcome { decision allow attributes { country "NG" dial "234" min 10 max 10 } } }
+    }
+
+    row "ET" {
+      priority 300
+      when { digits.e164 starts_with "251" }
+      then { outcome { decision allow attributes { country "ET" dial "251" min 9 max 9 } } }
+    }
+
+    row "KE" {
+      priority 300
+      when { digits.e164 starts_with "254" }
+      then { outcome { decision allow attributes { country "KE" dial "254" min 9 max 9 } } }
+    }
+
+    row "TZ" {
+      priority 300
+      when { digits.e164 starts_with "255" }
+      then { outcome { decision allow attributes { country "TZ" dial "255" min 9 max 9 } } }
+    }
+
+    row "UG" {
+      priority 300
+      when { digits.e164 starts_with "256" }
+      then { outcome { decision allow attributes { country "UG" dial "256" min 9 max 9 } } }
+    }
+
+    row "PT" {
+      priority 300
+      when { digits.e164 starts_with "351" }
+      then { outcome { decision allow attributes { country "PT" dial "351" min 9 max 9 } } }
+    }
+
+    row "IE" {
+      priority 300
+      when { digits.e164 starts_with "353" }
+      then { outcome { decision allow attributes { country "IE" dial "353" min 9 max 9 } } }
+    }
+
+    row "FI" {
+      priority 300
+      when { digits.e164 starts_with "358" }
+      then { outcome { decision allow attributes { country "FI" dial "358" min 5 max 12 } } }
+    }
+
+    row "UA" {
+      priority 300
+      when { digits.e164 starts_with "380" }
+      then { outcome { decision allow attributes { country "UA" dial "380" min 9 max 9 } } }
+    }
+
+    row "CZ" {
+      priority 300
+      when { digits.e164 starts_with "420" }
+      then { outcome { decision allow attributes { country "CZ" dial "420" min 9 max 9 } } }
+    }
+
+    row "HK" {
+      priority 300
+      when { digits.e164 starts_with "852" }
+      then { outcome { decision allow attributes { country "HK" dial "852" min 8 max 8 } } }
+    }
+
+    row "BD" {
+      priority 300
+      when { digits.e164 starts_with "880" }
+      then { outcome { decision allow attributes { country "BD" dial "880" min 10 max 10 } } }
+    }
+
+    row "TW" {
+      priority 300
+      when { digits.e164 starts_with "886" }
+      then { outcome { decision allow attributes { country "TW" dial "886" min 9 max 9 } } }
+    }
+
+    row "SA" {
+      priority 300
+      when { digits.e164 starts_with "966" }
+      then { outcome { decision allow attributes { country "SA" dial "966" min 9 max 9 } } }
+    }
+
+    row "AE" {
+      priority 300
+      when { digits.e164 starts_with "971" }
+      then { outcome { decision allow attributes { country "AE" dial "971" min 9 max 9 } } }
+    }
+
+    row "IL" {
+      priority 300
+      when { digits.e164 starts_with "972" }
+      then { outcome { decision allow attributes { country "IL" dial "972" min 9 max 9 } } }
+    }
+
+    row "QA" {
+      priority 300
+      when { digits.e164 starts_with "974" }
+      then { outcome { decision allow attributes { country "QA" dial "974" min 8 max 8 } } }
+    }
+
+    row "BT" {
+      priority 300
+      when { digits.e164 starts_with "975" }
+      then { outcome { decision allow attributes { country "BT" dial "975" min 8 max 8 } } }
+    }
+
+    row "NP" {
+      priority 300
+      when { digits.e164 starts_with "977" }
+      then { outcome { decision allow attributes { country "NP" dial "977" min 10 max 10 } } }
+    }
+  }
+}

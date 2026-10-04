@@ -77,6 +77,8 @@ func registerRulesEngineResource(r *Registry) {
 			{Name: "request_timeout", Type: "duration", Default: "5s", Summary: "Maximum time for a single rule evaluation"},
 			{Name: "max_request_bytes", Type: "int", Default: "1048576", Summary: "Maximum request body size"},
 			{Name: "definition", Type: "block", Summary: `Rule definitions published when the engine opens: definition "name" { version, source or path, tenant_id, run_tests }. An invalid one fails startup`},
+			{Name: "overrides", Type: "resource", Summary: "A database.sql resource that stores rule definitions edited at runtime (rules.save). They are published again, over the files, whenever the engine opens"},
+			{Name: "overrides_table", Type: "string", Default: "rule_overrides"},
 			{Name: "dir", Type: "string", Summary: `Directory to scan (recursively) for one definition per ".bcl" file found, named by its path relative to this directory (slashes become dots, extension stripped) — "orders/refund.bcl" becomes definition "orders.refund". A file that needs to split further can still "import \"./other.bcl\"" (github.com/oarkflow/bcl's own directive) for sibling files within its own definition; "dir" is for independent definitions, "import" is for composing one definition across files. Combines with explicit "definition" blocks; a name collision between the two fails startup.`},
 		},
 	})
@@ -85,12 +87,19 @@ func registerRulesEngineResource(r *Registry) {
 // rulesEngineWrapper wraps oarkflow/rules.Service as a REF platform resource.
 type rulesEngineWrapper struct {
 	service *rules.Service
+	cfg     rules.Config
+	// origins maps a definition to the file it was published from, which is
+	// what rules.reset goes back to.
+	origins map[string]string
+	// overrides, when set, persists definitions edited at runtime.
+	overrides *Database
+	table     string
 }
 
 func openRulesEngine(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("rules.engine", spec.Config,
 		"environment", "default_tenant", "strict_validation", "strict_evaluation",
-		"request_timeout", "max_request_bytes", "definition", "dir"); err != nil {
+		"request_timeout", "max_request_bytes", "definition", "dir", "overrides", "overrides_table"); err != nil {
 		return nil, nil, err
 	}
 
@@ -119,6 +128,7 @@ func openRulesEngine(ctx context.Context, spec ResourceSpec) (Resource, io.Close
 	// published here, on every start, rather than by an intent someone has to
 	// remember to call.
 	published := map[string]bool{}
+	origins := map[string]string{}
 	for _, block := range configBlocks(spec.Config, "definition") {
 		name, body := Stringify(block["id"]), block
 		if inner, ok := block["body"].(map[string]any); ok {
@@ -145,6 +155,9 @@ func openRulesEngine(ctx context.Context, spec ResourceSpec) (Resource, io.Close
 			return nil, nil, fmt.Errorf("resource %q: definition %q: %w%s", spec.Name, name, err, rulesDiagnostics(ctx, svc, req))
 		}
 		published[name] = true
+		if req.Path != "" {
+			origins[name] = req.Path
+		}
 	}
 
 	// "dir" auto-discovers definitions rather than naming each one — the
@@ -205,10 +218,21 @@ func openRulesEngine(ctx context.Context, spec ResourceSpec) (Resource, io.Close
 				return nil, nil, fmt.Errorf("resource %q: dir %q: definition %q: %w%s", spec.Name, dir, name, err, rulesDiagnostics(ctx, svc, req))
 			}
 			published[name] = true
+			origins[name] = path
 		}
 	}
 
-	wrapper := &rulesEngineWrapper{service: svc}
+	wrapper := &rulesEngineWrapper{service: svc, cfg: cfg, origins: origins, table: configString(spec.Config, "overrides_table", "rule_overrides")}
+	if dep, ok := spec.Dependency("overrides"); ok {
+		db, isDB := dep.(*Database)
+		if !isDB {
+			return nil, nil, fmt.Errorf("resource %q: overrides must name a database.sql resource", spec.Name)
+		}
+		wrapper.overrides = db
+		if err := wrapper.loadOverrides(ctx); err != nil {
+			return nil, nil, fmt.Errorf("resource %q: overrides: %w", spec.Name, err)
+		}
+	}
 	return wrapper, noopCloser{}, nil
 }
 

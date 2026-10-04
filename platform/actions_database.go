@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -79,7 +80,7 @@ func registerDatabaseActions(r *Registry) {
 		Provides:     "Per-statement results",
 		Kind:         "effect",
 		Config: []ConfigField{
-			{Name: "statements", Type: "[]object", Required: true, Summary: `statements [ { name … sql … args […] } … ]`},
+			{Name: "statements", Type: "[]object", Required: true, Summary: `statements [ { name … sql … args […] when "<expression>" require_affected true require_rows true failure { code "…" status 409 message "…" } } … ]. when skips a statement; require_affected (exec) and require_rows (query) make it a compare-and-set that rolls the transaction back and fails with the given code, status and message.`},
 			{Name: "isolation", Type: "string", Summary: "read_committed, repeatable_read or serializable"},
 		},
 	})
@@ -273,6 +274,13 @@ type txStatement struct {
 	statement string
 	args      []string
 	query     bool
+	when      *Expression
+
+	requireAffected bool
+	requireRows     bool
+	failCode        string
+	failStatus      int
+	failMessage     string
 }
 
 var databaseTransactionAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) (Action, error) {
@@ -293,16 +301,48 @@ var databaseTransactionAction = ActionFactoryFunc(func(build BuildContext, spec 
 		if err := db.CheckStatement(sqlText); err != nil {
 			return nil, fmt.Errorf("node %q: statement[%d]: %w", spec.Name, i, err)
 		}
-		statements = append(statements, txStatement{
+		st := txStatement{
 			name:      configString(block, "name", fmt.Sprintf("statement_%d", i)),
 			statement: sqlText,
 			args:      configStrings(block, "args"),
-			query:     configBool(block, "query", strings.HasPrefix(strings.ToUpper(strings.TrimSpace(sqlText)), "SELECT")),
-		})
+			query: configBool(block, "query", strings.HasPrefix(strings.ToUpper(strings.TrimSpace(sqlText)), "SELECT") ||
+				strings.Contains(strings.ToUpper(sqlText), " RETURNING ")),
+			requireAffected: configBool(block, "require_affected", false),
+			requireRows:     configBool(block, "require_rows", false),
+		}
+		if w := configString(block, "when", ""); w != "" {
+			if st.when, err = CompileExpr(w); err != nil {
+				return nil, fmt.Errorf("node %q: statement[%d] when: %w", spec.Name, i, err)
+			}
+		}
+		if f := configMap(block, "failure"); len(f) > 0 {
+			st.failCode = configString(f, "code", "CONFLICT")
+			status, ferr := configInt(f, "status", 409)
+			if ferr != nil {
+				return nil, fmt.Errorf("node %q: statement[%d] failure.status: %w", spec.Name, i, ferr)
+			}
+			st.failStatus = status
+			st.failMessage = configString(f, "message", "")
+		}
+		statements = append(statements, st)
 	}
 	isolation, err := parseIsolation(configString(spec.Config, "isolation", ""))
 	if err != nil {
 		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+	}
+	// A statement's result is published into the scope later statements bind
+	// their args from, under the statement's name. A name that is also one of the
+	// node's facts would silently replace that fact (and bind NULL for it), so
+	// the clash is refused at load time.
+	seen := map[string]bool{}
+	for _, st := range statements {
+		if slices.Contains(spec.Requires, st.name) {
+			return nil, fmt.Errorf("node %q: statement %q has the name of a required fact; rename the statement", spec.Name, st.name)
+		}
+		if seen[st.name] {
+			return nil, fmt.Errorf("node %q: two statements are named %q", spec.Name, st.name)
+		}
+		seen[st.name] = true
 	}
 
 	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
@@ -329,11 +369,29 @@ var databaseTransactionAction = ActionFactoryFunc(func(build BuildContext, spec 
 		}
 
 		for _, statement := range statements {
+			if statement.when != nil {
+				env := actionEnv(ctx)
+				for name, value := range results {
+					env[name] = value
+				}
+				run, err := statement.when.Bool(env)
+				if err != nil {
+					return ActionResult{}, err
+				}
+				if !run {
+					results[statement.name] = nil
+					scope[statement.name] = nil
+					continue
+				}
+			}
 			args := factArgs(scope, statement.args)
 			if statement.query {
 				rows, err := txQueryRows(ctx.Context, tx, statement.statement, args)
 				if err != nil {
 					return ActionResult{}, databaseFailure(err)
+				}
+				if statement.requireRows && len(rows) == 0 {
+					return ActionResult{}, statement.refusal()
 				}
 				results[statement.name] = rows
 				scope[statement.name] = rows
@@ -344,6 +402,9 @@ var databaseTransactionAction = ActionFactoryFunc(func(build BuildContext, spec 
 				return ActionResult{}, databaseFailure(err)
 			}
 			affected, _ := outcome.RowsAffected()
+			if statement.requireAffected && affected == 0 {
+				return ActionResult{}, statement.refusal()
+			}
 			results[statement.name] = affected
 			scope[statement.name] = affected
 		}
@@ -901,4 +962,12 @@ func notFoundOrMessage(message string) error {
 		return notFound("record", "")
 	}
 	return intent.Failure{Code: "NOT_FOUND", Category: intent.CategoryNotFound, Message: message}
+}
+
+// refusal is the failure of a compare-and-set statement that changed nothing.
+func (s txStatement) refusal() error {
+	if s.failCode == "" {
+		return notFoundOrMessage(s.failMessage)
+	}
+	return statusFailure(s.failCode, s.failStatus, s.failMessage, nil)
 }

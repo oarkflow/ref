@@ -1,0 +1,146 @@
+# ---------------------------------------------------------------------------
+# Queue, rules, authentication and the providers' connections.
+# ---------------------------------------------------------------------------
+
+# github.com/oarkflow/broker, embedded, with a write-ahead log. Each provider
+# gets its own queue (sms.dispatch.<provider>) with consumers sized by the
+# worker block in 06_workers.bcl, so a slow or failing provider cannot starve
+# the others.
+resource "bus" {
+  kind "queue.broker"
+  description "Durable queues: dispatch per provider, delivery receipts"
+  config {
+    dir env("SMS_BROKER_DIR", ".data/broker")
+    node_id env("SMS_NODE_ID", "node-1")
+    concurrency 4
+    visibility_timeout 60s
+    # A safety net for crashes and infrastructure errors. Retrying a failed
+    # send, and failing over, is decided by rules/delivery.bcl, not here.
+    retry { max_attempts 10 initial 500ms max 30s factor 2 jitter true }
+    # A receipt can outrun the commit of the submission it describes, so it is
+    # retried quickly at first.
+    consumer "sms.dlr" { concurrency 2 retry { max_attempts 14 initial 200ms max 30s factor 2 } }
+  }
+}
+
+# The rules: every file under rules/ is a definition (numbering, validate,
+# routing, pricing, delivery, receipts, templates).
+resource "policy" {
+  kind "rules.engine"
+  description "Decision tables and rankings"
+  config {
+    dir env("SMS_RULES_DIR", "rules")
+    environment "production"
+    strict_validation true
+    # Rules an operator edits at runtime (/ui/admin/rules) are stored here and
+    # published again over the files whenever the application starts.
+    overrides "db"
+    overrides_table "rule_overrides"
+  }
+}
+
+# Account API keys live in the users table as SHA-256 digests.
+resource "sender_auth" {
+  kind "auth.api_key_sql"
+  description "Account API keys (Authorization: Bearer <key>)"
+  config {
+    database "db"
+    query "SELECT id, tenant, name FROM users WHERE api_key_hash = $1 AND api_key_hash <> '' AND status <> 'deleted'"
+    roles ["sender"]
+  }
+}
+
+resource "admin_auth" {
+  kind "auth.api_key"
+  description "Operator key (X-API-Key or Authorization: Bearer)"
+  config {
+    key env("SMS_ADMIN_KEY", "dev-admin-key-change-me-0123")
+    principal_id "operator"
+    roles ["admin"]
+  }
+}
+
+# ---- Sandbox ------------------------------------------------------------------
+# Stand-in carrier (SMPP) and vendor APIs, started with the application, so it
+# runs end to end with nothing external. Turn it off (enabled false) when the
+# providers below point at real services.
+resource "sandbox" {
+  kind "sandbox.upstreams"
+  description "Stand-in SMPP carrier and vendor APIs for local runs"
+  config {
+    enabled env("SMS_SANDBOX", "true")
+    smpp_addr "127.0.0.1:2775"
+    system_id "smsgw"
+    password "sandbox"
+    vendor_addr "127.0.0.1:9100"
+    token "sandbox-token"
+    callback_url env("SMS_PUBLIC_URL", "http://127.0.0.1:8080") + "/v1/webhooks/dlr/{provider}"
+    callback_secret "webhook-secret-change-me"
+  }
+}
+
+# ---- Providers' connections ---------------------------------------------------
+# What a provider is to the routing rules (countries, quality, cost, retry
+# policy) is its row in the providers table; this is only how to reach it.
+
+resource "np_telecom" {
+  kind "service.smpp"
+  description "Nepal carrier over SMPP"
+  config {
+    addr env("NP_SMPP_ADDR", "127.0.0.1:2775")
+    system_id env("NP_SMPP_SYSTEM_ID", "smsgw")
+    password env("NP_SMPP_PASSWORD", "sandbox")
+    window_size 16
+    enquire_interval 30s
+    queue "bus"
+    receipt_job "sms.dlr"
+  }
+}
+
+resource "premium_np" {
+  kind "service.http"
+  description "Premium Nepal route (vendor HTTP API)"
+  config {
+    base_url env("PREMIUM_URL", "http://127.0.0.1:9100/premium_np")
+    allowed_hosts [env("VENDOR_HOST", "127.0.0.1")]
+    allow_private_networks env("VENDOR_ALLOW_PRIVATE", "true")
+    timeout 8s
+    headers { Authorization env("PREMIUM_AUTH", "Bearer sandbox-token") }
+  }
+}
+
+resource "in_vendor" {
+  kind "service.http"
+  description "India route (vendor HTTP API)"
+  config {
+    base_url env("IN_VENDOR_URL", "http://127.0.0.1:9100/in_vendor")
+    allowed_hosts [env("VENDOR_HOST", "127.0.0.1")]
+    allow_private_networks env("VENDOR_ALLOW_PRIVATE", "true")
+    timeout 8s
+    headers { Authorization env("IN_VENDOR_AUTH", "Bearer sandbox-token") }
+  }
+}
+
+resource "global_fallback" {
+  kind "service.http"
+  description "Catch-all route (vendor HTTP API)"
+  config {
+    base_url env("GLOBAL_URL", "http://127.0.0.1:9100/global_fallback")
+    allowed_hosts [env("VENDOR_HOST", "127.0.0.1")]
+    allow_private_networks env("VENDOR_ALLOW_PRIVATE", "true")
+    timeout 8s
+    headers { Authorization env("GLOBAL_AUTH", "Bearer sandbox-token") }
+  }
+}
+
+# Vendors call back with delivery receipts under this secret (X-Webhook-Secret).
+resource "webhook_auth" {
+  kind "auth.api_key"
+  description "Shared secret for vendor delivery-receipt callbacks"
+  config {
+    key env("SMS_WEBHOOK_SECRET", "webhook-secret-change-me")
+    principal_id "provider"
+    roles ["provider"]
+    header "X-Webhook-Secret"
+  }
+}

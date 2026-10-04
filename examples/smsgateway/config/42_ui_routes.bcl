@@ -1,0 +1,118 @@
+# ---------------------------------------------------------------------------
+# The console's API: the same intents as /v1, behind the session cookie
+# instead of an API key, plus the campaign and approval screens.
+#   /ui/...        accounts (role sender; the operator may use them too)
+#   /ui/admin/...  the operator (role admin)
+# ---------------------------------------------------------------------------
+
+route_group "ui_account" {
+  session "sessions"
+  auth "session_auth"
+  authz { roles ["sender", "admin"] authorizer "authorization" }
+  cache_control "no-store"
+
+  route "ui.send"     { method POST path "/ui/messages"       intent "sms.submit" status 202 }
+  route "ui.explain"  { method POST path "/ui/route/explain"  intent "sms.explain" }
+  route "ui.messages" { method GET  path "/ui/messages"       intent "me.messages.list" }
+  route "ui.message"  { method GET  path "/ui/messages/:id"   intent "me.messages.get" }
+  route "ui.balance"  { method GET  path "/ui/balance"        intent "me.balance" }
+  route "ui.ledger"   { method GET  path "/ui/ledger"         intent "me.ledger" }
+  route "ui.templates"       { method GET  path "/ui/templates"          intent "ui.templates.list" }
+  route "ui.templates.preview" { method POST path "/ui/templates/preview" intent "ui.templates.preview" }
+  route "ui.notifications"      { method GET  path "/ui/notifications"       intent "me.notifications.list" }
+  route "ui.notifications_read" { method POST path "/ui/notifications/read"  intent "me.notifications.read" }
+  route "ui.audiences"     { method GET    path "/ui/audiences"      intent "audience.list" }
+  route "ui.audience_new"  { method POST   path "/ui/audiences"      intent "audience.create" status 201 }
+  route "ui.audience"      { method GET    path "/ui/audiences/:id"  intent "audience.get" }
+  route "ui.audience_del"  { method DELETE path "/ui/audiences/:id"  intent "audience.delete" }
+  route "ui.campaigns" { method GET path "/ui/campaigns"      intent "me.campaigns.list" }
+  route "ui.campaign"  { method GET path "/ui/campaigns/:id"  intent "me.campaigns.get" }
+}
+
+route_group "ui_admin" {
+  session "sessions"
+  auth "session_auth"
+  authz { roles ["admin"] authorizer "authorization" }
+  cache_control "no-store"
+
+  route "ui.admin.channels"       { method GET path "/ui/admin/channels"                       intent "admin.channels.list" }
+  route "ui.admin.provider"       { method GET path "/ui/admin/providers/:id"                  intent "admin.providers.get" }
+  route "ui.admin.provider_put"   { method PUT path "/ui/admin/providers/:id"                  intent "admin.providers.put" }
+  route "ui.admin.provider_settings" { method PUT path "/ui/admin/providers/:id/settings"       intent "admin.providers.settings_put" }
+  route "ui.admin.provider_cost"  { method PUT path "/ui/admin/providers/:id/costs/:country"   intent "admin.providers.cost_put" }
+  route "ui.admin.provider_cost_del" { method DELETE path "/ui/admin/providers/:id/costs/:country" intent "admin.providers.cost_delete" }
+  route "ui.admin.provider_accounts"     { method GET    path "/ui/admin/providers/:id/accounts"       intent "admin.provider_accounts.list" }
+  route "ui.admin.provider_account_put"  { method PUT    path "/ui/admin/providers/:id/accounts/:name" intent "admin.provider_accounts.put" }
+  route "ui.admin.provider_account_test" { method POST   path "/ui/admin/providers/:id/accounts/:name/test"  intent "admin.provider_accounts.test" }
+  route "ui.admin.provider_account_del"  { method DELETE path "/ui/admin/providers/:id/accounts/:name" intent "admin.provider_accounts.delete" }
+  route "ui.admin.route_explain"        { method POST   path "/ui/admin/route/explain"              intent "admin.route.explain" }
+  route "ui.admin.routing_rules"        { method GET    path "/ui/admin/routing-rules"              intent "admin.routing_rules.list" }
+  route "ui.admin.routing_rule_new"     { method POST   path "/ui/admin/routing-rules"              intent "admin.routing_rules.put" status 201 }
+  route "ui.admin.routing_rule_put"     { method PUT    path "/ui/admin/routing-rules/:id"          intent "admin.routing_rules.put" }
+  route "ui.admin.routing_rule_enabled" { method PUT    path "/ui/admin/routing-rules/:id/enabled"  intent "admin.routing_rules.enabled" }
+  route "ui.admin.routing_rule_del"     { method DELETE path "/ui/admin/routing-rules/:id"          intent "admin.routing_rules.delete" }
+  route "ui.admin.rules"          { method GET path "/ui/admin/rules"                          intent "admin.rules.list" }
+  route "ui.admin.rule"           { method GET path "/ui/admin/rules/:name"                    intent "admin.rules.get" }
+  route "ui.admin.rule_put"       { method PUT path "/ui/admin/rules/:name"                    intent "admin.rules.put" }
+  route "ui.admin.rule_reset"     { method POST path "/ui/admin/rules/:name/reset"             intent "admin.rules.reset" }
+  route "ui.admin.rule_check"     { method POST path "/ui/admin/rules/:name/check"             intent "admin.rules.check" }
+  route "ui.admin.rule_try"       { method POST path "/ui/admin/rules/:name/try"               intent "admin.rules.try" }
+  route "ui.admin.users"          { method GET path "/ui/admin/users"                          intent "admin.users.list" }
+  route "ui.admin.user"           { method GET path "/ui/admin/users/:id"                      intent "admin.users.get" }
+  route "ui.admin.user_put"       { method PUT path "/ui/admin/users/:id"                      intent "admin.users.put" }
+  route "ui.admin.user_topup"     { method POST path "/ui/admin/users/:id/topup"               intent "admin.users.topup" }
+  route "ui.admin.user_password"  { method PUT path "/ui/admin/users/:id/password"             intent "admin.users.password" }
+  route "ui.admin.user_key"       { method POST path "/ui/admin/users/:id/key"                 intent "admin.users.key" }
+  route "ui.admin.providers"       { method GET path "/ui/admin/providers"            intent "admin.providers.list" }
+  route "ui.admin.provider_state"  { method PUT path "/ui/admin/providers/:id/state"  intent "admin.providers.state" }
+  route "ui.admin.messages"        { method GET path "/ui/admin/messages"             intent "admin.messages.list" }
+  route "ui.admin.stats"           { method GET path "/ui/admin/stats"                intent "admin.stats" }
+  route "ui.admin.approvals"       { method GET path "/ui/admin/approvals"            intent "approvals.list" }
+  route "ui.admin.approvals_decide" { method POST path "/ui/admin/approvals/:id"      intent "approvals.decide" }
+}
+
+intent "me.campaigns.list" {
+  response "rows"
+  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [uid] provides [rows]
+    config { statement "SELECT id, name, state, source, total, valid, skipped, sent, failed, created_ms FROM campaigns WHERE user_id = $1 ORDER BY created_ms DESC LIMIT 100" args [uid] }
+  }
+}
+
+intent "me.campaigns.get" {
+  response "result"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [id, uid] provides [rows]
+    config { statement "SELECT id, name, state, source, template, text, phone_field, region, total, valid, skipped, sent, failed, note, decided_by, created_ms FROM campaigns WHERE id = $1 AND user_id = $2" args [id, uid] require_rows true not_found_message "no such campaign" }
+  }
+  node "row" { uses "data.first" requires [rows] provides [row] config { source_fact "rows" } }
+  node "recipients" {
+    uses "database.query" resource "db" kind read requires [row] provides [recipients]
+    config { statement "SELECT n, to_number, e164, state, reason, message_id, fields FROM campaign_recipients WHERE campaign_id = $1 ORDER BY n LIMIT 2000" args [row.id] }
+  }
+  node "result" { uses "data.transform" kind pure requires [row, recipients] provides [result] config { data { extract { campaign "row" recipients "recipients" } pick ["campaign", "recipients"] } } }
+}
+
+# The operator's approval queue: open human tasks of the approval process.
+# The route is admin-only, so every open task is the operator's to see.
+intent "approvals.list" {
+  response "tasks"
+  node "tasks" {
+    uses "task.list" kind read provides [tasks]
+    config { process "campaign.approval" scope "all" status "open" limit 50 }
+  }
+}
+
+intent "approvals.decide" {
+  description "Approve or reject a campaign; the run continues on the queue"
+  response "approval"
+  input_schema "campaign_decision"
+  node "id" { uses "request.param" kind pure provides [approval_id] config { name "id" } }
+  node "approval" {
+    uses "task.complete" kind effect requires [approval_id, input] provides [approval]
+    config { process "campaign.approval" task_id_fact "approval_id" action_fact "input.action" payload_fact "input" }
+  }
+}

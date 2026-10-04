@@ -1,0 +1,126 @@
+# ---------------------------------------------------------------------------
+# Settling an attempt: what sms.deliver does with the decision in
+# rules/delivery.bcl. Each outcome is ONE transaction that compares the
+# message's dispatch sequence and state first (so a duplicate or late job
+# settles nothing) and only then moves the funds and writes the history. Every
+# statement after the first runs only if the first changed the message.
+#
+# The funds are held when the message is accepted (22_submit.bcl):
+#   accept  the provider took it: capture the hold, take the money
+#   fail    nobody will send it: release the hold
+# so a message is charged at most once, and only if a provider took it.
+# ---------------------------------------------------------------------------
+
+intent "settle.accept" {
+  description "A provider accepted the message: capture the hold"
+  response "settled"
+  node "applied" {
+    uses "database.transaction" resource "db" kind effect requires [input] provides [applied]
+    config {
+      statements [
+        { name "message" sql "UPDATE messages SET state = CASE WHEN want_dlr = 1 THEN 'submitted' ELSE 'delivered' END, provider_msg_id = $1, submitted_ms = $2, updated_ms = $2, delivered_ms = CASE WHEN want_dlr = 1 THEN 0 ELSE $2 END, body = CASE WHEN $3 = 1 THEN '' ELSE body END, cost = price, err_code = '', err_text = '' WHERE id = $4 AND dispatch_seq = $5 AND state = 'dispatching'"
+          args [input.provider_message_id, input.now_ms, input.redact, input.id, input.seq] },
+        { name "hold" when "message > 0" sql "UPDATE holds SET state = 'captured', updated_ms = $1 WHERE message_id = $2 AND state = 'hold'" args [input.now_ms, input.id] },
+        { name "balance" when "hold != nil and hold > 0" sql "UPDATE balances SET balance = balance - (SELECT amount FROM holds WHERE message_id = $1), held = held - (SELECT amount FROM holds WHERE message_id = $1) WHERE user_id = $2" args [input.id, input.user_id] },
+        { name "ledger" when "hold != nil and hold > 0" sql "INSERT INTO ledger (message_id, kind, user_id, amount, at_ms) SELECT message_id, 'charge', user_id, amount, $1 FROM holds WHERE message_id = $2 ON CONFLICT (message_id, kind) DO NOTHING" args [input.now_ms, input.id] },
+        { name "account" when "message > 0 and input.account != ''" sql "UPDATE provider_accounts SET failures = 0, cooldown_until_ms = 0 WHERE provider = $1 AND name = $2" args [input.provider, input.account] },
+        { name "attempt" when "message > 0" sql "INSERT INTO attempts (message_id, n, provider, outcome, code, err_text, latency_ms, at_ms) VALUES ($1, $2, $3, 'accepted', '', '', $4, $5) ON CONFLICT (message_id, n) DO NOTHING" args [input.id, input.total_attempts, input.provider, input.latency_ms, input.now_ms] },
+        { name "health" when "message > 0" sql "INSERT INTO provider_health (provider, route, successes, failures, consecutive_failures, open_until_ms, latency_ms, updated_ms) VALUES ($1, $2, 1, 0, 0, 0, $3, $4) ON CONFLICT (provider, route) DO UPDATE SET successes = successes + 1, consecutive_failures = 0, open_until_ms = 0, latency_ms = excluded.latency_ms, updated_ms = excluded.updated_ms" args [input.provider, input.route_key, input.latency_ms, input.now_ms] }
+      ]
+    }
+  }
+  node "settled" { uses "data.transform" kind pure requires [input, applied] provides [settled] config { data { extract { action "'accept'" applied "applied.message > 0" } } } }
+}
+
+intent "settle.retry" {
+  description "Try the same provider again, later"
+  response "settled"
+  node "applied" {
+    uses "database.transaction" resource "db" kind effect requires [input] provides [applied]
+    config {
+      statements [
+        { name "message" sql "UPDATE messages SET state = 'queued', dispatch_seq = dispatch_seq + 1, attempt = $1, next_run_ms = $2, claim_until_ms = 0, err_code = $3, err_text = $4, updated_ms = $5 WHERE id = $6 AND dispatch_seq = $7 AND state = 'dispatching'"
+          args [input.attempt_after, input.retry_at_ms, input.code, input.error_text, input.now_ms, input.id, input.seq] },
+        { name "account" when "message > 0 and input.account != ''" sql "UPDATE provider_accounts SET failures = failures + 1, cooldown_until_ms = CASE WHEN $1 > 0 THEN $1 ELSE cooldown_until_ms END WHERE provider = $2 AND name = $3" args [input.account_cooldown_until_ms, input.provider, input.account] },
+        { name "attempt" when "message > 0" sql "INSERT INTO attempts (message_id, n, provider, outcome, code, err_text, latency_ms, at_ms) VALUES ($1, $2, $3, 'retry', $4, $5, $6, $7) ON CONFLICT (message_id, n) DO NOTHING" args [input.id, input.total_attempts, input.provider, input.class, input.error_text, input.latency_ms, input.now_ms] },
+        { name "health" when "message > 0 and input.penalize == true" sql "INSERT INTO provider_health (provider, route, successes, failures, consecutive_failures, open_until_ms, updated_ms) VALUES ($1, $2, 0, 1, 1, CASE WHEN $3 <= 1 THEN $4 ELSE 0 END, $5) ON CONFLICT (provider, route) DO UPDATE SET failures = failures + 1, consecutive_failures = consecutive_failures + 1, open_until_ms = CASE WHEN consecutive_failures + 1 >= $3 THEN $4 ELSE open_until_ms END, updated_ms = excluded.updated_ms"
+          args [input.provider, input.route_key, input.breaker_failures, input.breaker_until_ms, input.now_ms] }
+      ]
+    }
+  }
+  node "next" {
+    uses "data.transform" kind pure requires [input] provides [next]
+    config { data { extract { message_id "input.id" provider "input.provider" channel "input.channel" seq "input.seq + 1" delay_s "input.delay_s" } } }
+  }
+  node "queued" {
+    uses "flow.branch" kind effect requires [next, applied] provides [queued]
+    config { input_fact "next" required false cases [ { name "applied" condition "applied.message > 0" intent "sms.enqueue_next" } ] }
+  }
+  node "settled" { uses "data.transform" kind pure requires [input, applied] provides [settled] config { data { extract { action "'retry'" applied "applied.message > 0" } } } }
+}
+
+intent "settle.failover" {
+  description "Give up on this provider and move to the next in the route"
+  response "settled"
+  node "applied" {
+    uses "database.transaction" resource "db" kind effect requires [input] provides [applied]
+    config {
+      statements [
+        { name "message" sql "UPDATE messages SET state = 'queued', dispatch_seq = dispatch_seq + 1, provider = $1, plan_index = plan_index + 1, attempt = 0, next_run_ms = $2, claim_until_ms = 0, err_code = $3, err_text = $4, updated_ms = $2 WHERE id = $5 AND dispatch_seq = $6 AND state = 'dispatching'"
+          args [input.next_provider, input.now_ms, input.code, input.error_text, input.id, input.seq] },
+        { name "account" when "message > 0 and input.account != ''" sql "UPDATE provider_accounts SET failures = failures + 1, cooldown_until_ms = CASE WHEN $1 > 0 THEN $1 ELSE cooldown_until_ms END WHERE provider = $2 AND name = $3" args [input.account_cooldown_until_ms, input.provider, input.account] },
+        { name "attempt" when "message > 0" sql "INSERT INTO attempts (message_id, n, provider, outcome, code, err_text, latency_ms, at_ms) VALUES ($1, $2, $3, 'failover', $4, $5, $6, $7) ON CONFLICT (message_id, n) DO NOTHING" args [input.id, input.total_attempts, input.provider, input.class, input.error_text, input.latency_ms, input.now_ms] },
+        { name "health" when "message > 0 and input.penalize == true" sql "INSERT INTO provider_health (provider, route, successes, failures, consecutive_failures, open_until_ms, updated_ms) VALUES ($1, $2, 0, 1, 1, CASE WHEN $3 <= 1 THEN $4 ELSE 0 END, $5) ON CONFLICT (provider, route) DO UPDATE SET failures = failures + 1, consecutive_failures = consecutive_failures + 1, open_until_ms = CASE WHEN consecutive_failures + 1 >= $3 THEN $4 ELSE open_until_ms END, updated_ms = excluded.updated_ms"
+          args [input.provider, input.route_key, input.breaker_failures, input.breaker_until_ms, input.now_ms] }
+      ]
+    }
+  }
+  node "next" {
+    uses "data.transform" kind pure requires [input] provides [next]
+    config { data { extract { message_id "input.id" provider "input.next_provider" channel "input.next_channel" seq "input.seq + 1" delay_s "0" } } }
+  }
+  node "queued" {
+    uses "flow.branch" kind effect requires [next, applied] provides [queued]
+    config { input_fact "next" required false cases [ { name "applied" condition "applied.message > 0" intent "sms.enqueue_next" } ] }
+  }
+  node "settled" { uses "data.transform" kind pure requires [input, applied] provides [settled] config { data { extract { action "'failover'" applied "applied.message > 0" } } } }
+}
+
+intent "settle.fail" {
+  description "The message cannot be delivered: fail it and release the hold"
+  response "settled"
+  node "applied" {
+    uses "database.transaction" resource "db" kind effect requires [input] provides [applied]
+    config {
+      statements [
+        { name "message" sql "UPDATE messages SET state = 'failed', err_code = $1, err_text = $2, updated_ms = $3, claim_until_ms = 0, body = '' WHERE id = $4 AND dispatch_seq = $5 AND state = 'dispatching'"
+          args [input.code, input.error_text, input.now_ms, input.id, input.seq] },
+        { name "hold" when "message > 0" sql "UPDATE holds SET state = 'released', updated_ms = $1 WHERE message_id = $2 AND state = 'hold'" args [input.now_ms, input.id] },
+        { name "balance" when "hold != nil and hold > 0" sql "UPDATE balances SET held = held - (SELECT amount FROM holds WHERE message_id = $1) WHERE user_id = $2" args [input.id, input.user_id] },
+        { name "ledger" when "hold != nil and hold > 0" sql "INSERT INTO ledger (message_id, kind, user_id, amount, at_ms) SELECT message_id, 'release', user_id, amount, $1 FROM holds WHERE message_id = $2 ON CONFLICT (message_id, kind) DO NOTHING" args [input.now_ms, input.id] },
+        { name "account" when "message > 0 and input.account != ''" sql "UPDATE provider_accounts SET failures = failures + 1, cooldown_until_ms = CASE WHEN $1 > 0 THEN $1 ELSE cooldown_until_ms END WHERE provider = $2 AND name = $3" args [input.account_cooldown_until_ms, input.provider, input.account] },
+        { name "attempt" when "message > 0" sql "INSERT INTO attempts (message_id, n, provider, outcome, code, err_text, latency_ms, at_ms) VALUES ($1, $2, $3, 'failed', $4, $5, $6, $7) ON CONFLICT (message_id, n) DO NOTHING" args [input.id, input.total_attempts, input.provider, input.code, input.error_text, input.latency_ms, input.now_ms] },
+        { name "health" when "message > 0 and input.penalize == true" sql "INSERT INTO provider_health (provider, route, successes, failures, consecutive_failures, open_until_ms, updated_ms) VALUES ($1, $2, 0, 1, 1, CASE WHEN $3 <= 1 THEN $4 ELSE 0 END, $5) ON CONFLICT (provider, route) DO UPDATE SET failures = failures + 1, consecutive_failures = consecutive_failures + 1, open_until_ms = CASE WHEN consecutive_failures + 1 >= $3 THEN $4 ELSE open_until_ms END, updated_ms = excluded.updated_ms"
+          args [input.provider, input.route_key, input.breaker_failures, input.breaker_until_ms, input.now_ms] }
+      ]
+    }
+  }
+  node "settled" { uses "data.transform" kind pure requires [input, applied] provides [settled] config { data { extract { action "'fail'" applied "applied.message > 0" } } } }
+}
+
+intent "settle.skip" {
+  description "Nothing to settle: the job was stale or the message already finished"
+  response "settled"
+  node "settled" { uses "constant" kind pure provides [settled] config { value { action "skip" applied false } } }
+}
+
+# The next job of a message, to its provider's queue.
+intent "sms.enqueue_next" {
+  description "Publish a message's next dispatch job"
+  response "published"
+  node "delay_s" { uses "expression" kind pure requires [input] provides [delay_s] config { expression "input.delay_s" } }
+  node "published" {
+    uses "queue.publish_delayed" resource "bus" kind effect requires [input, delay_s] provides [published]
+    config { job_type "sms.dispatch.{{ input.channel }}" payload_fact "input" delay_fact "delay_s" }
+  }
+}

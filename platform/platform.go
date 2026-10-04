@@ -75,6 +75,10 @@ type LoadOptions struct {
 	// HealthRegistry, when set, is attached to the REF engine and retrievable
 	// through Platform.Engine.Health().
 	HealthRegistry *health.Registry
+	// Templates is the host's template engine (an SPL engine, say). The
+	// template.render action renders through it, so text that is not an HTTP
+	// page (an SMS body, an email subject) can be a template file too.
+	Templates TemplateRenderer
 	// Mutate, when set, may rewrite the decoded document before anything is
 	// validated or opened. It is how a host compiles a sandboxed variant of an
 	// application (Studio's preview swaps real datastores for temp-dir ones and
@@ -124,6 +128,7 @@ type Platform struct {
 	stepAuthz map[string]compiledStepAuthz
 
 	replicaID string
+	templates TemplateRenderer
 
 	// intentIdempotent records which intents declared themselves replay-safe, so a
 	// route's idempotency guard can refuse to short-circuit one that did not.
@@ -176,6 +181,12 @@ type workerQueue interface {
 	Enqueue(string, any, ...map[string]string) (string, error)
 	Register(string, fh.QueueHandler)
 	Start() error
+}
+
+// workerTuner is implemented by queue resources that can size the consumers of
+// one job type, so a worker block's concurrency and max_attempts take effect.
+type workerTuner interface {
+	Tune(jobType string, concurrency, maxAttempts int)
 }
 
 // LoadFile parses, validates and compiles a BCL application file.
@@ -278,6 +289,7 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 		advanceRegistered: map[string]bool{},
 		bulkheads:         map[string]*bulkheadLimiter{},
 		replicaID:         opts.ReplicaID,
+		templates:         opts.Templates,
 	}
 	if p.replicaID == "" {
 		p.replicaID = "replica-" + newPrefixedID("")
@@ -306,6 +318,9 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 		return nil, err
 	}
 	if doc, err = resolveEntityCurrencies(doc, p.currencies); err != nil {
+		return nil, err
+	}
+	if doc, err = expandExtensions(doc); err != nil {
 		return nil, err
 	}
 	doc = applyFamilyDefaults(doc, opts.Registry)
@@ -481,7 +496,7 @@ func (p *Platform) Secret(name string) (string, bool) {
 var resourceDependencyKeys = []string{
 	"database", "cache", "queue", "store", "lock", "rate_limit", "limiter",
 	"authorizer", "mailer", "index", "outbox", "session", "circuit_breaker", "service",
-	"org_resource", "signer", "token_issuer", "storage",
+	"org_resource", "signer", "token_issuer", "storage", "overrides",
 }
 
 // openResources opens every resource in dependency order.
@@ -1703,6 +1718,11 @@ func (p *Platform) startWorkers(doc Document) error {
 			return fmt.Errorf("ref/platform: worker %q resource %q does not support managed consumption", spec.Name, spec.Queue)
 		}
 		worker := spec
+		// A queue that can size its consumers per job type (queue.broker) honours
+		// the worker's own concurrency and attempt limit.
+		if tuner, ok := queue.(workerTuner); ok && (spec.Concurrency > 0 || spec.MaxAttempts > 0) {
+			tuner.Tune(spec.JobType, spec.Concurrency, spec.MaxAttempts)
+		}
 		queue.Register(spec.JobType, func(ctx context.Context, job *fh.QueueJob) error {
 			return p.runWorkerJob(ctx, worker, job)
 		})

@@ -99,6 +99,11 @@ func Validate(ctx context.Context, src []byte, baseDir string, opts LoadOptions)
 			doc = resolved
 		}
 	}
+	if extended, err := expandExtensions(doc); err != nil {
+		fail(err)
+	} else {
+		doc = extended
+	}
 	doc = applyFamilyDefaults(doc, opts.Registry)
 	expanded, err := expandEntities(doc)
 	fail(err)

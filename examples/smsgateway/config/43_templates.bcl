@@ -1,0 +1,61 @@
+# ---------------------------------------------------------------------------
+# Template catalog for the console: what templates exist, what placeholders
+# each has (one input per placeholder), and a live preview. The catalog is the
+# message_templates table (seeded in 01_database.bcl); what a template implies
+# for a message (file, type, sender) is still decided by rules/templates.bcl,
+# and the preview uses that same decision, so it shows what a send would send.
+# ---------------------------------------------------------------------------
+
+shape "template_preview" {
+  additional_properties false
+  prop "template" { kind string required true max_length 60 }
+  prop "lang"     { kind string max_length 8 }
+  prop "vars"     { kind object }
+}
+
+intent "ui.templates.list" {
+  response "rows"
+  node "rows" {
+    uses "database.query" resource "db" kind read provides [rows]
+    config { statement "SELECT name, lang, label, description, fields FROM message_templates ORDER BY label, lang" }
+  }
+}
+
+intent "ui.templates.preview" {
+  description "Render a template with the given variables, without sending"
+  response "result"
+  input_schema "template_preview"
+  node "template" {
+    uses "rules.decide" resource "policy" kind read requires [input] provides [template]
+    config { definition "templates" decision "template" }
+  }
+  node "rendered" {
+    uses "template.render" kind pure requires [template, input] provides [rendered]
+    config { template_fact "template.file" vars_fact "input.vars" capture true }
+  }
+  node "text" {
+    uses "data.transform" kind pure requires [template, rendered] provides [text]
+    config { data { extract { body "template.effect == 'allow' and rendered.ok ? rendered.text : ''" error "template.effect != 'allow' ? 'there is no template with this name' : (rendered.ok ? '' : rendered.error.message)" } } }
+  }
+  node "analysis" {
+    uses "smpp.analyze" kind pure requires [text] provides [analysis]
+    config { text "{{ text.body }}" }
+  }
+  node "result" {
+    uses "data.transform" kind pure requires [template, text, analysis] provides [result]
+    config {
+      data {
+        extract {
+          text "text.body"
+          error "text.error"
+          type "template.effect == 'allow' ? template.type : ''"
+          sender "template.effect == 'allow' ? template.sender : ''"
+          segments "analysis.segments"
+          encoding "analysis.encoding"
+          characters "len(text.body)"
+        }
+        pick ["text", "error", "type", "sender", "segments", "encoding", "characters"]
+      }
+    }
+  }
+}

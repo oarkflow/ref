@@ -1,0 +1,77 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <section class="card">
+    <h1>Rules</h1>
+    <p class="muted">Decide which provider a message uses, who may send what, and what it costs. Routing rules are managed one by one; the definitions behind validation, pricing and delivery can be edited as source.</p>
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab active" data-tab="routing">Routing rules</button>
+      <button type="button" class="tab" data-tab="generated">Generated rules</button>
+      <button type="button" class="tab" data-tab="definitions">Definitions (source)</button>
+    </div>
+  </section>
+
+  <div id="tab-routing">
+    <div class="rr-layout">
+      <aside class="card rr-nav">
+        <input id="rr-search" type="search" placeholder="Search rules" aria-label="Search rules">
+        <div class="row tight"><button type="button" class="secondary small" id="rr-expand">Expand all</button><button type="button" class="secondary small" id="rr-collapse">Collapse all</button></div>
+        <div id="rr-tree" class="tree"></div>
+      </aside>
+      <section class="rr-main">
+        <div class="card">
+          <div class="split"><h2 id="rr-title">All rules</h2><button type="button" id="rr-new">Add rule</button></div>
+          <p class="muted" id="rr-help">The rule with the highest priority that matches a provider decides for it. A rule can put a provider first, make it the only one, or rule it out.</p>
+          <div id="rr-preset" class="preset" hidden></div>
+          <div id="rr-result" class="out" hidden></div>
+        </div>
+        <details class="card" id="rr-try" open>
+          <summary><strong>Try a route</strong> <span class="muted">where would a message go?</span></summary>
+          <form id="rr-tryform" class="grid2">
+            <label>Account <select name="account" required></select></label>
+            <label>Recipient <input name="to" placeholder="9856034616 or +977 9856034616" required></label>
+            <label>Template <select name="template"><option value="">(plain text)</option></select></label>
+            <label>Text <input name="text" value="hello" placeholder="used when no template is chosen"></label>
+            <label>Message type <select name="type"><option value="">(default)</option><option>transactional</option><option>otp</option><option>promotional</option></select></label>
+            <label>Sender id <input name="from" placeholder="optional"></label>
+            <div class="row wide"><button type="submit">Show the route</button></div>
+          </form>
+          <div id="rr-tryout" class="out" hidden></div>
+        </details>
+        <div id="rr-list"></div>
+      </section>
+    </div>
+  </div>
+
+  <section id="tab-generated" class="card" hidden>
+    <h2>Generated rules</h2>
+    <p class="muted">What the engine evaluates for every candidate provider, written from the routing rules above whenever one changes. Read only: change the rules, not this text.</p>
+    <div id="generated-editor" class="monaco"></div>
+    <div class="row"><button type="button" class="secondary" id="generated-refresh">Refresh</button></div>
+  </section>
+
+  <section id="tab-definitions" hidden>
+    <div class="card">
+      <h2>Definitions</h2>
+      <p class="muted">The decision tables behind numbering, validation, pricing, delivery and the built-in routing tiers. A saved change is checked first, takes effect on the next message, and is kept across restarts. Reset goes back to the file.</p>
+      <div id="defs" class="defs"></div>
+    </div>
+    <div class="card" id="def-editor" hidden>
+      <div class="split"><h2 id="def-title">Definition</h2><div class="row"><button type="button" class="secondary" id="def-check">Check</button><button type="button" id="def-save">Check and save</button><button type="button" class="secondary" id="def-reset">Reset to file</button></div></div>
+      <div id="source-editor" class="monaco tall"></div>
+      <div id="def-result" class="out"></div>
+      <h3>Try a decision</h3>
+      <p class="muted">Evaluate one decision against sample facts. Nothing is saved or sent.</p>
+      <label>Decision <select id="try-decision"></select></label>
+      <h4>Facts</h4>
+      <p class="muted">The values this definition reads, found in its conditions.</p>
+      <div id="try-fields" class="grid2"></div>
+      <div class="row"><button type="button" id="try-run">Evaluate</button></div>
+      <div id="try-result" class="out"></div>
+    </div>
+  </section>
+}
+
+@define("scripts") {
+  <script src="/static/js/rules.js?v=${asset_version}"></script>
+}

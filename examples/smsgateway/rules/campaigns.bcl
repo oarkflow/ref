@@ -1,0 +1,103 @@
+bcl { version "1.0" }
+
+# What a campaign does when some of its recipients' phone numbers are invalid.
+#
+# Every number is checked (github.com/oarkflow/phone) before a campaign is
+# stored. This table says what to do with the result:
+#
+#   deny   discard the WHOLE list: nothing is stored or sent, and the person who
+#          submitted it is told why (code and reason below, 422)
+#   allow  go on with the valid numbers: the invalid ones are skipped (never sent,
+#          never charged), counted, and listed with the reason; when `notify` is
+#          true the account is also notified (the bell in the console), when the
+#          campaign is accepted and again when it has been sent
+#
+# The first row that matches decides. Edit it on Admin > Rules > Definitions.
+#
+# Facts
+#   campaign   total, valid, skipped, invalid_percent (whole number), type,
+#              source ("rows" or "audience"), requested ("discard" or "skip" when
+#              the submitter asked, else "")
+#   user       id, tenant, plan
+#
+# Attributes of an allow: action ("send_valid"), notify (true or false)
+
+module "campaigns" {
+  version "1"
+  environment "production"
+
+  decision_schema "invalid_numbers" { effects [allow, deny] default allow strategy first_match }
+  decision_table "invalid_numbers" {
+    default allow
+    hit_policy first
+
+    # A list with no dialable number at all is never worth storing.
+    row "nothing-valid" {
+      priority 1000
+      when { campaign.valid == 0 }
+      then { outcome { decision deny reason "none of the recipients has a valid phone number" attributes { code "NO_VALID_RECIPIENTS" status 422 } } }
+    }
+    # The submitter asked for all or nothing.
+    row "asked-for-all-or-nothing" {
+      priority 900
+      when {
+        all {
+          campaign.requested == "discard"
+          campaign.skipped > 0
+        }
+      }
+      then { outcome { decision deny reason "the list has invalid phone numbers and you asked for the whole list to be discarded in that case" attributes { code "INVALID_RECIPIENTS" status 422 } } }
+    }
+    # A one-time-code list is all or nothing: a code that goes to some people and not to others is worse than none.
+    row "otp-is-all-or-nothing" {
+      priority 800
+      when {
+        all {
+          campaign.type == "otp"
+          campaign.skipped > 0
+        }
+      }
+      then { outcome { decision deny reason "a one-time-code campaign is all or nothing, and the list has invalid phone numbers" attributes { code "INVALID_RECIPIENTS" status 422 } } }
+    }
+    # An account on the strict plan never sends a partly valid list.
+    row "strict-plan" {
+      priority 700
+      when {
+        all {
+          user.plan == "strict"
+          campaign.skipped > 0
+        }
+      }
+      then { outcome { decision deny reason "your plan sends only lists in which every number is valid" attributes { code "INVALID_RECIPIENTS" status 422 } } }
+    }
+    # The submitter accepts invalid numbers, up to half the list.
+    row "asked-to-skip-invalid" {
+      priority 600
+      when {
+        all {
+          campaign.requested == "skip"
+          campaign.skipped > 0
+          campaign.invalid_percent <= 50
+        }
+      }
+      then { outcome { decision allow attributes { action "send_valid" notify true } } }
+    }
+    # A list in which more than one number in five is wrong is probably the wrong column or the wrong file.
+    row "mostly-invalid" {
+      priority 500
+      when { campaign.invalid_percent > 20 }
+      then { outcome { decision deny reason "more than 20 percent of the numbers are invalid, which usually means the wrong column or the wrong file; check the list" attributes { code "INVALID_RECIPIENTS" status 422 } } }
+    }
+    # Everything else: send to the valid numbers, count the rest and tell the account.
+    row "some-invalid-send-the-valid" {
+      priority 100
+      when { campaign.skipped > 0 }
+      then { outcome { decision allow attributes { action "send_valid" notify true } } }
+    }
+    row "all-valid" {
+      priority 10
+      when { campaign.skipped == 0 }
+      then { outcome { decision allow attributes { action "send_valid" notify false } } }
+    }
+  }
+}

@@ -1,0 +1,145 @@
+# ---------------------------------------------------------------------------
+# Operator API: accounts, keys, balances. Every route needs the operator key.
+# ---------------------------------------------------------------------------
+
+intent "admin.users.list" {
+  response "result"
+  node "rows" {
+    uses "database.query" resource "db" kind read provides [rows]
+    config { statement "SELECT u.id, u.tenant, u.name, u.status, u.default_sender, u.plan, u.rate_per_second, u.daily_limit, u.max_price, b.balance, b.held FROM users u LEFT JOIN balances b ON b.user_id = u.id ORDER BY u.id" }
+  }
+  node "result" { uses "collect" requires [rows] provides [result] }
+}
+route "admin.users.list" { method GET path "/v1/admin/users" intent "admin.users.list" auth "admin_auth" cache_control "no-store" }
+
+intent "admin.users.get" {
+  response "result"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [id] provides [rows]
+    config {
+      statement "SELECT u.id, u.tenant, u.name, u.status, u.default_sender, u.senders, u.countries, u.plan, u.objective, u.rate_per_second, u.daily_limit, u.max_price, b.balance, b.held FROM users u LEFT JOIN balances b ON b.user_id = u.id WHERE u.id = $1"
+      args [id]
+      require_rows true
+      not_found_message "no such user"
+    }
+  }
+  node "result" { uses "data.first" requires [rows] provides [result] config { source_fact "rows" } }
+}
+route "admin.users.get" { method GET path "/v1/admin/users/:id" intent "admin.users.get" auth "admin_auth" cache_control "no-store" }
+
+# Create or update an account (and its balance row) in one transaction.
+intent "admin.users.put" {
+  response "result"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  # Fill what the request left out, then build the row. (An expression's ternary
+  # evaluates both branches, so absent lists are defaulted here, not tested there.)
+  node "body" {
+    uses "data.transform" kind pure requires [input] provides [body]
+    config {
+      source_fact "input"
+      data { defaults { name "" tenant "" status "active" default_sender "" senders [] countries [] rate_per_second 0 daily_limit 0 max_price 0 objective "" plan "" } }
+    }
+  }
+  node "user" {
+    uses "data.transform" kind pure requires [id, body] provides [user]
+    config {
+      data {
+        extract {
+          id "id"
+          tenant "body.tenant != '' ? body.tenant : id"
+          name "body.name"
+          status "body.status"
+          default_sender "body.default_sender"
+          senders "len(body.senders) > 0 ? '|' + join(body.senders, '|') + '|' : ''"
+          countries "len(body.countries) > 0 ? '|' + join(body.countries, '|') + '|' : ''"
+          rate_per_second "body.rate_per_second"
+          daily_limit "body.daily_limit"
+          max_price "body.max_price"
+          objective "body.objective"
+          plan "body.plan"
+          now_ms "unix_millis()"
+        }
+      }
+    }
+  }
+  node "save" {
+    uses "database.transaction" resource "db" kind effect requires [user] provides [saved]
+    config {
+      statements [
+        { name "upsert" sql "INSERT INTO users (id, tenant, name, status, default_sender, senders, countries, rate_per_second, daily_limit, max_price, objective, plan, created_ms) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) ON CONFLICT (id) DO UPDATE SET tenant = excluded.tenant, name = excluded.name, status = excluded.status, default_sender = excluded.default_sender, senders = excluded.senders, countries = excluded.countries, rate_per_second = excluded.rate_per_second, daily_limit = excluded.daily_limit, max_price = excluded.max_price, objective = excluded.objective, plan = excluded.plan"
+          args [user.id, user.tenant, user.name, user.status, user.default_sender, user.senders, user.countries, user.rate_per_second, user.daily_limit, user.max_price, user.objective, user.plan, user.now_ms] },
+        { name "open_balance" sql "INSERT INTO balances (user_id, balance, held) VALUES ($1, 0, 0) ON CONFLICT (user_id) DO NOTHING" args [user.id] }
+      ]
+    }
+  }
+  node "result" { uses "data.transform" requires [user, saved] provides [result] config { data { source "user" pick ["id", "tenant", "name", "status", "default_sender", "plan"] } } }
+}
+route "admin.users.put" { method PUT path "/v1/admin/users/:id" intent "admin.users.put" auth "admin_auth" cache_control "no-store" }
+
+# Issue (or rotate) an account's API key. The key is shown once; only its
+# SHA-256 is kept.
+intent "admin.users.key" {
+  response "result"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "issued" { uses "auth.api_key_issue" kind pure provides [issued] config { prefix "smsk" } }
+  node "store" {
+    uses "database.exec" resource "db" kind effect requires [id, issued] provides [stored]
+    config {
+      statement "UPDATE users SET api_key_hash = $1 WHERE id = $2 AND status <> 'deleted'"
+      args [issued.hash, id]
+      require_affected true
+      not_found_message "no such user"
+    }
+  }
+  node "result" {
+    uses "data.transform" kind pure requires [id, issued, stored] provides [result]
+    config { data { extract { user "id" api_key "issued.key" } set { note "Store this key now: it cannot be shown again." } pick ["user", "api_key", "note"] } }
+  }
+}
+route "admin.users.key" { method POST path "/v1/admin/users/:id/key" intent "admin.users.key" auth "admin_auth" cache_control "no-store" }
+
+# Credit an account. `reference` makes it safe to replay: a payment webhook
+# delivered twice credits once.
+intent "admin.users.topup" {
+  response "result"
+  input_schema "topup_request"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "credit" {
+    uses "data.transform" kind pure requires [id, input] provides [credit]
+    config { data { extract { user "id" ref "input.reference" amount "round(input.amount * 1000000)" now_ms "unix_millis()" } } }
+  }
+  node "apply" {
+    uses "database.transaction" resource "db" kind effect requires [credit] provides [applied]
+    config {
+      statements [
+        { name "known" sql "SELECT user_id FROM balances WHERE user_id = $1" args [credit.user] require_rows true failure { code "NOT_FOUND" status 404 message "no such account" } },
+        { name "topup" sql "INSERT INTO topups (ref, user_id, amount, at_ms) VALUES ($1, $2, $3, $4) ON CONFLICT (ref) DO NOTHING" args [credit.ref, credit.user, credit.amount, credit.now_ms] },
+        { name "balance" sql "UPDATE balances SET balance = balance + $1 WHERE user_id = $2" when "topup > 0" args [credit.amount, credit.user] },
+        { name "journal" sql "INSERT INTO ledger (message_id, kind, user_id, amount, at_ms) VALUES ($1, 'topup', $2, $3, $4) ON CONFLICT (message_id, kind) DO NOTHING" when "topup > 0" args [credit.ref, credit.user, credit.amount, credit.now_ms] },
+        { name "now" sql "SELECT balance, held FROM balances WHERE user_id = $1" args [credit.user] }
+      ]
+    }
+  }
+  node "row" { uses "data.first" requires [applied] provides [row] config { source_fact "applied.now" } }
+  node "result" {
+    uses "data.transform" kind pure requires [credit, applied, row] provides [result]
+    config { data { extract { user "credit.user" applied "applied.topup > 0" balance "row.balance / 1000000" available "(row.balance - row.held) / 1000000" } pick ["user", "applied", "balance", "available"] } }
+  }
+}
+route "admin.users.topup" { method POST path "/v1/admin/users/:id/topup" intent "admin.users.topup" auth "admin_auth" cache_control "no-store" }
+
+intent "admin.users.balance" {
+  response "result"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [id] provides [rows]
+    config { statement "SELECT user_id, balance, held FROM balances WHERE user_id = $1" args [id] require_rows true not_found_message "no such account" }
+  }
+  node "row" { uses "data.first" requires [rows] provides [row] config { source_fact "rows" } }
+  node "result" {
+    uses "data.transform" requires [row] provides [result]
+    config { data { extract { user "row.user_id" balance "row.balance / 1000000" held "row.held / 1000000" available "(row.balance - row.held) / 1000000" } pick ["user", "balance", "held", "available"] } }
+  }
+}
+route "admin.users.balance" { method GET path "/v1/admin/users/:id/balance" intent "admin.users.balance" auth "admin_auth" cache_control "no-store" }

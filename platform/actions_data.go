@@ -1,8 +1,10 @@
 package platform
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -151,6 +153,19 @@ func registerDataActions(r *Registry) {
 		},
 	})
 
+	mustAction(r, "data.parse_csv", dataParseCSVAction, ActionInfo{
+		Family:   "data",
+		Summary:  "Parse CSV text into a list of rows, each an object keyed by the header (or by column1, column2, ... without one)",
+		Provides: "A list of objects",
+		Kind:     "pure",
+		Config: []ConfigField{
+			{Name: "source_fact", Type: "fact", Required: true, Summary: "Fact holding the CSV text"},
+			{Name: "delimiter", Type: "string", Default: ",", Summary: "One character; a semicolon or a tab is detected when left as the default and the first line has no comma"},
+			{Name: "header", Type: "bool", Default: "true", Summary: "The first line names the columns"},
+			{Name: "max_rows", Type: "int", Default: "10000"},
+		},
+	})
+
 	mustAction(r, "data.json_encode", dataJSONEncodeAction, ActionInfo{
 		Family:   "data",
 		Summary:  "Serialise a value to JSON text",
@@ -189,6 +204,16 @@ func registerDataActions(r *Registry) {
 		Kind:    "pure",
 		Config: []ConfigField{
 			{Name: "fields", Type: "[]fact", Required: true},
+		},
+	})
+
+	mustAction(r, "validate.regex", validateRegexAction, ActionInfo{
+		Family:   "validate",
+		Summary:  "Fail (422) unless every listed value is a valid regular expression; a missing or empty value is skipped",
+		Provides: "true",
+		Kind:     "pure",
+		Config: []ConfigField{
+			{Name: "fields", Type: "[]fact", Required: true, Summary: "Facts holding patterns; the last path segment names the field in the message"},
 		},
 	})
 
@@ -797,6 +822,30 @@ var validateRequiredAction = ActionFactoryFunc(func(_ BuildContext, spec NodeSpe
 	}), nil
 })
 
+var validateRegexAction = ActionFactoryFunc(func(_ BuildContext, spec NodeSpec) (Action, error) {
+	fields := configStrings(spec.Config, "fields")
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("node %q: validate.regex needs config.fields", spec.Name)
+	}
+	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
+		for _, path := range fields {
+			value, found := resolvePath(ctx.Inputs, path)
+			text := Stringify(value)
+			if !found || text == "" {
+				continue
+			}
+			if _, err := regexp.Compile(text); err != nil {
+				label := path
+				if i := strings.LastIndex(path, "."); i >= 0 {
+					label = path[i+1:]
+				}
+				return ActionResult{}, invalidInput("%s is not a valid regular expression: %v", strings.ReplaceAll(label, "_", " "), err)
+			}
+		}
+		return acknowledgement(spec, true), nil
+	}), nil
+})
+
 var validateSchemaAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) (Action, error) {
 	name, err := requiredString(spec.Config, "shape")
 	if err != nil {
@@ -837,5 +886,89 @@ var validateExpressionAction = ActionFactoryFunc(func(_ BuildContext, spec NodeS
 			return ActionResult{}, invalidInput("%s", message)
 		}
 		return acknowledgement(spec, true), nil
+	}), nil
+})
+
+var dataParseCSVAction = ActionFactoryFunc(func(_ BuildContext, spec NodeSpec) (Action, error) {
+	if err := exactlyOneOutput(spec); err != nil {
+		return nil, err
+	}
+	source, err := requiredString(spec.Config, "source_fact")
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+	}
+	delimiter := configString(spec.Config, "delimiter", ",")
+	header := configBool(spec.Config, "header", true)
+	maxRows, err := configInt(spec.Config, "max_rows", 10000)
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+	}
+	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
+		value, _ := resolvePath(ctx.Inputs, source)
+		text := strings.TrimPrefix(Stringify(value), "\ufeff")
+		if strings.TrimSpace(text) == "" {
+			return singleOutput(spec, []any{}), nil
+		}
+		comma := ','
+		if delimiter != "" {
+			comma = []rune(delimiter)[0]
+		}
+		if delimiter == "," {
+			first := strings.SplitN(text, "\n", 2)[0]
+			if !strings.Contains(first, ",") {
+				switch {
+				case strings.Contains(first, ";"):
+					comma = ';'
+				case strings.Contains(first, "\t"):
+					comma = '\t'
+				}
+			}
+		}
+		reader := csv.NewReader(strings.NewReader(text))
+		reader.Comma = comma
+		reader.FieldsPerRecord = -1
+		reader.TrimLeadingSpace = true
+		records, err := reader.ReadAll()
+		if err != nil {
+			return ActionResult{}, invalidInput("the CSV could not be read: %v", err)
+		}
+		var names []string
+		if header && len(records) > 0 {
+			for i, n := range records[0] {
+				n = strings.TrimSpace(n)
+				if n == "" {
+					n = fmt.Sprintf("column%d", i+1)
+				}
+				names = append(names, n)
+			}
+			records = records[1:]
+		}
+		if len(records) > maxRows {
+			return ActionResult{}, invalidInput("the CSV has %d rows; at most %d are accepted", len(records), maxRows)
+		}
+		rows := make([]any, 0, len(records))
+		for _, record := range records {
+			blank := true
+			row := map[string]any{}
+			for i, cell := range record {
+				if strings.TrimSpace(cell) != "" {
+					blank = false
+				}
+				name := fmt.Sprintf("column%d", i+1)
+				if i < len(names) {
+					name = names[i]
+				}
+				row[name] = strings.TrimSpace(cell)
+			}
+			for _, name := range names {
+				if _, ok := row[name]; !ok {
+					row[name] = ""
+				}
+			}
+			if !blank {
+				rows = append(rows, row)
+			}
+		}
+		return singleOutput(spec, rows), nil
 	}), nil
 })

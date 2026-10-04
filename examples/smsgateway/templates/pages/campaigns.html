@@ -1,0 +1,83 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <section class="card">
+    <h1>New campaign</h1>
+    <p class="muted">Send one message to many recipients, from a list of numbers, a CSV, or a saved audience. Each row can carry fields (a name, an amount, a date) that fill the message, so every recipient gets their own text. Numbers that cannot be dialled are skipped and never charged. An operator approves a campaign before it is sent.</p>
+    <form id="campaignform">
+      <label>Name <input name="name" required maxlength="120"></label>
+
+      <h2>Recipients</h2>
+      <div class="tabs sub" id="src-tabs" role="tablist">
+        <button type="button" class="tab active" data-src="list">Numbers</button>
+        <button type="button" class="tab" data-src="csv">CSV</button>
+        <button type="button" class="tab" data-src="audience">Saved audience</button>
+      </div>
+      <div data-pane="list">
+        <label>Phone numbers, one per line, in any written form <textarea name="numbers" rows="6" placeholder="9841234567&#10;+977 984-123-4568"></textarea></label>
+      </div>
+      <div data-pane="csv" hidden>
+        <label>CSV with a header line <textarea name="csv" rows="7" class="code" spellcheck="false" placeholder="phone,name,amount&#10;9841234567,Asha,1250"></textarea></label>
+        <div class="row"><label class="filebtn">Upload a CSV file <input type="file" id="csvfile" accept=".csv,text/csv,text/plain"></label><button type="button" class="secondary small" id="csvsample">Insert an example</button></div>
+        <div class="grid2">
+          <label>Column with the phone number <select name="phone_field"><option value="phone">phone</option></select></label>
+        </div>
+      </div>
+      <div data-pane="audience" hidden>
+        <label>Saved audience <select name="audience"><option value="">Choose an audience</option></select></label>
+        <p class="muted">Audiences are managed on the <a href="/audiences">Audiences</a> page.</p>
+      </div>
+      <div class="grid2">
+        <label>If a phone number is invalid
+          <select name="on_invalid">
+            <option value="">Follow the account's rules</option>
+            <option value="skip">Send to the valid numbers, skip the invalid</option>
+            <option value="discard">Discard the whole list</option>
+          </select>
+          <small class="muted">The rules decide whether your choice is allowed: a one-time-code list, or a list that is mostly invalid, is always discarded.</small>
+        </label>
+        <label>Country for numbers written without a country code <input name="region" value="NP" maxlength="2" pattern="[A-Za-z]{2}" title="a two-letter country code, such as NP or IN"></label>
+      </div>
+
+      <h2>Message</h2>
+      <div class="tabs sub" id="msg-tabs">
+        <button type="button" class="tab active" data-msg="text">Text</button>
+        <button type="button" class="tab" data-msg="template">Template</button>
+      </div>
+      <div data-mpane="text">
+        <label>Text <textarea name="text" rows="4" placeholder="Dear {{ name }}, NPR {{ amount }} is due."></textarea></label>
+        <p class="muted">Put a column in double braces, <code>{{ name }}</code>; click a column to insert it.</p>
+        <div id="chips" class="chips"></div>
+      </div>
+      <div data-mpane="template" hidden>
+        <label>Template <select name="template"><option value="">Choose a template</option></select></label>
+        <p class="muted" id="tpl-note"></p>
+        <fieldset id="tpl-fields" class="fields" hidden><legend>Placeholders</legend><div id="tpl-list"></div></fieldset>
+      </div>
+      <div class="grid2">
+        <label>Sender id <input name="from" maxlength="16" placeholder="optional"></label>
+        <label>Message type <select name="type"><option value="">(default)</option><option>transactional</option><option>otp</option><option>promotional</option></select></label>
+      </div>
+
+      <div class="row"><button type="button" class="secondary" id="preview">Check recipients and preview</button><button type="submit">Submit for approval</button></div>
+    </form>
+    <div id="preview-out" class="out" hidden></div>
+    <div id="result" class="out" hidden></div>
+  </section>
+
+  <section class="card">
+    <h2>Your campaigns</h2>
+    <table id="campaigns"><thead><tr><th>Name</th><th>State</th><th>From</th><th>Recipients</th><th>Valid</th><th>Skipped</th><th>Sent</th><th>Failed</th><th></th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section class="card" id="detail" hidden>
+    <div class="split"><h2 id="detail-title">Campaign</h2><div class="row"><button type="button" class="secondary small" id="detail-csv">Download report (CSV)</button><button type="button" class="secondary small" id="detail-close">Close</button></div></div>
+    <p id="detail-summary" class="muted"></p>
+    <label>Show <select id="detail-filter"><option value="">all recipients</option><option>pending</option><option>sent</option><option>failed</option><option>skipped</option></select></label>
+    <table id="detail-table"><thead><tr><th>#</th><th>Number</th><th>Dialled as</th><th>State</th><th>Reason</th></tr></thead><tbody></tbody></table>
+  </section>
+}
+
+@define("scripts") {
+  <script src="/static/js/bulk.js?v=${asset_version}"></script>
+}

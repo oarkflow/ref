@@ -1,0 +1,65 @@
+# ---------------------------------------------------------------------------
+# What an account sees of its own messages and money. Every query is scoped to
+# the authenticated account (principal.id), so one account cannot read another's.
+# ---------------------------------------------------------------------------
+
+intent "me.messages.get" {
+  response "result"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [id, uid] provides [rows]
+    config {
+      statement "SELECT id, state, provider, to_number AS \"to\", country, sender AS \"from\", msg_type AS type, segments, encoding, price, currency, err_code, err_text, created_ms, submitted_ms, delivered_ms, total_attempts FROM messages WHERE id = $1 AND user_id = $2"
+      args [id, uid] require_rows true not_found_message "no such message"
+    }
+  }
+  node "row" { uses "data.first" requires [rows] provides [row] config { source_fact "rows" } }
+  node "tries" {
+    uses "database.query" resource "db" kind read requires [row] provides [tries]
+    config { statement "SELECT n, provider, outcome, code, err_text, latency_ms, at_ms FROM attempts WHERE message_id = $1 AND n < 1000000 ORDER BY n" args [row.id] }
+  }
+  node "result" {
+    uses "data.transform" kind pure requires [row, tries] provides [result]
+    config { data { extract { message "row" attempts "tries" } pick ["message", "attempts"] } }
+  }
+}
+route "me.messages.get" { method GET path "/v1/messages/:id" intent "me.messages.get" auth "sender_auth" cache_control "no-store" }
+
+intent "me.messages.list" {
+  response "rows"
+  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [uid] provides [rows]
+    config {
+      statement "SELECT m.id, m.state, m.provider, m.to_number AS \"to\", m.sender AS \"from\", m.msg_type AS type, m.segments, m.price, m.currency, m.created_ms, COALESCE(p.sandbox, 1) AS sandbox FROM messages m LEFT JOIN providers p ON p.id = m.provider WHERE m.user_id = $1 ORDER BY m.created_ms DESC LIMIT 100"
+      args [uid]
+    }
+  }
+}
+route "me.messages.list" { method GET path "/v1/messages" intent "me.messages.list" auth "sender_auth" cache_control "no-store" }
+
+intent "me.balance" {
+  response "result"
+  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [uid] provides [rows]
+    config { statement "SELECT balance, held FROM balances WHERE user_id = $1" args [uid] require_rows true not_found_message "no balance" }
+  }
+  node "row" { uses "data.first" requires [rows] provides [row] config { source_fact "rows" } }
+  node "result" {
+    uses "data.transform" kind pure requires [row] provides [result]
+    config { data { extract { balance "row.balance / 1000000" held "row.held / 1000000" available "(row.balance - row.held) / 1000000" } pick ["balance", "held", "available"] } }
+  }
+}
+route "me.balance" { method GET path "/v1/balance" intent "me.balance" auth "sender_auth" cache_control "no-store" }
+
+intent "me.ledger" {
+  response "rows"
+  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [uid] provides [rows]
+    config { statement "SELECT message_id, kind, amount, at_ms FROM ledger WHERE user_id = $1 ORDER BY at_ms DESC LIMIT 200" args [uid] }
+  }
+}
+route "me.ledger" { method GET path "/v1/ledger" intent "me.ledger" auth "sender_auth" cache_control "no-store" }

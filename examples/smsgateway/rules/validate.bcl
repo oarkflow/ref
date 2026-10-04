@@ -1,0 +1,191 @@
+bcl { version "1.0" }
+
+# Validation: every reason a message is refused before it is routed or paid for.
+# A row that matches refuses the request with its code and status. The facts are
+# `message` (the normalised request), `user` (the account), `number` (how the
+# recipient number was read), all assembled in config/20_prepare.bcl.
+
+module "validate" {
+  version "1"
+  environment "production"
+
+  decision_schema "validate" { effects [allow, deny] default allow strategy first_match }
+  decision_table "validate" {
+    default allow
+    hit_policy first
+
+    row "account-not-active" {
+      priority 1000
+      when { user.status != "active" }
+      then { outcome { decision deny reason "the account is not active" attributes { code "ACCOUNT_SUSPENDED" status 403 } } }
+    }
+    row "recipient-opted-out" {
+      priority 950
+      when { message.optout == true }
+      then { outcome { decision deny reason "the recipient has opted out of messages" attributes { code "OPTED_OUT" status 403 } } }
+    }
+    row "country-not-permitted" {
+      priority 900
+      when {
+        all {
+          user.countries != ""
+          not {
+            contains(user.countries, "|" + message.country + "|")
+          }
+        }
+      }
+      then { outcome { decision deny reason "the account may not send to this country" attributes { code "COUNTRY_NOT_ALLOWED" status 403 } } }
+    }
+    row "number-too-short-or-long" {
+      priority 880
+      when {
+        any {
+          message.nsn_len < number.min
+          message.nsn_len > number.max
+        }
+      }
+      then { outcome { decision deny reason "the number has the wrong length for its country" attributes { code "INVALID_NUMBER" status 422 } } }
+    }
+    row "template-problem" {
+      priority 860
+      when { message.template_error != "" }
+      then { outcome { decision deny reason "the message template cannot be used" attributes { code "TEMPLATE_ERROR" status 422 } } }
+    }
+    # The number is checked with github.com/oarkflow/phone: a number that parses
+    # but cannot be dialled (no such range, wrong length) is refused before routing.
+    row "phone-not-valid" {
+      priority 880
+      when { message.phone_valid == false }
+      then { outcome { decision deny reason "the number is not a valid phone number" attributes { code "INVALID_PHONE" status 422 } } }
+    }
+    row "empty-text" {
+      priority 850
+      when { message.text_len == 0 }
+      then { outcome { decision deny reason "the message text is empty" attributes { code "EMPTY_TEXT" status 422 } } }
+    }
+    row "text-too-long" {
+      priority 840
+      when { message.segments > 6 }
+      then { outcome { decision deny reason "the message needs more than 6 segments" attributes { code "TEXT_TOO_LONG" status 422 } } }
+    }
+    row "sender-malformed" {
+      priority 800
+      when {
+        not {
+          any {
+            message.from matches "^[A-Za-z0-9][A-Za-z0-9 ._-]{0,10}$"
+            message.from matches "^\\+?[0-9]{3,15}$"
+          }
+        }
+      }
+      then { outcome { decision deny reason "the sender id is not valid: use up to 11 letters or digits, or a phone number" attributes { code "INVALID_SENDER" status 422 } } }
+    }
+    row "sender-not-registered" {
+      priority 790
+      when {
+        all {
+          user.senders != ""
+          not {
+            contains(user.senders, "|" + message.from + "|")
+          }
+        }
+      }
+      then { outcome { decision deny reason "the account may not send from this sender id" attributes { code "SENDER_NOT_ALLOWED" status 403 } } }
+    }
+    row "type-unknown" {
+      priority 780
+      when {
+        not {
+          message.type in ["otp", "transactional", "promotional"]
+        }
+      }
+      then { outcome { decision deny reason "the message type must be otp, transactional or promotional" attributes { code "INVALID_TYPE" status 422 } } }
+    }
+    row "reference-malformed" {
+      priority 770
+      when {
+        all {
+          message.reference != ""
+          not {
+            message.reference matches "^[A-Za-z0-9._:-]{1,100}$"
+          }
+        }
+      }
+      then { outcome { decision deny reason "the reference may contain letters, digits and . _ : - (100 at most)" attributes { code "INVALID_REFERENCE" status 422 } } }
+    }
+    row "lifetime-out-of-range" {
+      priority 760
+      when {
+        any {
+          message.ttl_s < 1
+          message.ttl_s > 604800
+        }
+      }
+      then { outcome { decision deny reason "expires_in must be between 1 second and 7 days" attributes { code "INVALID_TTL" status 422 } } }
+    }
+    row "schedule-out-of-range" {
+      priority 750
+      when {
+        any {
+          message.delay_s < 0
+          message.delay_s > 604800
+        }
+      }
+      then { outcome { decision deny reason "a message can be scheduled at most 7 days ahead" attributes { code "INVALID_SCHEDULE" status 422 } } }
+    }
+    row "daily-allowance-used" {
+      priority 700
+      when {
+        all {
+          user.daily_limit > 0
+          message.daily_count >= user.daily_limit
+        }
+      }
+      then { outcome { decision deny reason "the account's daily allowance is used" attributes { code "DAILY_LIMIT" status 429 } } }
+    }
+    # Content policy: promotions may not carry gambling or prize-draw content.
+    row "promotion-content" {
+      priority 600
+      when {
+        all {
+          message.type == "promotional"
+          message.text matches "(?i)\\b(lottery|jackpot|you have won|free (money|bitcoin))\\b"
+        }
+      }
+      then { outcome { decision deny reason "promotional messages may not contain gambling or prize-draw content" attributes { code "CONTENT_BLOCKED" status 422 } } }
+    }
+  }
+
+  # What the account may spend on one message, once it has a price.
+  decision_schema "limits" { effects [allow, deny] default allow strategy first_match }
+  decision_table "limits" {
+    default allow
+    hit_policy first
+
+    row "providers-unavailable" {
+      priority 210
+      when {
+        all {
+          route.empty == true
+          route.transient == true
+        }
+      }
+      then { outcome { decision deny reason "every provider for this destination is unavailable right now" attributes { code "NO_ROUTE" status 503 } } }
+    }
+    row "no-provider" {
+      priority 200
+      when { route.empty == true }
+      then { outcome { decision deny reason "no provider can deliver this message" attributes { code "NO_ROUTE" status 422 } } }
+    }
+    row "price-above-account-ceiling" {
+      priority 100
+      when {
+        all {
+          user.max_price > 0
+          charge.total > user.max_price
+        }
+      }
+      then { outcome { decision deny reason "the message costs more than the account's per-message limit" attributes { code "PRICE_LIMIT" status 403 } } }
+    }
+  }
+}

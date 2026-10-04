@@ -1,0 +1,46 @@
+# ---------------------------------------------------------------------------
+# What the console tells an account: a campaign accepted with invalid numbers
+# skipped, a campaign sent, a campaign rejected. They are rows in `notifications`
+# (written by the intent that did the thing), shown behind the bell in the header
+# and on /notifications. To tell people elsewhere (an e-mail, a webhook, an SMS to
+# the account owner), extend the intent that writes the row: see
+# docs/extending-intents.md.
+# ---------------------------------------------------------------------------
+
+shape "notifications_read" {
+  additional_properties false
+  prop "everything" { kind bool }
+  prop "ids" { kind array items string }
+}
+
+intent "me.notifications.list" {
+  response "result"
+  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [uid] provides [rows]
+    config { statement "SELECT id, kind, level, title, body, ref, created_ms, read_ms FROM notifications WHERE user_id = $1 ORDER BY created_ms DESC LIMIT 100" args [uid] }
+  }
+  node "unread_rows" {
+    uses "database.query" resource "db" kind read requires [uid] provides [unread_rows]
+    config { statement "SELECT COUNT(*) AS n FROM notifications WHERE user_id = $1 AND read_ms = 0" args [uid] }
+  }
+  node "unread" { uses "data.first" requires [unread_rows] provides [unread] config { source_fact "unread_rows" } }
+  node "result" { uses "data.transform" kind pure requires [rows, unread] provides [result] config { data { extract { notifications "rows" unread "unread.n" } pick ["notifications", "unread"] } } }
+}
+
+intent "me.notifications.read" {
+  description "Mark notifications read: all of them, or the listed ones"
+  response "result"
+  input_schema "notifications_read"
+  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "body" { uses "data.transform" kind pure requires [input] provides [body] config { source_fact "input" data { defaults { everything false ids [] } } } }
+  node "when" {
+    uses "data.transform" kind pure requires [body] provides [when]
+    config { data { extract { now_ms "unix_millis()" every "body.everything == true ? 1 : 0" listed "len(body.ids) > 0 ? '|' + join(body.ids, '|') + '|' : ''" } } }
+  }
+  node "marked" {
+    uses "database.transaction" resource "db" kind effect requires [uid, when] provides [marked]
+    config { statements [ { name "read" sql "UPDATE notifications SET read_ms = $1 WHERE user_id = $2 AND read_ms = 0 AND ($3 = 1 OR $4 LIKE '%|' || id || '|%')" args [when.now_ms, uid, when.every, when.listed] } ] }
+  }
+  node "result" { uses "data.transform" kind pure requires [marked] provides [result] config { data { extract { marked "marked.read" } pick ["marked"] } } }
+}

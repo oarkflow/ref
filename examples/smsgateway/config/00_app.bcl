@@ -1,0 +1,20 @@
+# SMS gateway.
+#
+# This directory is the whole application. There is no Go in it. REF runs it
+# (`make run dir=./examples/smsgateway`), and every decision it makes is written down
+# here or in ../rules:
+#
+#   config/      resources, pipelines (intents), routes, workers, schedules
+#   rules/       decision tables and rankings (github.com/oarkflow/rules):
+#                numbering, validation, routing, pricing, error handling
+#   templates/   SPL templates: the web console, and the SMS bodies (sms/)
+#   static/      assets served by 08_static.bcl
+#
+# A message moves through two pipelines. `sms.prepare` and `sms.submit` accept
+# it: check the account and the message, choose providers, take payment, queue
+# it. `sms.deliver` runs on a provider's queue: send, then decide from the
+# result whether it is done, should be retried, should fail over to the next
+# provider, or has failed for good.
+
+name "sms-gateway"
+environment env("APP_ENV", "development")

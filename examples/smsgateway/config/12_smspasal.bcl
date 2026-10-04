@@ -1,0 +1,86 @@
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# SMSPasal. The connection is this resource and the intent below; WHERE it
+# sends and WITH WHICH KEY is the provider's account, edited on /admin/providers:
+# API URL, API key, route id and campaign id. As shipped the account points at
+# the sandbox (http://127.0.0.1:9100/smsapi/index.php), so nothing leaves this
+# machine. To send for real:
+#   1. open smspasal on /admin/providers; in its account set the API URL to
+#      https://sms.smspasal.com/smsapi/index.php and put in your key, route id
+#      and campaign id;
+#   2. untick "Sandbox" on the provider and assign the provider to the accounts
+#      that should use it (Tenants / Accounts, "Only for the tenants and accounts
+#      above"), or leave it unassigned and give it a country.
+# Only the hosts in allowed_hosts can ever be called.
+# ---------------------------------------------------------------------------
+
+resource "smspasal" {
+  kind "service.http"
+  description "SMSPasal HTTP API"
+  config {
+    base_url "https://sms.smspasal.com/smsapi/index.php"
+    allowed_hosts ["127.0.0.1", "sms.smspasal.com"]
+    allow_private_networks env("SMSPASAL_ALLOW_PRIVATE", "true")
+    timeout 15s
+  }
+}
+
+# SMSPasal answers HTTP 200 with plain text: "SMS-SHOOT-ID/<id>" on success,
+# "ERR: <reason>" otherwise. Its route, campaign and the recipient format
+# (national, without the 977 prefix) are set here; what an ERR means is in
+# rules/delivery.bcl.
+intent "send.smspasal" {
+  description "Send through SMSPasal's HTTP API"
+  response "sent"
+  node "contacts" {
+    uses "data.transform" kind pure requires [input] provides [contacts]
+    config { data { extract { national "input.to matches '^977' ? substr(input.to, 3, len(input.to)) : input.to" } } }
+  }
+  node "call" {
+    uses "service.http" resource "smspasal" kind effect requires [input, contacts] provides [call]
+    config {
+      method "GET"
+      url "{{ input.settings.url }}"
+      query {
+        key "{{ input.cred.key }}"
+        type "text"
+        routeid "{{ input.cred.routeid }}"
+        campaign "{{ input.cred.campaign }}"
+        contacts "{{ contacts.national }}"
+        senderid "{{ input.from }}"
+        msg "{{ input.text }}"
+        responsetype "http"
+      }
+      capture true
+    }
+  }
+  node "failure" {
+    uses "data.transform" kind pure requires [call] provides [failure]
+    config {
+      data {
+        extract {
+          kind "call.ok ? 'upstream' : call.error.kind"
+          protocol "'http'"
+          status "call.ok ? 0 : call.error.status"
+          message "call.ok ? (trim(call.body) matches '^SMS-SHOOT-ID/' ? '' : trim(call.body)) : call.error.message"
+          retry_after_s "call.ok ? 0 : call.error.retry_after_s"
+        }
+        pick ["kind", "protocol", "status", "message", "retry_after_s"]
+      }
+    }
+  }
+  node "sent" {
+    uses "data.transform" kind pure requires [call, failure] provides [sent]
+    config {
+      data {
+        extract {
+          ok "call.ok and trim(call.body) matches '^SMS-SHOOT-ID/'"
+          provider_message_id "call.ok and trim(call.body) matches '^SMS-SHOOT-ID/' ? substr(trim(call.body), 13, len(trim(call.body))) : ''"
+          latency_ms "call.latency_ms"
+          error "failure"
+        }
+        pick ["ok", "provider_message_id", "latency_ms", "error"]
+      }
+    }
+  }
+}

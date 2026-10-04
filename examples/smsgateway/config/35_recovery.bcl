@@ -1,0 +1,49 @@
+# ---------------------------------------------------------------------------
+# Recovery. A message is written, then its job is published; a crash between
+# the two, or a worker dying mid-send, leaves a message nobody is working on.
+# This sweep finds them and queues a fresh job. The message's dispatch sequence
+# makes it safe: every job carries the sequence it was made for, so when an old
+# job turns up as well, it loses the claim and does nothing.
+# ---------------------------------------------------------------------------
+
+schedule "recover" { every 30s queue "bus" intent "sms.recover" }
+
+intent "sms.recover" {
+  description "Re-queue messages that no job is working on"
+  idempotent true
+  response "swept"
+  node "times" { uses "data.transform" kind pure requires [input] provides [times] config { data { extract { now_ms "unix_millis()" stale_ms "unix_millis() - 60000" } } } }
+  node "orphans" {
+    uses "database.query" resource "db" kind read requires [times] provides [orphans]
+    config {
+      statement "SELECT m.id, m.provider, p.channel, m.dispatch_seq FROM messages m JOIN providers p ON p.id = m.provider WHERE (m.state = 'queued' AND m.next_run_ms < $1) OR (m.state = 'dispatching' AND m.claim_until_ms < $2) ORDER BY m.next_run_ms LIMIT 200"
+      args [times.stale_ms, times.now_ms]
+    }
+  }
+  node "swept" {
+    uses "flow.foreach" kind effect requires [orphans, times] provides [swept]
+    config { intent "sms.recover_one" items_fact "orphans" concurrency 4 continue_on_error true }
+  }
+}
+
+intent "sms.recover_one" {
+  response "done"
+  node "times" { uses "data.transform" kind pure requires [input] provides [times] config { data { extract { now_ms "unix_millis()" stale_ms "unix_millis() - 60000" } } } }
+  node "bumped" {
+    uses "database.transaction" resource "db" kind effect requires [input, times] provides [bumped]
+    config {
+      statements [
+        { name "message" sql "UPDATE messages SET state = 'queued', dispatch_seq = dispatch_seq + 1, claim_until_ms = 0, updated_ms = $1 WHERE id = $2 AND dispatch_seq = $3 AND ((state = 'queued' AND next_run_ms < $4) OR (state = 'dispatching' AND claim_until_ms < $1))"
+          args [times.now_ms, input.item.id, input.item.dispatch_seq, times.stale_ms] }
+      ]
+    }
+  }
+  node "next" {
+    uses "data.transform" kind pure requires [input] provides [next]
+    config { data { extract { message_id "input.item.id" provider "input.item.provider" channel "input.item.channel" seq "input.item.dispatch_seq + 1" delay_s "0" } } }
+  }
+  node "done" {
+    uses "flow.branch" kind effect requires [next, bumped] provides [done]
+    config { input_fact "next" required false cases [ { name "bumped" condition "bumped.message > 0" intent "sms.enqueue_next" } ] }
+  }
+}

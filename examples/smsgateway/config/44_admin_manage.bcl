@@ -1,0 +1,415 @@
+# ---------------------------------------------------------------------------
+# What an operator manages while the application runs, without a deploy:
+#
+#   providers  routing parameters of every route: countries, tenants and
+#              accounts it is assigned to, quality, capabilities, retry
+#              behaviour, cost per country, state
+#   rules      the decision tables themselves (numbering, validation, routing,
+#              pricing, delivery, receipts, templates): read, edit, check,
+#              try against sample facts, go back to the file
+#   accounts   limits, senders, countries, objective, plan, money, passwords
+#
+# A provider is a routing entity; its `channel` is the technical connection it
+# sends over (an SMPP bind or a vendor API, declared in 02_resources.bcl).
+# Several providers may share a channel. A new channel needs BCL (a resource,
+# a worker and a send intent); a new provider does not.
+# ---------------------------------------------------------------------------
+
+shape "provider_put" {
+  additional_properties false
+  prop "kind"             { kind string max_length 16 }
+  prop "channel"          { kind string required true max_length 60 }
+  prop "state"            { kind string enum ["active", "paused", "disabled"] }
+  prop "quality"          { kind number min 0 max 100 }
+  prop "delivery_rate"    { kind number min 0 max 1 }
+  prop "countries"        { kind array items string }
+  prop "message_types"    { kind array items string }
+  prop "tenants"          { kind array items string }
+  prop "users"            { kind array items string }
+  prop "owner"            { kind string max_length 60 }
+  prop "assigned_only"    { kind bool }
+  prop "supports_unicode" { kind bool }
+  prop "supports_dlr"     { kind bool }
+  prop "supports_alpha"   { kind bool }
+  prop "supports_long"    { kind bool }
+  prop "sender_countries" { kind array items string }
+  prop "prefix_pattern"   { kind string max_length 200 }
+  prop "max_attempts"     { kind int min 1 max 12 }
+  prop "backoff_initial_s" { kind number min 0 max 3600 }
+  prop "backoff_max_s"    { kind number min 0 max 86400 }
+  prop "backoff_factor"   { kind number min 1 max 10 }
+  prop "description"      { kind string max_length 300 }
+  prop "sandbox"          { kind bool description "True while the provider talks to a stand-in, so nothing leaves this machine. A label for the console; it does not change where the provider sends" }
+}
+
+shape "provider_cost" {
+  additional_properties false
+  prop "per_segment" { kind number required true min 0 max 100 }
+}
+
+intent "admin.channels.list" {
+  response "rows"
+  node "rows" { uses "database.query" resource "db" kind read provides [rows] config { statement "SELECT name, kind, description, credential_fields, setting_fields FROM channels ORDER BY name" } }
+}
+
+intent "admin.providers.get" {
+  response "result"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [id] provides [rows]
+    config { statement "SELECT * FROM providers WHERE id = $1" args [id] require_rows true not_found_message "no such provider" }
+  }
+  node "row" { uses "data.first" requires [rows] provides [row] config { source_fact "rows" } }
+  node "costs" {
+    uses "database.query" resource "db" kind read requires [id] provides [costs]
+    config { statement "SELECT country, per_segment FROM provider_costs WHERE provider = $1 ORDER BY country" args [id] }
+  }
+  node "result" { uses "data.transform" kind pure requires [row, costs] provides [result] config { data { extract { provider "row" costs "costs" } pick ["provider", "costs"] } } }
+}
+
+intent "admin.providers.put" {
+  description "Create or change a provider's routing parameters"
+  response "result"
+  input_schema "provider_put"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "body" {
+    uses "data.transform" kind pure requires [input] provides [body]
+    config {
+      source_fact "input"
+      data {
+        defaults {
+          kind "http" state "active" quality 80 delivery_rate 0.95 countries [] message_types [] tenants [] users [] owner ""
+          assigned_only false supports_unicode true supports_dlr true supports_alpha true supports_long true sender_countries []
+          prefix_pattern "" max_attempts 3 backoff_initial_s 1 backoff_max_s 60 backoff_factor 2 description "" sandbox true
+        }
+      }
+    }
+  }
+  node "row" {
+    uses "data.transform" kind pure requires [id, body] provides [row]
+    config {
+      data {
+        extract {
+          id "lower(trim(id))"
+          kind "body.kind"
+          channel "body.channel"
+          state "body.state"
+          quality "body.quality"
+          delivery_rate "body.delivery_rate"
+          countries "len(body.countries) > 0 ? '|' + upper(join(body.countries, '|')) + '|' : ''"
+          message_types "len(body.message_types) > 0 ? '|' + join(body.message_types, '|') + '|' : ''"
+          tenants "len(body.tenants) > 0 ? '|' + join(body.tenants, '|') + '|' : ''"
+          users "len(body.users) > 0 ? '|' + join(body.users, '|') + '|' : ''"
+          owner "body.owner"
+          assigned_only "body.assigned_only ? 1 : 0"
+          supports_unicode "body.supports_unicode ? 1 : 0"
+          supports_dlr "body.supports_dlr ? 1 : 0"
+          supports_alpha "body.supports_alpha ? 1 : 0"
+          supports_long "body.supports_long ? 1 : 0"
+          sender_countries "len(body.sender_countries) > 0 ? '|' + upper(join(body.sender_countries, '|')) + '|' : ''"
+          prefix_pattern "body.prefix_pattern"
+          max_attempts "body.max_attempts"
+          backoff_initial_s "body.backoff_initial_s"
+          backoff_max_s "body.backoff_max_s"
+          backoff_factor "body.backoff_factor"
+          description "body.description"
+          sandbox "body.sandbox ? 1 : 0"
+        }
+      }
+    }
+  }
+  node "saved" {
+    uses "database.transaction" resource "db" kind effect requires [row] provides [saved]
+    config {
+      statements [
+        { name "known_channel" sql "SELECT name FROM channels WHERE name = $1" args [row.channel] require_rows true failure { code "UNKNOWN_CHANNEL" status 422 message "there is no such channel; see GET /ui/admin/channels" } },
+        { name "upsert" sql "INSERT INTO providers (id, kind, channel, sandbox, state, quality, delivery_rate, countries, message_types, tenants, users, owner, assigned_only, supports_unicode, supports_dlr, supports_alpha, supports_long, sender_countries, prefix_pattern, max_attempts, backoff_initial_s, backoff_max_s, backoff_factor, description) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) ON CONFLICT (id) DO UPDATE SET kind = excluded.kind, channel = excluded.channel, sandbox = excluded.sandbox, state = excluded.state, quality = excluded.quality, delivery_rate = excluded.delivery_rate, countries = excluded.countries, message_types = excluded.message_types, tenants = excluded.tenants, users = excluded.users, owner = excluded.owner, assigned_only = excluded.assigned_only, supports_unicode = excluded.supports_unicode, supports_dlr = excluded.supports_dlr, supports_alpha = excluded.supports_alpha, supports_long = excluded.supports_long, sender_countries = excluded.sender_countries, prefix_pattern = excluded.prefix_pattern, max_attempts = excluded.max_attempts, backoff_initial_s = excluded.backoff_initial_s, backoff_max_s = excluded.backoff_max_s, backoff_factor = excluded.backoff_factor, description = excluded.description"
+          args [row.id, row.kind, row.channel, row.sandbox, row.state, row.quality, row.delivery_rate, row.countries, row.message_types, row.tenants, row.users, row.owner, row.assigned_only, row.supports_unicode, row.supports_dlr, row.supports_alpha, row.supports_long, row.sender_countries, row.prefix_pattern, row.max_attempts, row.backoff_initial_s, row.backoff_max_s, row.backoff_factor, row.description] }
+      ]
+    }
+  }
+  node "result" { uses "data.transform" kind pure requires [row, saved] provides [result] config { data { extract { id "row.id" channel "row.channel" state "row.state" } pick ["id", "channel", "state"] } } }
+}
+
+intent "admin.providers.cost_put" {
+  description "Set a provider's price per segment for a country (* for every other country)"
+  response "result"
+  input_schema "provider_cost"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "country" { uses "request.param" kind pure provides [country] config { name "country" } }
+  node "saved" {
+    uses "database.transaction" resource "db" kind effect requires [id, country, input] provides [saved]
+    config {
+      statements [
+        { name "known" sql "SELECT id FROM providers WHERE id = $1" args [id] require_rows true failure { code "NOT_FOUND" status 404 message "no such provider" } },
+        { name "cost" sql "INSERT INTO provider_costs (provider, country, per_segment) VALUES ($1, UPPER($2), $3) ON CONFLICT (provider, country) DO UPDATE SET per_segment = excluded.per_segment" args [id, country, input.per_segment] }
+      ]
+    }
+  }
+  node "result" { uses "data.transform" kind pure requires [id, country, input, saved] provides [result] config { data { extract { provider "id" country "upper(country)" per_segment "input.per_segment" } pick ["provider", "country", "per_segment"] } } }
+}
+
+intent "admin.providers.cost_delete" {
+  response "result"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "country" { uses "request.param" kind pure provides [country] config { name "country" } }
+  node "gone" {
+    uses "database.transaction" resource "db" kind effect requires [id, country] provides [gone]
+    config { statements [ { name "del" sql "DELETE FROM provider_costs WHERE provider = $1 AND country = UPPER($2)" args [id, country] require_affected true failure { code "NOT_FOUND" status 404 message "no such price" } } ] }
+  }
+  node "result" { uses "data.transform" kind pure requires [id, country, gone] provides [result] config { data { extract { provider "id" country "upper(country)" deleted "true" } pick ["provider", "country", "deleted"] } } }
+}
+
+# ---- Rules ------------------------------------------------------------------
+
+shape "rule_put"  { additional_properties false  prop "source" { kind string required true max_length 200000 } }
+shape "rule_try"  { additional_properties false  prop "decision" { kind string required true max_length 100 }  prop "facts" { kind object required true } }
+
+intent "admin.rules.list" {
+  response "rows"
+  node "rows" { uses "rules.catalog" resource "policy" kind read provides [rows] }
+}
+
+intent "admin.rules.get" {
+  response "rule"
+  node "name" { uses "request.param" kind pure provides [name] config { name "name" } }
+  node "rule" { uses "rules.source" resource "policy" kind read requires [name] provides [rule] config { name_fact "name" } }
+}
+
+intent "admin.rules.put" {
+  description "Check and publish edited rule source; effective on the next message"
+  response "rule"
+  input_schema "rule_put"
+  node "name" { uses "request.param" kind pure provides [name] config { name "name" } }
+  node "rule" { uses "rules.save" resource "policy" kind effect requires [name, input] provides [rule] config { name_fact "name" source_fact "input.source" } }
+}
+
+intent "admin.rules.reset" {
+  description "Discard runtime edits and go back to the rule file"
+  response "rule"
+  node "name" { uses "request.param" kind pure provides [name] config { name "name" } }
+  node "rule" { uses "rules.reset" resource "policy" kind effect requires [name] provides [rule] config { name_fact "name" } }
+}
+
+intent "admin.rules.check" {
+  description "Validate rule source without publishing it; the answer lists diagnostics with line and column for an editor to mark"
+  response "report"
+  input_schema "rule_put"
+  node "name" { uses "request.param" kind pure provides [name] config { name "name" } }
+  node "report" { uses "rules.check" resource "policy" kind read requires [name, input] provides [report] config { name_fact "name" source_fact "input.source" } }
+}
+
+intent "admin.rules.try" {
+  description "Evaluate one decision of a rule against sample facts; nothing is changed or sent"
+  response "result"
+  input_schema "rule_try"
+  node "name" { uses "request.param" kind pure provides [name] config { name "name" } }
+  node "result" { uses "rules.try" resource "policy" kind read requires [name, input] provides [result] config { name_fact "name" decision_fact "input.decision" facts_fact "input.facts" } }
+}
+
+# ---- Provider accounts (credentials) ----------------------------------------
+# A provider can hold several accounts with its carrier or vendor. Each has
+# public settings (a system id, a route id) and secrets (a password, a token,
+# an API key). Secrets are sealed (AES-256-GCM) before they are stored, are never
+# returned by the API, and are replaced field by field: a field you leave out of
+# an update keeps its stored value. One active account is chosen for every send,
+# the least recently used first; one the provider refuses is rested (see
+# rules/delivery.bcl).
+
+shape "provider_account_put" {
+  additional_properties false
+  prop "state"  { kind string enum ["active", "disabled"] }
+  prop "note"   { kind string max_length 200 }
+  prop "public" { kind object }
+  prop "secret" { kind object }
+  prop "reset"  { kind bool description "Clear the account's failure count and rest period" }
+}
+
+intent "admin.provider_accounts.list" {
+  response "rows"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [id] provides [rows]
+    config { statement "SELECT name, state, public, note, used, failures, last_used_ms, cooldown_until_ms, CASE WHEN secret <> '' THEN 1 ELSE 0 END AS has_secret FROM provider_accounts WHERE provider = $1 ORDER BY name" args [id] }
+  }
+}
+
+intent "admin.provider_accounts.put" {
+  description "Create an account of a provider, or change it; secrets are sealed and never read back"
+  response "result"
+  input_schema "provider_account_put"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "acct" { uses "request.param" kind pure provides [acct] config { name "name" } }
+  node "body" {
+    uses "data.transform" kind pure requires [input] provides [body]
+    config { source_fact "input" data { defaults { state "active" note "" public {} secret {} reset false } } }
+  }
+  node "old_rows" {
+    uses "database.query" resource "db" kind read requires [id, acct] provides [old_rows]
+    config { statement "SELECT secret FROM provider_accounts WHERE provider = $1 AND name = $2" args [id, lower(acct)] }
+  }
+  node "old" { uses "data.first" requires [old_rows] provides [old] config { source_fact "old_rows" optional true } }
+  node "old_text" { uses "data.transform" kind pure requires [old] provides [old_text] config { data { extract { secret "old != nil ? old.secret : ''" } } } }
+  node "old_secret" { uses "crypto.unseal" kind pure requires [old_text] provides [old_secret] config { key env("SMS_CREDENTIAL_KEY", "sms-gateway-dev-credential-key-change-me") value_fact "old_text.secret" json true } }
+  node "new_secret" { uses "expression" kind pure requires [body] provides [new_secret] config { expression "body.secret" } }
+  node "merged" { uses "data.merge" kind pure requires [old_secret, new_secret] provides [merged] config { sources [old_secret, new_secret] } }
+  node "sealed" { uses "crypto.seal" kind pure requires [merged] provides [sealed] config { key env("SMS_CREDENTIAL_KEY", "sms-gateway-dev-credential-key-change-me") value_fact "merged" } }
+  node "public_text" { uses "data.json_encode" kind pure requires [body] provides [public_text] config { source_fact "body.public" } }
+  node "row" {
+    uses "data.transform" kind pure requires [id, acct, body, sealed, public_text] provides [row]
+    config { data { extract { provider "id" name "lower(trim(acct))" state "body.state" note "body.note" public "public_text" secret "sealed" reset "body.reset ? 1 : 0" } } }
+  }
+  node "saved" {
+    uses "database.transaction" resource "db" kind effect requires [row] provides [saved]
+    config {
+      statements [
+        { name "known" sql "SELECT id FROM providers WHERE id = $1" args [row.provider] require_rows true failure { code "NOT_FOUND" status 404 message "no such provider" } },
+        { name "upsert" sql "INSERT INTO provider_accounts (provider, name, state, public, secret, note) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (provider, name) DO UPDATE SET state = excluded.state, public = excluded.public, secret = excluded.secret, note = excluded.note, failures = CASE WHEN $7 = 1 THEN 0 ELSE provider_accounts.failures END, cooldown_until_ms = CASE WHEN $7 = 1 THEN 0 ELSE provider_accounts.cooldown_until_ms END"
+          args [row.provider, row.name, row.state, row.public, row.secret, row.note, row.reset] }
+      ]
+    }
+  }
+  node "result" { uses "data.transform" kind pure requires [row, saved] provides [result] config { data { extract { provider "row.provider" name "row.name" state "row.state" } pick ["provider", "name", "state"] } } }
+}
+
+intent "admin.provider_accounts.delete" {
+  response "result"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "acct" { uses "request.param" kind pure provides [acct] config { name "name" } }
+  node "gone" {
+    uses "database.transaction" resource "db" kind effect requires [id, acct] provides [gone]
+    config { statements [ { name "del" sql "DELETE FROM provider_accounts WHERE provider = $1 AND name = $2" args [id, acct] require_affected true failure { code "NOT_FOUND" status 404 message "no such account" } } ] }
+  }
+  node "result" { uses "data.transform" kind pure requires [id, acct, gone] provides [result] config { data { extract { provider "id" name "acct" deleted "true" } pick ["provider", "name", "deleted"] } } }
+}
+
+# ---- Provider settings ------------------------------------------------------
+# (Editing a provider never touches its settings or accounts: they have their own
+# endpoints.) Each channel declares the settings its providers have (channels.setting_fields:
+# name, label, kind, default, hint, required): an endpoint, an API address, a
+# sender id. The console builds the form from that, so providers of different
+# channels have different forms; this saves the values for one provider.
+
+shape "provider_settings" {
+  additional_properties false
+  prop "values" { kind object required true }
+}
+
+intent "admin.providers.settings_put" {
+  response "result"
+  input_schema "provider_settings"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "text" { uses "data.json_encode" kind pure requires [input] provides [text] config { source_fact "input.values" } }
+  node "saved" {
+    uses "database.transaction" resource "db" kind effect requires [id, text] provides [saved]
+    config { statements [ { name "set" sql "UPDATE providers SET settings = $1 WHERE id = $2" args [text, id] require_affected true failure { code "NOT_FOUND" status 404 message "no such provider" } } ] }
+  }
+  node "result" { uses "data.transform" kind pure requires [id, saved] provides [result] config { data { extract { id "id" saved "true" } pick ["id", "saved"] } } }
+}
+
+# ---- Testing an account's credentials ---------------------------------------
+# Sends one message through ONE account of a provider, exactly as a real send
+# would (the provider's settings, the account's credentials, the channel's send
+# intent), but without routing, payment or a message record, and without
+# touching the account's counters. The answer is the provider's own: accepted
+# with its message id, or its refusal. For a live provider this sends a real
+# message to the number you give.
+
+shape "account_test" {
+  additional_properties false
+  prop "to"   { kind string required true min_length 5 max_length 40 }
+  prop "text" { kind string max_length 160 }
+  prop "from" { kind string max_length 16 }
+}
+
+intent "admin.provider_accounts.test" {
+  description "Send one test message through one account of a provider"
+  response "result"
+  input_schema "account_test"
+  timeout 40s
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "acct" { uses "request.param" kind pure provides [acct] config { name "name" } }
+  node "body" {
+    uses "data.transform" kind pure requires [input] provides [body]
+    config { source_fact "input" data { defaults { text "Credential test from the SMS gateway" from "" } } }
+  }
+  node "prov_rows" {
+    uses "database.query" resource "db" kind read requires [id] provides [prov_rows]
+    config { statement "SELECT id, channel, settings, sandbox FROM providers WHERE id = $1" args [id] require_rows true not_found_message "no such provider" }
+  }
+  node "prov" { uses "data.first" requires [prov_rows] provides [prov] config { source_fact "prov_rows" } }
+  node "acct_rows" {
+    uses "database.query" resource "db" kind read requires [id, acct] provides [acct_rows]
+    config { statement "SELECT name, public, secret FROM provider_accounts WHERE provider = $1 AND name = $2" args [id, acct] require_rows true not_found_message "no such account" }
+  }
+  node "account" { uses "data.first" requires [acct_rows] provides [account] config { source_fact "acct_rows" } }
+  node "pset_raw" { uses "data.json_decode" kind pure requires [prov] provides [pset_raw] config { source_fact "prov.settings" } }
+  node "settings" {
+    uses "data.transform" kind pure requires [pset_raw] provides [settings]
+    config { source_fact "pset_raw" data { defaults { endpoint "/send" url "" from_override "" } } }
+  }
+  node "acct_public" { uses "data.json_decode" kind pure requires [account] provides [acct_public] config { source_fact "account.public" } }
+  node "acct_secret" { uses "crypto.unseal" kind pure requires [account] provides [acct_secret] config { key env("SMS_CREDENTIAL_KEY", "sms-gateway-dev-credential-key-change-me") value_fact "account.secret" json true } }
+  node "acct_merged" { uses "data.merge" kind pure requires [acct_public, acct_secret] provides [acct_merged] config { sources [acct_public, acct_secret] } }
+  node "cred" {
+    uses "data.transform" kind pure requires [acct_merged] provides [cred]
+    config {
+      source_fact "acct_merged"
+      data {
+        defaults { system_id "" password "" token "" key "" routeid "" campaign "" url "" }
+        extract { authorization "acct_merged.token != nil and acct_merged.token != '' ? 'Bearer ' + acct_merged.token : ''" }
+      }
+    }
+  }
+  node "outbound" {
+    uses "data.transform" kind pure requires [body, settings, cred] provides [outbound]
+    config {
+      data {
+        extract {
+          id "'test_' + replace(uuid(), '-', '')"
+          to "regex_replace(body.to, '[^0-9]', '')"
+          from "settings.from_override != '' ? settings.from_override : (body.from != '' ? body.from : 'SMS')"
+          text "body.text"
+          dlr "0"
+          provider "id"
+          cred "cred"
+          settings "settings"
+        }
+      }
+    }
+  }
+  node "sent_result" {
+    uses "flow.switch" kind effect requires [prov, outbound] provides [sent_result]
+    config {
+      on "prov.channel"
+      input_fact "outbound"
+      cases [
+        { label "np_telecom" intent "send.np_telecom" },
+        { label "premium_np" intent "send.premium_np" },
+        { label "in_vendor" intent "send.in_vendor" },
+        { label "global_fallback" intent "send.global_fallback" },
+        { label "smspasal" intent "send.smspasal" }
+      ]
+      default_intent "send.none"
+    }
+  }
+  node "sent" { uses "expression" kind pure requires [sent_result] provides [sent] config { expression "sent_result.result" } }
+  node "result" {
+    uses "data.transform" kind pure requires [prov, outbound, sent] provides [result]
+    config {
+      data {
+        extract {
+          ok "sent.ok == true"
+          provider_message_id "sent.provider_message_id != nil ? sent.provider_message_id : ''"
+          latency_ms "sent.latency_ms != nil ? sent.latency_ms : 0"
+          error "sent.error != nil and sent.error.message != nil ? sent.error.message : ''"
+          to "outbound.to"
+          from "outbound.from"
+          channel "prov.channel"
+          sandbox "prov.sandbox == 1"
+        }
+        pick ["ok", "provider_message_id", "latency_ms", "error", "to", "from", "channel", "sandbox"]
+      }
+    }
+  }
+}

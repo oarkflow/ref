@@ -6,6 +6,17 @@ Rather than processing requests through linear, sequential middleware pipelines 
 
 ---
 
+## Run an application
+
+```sh
+make run dir=./examples/smsgateway            # any directory with config/ (or bcl/, or app.bcl), templates/, static/
+make run dir=./examples/smsgateway addr=:9000
+make build                                    # bin/ref
+```
+
+`cmd/ref` is its own module and runs the application with its BCL, rules, SPL templates, static files, sessions, authorization, workflows, workers and every driver in this repository, with no application code.
+(`make run --dir=…` cannot work: GNU make reads `--dir` as its own `--directory` option.)
+
 ## The Problem: The 6 Fatal Flaws of Traditional HTTP Pipelines
 
 Traditional HTTP servers (including Gin, Echo, Fiber, FastHTTP, and conventional `fh`) rely on a 20-year-old architectural pattern: **the linear middleware chain**.
@@ -319,7 +330,7 @@ This gives teams a route-by-route migration path. It does not automatically tran
 - [**examples/gov-hierarchy/**](examples/gov-hierarchy/): Government services across country → state → district → municipality.
 - [**examples/medical-coding/**](examples/medical-coding/): Single- and multi-DOS medical coding with duplicate-billing checks and per-day claim lines.
 - [**docs/integrations-and-streaming.md**](docs/integrations-and-streaming.md): Node families as shorthand for their default action; gRPC (Connect), Standard Webhooks, RAG retrieval, external workflow orchestrators, and incremental SSE streaming with backpressure.
-- [**examples/smsgateway/**](examples/smsgateway/): A complete SMS sending application, entirely BCL. Pluggable provider gateways (SMPP via smppflow, vendor HTTP, mock) with routing by user, tenant, country, operator prefix, sender, message type, quality and cost; a validate → check → route → pay → dispatch pipeline over per-provider [oarkflow/broker](../broker) queues; configurable retry and failover; at-least-once delivery with exactly-once payment. Shows how to add a resource kind (`queue.broker`), gateway plugins and pipeline stages.
+- [**examples/smsgateway/**](examples/smsgateway/): A complete SMS sending application with no Go code: BCL, `oarkflow/rules` decision tables, SQL and SPL templates, run by `cmd/ref` (`make run dir=./examples/smsgateway`). Routing by account, tenant, country, sender, type, quality and cost; per-provider [oarkflow/broker](../broker) queues; retry, failover, at-least-once delivery with exactly-once payment; a web console. Flows are changed without editing them, by `extend` blocks ([docs/extending-intents.md](docs/extending-intents.md); generic actions in [docs/generic-actions.md](docs/generic-actions.md)).
 - [**docs/pipelines.md**](docs/pipelines.md): Multi-stage data verification pipelines. Public application pages built from form groups (wizard, tabbed, accordion or stacked layouts; editable, readonly or summary modes), per-stage roles and stage-local forms, and review, approval, check, automated, task and certificate nodes. Also covers the correction loop, four-eyes approval, and signed, verifiable certificates. The worked example is [examples/passport](examples/passport).
 - [**docs/entities.md**](docs/entities.md): Declarative data resources. One `entity` block becomes a migrated table and a validated REST API: filters, search, sorting, totals, optimistic versioning, soft delete, per-operation access rules with row conditions, tenant, owner and org scoping, CSV export, aggregates and post-commit hooks.
 - [**docs/flags-and-documents.md**](docs/flags-and-documents.md): Feature flags (targeting rules, sticky rollouts, weighted experiments, route gates, run-time overrides shared across replicas), dependency-free PDF documents and certificate PDFs, and exact decimal (money) columns.

@@ -1,0 +1,73 @@
+# ---------------------------------------------------------------------------
+# Operator views over providers, messages and traffic, and the controls that
+# change routing without a deploy.
+# ---------------------------------------------------------------------------
+
+intent "admin.providers.list" {
+  response "rows"
+  node "rows" {
+    uses "database.query" resource "db" kind read provides [rows]
+    config {
+      statement "SELECT p.*, COALESCE(SUM(h.successes), 0) AS successes, COALESCE(SUM(h.failures), 0) AS failures, COALESCE(MAX(h.open_until_ms), 0) AS open_until_ms FROM providers p LEFT JOIN provider_health h ON h.provider = p.id GROUP BY p.id ORDER BY p.id"
+    }
+  }
+}
+route "admin.providers.list" { method GET path "/v1/admin/providers" intent "admin.providers.list" auth "admin_auth" cache_control "no-store" }
+
+intent "admin.providers.state" {
+  response "result"
+  input_schema "provider_state"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "changed" {
+    uses "database.transaction" resource "db" kind effect requires [id, input] provides [changed]
+    config { statements [ { name "set" sql "UPDATE providers SET state = $1 WHERE id = $2" args [input.state, id] require_affected true failure { code "NOT_FOUND" status 404 message "no such provider" } } ] }
+  }
+  node "result" { uses "data.transform" kind pure requires [id, input, changed] provides [result] config { data { extract { id "id" state "input.state" } pick ["id", "state"] } } }
+}
+route "admin.providers.state" { method PUT path "/v1/admin/providers/:id/state" intent "admin.providers.state" auth "admin_auth" cache_control "no-store" }
+
+intent "admin.messages.list" {
+  response "rows"
+  node "state" { uses "request.param" kind pure provides [state] config { name "state" from "query" required false default "" } }
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [state] provides [rows]
+    config {
+      statement "SELECT id, user_id, state, provider, to_number AS \"to\", country, msg_type AS type, segments, price, err_code, total_attempts, created_ms FROM messages WHERE ($1 = '' OR state = $1) ORDER BY created_ms DESC LIMIT 200"
+      args [state]
+    }
+  }
+}
+route "admin.messages.list" { method GET path "/v1/admin/messages" intent "admin.messages.list" auth "admin_auth" cache_control "no-store" }
+
+intent "admin.stats" {
+  response "result"
+  node "by_state" {
+    uses "database.query" resource "db" kind read provides [by_state]
+    config { statement "SELECT state, COUNT(*) AS n FROM messages GROUP BY state ORDER BY state" }
+  }
+  node "by_provider" {
+    uses "database.query" resource "db" kind read provides [by_provider]
+    config { statement "SELECT provider, state, COUNT(*) AS n, COALESCE(SUM(cost), 0) AS cost FROM messages GROUP BY provider, state ORDER BY provider, state" }
+  }
+  node "money" {
+    uses "database.query" resource "db" kind read provides [money]
+    config { statement "SELECT COALESCE(SUM(balance), 0) AS balance, COALESCE(SUM(held), 0) AS held FROM balances" }
+  }
+  node "result" { uses "data.transform" kind pure requires [by_state, by_provider, money] provides [result] config { data { extract { states "by_state" providers "by_provider" money "money" } pick ["states", "providers", "money"] } } }
+}
+route "admin.stats" { method GET path "/v1/admin/stats" intent "admin.stats" auth "admin_auth" cache_control "no-store" }
+
+intent "admin.optouts.put" {
+  response "result"
+  input_schema "optout_put"
+  node "row" {
+    uses "data.transform" kind pure requires [input] provides [row]
+    config { data { extract { scope "input.scope != nil ? input.scope : '*'" number "regex_replace(input.number, '[^0-9]', '')" reason "input.reason != nil ? input.reason : ''" now_ms "unix_millis()" } } }
+  }
+  node "saved" {
+    uses "database.transaction" resource "db" kind effect requires [row] provides [saved]
+    config { statements [ { name "put" sql "INSERT INTO optouts (scope, number, reason, at_ms) VALUES ($1, $2, $3, $4) ON CONFLICT (scope, number) DO UPDATE SET reason = excluded.reason" args [row.scope, row.number, row.reason, row.now_ms] } ] }
+  }
+  node "result" { uses "data.transform" kind pure requires [row, saved] provides [result] config { data { extract { scope "row.scope" number "row.number" } pick ["scope", "number"] } } }
+}
+route "admin.optouts.put" { method POST path "/v1/admin/optouts" intent "admin.optouts.put" auth "admin_auth" cache_control "no-store" }

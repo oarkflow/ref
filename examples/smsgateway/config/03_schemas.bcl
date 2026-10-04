@@ -1,0 +1,38 @@
+# Request contracts. They run before any stage does: nothing is read, priced or
+# queued for a request that does not fit.
+
+shape "topup_request" {
+  description "POST /v1/admin/users/{id}/topup"
+  additional_properties false
+  prop "amount"    { kind number required true min 0.000001 }
+  prop "reference" { kind string required true min_length 1 max_length 100 description "Makes the top-up safe to replay" }
+}
+
+shape "sms_send" {
+  description "POST /v1/messages and /v1/route/explain"
+  additional_properties false
+  prop "to"            { kind string required true min_length 3 max_length 40 description "Recipient: +9779841234567, 009779841234567 or a national number" }
+  prop "text"          { kind string max_length 2000 }
+  prop "template"      { kind string max_length 60 pattern "^[a-z][a-z0-9_]*$" description "A template under templates/sms; sent instead of text" }
+  prop "vars"          { kind object description "Variables for the template" }
+  prop "lang"          { kind string max_length 8 }
+  prop "from"          { kind string max_length 16 description "Sender id; defaults to the account's" }
+  prop "type"          { kind string max_length 32 }
+  prop "reference"     { kind string max_length 100 description "Idempotency key: the same reference never sends or charges twice" }
+  prop "dlr"           { kind bool }
+  prop "delay_seconds" { kind int min 0 max 604800 description "Hold the message this long before dispatching" }
+  prop "expires_in"    { kind int min 1 max 604800 description "Seconds before an unsent message is dropped" }
+  prop "meta"          { kind object }
+}
+
+shape "provider_state" {
+  additional_properties false
+  prop "state" { kind string required true enum ["active", "paused", "disabled"] }
+}
+
+shape "optout_put" {
+  additional_properties false
+  prop "number" { kind string required true min_length 5 max_length 20 }
+  prop "scope"  { kind string max_length 60 description "An account id, or * for every account" }
+  prop "reason" { kind string max_length 200 }
+}

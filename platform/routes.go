@@ -555,6 +555,7 @@ func (p *Platform) authenticate(ctx context.Context, c fh.Ctx, route compiledRou
 	creds := Credentials{
 		BearerToken: extractBearer(c.Get("Authorization")),
 		APIKey:      c.Get("X-API-Key"),
+		Headers:     flattenHeaders(c.GetReqHeaders()),
 		SessionID:   sessionID,
 		RemoteIP:    c.IP(),
 		TLS:         c.Protocol() == "https",

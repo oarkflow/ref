@@ -1,0 +1,69 @@
+# What would happen to a message, without sending or charging anything: how its
+# number was read, whether it is valid, the chain of providers and why each
+# other provider was left out, and the price.
+
+# The public entry: for the caller's own account.
+intent "sms.explain" {
+  description "Dry run of sms.prepare for the caller's account"
+  response "result"
+  input_schema "sms_send"
+  node "result" { uses "flow.subflow" kind pure requires [input] provides [result] config { intent "sms.explain_as" } }
+}
+
+# For an operator: the same dry run for any account, to see where its messages would go.
+shape "admin_explain" {
+  additional_properties false
+  prop "account"       { kind string required true max_length 60 }
+  prop "to"            { kind string required true min_length 3 max_length 40 }
+  prop "text"          { kind string max_length 2000 }
+  prop "template"      { kind string max_length 60 pattern "^[a-z][a-z0-9_]*$" }
+  prop "vars"          { kind object }
+  prop "lang"          { kind string max_length 8 }
+  prop "from"          { kind string max_length 16 }
+  prop "type"          { kind string max_length 32 }
+  prop "dlr"           { kind bool }
+}
+intent "admin.route.explain" {
+  description "Dry run of sms.prepare for a named account"
+  response "result"
+  input_schema "admin_explain"
+  node "result" { uses "flow.subflow" kind pure requires [input] provides [result] config { intent "sms.explain_as" } }
+}
+
+# The dry run itself. `account`, when present, names the account (sms.prepare
+# reads it); sms.explain cannot receive it, because its input shape rejects it.
+intent "sms.explain_as" {
+  description "Dry run of sms.prepare"
+  response "result"
+  node "prepared" { uses "flow.subflow" kind pure requires [input] provides [prepared] config { intent "sms.prepare" } }
+  node "lead" { uses "data.first" requires [prepared] provides [lead] config { source_fact "prepared.route.chain" optional true } }
+  node "result" {
+    uses "data.transform" kind pure requires [prepared, lead] provides [result]
+    config {
+      data {
+        extract {
+          to "prepared.message.to"
+          country "prepared.message.country"
+          type "prepared.message.type"
+          segments "prepared.message.segments"
+          encoding "prepared.message.encoding"
+          objective "prepared.route.ranking"
+          route "prepared.route.chain"
+          rejected "prepared.route.rejected"
+          price "prepared.charge.total"
+          currency "prepared.charge.currency"
+          sandbox "lead != nil and lead.sandbox == 1"
+        }
+        pick ["to", "country", "type", "segments", "encoding", "objective", "route", "rejected", "price", "currency", "sandbox"]
+      }
+    }
+  }
+}
+route "sms.explain" {
+  description "Dry run: how a message would be read, routed and priced"
+  method POST
+  path "/v1/route/explain"
+  intent "sms.explain"
+  auth "sender_auth"
+  cache_control "no-store"
+}

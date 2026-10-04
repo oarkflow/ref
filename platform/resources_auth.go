@@ -155,6 +155,9 @@ func registerAuthResources(r *Registry) {
 // about key prefixes, small but free to avoid.
 type apiKeyAuth struct {
 	byDigest map[string]Principal
+	// header is a header other than X-API-Key that carries the key, such as a
+	// webhook's X-Webhook-Secret. X-API-Key and a bearer token still work.
+	header string
 }
 
 func openAPIKeyAuth(_ context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
@@ -162,7 +165,7 @@ func openAPIKeyAuth(_ context.Context, spec ResourceSpec) (Resource, io.Closer, 
 		"key", "principal_id", "roles", "scopes", "keys", "header"); err != nil {
 		return nil, nil, err
 	}
-	auth := &apiKeyAuth{byDigest: map[string]Principal{}}
+	auth := &apiKeyAuth{byDigest: map[string]Principal{}, header: configString(spec.Config, "header", "")}
 
 	add := func(value string, principal Principal) error {
 		if len(value) < 16 {
@@ -215,6 +218,14 @@ func (a *apiKeyAuth) Authenticate(_ context.Context, creds Credentials) (Princip
 	// static key in an Authorization header, and refusing that only produces a
 	// confusing 401 for a correct key.
 	presented := creds.APIKey
+	if presented == "" && a.header != "" {
+		for name, value := range creds.Headers {
+			if strings.EqualFold(name, a.header) {
+				presented = value
+				break
+			}
+		}
+	}
 	if presented == "" {
 		presented = creds.BearerToken
 	}

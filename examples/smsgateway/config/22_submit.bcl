@@ -1,0 +1,151 @@
+# ---------------------------------------------------------------------------
+# sms.submit: accept a message. Prepare it (20_prepare.bcl), then, in ONE
+# transaction, take the payment and store the message; then queue it for the
+# first provider in its route.
+#
+# The funds are HELD, not spent: a hold is released if the message ultimately
+# fails and captured when a provider accepts it (30_deliver.bcl). Because the
+# hold and the message are one commit, and the reference is unique per account,
+# a message is paid for exactly once however often the request is repeated.
+# ---------------------------------------------------------------------------
+
+# The public entry (route, input schema), which hands the request to sms.accept.
+intent "sms.submit" {
+  description "Send one SMS for the caller's account"
+  response "accepted"
+  input_schema "sms_send"
+  timeout 15s
+  node "accepted" { uses "flow.subflow" kind effect requires [input] provides [accepted] config { intent "sms.accept" } }
+}
+
+# The whole acceptance. Internal callers (campaigns) call it directly and may
+# name the account in `account`; a caller of sms.submit cannot, because the
+# sms_send shape rejects the field.
+intent "sms.accept" {
+  description "Accept one SMS: prepare it, take payment, queue it"
+  response "result"
+  timeout 15s
+
+  node "prepared" { uses "flow.subflow" kind pure requires [input] provides [prepared] config { intent "sms.prepare" } }
+
+  # A repeated reference is the same message; a reused one for different content is refused.
+  node "earlier_rows" {
+    uses "database.query" resource "db" kind read requires [prepared] provides [earlier_rows]
+    config { statement "SELECT id, payload_hash, state, provider FROM messages WHERE user_id = $1 AND idem_key = $2" args [prepared.user.id, prepared.message.reference] }
+  }
+  node "earlier_first" { uses "data.first" requires [earlier_rows] provides [earlier_first] config { source_fact "earlier_rows" optional true } }
+  node "existing" {
+    uses "data.transform" kind pure requires [earlier_first] provides [existing]
+    config { data { extract { id "earlier_first != nil ? earlier_first.id : ''" payload_hash "earlier_first != nil ? earlier_first.payload_hash : ''" state "earlier_first != nil ? earlier_first.state : ''" provider "earlier_first != nil ? earlier_first.provider : ''" } } }
+  }
+  node "reference_ok" {
+    uses "rules.decide" resource "policy" kind read requires [prepared, existing] provides [reference_ok]
+    input_data { extract { message "prepared.message" existing "existing" } pick ["message", "existing"] }
+    config { definition "idempotency" decision "reference" fail_on ["deny"] }
+  }
+
+  node "lead" { uses "data.first" requires [prepared] provides [lead] config { source_fact "prepared.route.chain" } }
+  node "plan_ids" { uses "data.map" kind pure requires [prepared] provides [plan_ids] config { source_fact "prepared.route.chain" expression "item.id" } }
+  node "plan_json" { uses "data.json_encode" kind pure requires [plan_ids] provides [plan_json] config { source_fact "plan_ids" } }
+  node "row" {
+    uses "data.transform" kind pure requires [prepared, plan_json, lead] provides [row]
+    config {
+      data {
+        extract {
+          id "prepared.message.id"
+          user_id "prepared.user.id"
+          tenant "prepared.user.tenant"
+          idem_key "prepared.message.reference != '' ? prepared.message.reference : nil"
+          payload_hash "prepared.message.payload_hash"
+          provider "lead.id"
+          plan "plan_json"
+          to "prepared.message.to"
+          country "prepared.message.country"
+          sender "prepared.message.from"
+          type "prepared.message.type"
+          segments "prepared.message.segments"
+          encoding "prepared.message.encoding"
+          dlr "prepared.message.dlr ? 1 : 0"
+          text "prepared.message.text"
+          price "prepared.charge.micros"
+          currency "prepared.message.currency"
+          now_ms "prepared.message.now_ms"
+          next_run_ms "prepared.message.now_ms + prepared.message.delay_s * 1000"
+          expires_ms "prepared.message.now_ms + (prepared.message.delay_s + prepared.message.ttl_s) * 1000"
+        }
+      }
+    }
+  }
+
+  node "accepted" {
+    uses "database.transaction" resource "db" kind effect requires [row, existing, reference_ok] provides [accepted]
+    config {
+      statements [
+        { name "open_balance" when "existing.id == ''" sql "INSERT INTO balances (user_id, balance, held) VALUES ($1, 0, 0) ON CONFLICT (user_id) DO NOTHING" args [row.user_id] },
+        { name "reserve" when "existing.id == ''" sql "UPDATE balances SET held = held + $1 WHERE user_id = $2 AND balance - held >= $3" args [row.price, row.user_id, row.price]
+          require_affected true failure { code "INSUFFICIENT_FUNDS" status 409 message "the message costs more than the available balance" } },
+        { name "message" when "existing.id == ''" sql "INSERT INTO messages (id, user_id, tenant, idem_key, payload_hash, state, provider, plan, plan_index, attempt, total_attempts, dispatch_seq, next_run_ms, to_number, country, sender, msg_type, segments, encoding, want_dlr, body, price, currency, created_ms, updated_ms, expires_ms) VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, 0, 0, 0, 1, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $19, $20)"
+          args [row.id, row.user_id, row.tenant, row.idem_key, row.payload_hash, row.provider, row.plan, row.next_run_ms, row.to, row.country, row.sender, row.type, row.segments, row.encoding, row.dlr, row.text, row.price, row.currency, row.now_ms, row.expires_ms] },
+        { name "hold" when "existing.id == ''" sql "INSERT INTO holds (message_id, user_id, amount, state, updated_ms) VALUES ($1, $2, $3, 'hold', $4)" args [row.id, row.user_id, row.price, row.now_ms] },
+        { name "journal" when "existing.id == ''" sql "INSERT INTO ledger (message_id, kind, user_id, amount, at_ms) VALUES ($1, 'hold', $2, $3, $4) ON CONFLICT (message_id, kind) DO NOTHING" args [row.id, row.user_id, row.price, row.now_ms] }
+      ]
+    }
+  }
+
+  # Queue the first attempt, unless this request was a repeat of an accepted one.
+  node "job" {
+    uses "data.transform" kind pure requires [row, lead] provides [job]
+    config { data { extract { message_id "row.id" provider "row.provider" channel "lead.channel" seq "1" delay_s "(row.next_run_ms - row.now_ms) / 1000" } } }
+  }
+  node "queued" {
+    uses "flow.branch" kind effect requires [job, existing, accepted] provides [queued]
+    config { input_fact "job" required false cases [ { name "new" condition "existing.id == ''" intent "sms.enqueue_first" } ] }
+  }
+
+  node "route_ids" { uses "data.map" kind pure requires [prepared] provides [route_ids] config { source_fact "prepared.route.chain" expression "item.id" } }
+  node "result" {
+    uses "data.transform" kind pure requires [prepared, existing, route_ids, queued, lead] provides [result]
+    config {
+      data {
+        extract {
+          id "existing.id != '' ? existing.id : prepared.message.id"
+          state "existing.id != '' ? existing.state : 'queued'"
+          duplicate "existing.id != ''"
+          to "prepared.message.to"
+          country "prepared.message.country"
+          from "prepared.message.from"
+          type "prepared.message.type"
+          segments "prepared.message.segments"
+          encoding "prepared.message.encoding"
+          price "prepared.charge.total"
+          currency "prepared.message.currency"
+          provider "existing.id != '' ? existing.provider : lead.id"
+          route "route_ids"
+          sandbox "lead.sandbox == 1"
+        }
+        pick ["id", "state", "duplicate", "to", "country", "from", "type", "segments", "encoding", "price", "currency", "provider", "route", "sandbox"]
+      }
+    }
+  }
+}
+
+intent "sms.enqueue_first" {
+  description "Publish a message's first dispatch job, to its first provider's queue"
+  response "published"
+  node "delay_s" { uses "expression" kind pure requires [input] provides [delay_s] config { expression "input.delay_s" } }
+  node "published" {
+    uses "queue.publish_delayed" resource "bus" kind effect requires [input, delay_s] provides [published]
+    config { job_type "sms.dispatch.{{ input.channel }}" payload_fact "input" delay_fact "delay_s" }
+  }
+}
+
+route "sms.submit" {
+  description "Send an SMS. Answers 202 once the message is stored and paid for; delivery follows."
+  method POST
+  path "/v1/messages"
+  intent "sms.submit"
+  auth "sender_auth"
+  status 202
+  cache_control "no-store"
+  max_body_bytes 65536
+}

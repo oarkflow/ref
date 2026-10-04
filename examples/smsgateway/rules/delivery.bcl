@@ -1,0 +1,278 @@
+bcl { version "1.0" }
+
+# Delivery policy. Three decisions run for every attempt to send a message
+# through a provider:
+#
+#   gate      before sending: should this job send at all?
+#   classify  after sending: what kind of result was that?
+#   decide    what to do about it: accept, retry the same provider, fail over to
+#             the next provider in the route, or fail the message.
+#
+# Facts:
+#   job   the message and the provider it is on: claimed, stale, state, provider,
+#         attempt (on this provider), total_attempts, plan_index, plan_len,
+#         has_next, expired, country, type, provider_state, circuit_open,
+#         max_attempts, backoff_initial_s, backoff_max_s, backoff_factor
+#   sent  the provider's answer: ok, skipped, provider_message_id, latency_ms,
+#         body_code (a vendor's own error code from its response body) and
+#         error { kind (upstream, timeout, transport, connect, bind, blocked),
+#         protocol, status, code, message, retry_after_s }
+#   gate, class  the earlier decisions' attributes
+#
+# What each result MEANS is written here and nowhere else. The pipeline only
+# does what a row tells it: an attribute `action` of accept, retry, failover,
+# fail or skip, with the values the action needs.
+
+module "delivery" {
+  version "1"
+  environment "production"
+
+  decision_schema "gate" { effects [allow, deny] default allow strategy first_match }
+  decision_table "gate" {
+    default allow
+    hit_policy first
+
+    # Another worker holds this message right now: fail the job, so the queue
+    # redelivers it after its backoff.
+    row "being-sent-elsewhere" {
+      priority 100
+      when {
+        all {
+          job.claimed == false
+          job.stale == false
+          job.state == "dispatching"
+        }
+      }
+      then { outcome { decision deny reason "another worker is sending this message" attributes { code "BUSY" status 503 } } }
+    }
+    # The job is out of date, or the message is already finished: nothing to do.
+    row "stale-or-finished" {
+      priority 90
+      when { job.claimed == false }
+      then { outcome { decision allow attributes { action "skip" reason "stale or already handled" } } }
+    }
+    row "expired" {
+      priority 80
+      when { job.expired == true }
+      then { outcome { decision allow attributes { action "fail" code "expired" reason "the message expired before it could be sent" } } }
+    }
+    # A provider that is not active, or whose circuit is open, is skipped
+    # without trying it.
+    row "provider-not-active" {
+      priority 70
+      when { job.provider_state != "active" }
+      then { outcome { decision allow attributes { action "failover" code "provider_not_active" reason "the provider is not active" } } }
+    }
+    row "circuit-open" {
+      priority 60
+      when { job.circuit_open == 1 }
+      then { outcome { decision allow attributes { action "failover" code "circuit_open" reason "the provider is failing on this route" } } }
+    }
+    # The provider has accounts, and every one is resting or switched off.
+    row "no-account-available" {
+      priority 55
+      when {
+        all {
+          job.accounts_total > 0
+          job.accounts_available == 0
+        }
+      }
+      then { outcome { decision allow attributes { action "failover" code "no_account" reason "every account of the provider is resting or switched off" } } }
+    }
+    row "send" {
+      priority 10
+      when { job.claimed == true }
+      then { outcome { decision allow attributes { action "send" } } }
+    }
+  }
+
+  decision_schema "classify" { effects [allow] default allow strategy first_match }
+  decision_table "classify" {
+    default allow
+    hit_policy first
+
+    row "accepted" {
+      priority 1000
+      when { sent.ok == true }
+      then { outcome { decision allow attributes { class "ok" } } }
+    }
+    row "not-sent" {
+      priority 900
+      when { sent.skipped == true }
+      then { outcome { decision allow attributes { class "not_sent" } } }
+    }
+    row "provider-is-throttling" {
+      priority 800
+      when {
+        any {
+          sent.error.status == 429
+          sent.error.message matches "(?i)throttl|RMSGQFUL|0x00000058|0x00000014"
+        }
+      }
+      then { outcome { decision allow attributes { class "throttled" } } }
+    }
+    # The destination is the problem: no other provider will do better.
+    row "destination-rejected" {
+      priority 700
+      when {
+        any {
+          sent.error.message matches "(?i)INVALID_DESTINATION|invalid_number|0x0000000b"
+          sent.body_code == "invalid_number"
+        }
+      }
+      then { outcome { decision allow attributes { class "permanent" } } }
+    }
+    # The provider refuses us (credentials, account, route): another provider may accept.
+    row "provider-refuses-us" {
+      priority 600
+      when {
+        any {
+          sent.error.status == 401
+          sent.error.status == 402
+          sent.error.status == 403
+          sent.error.kind == "blocked"
+          sent.error.kind == "bind"
+          sent.error.message matches "(?i)INVALID_PASSWORD|INVALID_SYSTEM_ID|BIND_FAILED|INVALID_SOURCE|0x0000000e|0x0000000f|0x0000000d|0x0000000a"
+        }
+      }
+      then { outcome { decision allow attributes { class "provider" } } }
+    }
+    # SMSPasal answers "ERR: <reason>" with HTTP 200.
+    row "smspasal-bad-number" {
+      priority 650
+      when { sent.error.message matches "(?i)^ERR:.*(INVALID (MOBILE|NUMBER|CONTACT|RECIPIENT)|NO VALID CONTACT)" }
+      then { outcome { decision allow attributes { class "permanent" } } }
+    }
+    row "smspasal-refuses-us" {
+      priority 640
+      when { sent.error.message matches "(?i)^ERR:.*(API KEY|SENDER|ROUTE|CAMPAIGN|BALANCE|CREDIT|IP )" }
+      then { outcome { decision allow attributes { class "provider" } } }
+    }
+    row "request-rejected" {
+      priority 500
+      when {
+        all {
+          sent.error.kind == "upstream"
+          sent.error.status >= 400
+          sent.error.status < 500
+        }
+      }
+      then { outcome { decision allow attributes { class "permanent" } } }
+    }
+    # Timeouts, dropped connections, 5xx, SYSTEM_ERROR, anything unrecognised.
+    row "transient" {
+      priority 10
+      when { sent.ok == false }
+      then { outcome { decision allow attributes { class "retryable" } } }
+    }
+  }
+
+  decision_schema "decide" { effects [allow] default allow strategy first_match }
+  decision_table "decide" {
+    default allow
+    hit_policy first
+
+    row "job-skipped" {
+      priority 1000
+      when { gate.action == "skip" }
+      then { outcome { decision allow attributes { action "skip" } } }
+    }
+    row "gate-says-fail" {
+      priority 990
+      when { gate.action == "fail" }
+      then { outcome { decision allow attributes { action "fail" code "expired" penalize false } } }
+    }
+    # The provider was skipped without being tried.
+    row "skipped-provider-has-a-successor" {
+      priority 980
+      when {
+        all {
+          gate.action == "failover"
+          job.has_next == true
+        }
+      }
+      then { outcome { decision allow attributes { action "failover" penalize false } } }
+    }
+    row "skipped-provider-is-the-last" {
+      priority 970
+      when { gate.action == "failover" }
+      then { outcome { decision allow attributes { action "fail" code "all_providers_failed" penalize false } } }
+    }
+    # A provider accepted it: charge the held funds, erase the text, count a success.
+    row "accepted" {
+      priority 900
+      when { class.class == "ok" }
+      then { outcome { decision allow attributes { action "accept" capture true redact true penalize false } } }
+    }
+    row "bad-destination" {
+      priority 800
+      when { class.class == "permanent" }
+      then { outcome { decision allow attributes { action "fail" code "destination_rejected" penalize false } } }
+    }
+    # The provider is busy: wait its Retry-After (at least 2s) and try it again,
+    # without using up one of its attempts. At most 12 sends per message.
+    row "throttled" {
+      priority 700
+      when {
+        all {
+          class.class == "throttled"
+          job.total_attempts < 12
+        }
+      }
+      then { outcome { decision allow attributes { action "retry" delay_mode "retry_after" min_delay_s 2 free true penalize false } } }
+    }
+    # The provider refused this account's credentials and the provider has
+    # another account ready: try it at once, without using up an attempt, and
+    # rest the refused one for five minutes.
+    row "provider-refused-try-another-account" {
+      priority 650
+      when {
+        all {
+          class.class == "provider"
+          job.accounts_available > 1
+          job.total_attempts < 12
+        }
+      }
+      then { outcome { decision allow attributes { action "retry" delay_mode "none" free true penalize false account_cooldown_s 300 } } }
+    }
+    row "provider-refused-and-another-exists" {
+      priority 600
+      when {
+        all {
+          class.class == "provider"
+          job.has_next == true
+        }
+      }
+      then { outcome { decision allow attributes { action "failover" penalize true breaker_failures 5 breaker_open_s 30 account_cooldown_s 300 } } }
+    }
+    row "provider-refused-and-last" {
+      priority 590
+      when { class.class == "provider" }
+      then { outcome { decision allow attributes { action "fail" code "all_providers_failed" penalize true breaker_failures 5 breaker_open_s 30 account_cooldown_s 300 } } }
+    }
+    # A transient failure: try the same provider again, with the provider's own
+    # backoff, up to its own attempt limit (and 12 sends in all).
+    row "transient-retry" {
+      priority 500
+      when {
+        all {
+          class.class == "retryable"
+          job.attempt < job.max_attempts
+          job.total_attempts < 12
+        }
+      }
+      then { outcome { decision allow attributes { action "retry" delay_mode "backoff" free false penalize true breaker_failures 5 breaker_open_s 30 } } }
+    }
+    # Retries on this provider are used up: the next provider.
+    row "fail-over" {
+      priority 400
+      when { job.has_next == true }
+      then { outcome { decision allow attributes { action "failover" penalize true breaker_failures 5 breaker_open_s 30 } } }
+    }
+    row "chain-exhausted" {
+      priority 10
+      when { job.plan_len >= 0 }
+      then { outcome { decision allow attributes { action "fail" code "all_providers_failed" penalize true breaker_failures 5 breaker_open_s 30 } } }
+    }
+  }
+}

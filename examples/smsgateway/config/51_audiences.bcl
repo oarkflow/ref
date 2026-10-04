@@ -1,0 +1,101 @@
+# ---------------------------------------------------------------------------
+# Audiences: saved lists of recipients with their fields (a contact list, a
+# customer export). They are built from the same sources as a campaign (numbers,
+# CSV, rows), checked once with github.com/oarkflow/phone, and kept per account.
+# A campaign can then be started from an audience instead of pasting the list
+# again; its rows are copied at that moment, so later edits to the audience do not
+# change a campaign that is waiting for approval.
+# ---------------------------------------------------------------------------
+
+shape "audience_create" {
+  additional_properties false
+  prop "name"        { kind string required true min_length 1 max_length 120 }
+  prop "recipients"  { kind array items string }
+  prop "rows"        { kind array items object }
+  prop "csv"         { kind string max_length 4000000 }
+  prop "phone_field" { kind string max_length 60 }
+  prop "region"      { kind string max_length 2 }
+}
+
+intent "audience.create" {
+  description "Save a list of recipients with their fields"
+  response "result"
+  input_schema "audience_create"
+  timeout 120s
+  node "head" {
+    uses "data.transform" kind pure requires [input] provides [head]
+    config { data { extract { id "'aud_' + replace(uuid(), '-', '')" user_id "principal.id" name "input.name" now_ms "unix_millis()" } pick ["id", "user_id", "name", "now_ms"] } }
+  }
+  node "prepared" { uses "flow.subflow" kind pure requires [input] provides [prepared] config { intent "campaign.prepare_rows" } }
+  node "sized" {
+    uses "database.transaction" resource "db" kind effect requires [prepared] provides [sized]
+    config { statements [
+      { name "some" sql "SELECT 1 WHERE $1 > 0" args [prepared.total] require_rows true failure { code "NO_RECIPIENTS" status 422 message "the list has no recipients" } },
+      { name "few" sql "SELECT 1 WHERE $1 <= 2000" args [prepared.total] require_rows true failure { code "TOO_MANY_RECIPIENTS" status 422 message "an audience takes at most 2000 recipients" } }
+    ] }
+  }
+  node "stored" {
+    uses "database.transaction" resource "db" kind effect requires [head, prepared, sized] provides [stored]
+    config { statements [ { name "audience" sql "INSERT INTO audiences (id, user_id, name, total, valid, skipped, phone_field, region, created_ms) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+      args [head.id, head.user_id, head.name, prepared.total, prepared.valid, prepared.skipped, prepared.phone_field, prepared.region, head.now_ms] } ] }
+  }
+  node "rows" { uses "data.augment" kind pure requires [prepared, head] provides [rows] config { source_fact "prepared.rows" fields { audience_id "head.id" } } }
+  node "added" {
+    uses "flow.foreach" kind effect requires [rows, stored] provides [added]
+    config { intent "audience.add_member" items_fact "rows" concurrency 1 max_items 2000 }
+  }
+  node "result" {
+    uses "data.transform" kind pure requires [head, prepared, added] provides [result]
+    config { data { extract { id "head.id" name "head.name" total "prepared.total" valid "prepared.valid" skipped "prepared.skipped" columns "prepared.columns" } pick ["id", "name", "total", "valid", "skipped", "columns"] } }
+  }
+}
+
+intent "audience.add_member" {
+  response "done"
+  node "text" { uses "data.json_encode" kind pure requires [input] provides [text] config { source_fact "input.fields" } }
+  node "done" {
+    uses "database.transaction" resource "db" kind effect requires [input, text] provides [done]
+    config { statements [ { name "add" sql "INSERT INTO audience_members (audience_id, n, to_number, e164, state, reason, fields) VALUES ($1, $2, $3, $4, $5, $6, $7)"
+      args [input.audience_id, input.n, input.phone, input.phone_e164, input.state, input.reason, text] } ] }
+  }
+}
+
+intent "audience.list" {
+  response "rows"
+  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [uid] provides [rows]
+    config { statement "SELECT id, name, total, valid, skipped, phone_field, region, created_ms FROM audiences WHERE user_id = $1 ORDER BY created_ms DESC LIMIT 200" args [uid] }
+  }
+}
+
+intent "audience.get" {
+  response "result"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [id, uid] provides [rows]
+    config { statement "SELECT id, name, total, valid, skipped, phone_field, region, created_ms FROM audiences WHERE id = $1 AND user_id = $2" args [id, uid] require_rows true not_found_message "no such audience" }
+  }
+  node "row" { uses "data.first" requires [rows] provides [row] config { source_fact "rows" } }
+  node "members" {
+    uses "database.query" resource "db" kind read requires [row] provides [members]
+    config { statement "SELECT n, to_number, e164, state, reason, fields FROM audience_members WHERE audience_id = $1 ORDER BY n LIMIT 2000" args [row.id] }
+  }
+  node "result" { uses "data.transform" kind pure requires [row, members] provides [result] config { data { extract { audience "row" members "members" } pick ["audience", "members"] } } }
+}
+
+intent "audience.delete" {
+  response "result"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "gone" {
+    uses "database.transaction" resource "db" kind effect requires [id, uid] provides [gone]
+    config { statements [
+      { name "own" sql "SELECT id FROM audiences WHERE id = $1 AND user_id = $2" args [id, uid] require_rows true failure { code "NOT_FOUND" status 404 message "no such audience" } },
+      { name "members" sql "DELETE FROM audience_members WHERE audience_id = $1" args [id] },
+      { name "list" sql "DELETE FROM audiences WHERE id = $1" args [id] }
+    ] }
+  }
+  node "result" { uses "data.transform" kind pure requires [id, gone] provides [result] config { data { extract { id "id" deleted "true" } pick ["id", "deleted"] } } }
+}

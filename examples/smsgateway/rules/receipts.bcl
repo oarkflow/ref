@@ -1,0 +1,106 @@
+bcl { version "1.0" }
+
+# Delivery receipts. A provider reports, some time after accepting a message,
+# whether the handset got it. This file says how each provider's wording maps to
+# an outcome, and what to do about the outcome.
+#
+# Facts: receipt { provider, provider_message_id, reference, state, code, raw }
+# (SMPP receipts carry smppflow's state and the SMPP error code; vendor webhooks
+# carry the vendor's own status), and message { found, id, state, hold_state }.
+
+module "receipts" {
+  version "1"
+  environment "production"
+
+  decision_schema "receipt_outcome" { effects [allow] default allow strategy first_match }
+  decision_table "receipt_outcome" {
+    default allow
+    hit_policy first
+
+    row "delivered" {
+      priority 100
+      when {
+        any {
+          receipt.state == "delivered"
+          receipt.state == "DELIVRD"
+          receipt.state == "delivered_to_handset"
+          receipt.state == "success"
+        }
+      }
+      then { outcome { decision allow attributes { outcome "delivered" final true } } }
+    }
+    row "failed" {
+      priority 90
+      when {
+        any {
+          receipt.state == "failed"
+          receipt.state == "rejected"
+          receipt.state == "expired"
+          receipt.state == "UNDELIV"
+          receipt.state == "REJECTD"
+          receipt.state == "EXPIRED"
+          receipt.state == "DELETED"
+          receipt.state == "UNKNOWN"
+          receipt.state == "undelivered"
+        }
+      }
+      then { outcome { decision allow attributes { outcome "failed" final true } } }
+    }
+    # Anything else (ACCEPTD, ENROUTE, …) is interim: it changes nothing.
+    row "interim" {
+      priority 1
+      when { receipt.state != "" }
+      then { outcome { decision allow attributes { outcome "interim" final false } } }
+    }
+  }
+
+  decision_schema "receipt_action" { effects [allow, deny] default allow strategy first_match }
+  decision_table "receipt_action" {
+    default allow
+    hit_policy first
+
+    row "interim-receipt" {
+      priority 100
+      when { verdict.final == false }
+      then { outcome { decision allow attributes { action "ignore" } } }
+    }
+    # The receipt can outrun the commit of the submission it describes: fail the
+    # job, and the queue retries it shortly.
+    row "message-not-known-yet" {
+      priority 90
+      when { message.found == false }
+      then { outcome { decision deny reason "no message matches this receipt yet" attributes { code "UNKNOWN_MESSAGE" status 503 } } }
+    }
+    row "message-not-submitted-yet" {
+      priority 80
+      when {
+        any {
+          message.state == "queued"
+          message.state == "dispatching"
+        }
+      }
+      then { outcome { decision deny reason "the message has not been recorded as submitted yet" attributes { code "NOT_READY" status 503 } } }
+    }
+    row "already-finished" {
+      priority 70
+      when {
+        any {
+          message.state == "delivered"
+          message.state == "failed"
+        }
+      }
+      then { outcome { decision allow attributes { action "ignore" } } }
+    }
+    row "delivered" {
+      priority 50
+      when { verdict.outcome == "delivered" }
+      then { outcome { decision allow attributes { action "deliver" capture false redact true penalize false } } }
+    }
+    # Failed after the provider accepted it: give the money back.
+    row "failed-after-acceptance" {
+      priority 40
+      when { verdict.outcome == "failed" }
+      then { outcome { decision allow attributes { action "fail" refund true redact true penalize true breaker_failures 5 breaker_open_s 30 } } }
+    }
+  }
+}

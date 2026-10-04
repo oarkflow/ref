@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/oarkflow/fh"
@@ -31,7 +32,7 @@ func registerQueueActions(r *Registry) {
 		Provides:     "The job id",
 		Kind:         "async_effect",
 		Config: []ConfigField{
-			{Name: "job_type", Type: "string", Required: true},
+			{Name: "job_type", Type: "template", Required: true, Summary: "May contain {{ }} to pick the queue per message"},
 			{Name: "payload_fact", Type: "fact", Default: "input"},
 			{Name: "priority", Type: "int", Summary: "Higher runs first"},
 			{Name: "concurrency_key", Type: "expression", Summary: "Jobs sharing a key are not run concurrently"},
@@ -46,9 +47,10 @@ func registerQueueActions(r *Registry) {
 		Provides:     "The job id",
 		Kind:         "async_effect",
 		Config: []ConfigField{
-			{Name: "job_type", Type: "string", Required: true},
+			{Name: "job_type", Type: "template", Required: true, Summary: "May contain {{ }} to pick the queue per message"},
 			{Name: "payload_fact", Type: "fact", Default: "input"},
 			{Name: "delay", Type: "duration", Summary: "Relative delay from now"},
+			{Name: "delay_fact", Type: "fact", Summary: "Fact holding the delay, in seconds or as a duration string; overrides delay"},
 			{Name: "run_at_fact", Type: "fact", Summary: "Absolute RFC3339 instant, taking precedence over delay"},
 			{Name: "headers", Type: "map"},
 		},
@@ -91,6 +93,25 @@ type queuePublish struct {
 	priority    int
 	headers     map[string]string
 	concurrency *Expression
+	// jobTypeTmpl is set when job_type contains {{ }}, so one node can publish
+	// to a queue chosen per message (one queue per provider, per tenant, …).
+	jobTypeTmpl *Template
+}
+
+// job returns the job type for this invocation.
+func (p *queuePublish) job(ctx *ActionContext) (string, error) {
+	if p.jobTypeTmpl == nil {
+		return p.jobType, nil
+	}
+	rendered, err := p.jobTypeTmpl.Render(actionEnv(ctx))
+	if err != nil {
+		return "", err
+	}
+	rendered = strings.TrimSpace(rendered)
+	if rendered == "" {
+		return "", invalidInput("job_type %q rendered empty", p.jobTypeTmpl.Raw())
+	}
+	return rendered, nil
 }
 
 func compileQueuePublish(build BuildContext, spec NodeSpec) (*queuePublish, error) {
@@ -119,6 +140,11 @@ func compileQueuePublish(build BuildContext, spec NodeSpec) (*queuePublish, erro
 		concurrency: concurrency,
 	}
 	publish.delayed, _ = queue.(spi.QueueDelay)
+	if strings.Contains(jobType, "{{") {
+		if publish.jobTypeTmpl, err = CompileTemplate(jobType); err != nil {
+			return nil, fmt.Errorf("node %q: job_type: %w", spec.Name, err)
+		}
+	}
 	return publish, nil
 }
 
@@ -164,10 +190,14 @@ var queuePublishAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpe
 		if err != nil {
 			return ActionResult{}, err
 		}
+		jobType, err := publish.job(ctx)
+		if err != nil {
+			return ActionResult{}, err
+		}
 		// A concurrency key or a priority needs the richer enqueue path, which
 		// only fh's own queue exposes; a plain SPI queue gets the simple form.
 		if native, ok := publish.queue.(*fh.DurableQueue); ok && (publish.priority != 0 || publish.concurrency != nil) {
-			job := fh.QueueJob{Type: publish.jobType, Priority: publish.priority}
+			job := fh.QueueJob{Type: jobType, Priority: publish.priority}
 			if publish.concurrency != nil {
 				key, err := publish.concurrency.String(actionEnv(ctx))
 				if err != nil {
@@ -179,13 +209,13 @@ var queuePublishAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpe
 			if err != nil {
 				return ActionResult{}, unavailable("could not publish the job: %v", err)
 			}
-			return acknowledgement(spec, map[string]any{"job_id": id, "job_type": publish.jobType}), nil
+			return acknowledgement(spec, map[string]any{"job_id": id, "job_type": jobType}), nil
 		}
-		id, err := publish.queue.Enqueue(publish.jobType, body, headers)
+		id, err := publish.queue.Enqueue(jobType, body, headers)
 		if err != nil {
 			return ActionResult{}, unavailable("could not publish the job: %v", err)
 		}
-		return acknowledgement(spec, map[string]any{"job_id": id, "job_type": publish.jobType}), nil
+		return acknowledgement(spec, map[string]any{"job_id": id, "job_type": jobType}), nil
 	}), nil
 })
 
@@ -202,8 +232,9 @@ var queuePublishDelayedAction = ActionFactoryFunc(func(build BuildContext, spec 
 		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
 	}
 	runAtFact := configString(spec.Config, "run_at_fact", "")
-	if delay <= 0 && runAtFact == "" {
-		return nil, fmt.Errorf("node %q: queue.publish_delayed needs either config.delay or config.run_at_fact", spec.Name)
+	delayFact := configString(spec.Config, "delay_fact", "")
+	if delay <= 0 && runAtFact == "" && delayFact == "" {
+		return nil, fmt.Errorf("node %q: queue.publish_delayed needs config.delay, config.delay_fact or config.run_at_fact", spec.Name)
 	}
 
 	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
@@ -211,7 +242,22 @@ var queuePublishDelayedAction = ActionFactoryFunc(func(build BuildContext, spec 
 		if err != nil {
 			return ActionResult{}, err
 		}
+		jobType, err := publish.job(ctx)
+		if err != nil {
+			return ActionResult{}, err
+		}
 		runAt := ctx.Now.Add(delay)
+		if delayFact != "" {
+			raw, found := resolvePath(ctx.Inputs, delayFact)
+			if !found {
+				return ActionResult{}, invalidInput("no delay at %q", delayFact)
+			}
+			d, err := parseDelay(raw)
+			if err != nil {
+				return ActionResult{}, invalidInput("%q is not a delay: %v", delayFact, err)
+			}
+			runAt = ctx.Now.Add(d)
+		}
 		if runAtFact != "" {
 			raw, found := resolvePath(ctx.Inputs, runAtFact)
 			if !found {
@@ -223,11 +269,11 @@ var queuePublishDelayedAction = ActionFactoryFunc(func(build BuildContext, spec 
 			}
 			runAt = parsed
 		}
-		id, err := publish.delayed.EnqueueDelayed(publish.jobType, body, runAt, headers)
+		id, err := publish.delayed.EnqueueDelayed(jobType, body, runAt, headers)
 		if err != nil {
 			return ActionResult{}, unavailable("could not schedule the job: %v", err)
 		}
-		return acknowledgement(spec, map[string]any{"job_id": id, "job_type": publish.jobType, "run_at": runAt.UTC().Format(time.RFC3339)}), nil
+		return acknowledgement(spec, map[string]any{"job_id": id, "job_type": jobType, "run_at": runAt.UTC().Format(time.RFC3339)}), nil
 	}), nil
 })
 
@@ -319,6 +365,27 @@ var inboxDedupeAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec
 
 // parseInstant accepts the timestamp shapes that reach configuration: a real
 // time, an RFC3339 string, or a Unix epoch number.
+// parseDelay reads a delay: a number of seconds, or a duration string ("5s").
+func parseDelay(value any) (time.Duration, error) {
+	switch typed := value.(type) {
+	case time.Duration:
+		return typed, nil
+	case string:
+		if d, err := time.ParseDuration(typed); err == nil {
+			return d, nil
+		}
+		if secs, ok := ToFloat(typed); ok {
+			return time.Duration(secs * float64(time.Second)), nil
+		}
+		return 0, fmt.Errorf("%q is neither a duration nor a number of seconds", typed)
+	default:
+		if secs, ok := ToFloat(value); ok && secs >= 0 {
+			return time.Duration(secs * float64(time.Second)), nil
+		}
+		return 0, fmt.Errorf("cannot read %T as a delay", value)
+	}
+}
+
 func parseInstant(value any) (time.Time, error) {
 	switch typed := value.(type) {
 	case time.Time:

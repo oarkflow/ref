@@ -25,8 +25,11 @@ type Document struct {
 	Roles   []RoleSpec   `bcl:"role,block"`
 	Tenants []TenantSpec `bcl:"tenant,block"`
 
-	Intents   []IntentSpec  `bcl:"intent,block"`
-	Processes []ProcessSpec `bcl:"process,block"`
+	Intents []IntentSpec `bcl:"intent,block"`
+	// Extensions add, replace and remove nodes of intents declared elsewhere;
+	// expandExtensions (extend.go) applies and clears them.
+	Extensions []IntentExtensionSpec `bcl:"extend,block"`
+	Processes  []ProcessSpec         `bcl:"process,block"`
 
 	Routes []RouteSpec `bcl:"route,block"`
 	// RouteGroups are never compiled directly: expandRouteGroups (route_group.go)

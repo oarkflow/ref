@@ -1,0 +1,74 @@
+bcl { version "1.0" }
+
+# Pricing: what an account pays per segment. The first row that matches wins, so
+# the specific comes before the general: an account's own rate, then country and
+# message type together, then country, then the default. The price does not
+# depend on which provider carries the message, so failing over never changes a
+# bill. Facts: message, user.
+
+module "pricing" {
+  version "1"
+  environment "production"
+
+  decision_schema "price" { effects [allow, deny] default deny strategy first_match }
+  decision_table "price" {
+    default deny
+    hit_policy first
+
+    row "alice-in-nepal" {
+      priority 1000
+      when {
+        all {
+          user.id == "acme_alice"
+          message.country == "NP"
+        }
+      }
+      then { outcome { decision allow attributes { per_segment 0.012 } } }
+    }
+    row "otp-in-nepal" {
+      priority 900
+      when {
+        all {
+          message.type == "otp"
+          message.country == "NP"
+        }
+      }
+      then { outcome { decision allow attributes { per_segment 0.030 } } }
+    }
+    row "otp-in-india" {
+      priority 890
+      when {
+        all {
+          message.type == "otp"
+          message.country == "IN"
+        }
+      }
+      then { outcome { decision allow attributes { per_segment 0.025 } } }
+    }
+    row "nepal" {
+      priority 500
+      when { message.country == "NP" }
+      then { outcome { decision allow attributes { per_segment 0.015 } } }
+    }
+    row "india" {
+      priority 490
+      when { message.country == "IN" }
+      then { outcome { decision allow attributes { per_segment 0.012 } } }
+    }
+    row "united-kingdom" {
+      priority 480
+      when { message.country == "GB" }
+      then { outcome { decision allow attributes { per_segment 0.045 } } }
+    }
+    row "united-states" {
+      priority 470
+      when { message.country == "US" }
+      then { outcome { decision allow attributes { per_segment 0.012 } } }
+    }
+    row "everywhere-else" {
+      priority 10
+      when { message.country != "" }
+      then { outcome { decision allow attributes { per_segment 0.020 } } }
+    }
+  }
+}

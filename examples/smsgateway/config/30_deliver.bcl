@@ -1,0 +1,242 @@
+# ---------------------------------------------------------------------------
+# sms.deliver: one attempt to send a message through one provider. Each provider
+# has its own queue (sms.dispatch.<provider>) and its own consumers
+# (31_workers.bcl) that run this intent for every job on it.
+#
+#   claim ─ gate ─ send ─ classify ─ decide ─ settle
+#
+#   claim     take the message for this job (compare-and-set on its sequence
+#             number: a stale or duplicate job loses and does nothing)
+#   gate      rules/delivery.bcl: should this job send at all?
+#   send      through the provider the message is on (30_send.bcl)
+#   classify  rules/delivery.bcl: what kind of result was that?
+#   decide    rules/delivery.bcl: accept, retry, fail over or fail
+#   settle    do what was decided, in one transaction with the message's state
+#             and the held funds (capture on acceptance, release on failure)
+# ---------------------------------------------------------------------------
+
+intent "sms.deliver" {
+  description "One attempt to deliver a message through one provider"
+  idempotent true
+  response "settled"
+  timeout 90s
+
+  node "times" {
+    uses "data.transform" kind pure requires [input] provides [times]
+    config { data { extract { now_ms "unix_millis()" lease_until_ms "unix_millis() + 60000" } } }
+  }
+
+  node "claim" {
+    uses "database.transaction" resource "db" kind effect requires [input, times] provides [claim]
+    config {
+      statements [
+        { name "taken" sql "UPDATE messages SET state = 'dispatching', claim_until_ms = $1, attempt = attempt + 1, total_attempts = total_attempts + 1, updated_ms = $2 WHERE id = $3 AND dispatch_seq = $4 AND (state = 'queued' OR (state = 'dispatching' AND claim_until_ms < $2))"
+          args [times.lease_until_ms, times.now_ms, input.message_id, input.seq] },
+        { name "row" sql "SELECT id, user_id, state, provider, plan, plan_index, attempt, total_attempts, dispatch_seq, country, msg_type, to_number, sender, body, want_dlr, expires_ms FROM messages WHERE id = $1" args [input.message_id] }
+      ]
+    }
+  }
+  node "msg" { uses "data.first" requires [claim] provides [msg] config { source_fact "claim.row" optional true } }
+  node "where" {
+    uses "data.transform" kind pure requires [input, msg] provides [where]
+    config { data { extract { provider "msg != nil ? msg.provider : input.provider" route_key "msg != nil ? msg.country + '|' + msg.msg_type : ''" plan_text "msg != nil ? msg.plan : '[]'" } } }
+  }
+  node "plan" { uses "data.json_decode" kind pure requires [where] provides [plan] config { source_fact "where.plan_text" } }
+  node "provider_rows" {
+    uses "database.query" resource "db" kind read requires [where, times] provides [provider_rows]
+    config {
+      statement "SELECT p.id, p.channel, p.settings, p.state, p.max_attempts, p.backoff_initial_s, p.backoff_max_s, p.backoff_factor, CASE WHEN COALESCE(h.open_until_ms, 0) > $3 THEN 1 ELSE 0 END AS circuit_open FROM providers p LEFT JOIN provider_health h ON h.provider = p.id AND h.route = $2 WHERE p.id = $1"
+      args [where.provider, where.route_key, times.now_ms]
+    }
+  }
+  node "prow" { uses "data.first" requires [provider_rows] provides [prow] config { source_fact "provider_rows" optional true } }
+
+  # The provider's own accounts (credentials), managed on /admin/providers. One
+  # is picked per attempt, the least recently used first, so load spreads over
+  # them; an account the provider refused is rested for a while (rules/delivery.bcl).
+  # A provider with no accounts sends with whatever its channel resource holds.
+  # The provider's own settings (the form on /admin/providers): endpoint or API
+  # URL, sender id. Defaults fill what was never set.
+  node "pset_text" { uses "data.transform" kind pure requires [prow] provides [pset_text] config { data { extract { text "prow != nil ? prow.settings : '{}'" } } } }
+  node "pset_raw" { uses "data.json_decode" kind pure requires [pset_text] provides [pset_raw] config { source_fact "pset_text.text" } }
+  node "settings" {
+    uses "data.transform" kind pure requires [pset_raw] provides [settings]
+    config { source_fact "pset_raw" data { defaults { endpoint "/send" url "" from_override "" } } }
+  }
+  node "acct_count_rows" {
+    uses "database.query" resource "db" kind read requires [where] provides [acct_count_rows]
+    config { statement "SELECT COUNT(*) AS n FROM provider_accounts WHERE provider = $1" args [where.provider] }
+  }
+  node "acct_count" { uses "data.first" requires [acct_count_rows] provides [acct_count] config { source_fact "acct_count_rows" } }
+  node "acct_rows" {
+    uses "database.query" resource "db" kind read requires [where, times] provides [acct_rows]
+    config { statement "SELECT name, public, secret FROM provider_accounts WHERE provider = $1 AND state = 'active' AND cooldown_until_ms <= $2 ORDER BY last_used_ms, name LIMIT 2" args [where.provider, times.now_ms] }
+  }
+  node "acct_first" { uses "data.first" requires [acct_rows] provides [acct_first] config { source_fact "acct_rows" optional true } }
+  node "acct_text" {
+    uses "data.transform" kind pure requires [acct_first] provides [acct_text]
+    config { data { extract { public "acct_first != nil ? acct_first.public : '{}'" secret "acct_first != nil ? acct_first.secret : ''" name "acct_first != nil ? acct_first.name : ''" } } }
+  }
+  node "acct_public" { uses "data.json_decode" kind pure requires [acct_text] provides [acct_public] config { source_fact "acct_text.public" } }
+  node "acct_secret" { uses "crypto.unseal" kind pure requires [acct_text] provides [acct_secret] config { key env("SMS_CREDENTIAL_KEY", "sms-gateway-dev-credential-key-change-me") value_fact "acct_text.secret" json true } }
+  node "acct_merged" { uses "data.merge" kind pure requires [acct_public, acct_secret] provides [acct_merged] config { sources [acct_public, acct_secret] } }
+  node "cred" {
+    uses "data.transform" kind pure requires [acct_merged, acct_text] provides [cred]
+    config {
+      source_fact "acct_merged"
+      data {
+        defaults { system_id "" password "" token "" key "" routeid "" campaign "" url "" }
+        extract { account "acct_text.name" authorization "acct_merged.token != nil and acct_merged.token != '' ? 'Bearer ' + acct_merged.token : ''" }
+      }
+    }
+  }
+  node "after" {
+    uses "data.transform" kind pure requires [msg, plan] provides [after]
+    config { data { extract { id "msg != nil and msg.plan_index + 1 < len(plan) ? at(plan, msg.plan_index + 1) : ''" } } }
+  }
+  node "after_rows" {
+    uses "database.query" resource "db" kind read requires [after] provides [after_rows]
+    config { statement "SELECT id, channel FROM providers WHERE id = $1" args [after.id] }
+  }
+  node "after_row" { uses "data.first" requires [after_rows] provides [after_row] config { source_fact "after_rows" optional true } }
+  node "job" {
+    uses "data.transform" kind pure requires [input, msg, claim, prow, plan, times, where, after_row, acct_count, acct_rows, cred] provides [job]
+    config {
+      data {
+        extract {
+          id "input.message_id"
+          seq "input.seq"
+          claimed "claim.taken > 0"
+          stale "msg == nil or msg.dispatch_seq != input.seq"
+          state "msg != nil ? msg.state : ''"
+          user_id "msg != nil ? msg.user_id : ''"
+          provider "where.provider"
+          channel "prow != nil ? prow.channel : ''"
+          next_channel "after_row != nil ? after_row.channel : ''"
+          accounts_total "acct_count.n"
+          accounts_available "len(acct_rows)"
+          account "cred.account"
+          route_key "where.route_key"
+          country "msg != nil ? msg.country : ''"
+          type "msg != nil ? msg.msg_type : ''"
+          attempt "msg != nil ? msg.attempt : 0"
+          total_attempts "msg != nil ? msg.total_attempts : 0"
+          plan_index "msg != nil ? msg.plan_index : 0"
+          plan_len "len(plan)"
+          has_next "msg != nil and msg.plan_index + 1 < len(plan)"
+          next_provider "msg != nil and msg.plan_index + 1 < len(plan) ? at(plan, msg.plan_index + 1) : ''"
+          expired "msg != nil and msg.expires_ms > 0 and times.now_ms > msg.expires_ms"
+          provider_state "prow != nil ? prow.state : 'missing'"
+          circuit_open "prow != nil ? prow.circuit_open : 0"
+          max_attempts "prow != nil ? prow.max_attempts : 1"
+          backoff_initial_s "prow != nil ? prow.backoff_initial_s : 1"
+          backoff_max_s "prow != nil ? prow.backoff_max_s : 60"
+          backoff_factor "prow != nil ? prow.backoff_factor : 2"
+          now_ms "times.now_ms"
+        }
+      }
+    }
+  }
+  node "gate" {
+    uses "rules.decide" resource "policy" kind read requires [job] provides [gate]
+    config { definition "delivery" decision "gate" fail_on ["deny"] }
+  }
+  node "outbound" {
+    uses "data.transform" kind pure requires [msg, job, cred, settings] provides [outbound]
+    config { data { extract { id "job.id" to "msg != nil ? msg.to_number : ''" from "settings.from_override != '' ? settings.from_override : (msg != nil ? msg.sender : '')" text "msg != nil ? msg.body : ''" dlr "msg != nil ? msg.want_dlr : 1" provider "job.provider" cred "cred" settings "settings" } } }
+  }
+
+  node "touched" {
+    uses "database.transaction" resource "db" kind effect requires [gate, job] provides [touched]
+    config { statements [ { name "touch" when "gate.action == 'send' and job.account != ''" sql "UPDATE provider_accounts SET last_used_ms = $1, used = used + 1 WHERE provider = $2 AND name = $3" args [job.now_ms, job.provider, job.account] } ] }
+  }
+
+  # Send through the provider the message is on, only if the gate said to.
+  node "sent_result" {
+    uses "flow.switch" kind effect requires [gate, job, outbound, touched] provides [sent_result]
+    config {
+      on "gate.action == 'send' ? job.channel : 'none'"
+      input_fact "outbound"
+      cases [
+        { label "np_telecom" intent "send.np_telecom" },
+        { label "premium_np" intent "send.premium_np" },
+        { label "in_vendor" intent "send.in_vendor" },
+        { label "global_fallback" intent "send.global_fallback" },
+        { label "smspasal" intent "send.smspasal" }
+      ]
+      default_intent "send.none"
+    }
+  }
+  node "sent" { uses "expression" kind pure requires [sent_result] provides [sent] config { expression "sent_result.result" } }
+
+  node "class" {
+    uses "rules.decide" resource "policy" kind read requires [job, gate, sent] provides [class]
+    config { definition "delivery" decision "classify" }
+  }
+  node "decision" {
+    uses "rules.decide" resource "policy" kind read requires [job, gate, sent, class] provides [decision]
+    config { definition "delivery" decision "decide" }
+  }
+
+  # Everything the settling step needs, with the retry delay worked out from the
+  # provider's own backoff (or the Retry-After it sent) as the rule asked.
+  node "delay" {
+    uses "data.transform" kind pure requires [job, sent, decision] provides [delay]
+    config { data { extract { delay_s "decision.delay_mode == 'backoff' ? min(job.backoff_max_s, job.backoff_initial_s * pow(job.backoff_factor, job.attempt - 1)) : (decision.delay_mode == 'retry_after' ? (sent.error.retry_after_s > decision.min_delay_s ? sent.error.retry_after_s : decision.min_delay_s) : 0)" } } }
+  }
+  node "rest" {
+    uses "data.transform" kind pure requires [decision] provides [rest]
+    config { source_fact "decision" data { defaults { account_cooldown_s 0 } pick ["account_cooldown_s"] } }
+  }
+  node "settlement" {
+    uses "data.transform" kind pure requires [job, sent, decision, class, delay, rest] provides [settlement]
+    config {
+      data {
+        extract {
+          action "decision.action"
+          id "job.id"
+          seq "job.seq"
+          user_id "job.user_id"
+          provider "job.provider"
+          route_key "job.route_key"
+          next_provider "job.next_provider"
+          channel "job.channel"
+          next_channel "job.next_channel"
+          account "job.account"
+          account_cooldown_until_ms "rest.account_cooldown_s > 0 ? job.now_ms + rest.account_cooldown_s * 1000 : 0"
+          attempt "job.attempt"
+          total_attempts "job.total_attempts"
+          attempt_after "decision.free == true ? job.attempt - 1 : job.attempt"
+          code "decision.code != nil ? decision.code : ''"
+          error_text "sent.error != nil ? sent.error.message : ''"
+          provider_message_id "sent.provider_message_id != nil ? sent.provider_message_id : ''"
+          latency_ms "sent.latency_ms != nil ? sent.latency_ms : 0"
+          capture "decision.capture == true"
+          redact "decision.redact == true ? 1 : 0"
+          penalize "decision.penalize == true"
+          breaker_failures "decision.breaker_failures != nil ? decision.breaker_failures : 5"
+          breaker_open_s "decision.breaker_open_s != nil ? decision.breaker_open_s : 30"
+          now_ms "job.now_ms"
+          delay_s "delay.delay_s"
+          retry_at_ms "job.now_ms + round(delay.delay_s * 1000)"
+          breaker_until_ms "job.now_ms + (decision.breaker_open_s != nil ? decision.breaker_open_s : 30) * 1000"
+          class "class.class"
+        }
+      }
+    }
+  }
+  node "settled" {
+    uses "flow.switch" kind effect requires [settlement] provides [settled]
+    config {
+      on "settlement.action"
+      input_fact "settlement"
+      cases [
+        { label "accept" intent "settle.accept" },
+        { label "retry" intent "settle.retry" },
+        { label "failover" intent "settle.failover" },
+        { label "fail" intent "settle.fail" }
+      ]
+      default_intent "settle.skip"
+    }
+  }
+}

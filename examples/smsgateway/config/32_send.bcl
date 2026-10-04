@@ -1,0 +1,74 @@
+# ---------------------------------------------------------------------------
+# Sending, one intent per provider. Each answers with the same shape:
+#   { ok, provider_message_id, latency_ms, error { kind, protocol, status, code, message, retry_after_s } }
+# and never fails because the provider refused: what a refusal means is
+# rules/delivery.bcl's to say. Adding a provider is a resource (02_resources.bcl),
+# a row in the providers table, a worker (31_workers.bcl), a case in
+# sms.deliver and an intent here.
+# ---------------------------------------------------------------------------
+
+intent "send.np_telecom" {
+  description "Send over the Nepal carrier's SMPP bind"
+  response "sent"
+  node "sent" {
+    uses "smpp.submit" resource "np_telecom" kind effect requires [input] provides [sent]
+    config { to "{{ input.to }}" from "{{ input.from }}" text "{{ input.text }}" dlr "{{ input.dlr }}" reference "{{ input.id }}" system_id "{{ input.cred.system_id }}" password "{{ input.cred.password }}" }
+  }
+}
+
+intent "send.premium_np" {
+  description "Send through the premium Nepal vendor's HTTP API"
+  response "sent"
+  node "call" {
+    uses "service.http" resource "premium_np" kind effect requires [input] provides [call]
+    config {
+      method "POST"
+      url "{{ input.settings.endpoint }}"
+      body { to "{{ input.to }}" from "{{ input.from }}" text "{{ input.text }}" reference "{{ input.id }}" }
+      headers { "Idempotency-Key" "{{ input.id }}" Authorization "{{ input.cred.authorization }}" }
+      expect_status [200, 201, 202]
+      capture true
+    }
+  }
+  node "sent" { uses "data.transform" kind pure requires [call] provides [sent] config { data { extract { ok "call.ok" provider_message_id "call.ok ? call.body.data.message_id : ''" latency_ms "call.latency_ms" error "call.error" body_code "call.body.error.code" } } } }
+}
+
+intent "send.in_vendor" {
+  description "Send through the India vendor's HTTP API"
+  response "sent"
+  node "call" {
+    uses "service.http" resource "in_vendor" kind effect requires [input] provides [call]
+    config {
+      method "POST"
+      url "{{ input.settings.endpoint }}"
+      body { to "{{ input.to }}" from "{{ input.from }}" text "{{ input.text }}" reference "{{ input.id }}" }
+      headers { "Idempotency-Key" "{{ input.id }}" Authorization "{{ input.cred.authorization }}" }
+      expect_status [200, 201, 202]
+      capture true
+    }
+  }
+  node "sent" { uses "data.transform" kind pure requires [call] provides [sent] config { data { extract { ok "call.ok" provider_message_id "call.ok ? call.body.data.message_id : ''" latency_ms "call.latency_ms" error "call.error" body_code "call.body.error.code" } } } }
+}
+
+intent "send.global_fallback" {
+  description "Send through the catch-all vendor's HTTP API"
+  response "sent"
+  node "call" {
+    uses "service.http" resource "global_fallback" kind effect requires [input] provides [call]
+    config {
+      method "POST"
+      url "{{ input.settings.endpoint }}"
+      body { to "{{ input.to }}" from "{{ input.from }}" text "{{ input.text }}" reference "{{ input.id }}" }
+      headers { "Idempotency-Key" "{{ input.id }}" Authorization "{{ input.cred.authorization }}" }
+      expect_status [200, 201, 202]
+      capture true
+    }
+  }
+  node "sent" { uses "data.transform" kind pure requires [call] provides [sent] config { data { extract { ok "call.ok" provider_message_id "call.ok ? call.body.data.message_id : ''" latency_ms "call.latency_ms" error "call.error" body_code "call.body.error.code" } } } }
+}
+
+# Nothing was sent (the gate said not to).
+intent "send.none" {
+  response "sent"
+  node "sent" { uses "constant" kind pure provides [sent] config { value { ok false skipped true } } }
+}

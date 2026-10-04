@@ -1,0 +1,27 @@
+bcl { version "1.0" }
+
+# A request that repeats a reference must repeat the same message. Facts:
+# message (the new request, with its payload hash) and existing (the message
+# already stored under the reference, if any).
+
+module "idempotency" {
+  version "1"
+  environment "production"
+
+  decision_schema "reference" { effects [allow, deny] default allow strategy first_match }
+  decision_table "reference" {
+    default allow
+    hit_policy first
+
+    row "reference-reused-for-another-message" {
+      priority 100
+      when {
+        all {
+          existing.id != ""
+          existing.payload_hash != message.payload_hash
+        }
+      }
+      then { outcome { decision deny reason "this reference was already used for a different message" attributes { code "REFERENCE_REUSED" status 409 } } }
+    }
+  }
+}

@@ -1,0 +1,233 @@
+# ---------------------------------------------------------------------------
+# sms.prepare: everything decided about a message before it is paid for.
+#
+#   account ─ number ─ content ─ message facts ─ validate ─┐
+#                                        │                  ├─ prepared
+#                                        └─ routing ─ price ─ limits ┘
+#
+# It returns { message, user, route, charge }. sms.submit accepts and queues
+# the result; sms.explain shows it. Nothing here writes anything.
+#
+# Every judgement lives in ../rules: how a number is read, what is refused, which
+# providers may carry the message and in what order, what it costs. This file
+# gathers the facts those rules read and wires the stages together.
+# ---------------------------------------------------------------------------
+
+intent "sms.prepare" {
+  description "Decide a message: account, number, content, validation, route, price"
+  response "prepared"
+  timeout 10s
+
+  # ---- The account ---------------------------------------------------------
+  node "uid" { uses "expression" kind pure requires [input] provides [uid] config { expression "input.account != nil ? input.account : principal.id" } }
+  node "user_rows" {
+    uses "database.query" resource "db" kind read requires [uid] provides [user_rows]
+    config {
+      statement "SELECT id, tenant, name, status, default_sender, senders, countries, rate_per_second, daily_limit, max_price, objective, plan FROM users WHERE id = $1"
+      args [uid]
+      require_rows true
+      not_found_message "the account does not exist"
+    }
+  }
+  node "user" { uses "data.first" requires [user_rows] provides [user] config { source_fact "user_rows" } }
+  node "day" { uses "expression" kind pure provides [day_start] config { expression "floor(unix_millis() / 86400000) * 86400000" } }
+  node "daily_rows" {
+    uses "database.query" resource "db" kind read requires [user, day_start] provides [daily_rows]
+    config { statement "SELECT COUNT(*) AS n FROM messages WHERE user_id = $1 AND created_ms >= $2" args [user.id, day_start] }
+  }
+  node "daily" { uses "data.first" requires [daily_rows] provides [daily] config { source_fact "daily_rows" } }
+
+  # ---- The recipient number ------------------------------------------------
+  # What was typed, then how it is written (rules/numbering.bcl: number_form),
+  # then the international digits, then the country they belong to.
+  node "typed" {
+    uses "data.transform" kind pure requires [input] provides [typed]
+    config { data { extract { clean "regex_replace(input.to, '[ ().-]', '')" invalid "regex_replace(input.to, '[0-9+ ().-]', '')" } } }
+  }
+  node "form" {
+    uses "rules.decide" resource "policy" kind read requires [typed] provides [form]
+    config { definition "numbering" decision "number_form" fail_on ["deny"] }
+  }
+  node "recipient" {
+    uses "data.transform" kind pure requires [typed, form] provides [recipient]
+    config { data { extract { e164 "form.form == 'national' ? form.dial + trim_prefix(typed.clean, form.trunk) : substr(typed.clean, form.strip, len(typed.clean))" } } }
+  }
+  node "recipient_country" {
+    uses "rules.decide" resource "policy" kind read requires [recipient] provides [recipient_country]
+    input_data { extract { digits "recipient" } pick ["digits"] }
+    config { definition "numbering" decision "number_country" fail_on ["deny"] }
+  }
+  node "number" {
+    uses "data.transform" kind pure requires [recipient, recipient_country] provides [number]
+    config {
+      data {
+        extract {
+          e164 "recipient.e164"
+          country "recipient_country.country"
+          dial "recipient_country.dial"
+          min "recipient_country.min"
+          max "recipient_country.max"
+          nsn_len "len(recipient.e164) - len(recipient_country.dial)"
+        }
+      }
+    }
+  }
+
+  # ---- The text ----------------------------------------------------------
+  # A request names a template or sends text. A template is an SPL file.
+  node "template" {
+    uses "rules.decide" resource "policy" kind read requires [input] provides [template]
+    config { definition "templates" decision "template" }
+  }
+  node "rendered" {
+    uses "template.render" kind pure requires [template, input] provides [rendered]
+    config { template_fact "template.file" vars_fact "input.vars" capture true }
+  }
+  # The number is also checked with github.com/oarkflow/phone (libphonenumber's
+  # metadata), as a bulk campaign checks every row: rules/validate.bcl refuses a
+  # number that cannot be dialled.
+  node "phone_input" { uses "expression" kind pure requires [number] provides [phone_input] config { expression "'+' + number.e164" } }
+  node "phone" { uses "phone.validate" kind pure requires [phone_input] provides [phone] config { value_fact "phone_input" } }
+  node "content" {
+    uses "data.transform" kind pure requires [input, template, rendered] provides [content]
+    config {
+      data {
+        extract {
+          text "input.template != nil ? rendered.text : (input.text != nil ? input.text : '')"
+          type "template.effect == 'allow' ? template.type : ''"
+          sender "template.effect == 'allow' ? template.sender : ''"
+          error "input.template != nil and template.effect != 'allow' ? 'there is no template with this name' : (input.template != nil and rendered.ok == false ? rendered.error.message : '')"
+        }
+      }
+    }
+  }
+  node "analysis" {
+    uses "smpp.analyze" kind pure requires [content] provides [analysis]
+    config { text "{{ content.text }}" }
+  }
+
+  # ---- Sender and type -----------------------------------------------------
+  node "basics" {
+    uses "data.transform" kind pure requires [input, content, user] provides [basics]
+    config {
+      data {
+        extract {
+          from "input.from != nil and input.from != '' ? input.from : (content.sender != '' ? content.sender : (user.default_sender != '' ? user.default_sender : 'SMS'))"
+          type "input.type != nil and input.type != '' ? input.type : (content.type != '' ? content.type : 'transactional')"
+        }
+      }
+    }
+  }
+  node "sender_in" {
+    uses "data.transform" kind pure requires [basics] provides [sender_in]
+    config { data { extract { e164 "regex_replace(basics.from, '^\\+', '')" } } }
+  }
+  node "sender_country" {
+    uses "rules.decide" resource "policy" kind read requires [sender_in] provides [sender_country]
+    input_data { extract { digits "sender_in" } pick ["digits"] }
+    config { definition "numbering" decision "number_country" }
+  }
+
+  # ---- Opt-outs ------------------------------------------------------------
+  node "optout_rows" {
+    uses "database.query" resource "db" kind read requires [number, user] provides [optout_rows]
+    config { statement "SELECT reason FROM optouts WHERE number = $1 AND scope IN ('*', $2)" args [number.e164, user.id] }
+  }
+  node "optout" { uses "data.first" requires [optout_rows] provides [optout] config { source_fact "optout_rows" optional true } }
+
+  # ---- The message facts the rules read -----------------------------------------
+  node "message" {
+    uses "data.transform" kind pure requires [input, user, number, content, analysis, basics, sender_country, optout, daily, phone] provides [message]
+    config {
+      data {
+        extract {
+          id "'msg_' + replace(uuid(), '-', '')"
+          user_id "user.id"
+          tenant "user.tenant"
+          to "number.e164"
+          country "number.country"
+          dial "number.dial"
+          nsn_len "number.nsn_len"
+          from "basics.from"
+          sender_kind "basics.from matches '^\\+?[0-9]+$' ? 'numeric' : 'alpha'"
+          sender_country "sender_country.effect == 'allow' ? sender_country.country : ''"
+          text "content.text"
+          text_len "len(trim(content.text))"
+          type "basics.type"
+          segments "analysis.segments"
+          encoding "analysis.encoding"
+          unicode "analysis.unicode"
+          dlr "coalesce(input.dlr, true)"
+          reference "input.reference != nil ? input.reference : ''"
+          ttl_s "input.expires_in != nil ? input.expires_in : 86400"
+          delay_s "input.delay_seconds != nil ? input.delay_seconds : 0"
+          template "input.template != nil ? input.template : ''"
+          template_error "content.error"
+          phone_valid "phone.valid"
+          phone_reason "phone.reason"
+          phone_type "phone.type"
+          optout "optout != nil"
+          optout_reason "optout != nil ? optout.reason : ''"
+          daily_count "daily.n"
+          route_key "number.country + '|' + basics.type"
+          now_ms "unix_millis()"
+          currency "'USD'"
+          payload_hash "sha256(number.e164 + '|' + basics.from + '|' + content.text + '|' + basics.type + '|' + string(coalesce(input.dlr, true)) + '|' + string(input.delay_seconds != nil ? input.delay_seconds : 0))"
+        }
+      }
+    }
+  }
+  node "valid" {
+    uses "rules.decide" resource "policy" kind read requires [message, user, number] provides [valid]
+    config { definition "validate" decision "validate" fail_on ["deny"] }
+  }
+
+  # ---- Routing -------------------------------------------------------------
+  # Every provider in the catalog with its health on this route; the rules pick
+  # and order them.
+  node "candidates" {
+    uses "database.query" resource "db" kind read requires [message] provides [candidates]
+    config {
+      statement "SELECT p.id, p.kind, p.channel, p.sandbox AS sandbox, p.state, p.quality, p.delivery_rate, p.countries, p.message_types, p.owner, p.tenants, p.users, p.assigned_only, p.supports_unicode, p.supports_dlr, p.supports_alpha, p.supports_long, p.sender_countries, p.prefix_pattern, p.max_attempts, p.backoff_initial_s, p.backoff_max_s, p.backoff_factor, COALESCE(c.per_segment, d.per_segment, 0) AS cost_per_segment, COALESCE(c.per_segment, d.per_segment, 0) * $4 AS cost, COALESCE(h.successes, 0) AS successes, COALESCE(h.failures, 0) AS failures, COALESCE(h.consecutive_failures, 0) AS consecutive_failures, CASE WHEN COALESCE(h.open_until_ms, 0) > $3 THEN 1 ELSE 0 END AS circuit_open FROM providers p LEFT JOIN provider_costs c ON c.provider = p.id AND c.country = $1 LEFT JOIN provider_costs d ON d.provider = p.id AND d.country = '*' LEFT JOIN provider_health h ON h.provider = p.id AND h.route = $2"
+      args [message.country, message.route_key, message.now_ms, message.segments]
+    }
+  }
+  node "objective" {
+    uses "rules.decide" resource "policy" kind read requires [message, user] provides [objective]
+    config { definition "routing" decision "route_objective" }
+  }
+  node "route" {
+    uses "rules.rank" resource "policy" kind read requires [message, user, candidates, objective] provides [route]
+    config { definition "routing" candidates_fact "candidates" eligibility "route_eligibility" eligibility_extra ["custom_routing/custom"] ranking_fact "objective.ranking" }
+  }
+
+  # ---- Price ---------------------------------------------------------------
+  node "rate" {
+    uses "rules.decide" resource "policy" kind read requires [message, user] provides [rate]
+    config { definition "pricing" decision "price" fail_on ["deny"] }
+  }
+  node "charge" {
+    uses "data.transform" kind pure requires [message, rate] provides [charge]
+    config {
+      data {
+        extract {
+          per_segment "rate.per_segment"
+          segments "message.segments"
+          total "rate.per_segment * message.segments"
+          micros "round(rate.per_segment * message.segments * 1000000)"
+          currency "message.currency"
+          rule "rate.rule"
+        }
+      }
+    }
+  }
+  node "limits" {
+    uses "rules.decide" resource "policy" kind read requires [user, route, charge] provides [limits]
+    config { definition "validate" decision "limits" fail_on ["deny"] }
+  }
+
+  node "prepared" {
+    uses "data.transform" kind pure requires [message, user, route, charge, valid, limits] provides [prepared]
+    config { data { extract { message "message" user "user" route "route" charge "charge" } pick ["message", "user", "route", "charge"] } }
+  }
+}

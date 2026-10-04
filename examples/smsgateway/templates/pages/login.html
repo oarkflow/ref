@@ -1,0 +1,15 @@
+@extends("layouts/plain.html")
+
+@define("content") {
+  <section class="card">
+    <h1>${app_name}</h1>
+    <p class="muted">Sign in to send messages, run campaigns and manage providers.</p>
+    <form id="loginform">
+      <label>Email <input name="email" type="email" autocomplete="username" required></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+      <div class="row"><button type="submit">Sign in</button></div>
+    </form>
+    <pre id="result" class="out"></pre>
+    <p class="muted">Development accounts: demo@example.com / demo-pass-123 (an account) and operator@example.com / operator-pass-123 (the operator).</p>
+  </section>
+}

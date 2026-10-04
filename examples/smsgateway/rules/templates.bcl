@@ -1,0 +1,47 @@
+bcl { version "1.0" }
+
+# Message templates. A request may name a template instead of sending text:
+# {"template": "otp_login", "vars": {"code": "482913"}, "to": "..."}. The text is
+# the SPL file templates/sms/<name>.html (or <name>_<lang>.html when the request
+# names a language), rendered with the request's vars. This table says what a
+# template implies for the message that uses it: the file to use, the message
+# type, the sender id.
+#
+# Fact: input (the request body).
+
+module "templates" {
+  version "1"
+  environment "production"
+
+  decision_schema "template" { effects [allow, deny] default deny strategy first_match }
+  decision_table "template" {
+    default deny
+    hit_policy first
+
+    row "otp-login-nepali" {
+      priority 100
+      when {
+        all {
+          input.template == "otp_login"
+          input.lang == "ne"
+        }
+      }
+      then { outcome { decision allow attributes { file "sms/otp_login_ne" type "otp" sender "ACMEBANK" } } }
+    }
+    row "otp-login" {
+      priority 90
+      when { input.template == "otp_login" }
+      then { outcome { decision allow attributes { file "sms/otp_login" type "otp" sender "ACMEBANK" } } }
+    }
+    row "payment-received" {
+      priority 80
+      when { input.template == "payment_received" }
+      then { outcome { decision allow attributes { file "sms/payment_received" type "transactional" sender "ACMEBANK" } } }
+    }
+    row "spring-sale" {
+      priority 70
+      when { input.template == "spring_sale" }
+      then { outcome { decision allow attributes { file "sms/spring_sale" type "promotional" sender "ACMESHOP" } } }
+    }
+  }
+}

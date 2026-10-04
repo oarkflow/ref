@@ -1,0 +1,115 @@
+# ---------------------------------------------------------------------------
+# Console sign-in: signed session cookie, role-based access.
+#
+# The JSON API under /v1 takes API keys (sender_auth, admin_auth). The console
+# under /ui takes the session cookie from POST /login, so a browser never holds
+# a long-lived key. Roles: `sender` (an account) and `admin` (the operator).
+# ---------------------------------------------------------------------------
+
+resource "sessions" {
+  kind "session.file"
+  description "Signed session cookies"
+  config {
+    dir env("SMS_SESSION_DIR", ".data/sessions")
+    secret env("SMS_SESSION_SECRET", "sms-gateway-dev-session-secret-change-me-0123456789")
+    cookie "sms_sid"
+    max_age 12h
+    secure false
+  }
+}
+
+resource "session_auth" {
+  kind "auth.session"
+  description "Caller identity from the session cookie"
+  config {
+    session "sessions"
+    roles_claim "roles"
+  }
+}
+
+resource "authorization" {
+  kind "authz.rbac"
+  description "Role-based access for the console"
+  config {
+    default_roles ["sender"]
+  }
+}
+
+role "sender" {
+  description "An account: sends and reads its own messages, money and campaigns"
+  permissions ["messages:*", "campaigns:own"]
+}
+
+role "admin" {
+  description "The operator: providers, traffic, accounts, approvals"
+  permissions ["admin:*", "campaigns:approve"]
+  inherits ["sender"]
+}
+
+shape "login_input" {
+  additional_properties false
+  prop "email"    { kind string required true max_length 120 }
+  prop "password" { kind string required true sensitive true max_length 200 }
+}
+
+intent "auth.login" {
+  description "Verify an email and password and start a session"
+  response "response"
+  input_schema "login_input"
+  timeout 5s
+  node "find_user" {
+    uses "database.query" resource "db" kind read speculation pre_auth_safe requires [input] provides [users]
+    config { statement "SELECT id, email, name, tenant, password_hash, roles, status FROM users WHERE email = LOWER($1) AND email <> '' LIMIT 1" args [input.email] }
+  }
+  node "login" {
+    uses "auth.login" resource "sessions" kind pure requires [input, users] provides [principal]
+    config { user_fact "users" password_fact "input.password" roles_field "roles" disabled_field "status != 'active'" }
+  }
+  node "response" { uses "collect" requires [principal] provides [response] }
+}
+route "auth.login" {
+  method POST
+  path "/login"
+  intent "auth.login"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+intent "auth.logout" {
+  description "End the session"
+  response "response"
+  node "who" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+  node "out" { uses "auth.logout" resource "sessions" kind effect requires [user_id] provides [logged_out] }
+  node "response" { uses "collect" requires [logged_out] provides [response] }
+}
+route "auth.logout" { method POST path "/logout" intent "auth.logout" session "sessions" auth "session_auth" cache_control "no-store" }
+
+# Who is signed in, for the console to show and to decide where to send them.
+intent "ui.me" {
+  response "me"
+  node "me" {
+    uses "data.transform" kind pure requires [input] provides [me]
+    config { data { extract { id "principal.id" name "principal.username" roles "principal.roles" } pick ["id", "name", "roles"] } }
+  }
+}
+route "ui.me" { method GET path "/ui/me" intent "ui.me" session "sessions" auth "session_auth" cache_control "no-store" }
+
+# An operator sets an account's console password.
+intent "admin.users.password" {
+  response "result"
+  input_schema "password_set"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "hash" { uses "auth.password_hash" kind pure requires [input] provides [hash] config { value_fact "input.password" } }
+  node "set" {
+    uses "database.transaction" resource "db" kind effect requires [id, input, hash] provides [set]
+    config { statements [ { name "pw" sql "UPDATE users SET password_hash = $1, email = LOWER($2) WHERE id = $3" args [hash, input.email, id] require_affected true failure { code "NOT_FOUND" status 404 message "no such account" } } ] }
+  }
+  node "result" { uses "data.transform" kind pure requires [id, set] provides [result] config { data { extract { id "id" updated "true" } pick ["id", "updated"] } } }
+}
+shape "password_set" {
+  additional_properties false
+  prop "email"    { kind string required true max_length 120 }
+  prop "password" { kind string required true sensitive true min_length 10 max_length 200 }
+}
+route "admin.users.password" { method PUT path "/v1/admin/users/:id/password" intent "admin.users.password" auth "admin_auth" cache_control "no-store" }

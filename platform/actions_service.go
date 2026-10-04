@@ -1,11 +1,15 @@
 package platform
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/oarkflow/ref/intent"
 	"github.com/oarkflow/ref/platform/spi"
@@ -35,6 +39,7 @@ func registerServiceActions(r *Registry) {
 			{Name: "query", Type: "map", Summary: "Query parameters, templated"},
 			{Name: "expect_status", Type: "[]int", Summary: "Statuses treated as success. Default is 2xx."},
 			{Name: "raw", Type: "bool", Summary: "Publish the response body as text rather than parsed JSON"},
+			{Name: "capture", Type: "bool", Summary: "Publish a failed call as data ({ ok: false, status, error { kind, status, message, retry_after_s } }) instead of failing the intent, so a rules table can decide what the failure means"},
 		},
 	})
 
@@ -175,6 +180,7 @@ type compiledHTTPCall struct {
 	query        map[string]*Template
 	expectStatus []int
 	raw          bool
+	capture      bool
 }
 
 func compileHTTPCall(build BuildContext, spec NodeSpec, defaultURL, defaultMethod string) (*compiledHTTPCall, error) {
@@ -195,6 +201,7 @@ func compileHTTPCall(build BuildContext, spec NodeSpec, defaultURL, defaultMetho
 		url:      url,
 		bodyFact: configString(spec.Config, "body_fact", ""),
 		raw:      configBool(spec.Config, "raw", false),
+		capture:  configBool(spec.Config, "capture", false),
 	}
 	if call.headers, err = templateMap(spec, "headers"); err != nil {
 		return nil, err
@@ -343,7 +350,11 @@ var httpCallAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) (
 		if err != nil {
 			return ActionResult{}, err
 		}
+		started := time.Now()
 		response, err := call.service.Do(ctx.Context, request)
+		if call.capture {
+			return call.captured(spec, response, err, time.Since(started)), nil
+		}
 		if err != nil && !call.accepts(response.Status) {
 			return ActionResult{}, upstreamFailure(err, response.Status)
 		}
@@ -353,6 +364,55 @@ var httpCallAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) (
 		return call.result(spec, response), nil
 	}), nil
 })
+
+// captured renders a call's outcome, success or not, as data. The error's kind
+// says where it came from (upstream, timeout, transport, blocked); what it
+// means is left to the rules that read it.
+func (c *compiledHTTPCall) captured(spec NodeSpec, response HTTPResponse, err error, took time.Duration) ActionResult {
+	ok := (err == nil || c.accepts(response.Status)) && c.accepts(response.Status)
+	value := map[string]any{"ok": ok, "status": response.Status, "headers": response.Headers, "latency_ms": took.Milliseconds()}
+	if c.raw {
+		value["body"] = string(response.Body)
+	} else if response.JSON != nil {
+		value["body"] = response.JSON
+	} else {
+		value["body"] = response.Text
+	}
+	if ok {
+		return acknowledgement(spec, value)
+	}
+	failure := map[string]any{"protocol": "http", "status": response.Status}
+	message := fmt.Sprintf("upstream returned %d", response.Status)
+	if err != nil {
+		message = err.Error()
+	}
+	failure["message"] = message
+	var own intent.Failure
+	switch {
+	case response.Status > 0:
+		failure["kind"] = "upstream"
+	case errors.As(err, &own):
+		failure["kind"] = "blocked"
+	case errors.Is(err, context.DeadlineExceeded):
+		failure["kind"] = "timeout"
+	default:
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			failure["kind"] = "timeout"
+		} else {
+			failure["kind"] = "transport"
+		}
+	}
+	retry := 0.0
+	if v := response.Headers["Retry-After"]; v != "" {
+		if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
+			retry = float64(n)
+		}
+	}
+	failure["retry_after_s"] = retry
+	value["error"] = failure
+	return acknowledgement(spec, value)
+}
 
 // upstreamFailure maps another service's status onto a category of our own, so a
 // retry policy and the caller both see something truthful: their bad request is

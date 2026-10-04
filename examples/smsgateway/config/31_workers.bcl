@@ -1,0 +1,13 @@
+# ---------------------------------------------------------------------------
+# One queue and one pool of consumers per provider. A slow or failing provider
+# backs up only its own queue. `concurrency` is the number of consumers.
+# ---------------------------------------------------------------------------
+
+worker "dispatch_np_telecom"    { queue "bus" job_type "sms.dispatch.np_telecom"    intent "sms.deliver" concurrency 8 max_attempts 10 }
+worker "dispatch_premium_np"    { queue "bus" job_type "sms.dispatch.premium_np"    intent "sms.deliver" concurrency 4 max_attempts 10 }
+worker "dispatch_in_vendor"     { queue "bus" job_type "sms.dispatch.in_vendor"     intent "sms.deliver" concurrency 6 max_attempts 10 }
+worker "dispatch_global_fallback" { queue "bus" job_type "sms.dispatch.global_fallback" intent "sms.deliver" concurrency 4 max_attempts 10 }
+worker "dispatch_smspasal"       { queue "bus" job_type "sms.dispatch.smspasal"       intent "sms.deliver" concurrency 2 max_attempts 10 }
+
+# Delivery receipts, from an SMPP bind or a vendor webhook.
+worker "receipts" { queue "bus" job_type "sms.dlr" intent "sms.receipt" concurrency 2 max_attempts 14 }

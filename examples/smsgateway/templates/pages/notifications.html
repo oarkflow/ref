@@ -1,0 +1,13 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <section class="card">
+    <div class="split"><h1>Notifications</h1><button type="button" class="secondary" id="read-all">Mark all as read</button></div>
+    <p class="muted">What happened to your campaigns: accepted with invalid numbers skipped, sent, or rejected.</p>
+    <div id="notes"></div>
+  </section>
+}
+
+@define("scripts") {
+  <script src="/static/js/notifications.js?v=${asset_version}"></script>
+}

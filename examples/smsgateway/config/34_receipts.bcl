@@ -1,0 +1,104 @@
+# ---------------------------------------------------------------------------
+# Delivery receipts. They arrive as jobs of type sms.dlr from two places: an
+# SMPP bind (the service.smpp resource publishes them) and a vendor's webhook
+# (a receipt names the CHANNEL it came in over; providers sharing a channel share its receipts)
+# (the route below publishes them). rules/receipts.bcl decides what each one
+# means; this file looks the message up and applies the decision.
+# ---------------------------------------------------------------------------
+
+intent "sms.receipt" {
+  description "Apply one delivery receipt to its message"
+  idempotent true
+  response "result"
+  node "receipt" { uses "expression" kind pure requires [input] provides [receipt] config { expression "input" } }
+  node "found_rows" {
+    uses "database.query" resource "db" kind read requires [input] provides [found_rows]
+    config { statement "SELECT m.id, m.user_id, m.state, m.provider FROM messages m JOIN providers p ON p.id = m.provider WHERE m.provider_msg_id = $1 AND m.provider_msg_id <> '' AND (p.channel = $2 OR $2 = '')" args [input.provider_message_id, input.provider] }
+  }
+  node "found" { uses "data.first" requires [found_rows] provides [found] config { source_fact "found_rows" optional true } }
+  node "message" {
+    uses "data.transform" kind pure requires [found] provides [message]
+    config { data { extract { found "found != nil" id "found != nil ? found.id : ''" user_id "found != nil ? found.user_id : ''" state "found != nil ? found.state : ''" } } }
+  }
+  node "verdict" {
+    uses "rules.decide" resource "policy" kind read requires [receipt] provides [verdict]
+    config { definition "receipts" decision "receipt_outcome" }
+  }
+  node "action" {
+    uses "rules.decide" resource "policy" kind read requires [receipt, message, verdict] provides [action]
+    config { definition "receipts" decision "receipt_action" fail_on ["deny"] }
+  }
+  node "settlement" {
+    uses "data.transform" kind pure requires [message, action, input] provides [settlement]
+    config { data { extract { id "message.id" user_id "message.user_id" action "action.action" now_ms "unix_millis()" code "input.code != nil ? input.code : ''" state "input.state" } } }
+  }
+  node "result" {
+    uses "flow.switch" kind effect requires [settlement] provides [result]
+    config {
+      on "settlement.action"
+      input_fact "settlement"
+      cases [
+        { label "deliver" intent "receipt.deliver" },
+        { label "fail" intent "receipt.fail" }
+      ]
+      default_intent "receipt.ignore"
+    }
+  }
+}
+
+intent "receipt.deliver" {
+  response "applied"
+  node "applied" {
+    uses "database.transaction" resource "db" kind effect requires [input] provides [applied]
+    config {
+      statements [
+        { name "message" sql "UPDATE messages SET state = 'delivered', delivered_ms = $1, updated_ms = $1, body = '' WHERE id = $2 AND state = 'submitted'" args [input.now_ms, input.id] },
+        { name "attempt" when "message > 0" sql "INSERT INTO attempts (message_id, n, provider, outcome, code, err_text, latency_ms, at_ms) VALUES ($1, 1000000, 'receipt', 'delivered', '', '', 0, $2) ON CONFLICT (message_id, n) DO NOTHING" args [input.id, input.now_ms] }
+      ]
+    }
+  }
+}
+
+intent "receipt.fail" {
+  response "applied"
+  node "applied" {
+    uses "database.transaction" resource "db" kind effect requires [input] provides [applied]
+    config {
+      statements [
+        { name "message" sql "UPDATE messages SET state = 'failed', err_code = $1, err_text = 'the handset did not receive the message', updated_ms = $2, body = '' WHERE id = $3 AND state = 'submitted'" args [input.code, input.now_ms, input.id] },
+        { name "hold" when "message > 0" sql "UPDATE holds SET state = 'refunded', updated_ms = $1 WHERE message_id = $2 AND state = 'captured'" args [input.now_ms, input.id] },
+        { name "balance" when "hold != nil and hold > 0" sql "UPDATE balances SET balance = balance + (SELECT amount FROM holds WHERE message_id = $1) WHERE user_id = $2" args [input.id, input.user_id] },
+        { name "ledger" when "hold != nil and hold > 0" sql "INSERT INTO ledger (message_id, kind, user_id, amount, at_ms) SELECT message_id, 'refund', user_id, amount, $1 FROM holds WHERE message_id = $2 ON CONFLICT (message_id, kind) DO NOTHING" args [input.now_ms, input.id] }
+      ]
+    }
+  }
+}
+
+intent "receipt.ignore" {
+  response "applied"
+  node "applied" { uses "constant" kind pure provides [applied] config { value { ignored true } } }
+}
+
+# A vendor's callback: { "id": "...", "status": "delivered" | "failed" | ... }
+intent "sms.webhook" {
+  description "Accept a vendor's delivery receipt and queue it"
+  response "accepted"
+  node "provider" { uses "request.param" kind pure provides [provider] config { name "provider" from "path" } }
+  node "job" {
+    uses "data.transform" kind pure requires [input, provider] provides [job]
+    config { data { extract { provider "provider" provider_message_id "input.id" state "input.status" code "input.code != nil ? input.code : ''" raw "input.status" } pick ["provider", "provider_message_id", "state", "code", "raw"] } }
+  }
+  node "queued" {
+    uses "queue.publish" resource "bus" kind effect requires [job] provides [queued]
+    config { job_type "sms.dlr" payload_fact "job" }
+  }
+  node "accepted" { uses "constant" kind pure requires [queued] provides [accepted] config { value { accepted true } } }
+}
+route "sms.webhook" {
+  description "Vendor delivery-receipt callback"
+  method POST
+  path "/v1/webhooks/dlr/:provider"
+  intent "sms.webhook"
+  auth "webhook_auth"
+  status 202
+}

@@ -1,0 +1,595 @@
+# ---------------------------------------------------------------------------
+# Campaigns: a bulk send from a list of recipients, a CSV, rows of JSON or a
+# saved audience, that an operator must approve first. Every row may carry any
+# number of fields (a name, an amount, a due date); a row's fields fill the
+# message template's placeholders, so each recipient gets their own text.
+#
+#   source ─► campaign.prepare_rows  one row per recipient, the number checked
+#             │                       with github.com/oarkflow/phone (skipped
+#             │                       with a reason when it is not a dialable number)
+#             ▼
+#   POST /ui/campaigns ─► campaign.create ─ stores the campaign and its rows, starts the run
+#   run ─ approve (human task, role admin, four eyes) ─┬─ approved ─► campaign.run
+#                                                      └─ rejected ─► campaign.reject
+#   campaign.run: for each PENDING row, sms.accept as the campaign's account, with
+#                 reference "<campaign>:<n>" (so a re-run never sends or charges twice)
+#
+# Placeholders: a message template (templates/sms/*.html) uses ${field}; plain
+# text uses {{ field }}. A campaign can also carry default values (vars); a row's
+# own fields win over them. Rows skipped for an invalid number are never sent
+# and never charged, and are listed with the reason.
+# ---------------------------------------------------------------------------
+
+resource "runs" {
+  kind "store.sql"
+  description "Durable state of workflow runs and their human tasks"
+  config { database "db" table_prefix "sms_process" }
+}
+
+shape "campaign_source" {
+  additional_properties false
+  prop "recipients" { kind array items string description "Phone numbers, one per entry, in any written form" }
+  prop "rows"       { kind array items object description "Rows of fields; the phone column is named by phone_field" }
+  prop "csv"        { kind string max_length 4000000 description "CSV text with a header line" }
+  prop "audience"   { kind string max_length 60 description "A saved audience of this account" }
+  prop "phone_field" { kind string max_length 60 }
+  prop "region"     { kind string max_length 2 description "Country (ISO code) for numbers written without a country code; default NP" }
+}
+
+shape "campaign_create" {
+  additional_properties false
+  prop "name"        { kind string required true min_length 1 max_length 120 }
+  prop "recipients"  { kind array items string }
+  prop "rows"        { kind array items object }
+  prop "csv"         { kind string max_length 4000000 }
+  prop "audience"    { kind string max_length 60 }
+  prop "phone_field" { kind string max_length 60 }
+  prop "region"      { kind string max_length 2 }
+  prop "text"        { kind string max_length 2000 }
+  prop "template"    { kind string max_length 60 }
+  prop "vars"        { kind object description "Default values for the placeholders; a row's own fields win" }
+  prop "from"        { kind string max_length 16 }
+  prop "type"        { kind string max_length 32 }
+  prop "on_invalid"  { kind string enum ["discard", "skip"] description "What you want if a number is invalid: discard the whole list, or skip the invalid numbers. The rules (rules/campaigns.bcl) decide whether they allow it" }
+}
+
+shape "campaign_preview" {
+  additional_properties false
+  prop "name"        { kind string max_length 120 }
+  prop "audience"    { kind string max_length 60 }
+  prop "from"        { kind string max_length 16 }
+  prop "type"        { kind string max_length 32 }
+  prop "recipients"  { kind array items string }
+  prop "rows"        { kind array items object }
+  prop "csv"         { kind string max_length 4000000 }
+  prop "phone_field" { kind string max_length 60 }
+  prop "region"      { kind string max_length 2 }
+  prop "text"        { kind string max_length 2000 }
+  prop "template"    { kind string max_length 60 }
+  prop "vars"        { kind object }
+  prop "on_invalid"  { kind string enum ["discard", "skip"] }
+}
+
+shape "campaign_decision" {
+  additional_properties false
+  prop "action" { kind string required true enum ["approve", "reject"] }
+  prop "note"   { kind string max_length 500 }
+}
+
+# ---- Rows from a source ------------------------------------------------------
+# Whatever the source, the result is one row per recipient:
+#   { n, phone, phone_e164, phone_region, phone_type, state ('pending' or 'skipped'), reason,
+#     fields (the row as given), …the columns }
+intent "campaign.prepare_rows" {
+  description "Turn a list, CSV or rows into checked recipient rows"
+  response "result"
+  node "opts" {
+    uses "data.transform" kind pure requires [input] provides [opts]
+    config {
+      data {
+        extract {
+          phone_field "input.phone_field != nil and input.phone_field != '' ? input.phone_field : 'phone'"
+          region "input.region != nil and input.region != '' ? upper(input.region) : 'NP'"
+        }
+      }
+    }
+  }
+  node "from_csv" { uses "data.parse_csv" kind pure requires [input] provides [from_csv] config { source_fact "input.csv" } }
+  node "from_list" { uses "data.augment" kind pure requires [input] provides [from_list] config { source_fact "input.recipients" fields { phone "string(item)" } } }
+  node "rows0" { uses "data.concat" kind pure requires [input, from_csv, from_list] provides [rows0] config { sources ["input.rows", "from_csv", "from_list"] } }
+  node "rows" {
+    uses "phone.validate" kind pure requires [rows0, opts] provides [rows]
+    config { rows_fact "rows0" phone_field_fact "opts.phone_field" region_fact "opts.region" allow_types ["MOBILE", "FIXED_LINE_OR_MOBILE", "VOIP", "UNKNOWN"] }
+  }
+  node "good" { uses "data.filter" kind pure requires [rows] provides [good] config { source_fact "rows" expression "item.state == 'pending'" } }
+  node "first" { uses "data.first" requires [rows] provides [first] config { source_fact "rows" optional true } }
+  node "result" {
+    uses "data.transform" kind pure requires [rows, good, first, opts] provides [result]
+    config {
+      data {
+        extract {
+          rows "rows"
+          total "len(rows)"
+          valid "len(good)"
+          skipped "len(rows) - len(good)"
+          columns "first != nil ? sort(keys(first.fields)) : []"
+          phone_field "opts.phone_field"
+          region "opts.region"
+        }
+        pick ["rows", "total", "valid", "skipped", "columns", "phone_field", "region"]
+      }
+    }
+  }
+}
+
+# ---- What to do about invalid numbers --------------------------------------------
+# rules/campaigns.bcl decides, from the counts, the kind of campaign, what the
+# submitter asked for and the account: discard the whole list (a 422 that says why)
+# or send to the valid numbers (the rest counted, skipped and, when the rule says
+# so, notified). campaign.policy only asks; campaign.enforce fails on a discard.
+intent "campaign.policy" {
+  description "What the rules would do about the invalid numbers of a campaign"
+  response "decision"
+  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "user_rows" {
+    uses "database.query" resource "db" kind read requires [uid] provides [user_rows]
+    config { statement "SELECT id, tenant, plan FROM users WHERE id = $1" args [uid] }
+  }
+  node "user" { uses "data.first" requires [user_rows] provides [user] config { source_fact "user_rows" optional true } }
+  node "campaign" {
+    uses "data.transform" kind pure requires [input] provides [campaign]
+    config {
+      data {
+        extract {
+          total "input.total"
+          valid "input.valid"
+          skipped "input.skipped"
+          invalid_percent "input.total > 0 ? floor(input.skipped * 100 / input.total) : 0"
+          type "input.type != nil ? input.type : ''"
+          source "input.source"
+          requested "input.requested != nil ? input.requested : ''"
+        }
+      }
+    }
+  }
+  node "decision" {
+    uses "rules.decide" resource "policy" kind read requires [campaign, user] provides [decision]
+    config { definition "campaigns" decision "invalid_numbers" }
+  }
+}
+
+intent "campaign.enforce" {
+  description "Apply the rules about invalid numbers: discard the list (422) or let the valid ones through"
+  response "decision"
+  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "user_rows" {
+    uses "database.query" resource "db" kind read requires [uid] provides [user_rows]
+    config { statement "SELECT id, tenant, plan FROM users WHERE id = $1" args [uid] }
+  }
+  node "user" { uses "data.first" requires [user_rows] provides [user] config { source_fact "user_rows" optional true } }
+  node "campaign" {
+    uses "data.transform" kind pure requires [input] provides [campaign]
+    config {
+      data {
+        extract {
+          total "input.total"
+          valid "input.valid"
+          skipped "input.skipped"
+          invalid_percent "input.total > 0 ? floor(input.skipped * 100 / input.total) : 0"
+          type "input.type != nil ? input.type : ''"
+          source "input.source"
+          requested "input.requested != nil ? input.requested : ''"
+        }
+      }
+    }
+  }
+  node "decision" {
+    uses "rules.decide" resource "policy" kind read requires [campaign, user] provides [decision]
+    config { definition "campaigns" decision "invalid_numbers" fail_on ["deny"] }
+  }
+}
+
+# The text of the notice about skipped numbers (the first few of them).
+intent "campaign.notice" {
+  description "Write the notice an account gets about the invalid numbers of its campaign"
+  response "notice"
+  node "phones" { uses "data.map" kind pure requires [input] provides [phones] config { source_fact "input.skipped_rows" expression "item.phone == '' ? '(empty)' : item.phone" } }
+  node "first" { uses "expression" kind pure requires [phones] provides [first] config { expression "len(phones) > 0 ? join(phones, ', ') : ''" } }
+  node "notice" {
+    uses "data.transform" kind pure requires [input, first] provides [notice]
+    config {
+      data {
+        extract {
+          id "'ntf_' + replace(uuid(), '-', '')"
+          title "input.skipped == 1 ? '1 invalid number in campaign ' + input.name : string(input.skipped) + ' invalid numbers in campaign ' + input.name"
+          body "string(input.skipped) + ' of ' + string(input.total) + ' numbers cannot be dialled and are skipped (never sent, never charged): ' + (len(first) > 160 ? substr(first, 0, 160) + ', ...' : first) + '. The other ' + string(input.valid) + ' go out once an operator approves the campaign.'"
+          text "string(input.skipped) + ' of ' + string(input.total) + ' numbers are invalid and will be skipped; ' + string(input.valid) + ' will be sent after approval.'"
+        }
+      }
+    }
+  }
+}
+
+# ---- Preview: counts, the rows that will be skipped, and the first message ----
+intent "campaign.preview" {
+  description "Check a source and show what a campaign would send, without storing anything"
+  response "result"
+  input_schema "campaign_preview"
+  timeout 30s
+  node "prepared" { uses "flow.subflow" kind pure requires [input] provides [prepared] config { intent "campaign.prepare_rows" } }
+  node "bad" { uses "data.filter" kind pure requires [prepared] provides [bad] config { source_fact "prepared.rows" expression "item.state == 'skipped'" } }
+  node "good" { uses "data.filter" kind pure requires [prepared] provides [good] config { source_fact "prepared.rows" expression "item.state == 'pending'" } }
+  node "lead" { uses "data.first" requires [good] provides [lead] config { source_fact "good" optional true } }
+  node "tpl" {
+    uses "data.transform" kind pure requires [input] provides [tpl]
+    config { data { extract { template "input.template != nil ? input.template : ''" lang "input.lang != nil ? input.lang : ''" tpl_text "input.text != nil ? input.text : ''" } } }
+  }
+  node "sample_vars" {
+    uses "data.merge" kind pure requires [input, lead, tpl] provides [sample_vars]
+    config { sources ["input.vars", "lead", "tpl"] }
+  }
+  node "has_template" { uses "expression" kind pure requires [input] provides [has_template] config { expression "input.template != nil and input.template != ''" } }
+  node "sample_text" {
+    uses "flow.branch" kind pure requires [input, sample_vars, has_template] provides [sample_text]
+    config { input_fact "sample_vars" required false cases [ { name "template" condition "has_template == true" intent "campaign.sample_template" } ] default_intent "campaign.sample_plain" }
+  }
+  node "policy_in" {
+    uses "data.transform" kind pure requires [prepared, input] provides [policy_in]
+    config { data { extract { total "prepared.total" valid "prepared.valid" skipped "prepared.skipped" type "input.type" source "'rows'" requested "input.on_invalid" } } }
+  }
+  node "policy" { uses "flow.subflow" kind pure requires [policy_in] provides [policy] config { intent "campaign.policy" input_fact "policy_in" } }
+  node "result" {
+    uses "data.transform" kind pure requires [prepared, bad, sample_text, policy] provides [result]
+    config {
+      data {
+        extract {
+          total "prepared.total"
+          valid "prepared.valid"
+          skipped "prepared.skipped"
+          columns "prepared.columns"
+          phone_field "prepared.phone_field"
+          region "prepared.region"
+          skipped_rows "bad"
+          sample "sample_text.result"
+          policy "policy"
+        }
+        pick ["total", "valid", "skipped", "columns", "phone_field", "region", "skipped_rows", "sample", "policy"]
+      }
+    }
+  }
+}
+route "campaign.preview" { method POST path "/ui/campaigns/preview" intent "campaign.preview" session "sessions" auth "session_auth" authz { roles ["sender", "admin"] authorizer "authorization" } cache_control "no-store" }
+
+# The message the first valid row would get.
+intent "campaign.sample_template" {
+  response "text"
+  node "chosen" {
+    uses "rules.decide" resource "policy" kind read requires [input] provides [chosen]
+    config { definition "templates" decision "template" }
+  }
+  node "rendered" {
+    uses "template.render" kind pure requires [chosen, input] provides [rendered]
+    config { template_fact "chosen.file" vars_fact "input" capture true }
+  }
+  node "text" { uses "data.transform" kind pure requires [chosen, rendered] provides [text] config { data { extract { text "chosen.effect == 'allow' and rendered.ok ? rendered.text : ''" error "chosen.effect != 'allow' ? 'there is no template with this name' : (rendered.ok ? '' : rendered.error.message)" } pick ["text", "error"] } } }
+}
+intent "campaign.sample_plain" {
+  response "text"
+  node "rendered" { uses "text.render" kind pure requires [input] provides [rendered] config { text_fact "input.tpl_text" vars_fact "input" } }
+  node "text" { uses "data.transform" kind pure requires [rendered] provides [text] config { data { extract { text "rendered" error "''" } pick ["text", "error"] } } }
+}
+
+# ---- Create --------------------------------------------------------------------
+intent "campaign.create" {
+  description "Store a campaign and start its approval run"
+  response "result"
+  input_schema "campaign_create"
+  timeout 120s
+  node "has_audience" { uses "expression" kind pure requires [input] provides [has_audience] config { expression "input.audience != nil and input.audience != ''" } }
+  node "created" {
+    uses "flow.branch" kind effect requires [input, has_audience] provides [created]
+    config { cases [ { name "audience" condition "has_audience == true" intent "campaign.create_from_audience" } ] default_intent "campaign.create_from_rows" }
+  }
+  node "result" { uses "expression" kind pure requires [created] provides [result] config { expression "created.result" } }
+}
+route "campaign.create" { method POST path "/ui/campaigns" intent "campaign.create" session "sessions" auth "session_auth" authz { roles ["sender"] authorizer "authorization" } status 202 cache_control "no-store" }
+
+# Common to both ways of creating: the campaign's own fields.
+intent "campaign.header" {
+  response "row"
+  node "row" {
+    uses "data.transform" kind pure requires [input] provides [row]
+    config {
+      data {
+        extract {
+          id "'cmp_' + replace(uuid(), '-', '')"
+          user_id "principal.id"
+          name "input.name"
+          text "input.text != nil ? input.text : ''"
+          template "input.template != nil ? input.template : ''"
+          sender "input.from != nil ? input.from : ''"
+          msg_type "input.type != nil ? input.type : ''"
+          phone_field "input.phone_field != nil and input.phone_field != '' ? input.phone_field : 'phone'"
+          region "input.region != nil and input.region != '' ? upper(input.region) : 'NP'"
+          now_ms "unix_millis()"
+        }
+        pick ["id", "user_id", "name", "text", "template", "sender", "msg_type", "phone_field", "region", "now_ms"]
+      }
+    }
+  }
+}
+
+intent "campaign.create_from_rows" {
+  response "result"
+  node "head" { uses "flow.subflow" kind pure requires [input] provides [head] config { intent "campaign.header" } }
+  node "vars_in" { uses "data.transform" kind pure requires [input] provides [vars_in] config { source_fact "input" data { defaults { vars {} } pick ["vars"] } } }
+  node "vars_text" { uses "data.json_encode" kind pure requires [vars_in] provides [vars_text] config { source_fact "vars_in.vars" } }
+  node "prepared" { uses "flow.subflow" kind pure requires [input] provides [prepared] config { intent "campaign.prepare_rows" } }
+  node "sized" {
+    uses "database.transaction" resource "db" kind effect requires [prepared] provides [sized]
+    config { statements [
+      { name "some" sql "SELECT 1 WHERE $1 > 0" args [prepared.total] require_rows true failure { code "NO_RECIPIENTS" status 422 message "the campaign has no recipients" } },
+      { name "few" sql "SELECT 1 WHERE $1 <= 2000" args [prepared.total] require_rows true failure { code "TOO_MANY_RECIPIENTS" status 422 message "a campaign takes at most 2000 recipients; split it" } }
+    ] }
+  }
+  # The rules decide what an invalid number means for this list: discard it all (a
+  # 422 ends the intent here, nothing stored) or go on with the valid ones.
+  node "policy_in" {
+    uses "data.transform" kind pure requires [prepared, input, sized] provides [policy_in]
+    config { data { extract { total "prepared.total" valid "prepared.valid" skipped "prepared.skipped" type "input.type" source "'rows'" requested "input.on_invalid" } } }
+  }
+  node "enforced" { uses "flow.subflow" kind effect requires [policy_in] provides [enforced] config { intent "campaign.enforce" input_fact "policy_in" } }
+  node "bad" { uses "data.filter" kind pure requires [prepared] provides [bad] config { source_fact "prepared.rows" expression "item.state == 'skipped'" } }
+  node "note_in" {
+    uses "data.transform" kind pure requires [prepared, head, bad] provides [note_in]
+    config { data { extract { name "head.name" total "prepared.total" valid "prepared.valid" skipped "prepared.skipped" skipped_rows "bad" } } }
+  }
+  node "note" { uses "flow.subflow" kind pure requires [note_in] provides [note] config { intent "campaign.notice" input_fact "note_in" } }
+  node "stored" {
+    uses "database.transaction" resource "db" kind effect requires [head, prepared, vars_text, enforced, note] provides [stored]
+    config {
+      statements [
+        { name "campaign" sql "INSERT INTO campaigns (id, user_id, name, state, text, template, vars, sender, msg_type, total, valid, skipped, source, phone_field, region, created_ms, updated_ms) VALUES ($1, $2, $3, 'pending_approval', $4, $5, $6, $7, $8, $9, $10, $11, 'rows', $12, $13, $14, $14)"
+          args [head.id, head.user_id, head.name, head.text, head.template, vars_text, head.sender, head.msg_type, prepared.total, prepared.valid, prepared.skipped, prepared.phone_field, prepared.region, head.now_ms] },
+        { name "notify" when "enforced.notify == true and prepared.skipped > 0" sql "INSERT INTO notifications (id, user_id, kind, level, title, body, ref, created_ms) VALUES ($1, $2, 'campaign_invalid_numbers', 'warn', $3, $4, $5, $6)"
+          args [note.id, head.user_id, note.title, note.body, head.id, head.now_ms] }
+      ]
+    }
+  }
+  node "rows" {
+    uses "data.augment" kind pure requires [prepared, head] provides [rows]
+    config { source_fact "prepared.rows" fields { campaign_id "head.id" } }
+  }
+  node "added" {
+    uses "flow.foreach" kind effect requires [rows, stored] provides [added]
+    config { intent "campaign.add_recipient" items_fact "rows" concurrency 1 max_items 2000 }
+  }
+  node "run" {
+    uses "process.start" kind effect requires [approval, added] provides [run]
+    config { process "campaign.approval" input_fact "approval" idempotency_fact "head.id" }
+  }
+  node "approval" {
+    uses "data.transform" kind pure requires [head, prepared] provides [approval]
+    config { data { extract { id "head.id" user_id "head.user_id" name "head.name" total "prepared.total" valid "prepared.valid" skipped "prepared.skipped" } } }
+  }
+  node "linked" {
+    uses "database.transaction" resource "db" kind effect requires [head, run] provides [linked]
+    config { statements [ { name "link" sql "UPDATE campaigns SET run_id = $1 WHERE id = $2" args [run.run_id, head.id] } ] }
+  }
+  node "result" {
+    uses "data.transform" kind pure requires [head, prepared, linked, enforced, note] provides [result]
+    config { data { extract { id "head.id" state "'pending_approval'" total "prepared.total" valid "prepared.valid" skipped "prepared.skipped" notice "prepared.skipped > 0 ? note.text : ''" policy "enforced.rule" } pick ["id", "state", "total", "valid", "skipped", "notice", "policy"] } }
+  }
+}
+
+intent "campaign.create_from_audience" {
+  response "result"
+  node "head" { uses "flow.subflow" kind pure requires [input] provides [head] config { intent "campaign.header" } }
+  node "counts_rows" {
+    uses "database.query" resource "db" kind read requires [head, input] provides [counts_rows]
+    config { statement "SELECT id, total, valid, skipped FROM audiences WHERE id = $1 AND user_id = $2" args [input.audience, head.user_id] require_rows true not_found_message "no such audience" }
+  }
+  node "counts" { uses "data.first" requires [counts_rows] provides [counts] config { source_fact "counts_rows" } }
+  node "policy_in" {
+    uses "data.transform" kind pure requires [counts, input] provides [policy_in]
+    config { data { extract { total "counts.total" valid "counts.valid" skipped "counts.skipped" type "input.type" source "'audience'" requested "input.on_invalid" } } }
+  }
+  node "enforced" { uses "flow.subflow" kind effect requires [policy_in] provides [enforced] config { intent "campaign.enforce" input_fact "policy_in" } }
+  node "bad" {
+    uses "database.query" resource "db" kind read requires [counts, enforced] provides [bad]
+    config { statement "SELECT to_number AS phone FROM audience_members WHERE audience_id = $1 AND state = 'skipped' ORDER BY n LIMIT 30" args [counts.id] }
+  }
+  node "note_in" {
+    uses "data.transform" kind pure requires [counts, head, bad] provides [note_in]
+    config { data { extract { name "head.name" total "counts.total" valid "counts.valid" skipped "counts.skipped" skipped_rows "bad" } } }
+  }
+  node "note" { uses "flow.subflow" kind pure requires [note_in] provides [note] config { intent "campaign.notice" input_fact "note_in" } }
+  node "vars_in" { uses "data.transform" kind pure requires [input] provides [vars_in] config { source_fact "input" data { defaults { vars {} } pick ["vars"] } } }
+  node "vars_text" { uses "data.json_encode" kind pure requires [vars_in] provides [vars_text] config { source_fact "vars_in.vars" } }
+  node "stored" {
+    uses "database.transaction" resource "db" kind effect requires [head, vars_text, input, enforced, note, counts] provides [stored]
+    config {
+      statements [
+        { name "list" sql "SELECT id FROM audiences WHERE id = $1 AND user_id = $2" args [input.audience, head.user_id] require_rows true failure { code "NOT_FOUND" status 404 message "no such audience" } },
+        { name "campaign" sql "INSERT INTO campaigns (id, user_id, name, state, text, template, vars, sender, msg_type, total, source, phone_field, region, audience_id, created_ms, updated_ms) SELECT $1, $2, $3, 'pending_approval', $4, $5, $6, $7, $8, a.total, 'audience', a.phone_field, a.region, a.id, $9, $9 FROM audiences a WHERE a.id = $10"
+          args [head.id, head.user_id, head.name, head.text, head.template, vars_text, head.sender, head.msg_type, head.now_ms, input.audience] },
+        { name "copy" sql "INSERT INTO campaign_recipients (campaign_id, n, to_number, e164, state, reason, fields) SELECT $1, n, to_number, e164, state, reason, fields FROM audience_members WHERE audience_id = $2" args [head.id, input.audience] },
+        { name "recount" sql "UPDATE campaigns SET valid = (SELECT COUNT(*) FROM campaign_recipients WHERE campaign_id = $1 AND state = 'pending'), skipped = (SELECT COUNT(*) FROM campaign_recipients WHERE campaign_id = $1 AND state = 'skipped'), total = (SELECT COUNT(*) FROM campaign_recipients WHERE campaign_id = $1) WHERE id = $1" args [head.id] },
+        { name "notify" when "enforced.notify == true and counts.skipped > 0" sql "INSERT INTO notifications (id, user_id, kind, level, title, body, ref, created_ms) VALUES ($1, $2, 'campaign_invalid_numbers', 'warn', $3, $4, $5, $6)"
+          args [note.id, head.user_id, note.title, note.body, head.id, head.now_ms] }
+      ]
+    }
+  }
+  node "counted" {
+    uses "database.query" resource "db" kind read requires [stored, head] provides [counted]
+    config { statement "SELECT id, user_id, name, total, valid, skipped FROM campaigns WHERE id = $1" args [head.id] }
+  }
+  node "row" { uses "data.first" requires [counted] provides [row] config { source_fact "counted" } }
+  node "run" {
+    uses "process.start" kind effect requires [row] provides [run]
+    config { process "campaign.approval" input_fact "row" idempotency_fact "row.id" }
+  }
+  node "linked" {
+    uses "database.transaction" resource "db" kind effect requires [row, run] provides [linked]
+    config { statements [ { name "link" sql "UPDATE campaigns SET run_id = $1 WHERE id = $2" args [run.run_id, row.id] } ] }
+  }
+  node "result" {
+    uses "data.transform" kind pure requires [row, linked, enforced, note] provides [result]
+    config { data { extract { id "row.id" state "'pending_approval'" total "row.total" valid "row.valid" skipped "row.skipped" notice "row.skipped > 0 ? note.text : ''" policy "enforced.rule" } pick ["id", "state", "total", "valid", "skipped", "notice", "policy"] } }
+  }
+}
+
+# One stored row (called by campaign.create for every recipient).
+intent "campaign.add_recipient" {
+  response "done"
+  node "text" { uses "data.json_encode" kind pure requires [input] provides [text] config { source_fact "input.fields" } }
+  node "done" {
+    uses "database.transaction" resource "db" kind effect requires [input, text] provides [done]
+    config { statements [ { name "add" sql "INSERT INTO campaign_recipients (campaign_id, n, to_number, e164, state, reason, fields) VALUES ($1, $2, $3, $4, $5, $6, $7)"
+      args [input.campaign_id, input.n, input.phone, input.phone_e164, input.state, input.reason, text] } ] }
+  }
+}
+
+process "campaign.approval" {
+  description "An operator approves a campaign before it is sent"
+  store "runs"
+  queue "bus"
+  start "approve"
+  max_steps 10
+
+  step "approve" {
+    description "Parks until an operator decides"
+    family approval
+    task {
+      title "Approve campaign {{ run.input.name }} ({{ run.input.valid }} of {{ run.input.total }} recipients valid)"
+      instructions "Approve to send to every valid recipient, or reject to cancel. Recipients with an invalid number are skipped and never charged."
+      role "admin"
+      actions [approve, reject]
+      form_schema "campaign_decision"
+      due 72h
+      forbid_principals ["run.input.user_id"]
+    }
+  }
+  step "send" {
+    intent "campaign.run"
+    family messaging
+    terminal true
+    input_data { extract { campaign_id "run.input.id" decided_by "result.completed_by" } }
+  }
+  step "cancel" {
+    intent "campaign.reject"
+    family database
+    terminal true
+    input_data { extract { campaign_id "run.input.id" note "result.note" } }
+  }
+  edge "approved" { kind branch from "approve" to "send" condition "result.action == 'approve'" }
+  edge "rejected" { kind branch from "approve" to "cancel" condition "result.action == 'reject'" }
+}
+
+intent "campaign.reject" {
+  response "done"
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
+  node "nid" { uses "expression" kind pure provides [nid] config { expression "'ntf_' + replace(uuid(), '-', '')" } }
+  node "done" {
+    uses "database.transaction" resource "db" kind effect requires [input, now_ms, nid] provides [done]
+    config { statements [
+      { name "cancel" sql "UPDATE campaigns SET state = 'rejected', note = COALESCE($1, ''), updated_ms = $2 WHERE id = $3 AND state = 'pending_approval'" args [input.note, now_ms, input.campaign_id] },
+      { name "tell" when "cancel > 0" sql "INSERT INTO notifications (id, user_id, kind, level, title, body, ref, created_ms) SELECT $1, user_id, 'campaign_rejected', 'warn', 'Campaign ' || name || ' was rejected', 'An operator rejected it; nothing was sent. ' || note, id, $2 FROM campaigns WHERE id = $3" args [nid, now_ms, input.campaign_id] }
+    ] }
+  }
+}
+
+intent "campaign.run" {
+  description "Send an approved campaign: one sms.accept per valid recipient"
+  idempotent true
+  response "result"
+  timeout 600s
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
+  node "claimed" {
+    uses "database.transaction" resource "db" kind effect requires [input, now_ms] provides [claimed]
+    config { statements [ { name "go" sql "UPDATE campaigns SET state = 'sending', decided_by = $1, updated_ms = $2 WHERE id = $3 AND state IN ('pending_approval', 'sending')" args [input.decided_by, now_ms, input.campaign_id] require_affected true failure { code "NOT_FOUND" status 404 message "no such campaign" } } ] }
+  }
+  node "recipients" {
+    uses "database.query" resource "db" kind read requires [input, claimed] provides [recipients]
+    config {
+      statement "SELECT r.n, r.to_number, r.e164, r.fields, c.id AS campaign_id, c.user_id, c.text, c.template, c.vars, c.sender, c.msg_type FROM campaign_recipients r JOIN campaigns c ON c.id = r.campaign_id WHERE r.campaign_id = $1 AND r.state = 'pending' ORDER BY r.n"
+      args [input.campaign_id]
+    }
+  }
+  node "sent" {
+    uses "flow.foreach" kind effect requires [recipients] provides [sent]
+    config { intent "campaign.send_one" items_fact "recipients" concurrency 4 continue_on_error true max_items 2000 }
+  }
+  node "nid" { uses "expression" kind pure provides [nid] config { expression "'ntf_' + replace(uuid(), '-', '')" } }
+  node "finished" {
+    uses "database.transaction" resource "db" kind effect requires [input, sent, now_ms, nid] provides [finished]
+    config {
+      statements [
+        { name "done" sql "UPDATE campaigns SET state = 'sent', sent = (SELECT COUNT(*) FROM campaign_recipients WHERE campaign_id = $1 AND state = 'sent'), failed = (SELECT COUNT(*) FROM campaign_recipients WHERE campaign_id = $1 AND state = 'failed'), updated_ms = $2 WHERE id = $1" args [input.campaign_id, now_ms] },
+        { name "tell" sql "INSERT INTO notifications (id, user_id, kind, level, title, body, ref, created_ms) SELECT $1, user_id, 'campaign_finished', CASE WHEN failed > 0 THEN 'warn' ELSE 'info' END, 'Campaign ' || name || ' was sent', CAST(sent AS TEXT) || ' sent, ' || CAST(failed AS TEXT) || ' failed, ' || CAST(skipped AS TEXT) || ' skipped because the number is invalid.', id, $2 FROM campaigns WHERE id = $3"
+          args [nid, now_ms, input.campaign_id] }
+      ]
+    }
+  }
+  node "result" { uses "data.transform" kind pure requires [sent, finished] provides [result] config { data { extract { succeeded "sent.succeeded" failed "sent.failed" } pick ["succeeded", "failed"] } } }
+}
+
+# One recipient. The row's fields (over the campaign's defaults) fill the template,
+# or the {{ placeholders }} of the plain text. A refusal (no funds, opt-out, a
+# provider that cannot carry it) is recorded against the row, with its reason, not
+# raised, so one bad row does not stop the campaign.
+intent "campaign.send_one" {
+  response "recorded"
+  node "ref" { uses "expression" kind pure requires [input] provides [ref] config { expression "input.campaign_id + ':' + string(input.n)" } }
+  node "own" { uses "data.json_decode" kind pure requires [input] provides [own] config { source_fact "input.fields" } }
+  node "defaults" { uses "data.json_decode" kind pure requires [input] provides [defaults] config { source_fact "input.vars" } }
+  node "vars" { uses "data.merge" kind pure requires [defaults, own] provides [vars] config { sources [defaults, own] } }
+  node "rendered" { uses "text.render" kind pure requires [input, vars] provides [rendered] config { text_fact "input.text" vars_fact "vars" } }
+  node "request" {
+    uses "data.transform" kind pure requires [input, ref, vars, rendered] provides [request]
+    config {
+      data {
+        extract {
+          account "input.user_id"
+          to "input.e164 != '' ? input.e164 : input.to_number"
+          reference "ref"
+          text "input.template == '' ? rendered : nil"
+          template "input.template != '' ? input.template : nil"
+          vars "input.template != '' ? vars : nil"
+          from "input.sender != '' ? input.sender : nil"
+          type "input.msg_type != '' ? input.msg_type : nil"
+        }
+        pick ["account", "to", "reference", "text", "template", "vars", "from", "type"]
+      }
+    }
+  }
+  node "message" {
+    uses "flow.subflow" kind effect requires [request] provides [message]
+    config { intent "campaign.accept_one" input_fact "request" }
+  }
+  node "why" { uses "data.first" requires [message] provides [why] config { source_fact "message.attempts" optional true } }
+  node "outcome" {
+    uses "data.transform" kind pure requires [message, why] provides [outcome]
+    config { data { extract { id "message.result.id != nil ? message.result.id : ''" reason "why != nil ? why.error : 'not accepted'" } } }
+  }
+  node "recorded" {
+    uses "database.transaction" resource "db" kind effect requires [input, outcome] provides [recorded]
+    config { statements [ { name "mark" sql "UPDATE campaign_recipients SET state = CASE WHEN $1 <> '' THEN 'sent' ELSE 'failed' END, message_id = $1, reason = CASE WHEN $1 <> '' THEN '' ELSE $2 END WHERE campaign_id = $3 AND n = $4"
+      args [outcome.id, outcome.reason, input.campaign_id, input.n] } ] }
+  }
+}
+
+# sms.accept, with failures captured.
+intent "campaign.accept_one" {
+  response "outcome"
+  node "outcome" {
+    uses "flow.fallback" kind effect requires [input] provides [outcome]
+    config { intents ["sms.accept", "campaign.refused"] input_fact "input" fallback { id "" } }
+  }
+}
+
+# The answer for a recipient the pipeline refused: no message.
+intent "campaign.refused" {
+  response "none"
+  node "none" { uses "constant" kind pure provides [none] config { value { id "" } } }
+}

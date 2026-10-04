@@ -1,0 +1,21 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <section class="card">
+    <h1>Operator</h1>
+    <h2>Providers</h2>
+    <table id="providers"><thead><tr><th>Id</th><th>Kind</th><th>State</th><th>Quality</th><th>Countries</th><th>OK</th><th>Failed</th><th></th></tr></thead><tbody></tbody></table>
+  </section>
+  <section class="card">
+    <h2>Campaigns waiting for approval</h2>
+    <table id="approvals"><thead><tr><th>Campaign</th><th>Requested by</th><th></th></tr></thead><tbody></tbody></table>
+  </section>
+  <section class="card">
+    <h2>Traffic</h2>
+    <pre id="stats" class="out"></pre>
+  </section>
+  <section class="card">
+    <h2>Recent messages</h2>
+    <table id="allmessages"><thead><tr><th>Id</th><th>Account</th><th>State</th><th>Provider</th><th>To</th><th>Error</th></tr></thead><tbody></tbody></table>
+  </section>
+}

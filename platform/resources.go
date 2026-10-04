@@ -21,6 +21,7 @@ func registerBuiltinResources(r *Registry) {
 	registerQueueResources(r)
 	registerCoordinationResources(r)
 	registerAuthResources(r)
+	registerSQLKeyAuth(r)
 	registerSignerResources(r)
 	registerIdentityResources(r)
 	registerAuthzEngineResource(r)
