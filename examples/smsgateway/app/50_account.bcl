@@ -1,0 +1,30 @@
+# Self-service API: an account reads its own messages, balance and ledger.
+# Another account's message answers 404, exactly like a missing one.
+
+intent "sms.message" {
+  response "result"
+  node "id"     { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "result" { uses "sms.query" resource "sms" kind read requires [id] provides [result] config { op "message" } }
+}
+route "sms.message" { method GET path "/v1/messages/:id" intent "sms.message" auth "sender_auth" cache_control "no-store" }
+
+intent "sms.messages" {
+  response "result"
+  node "state"  { uses "request.param" kind pure provides [state] config { name "state" from "query" required false } }
+  node "limit"  { uses "request.param" kind pure provides [limit] config { name "limit" from "query" required false } }
+  node "result" { uses "sms.query" resource "sms" kind read requires [state, limit] provides [result] config { op "messages" } }
+}
+route "sms.messages" { method GET path "/v1/messages" intent "sms.messages" auth "sender_auth" cache_control "no-store" }
+
+intent "sms.balance" {
+  response "result"
+  node "result" { uses "sms.query" resource "sms" kind read provides [result] config { op "balance" } }
+}
+route "sms.balance" { method GET path "/v1/balance" intent "sms.balance" auth "sender_auth" cache_control "no-store" }
+
+intent "sms.ledger" {
+  response "result"
+  node "limit"  { uses "request.param" kind pure provides [limit] config { name "limit" from "query" required false } }
+  node "result" { uses "sms.query" resource "sms" kind read requires [limit] provides [result] config { op "ledger" } }
+}
+route "sms.ledger" { method GET path "/v1/ledger" intent "sms.ledger" auth "sender_auth" cache_control "no-store" }

@@ -1,0 +1,100 @@
+# Providers.
+#
+# Each provider is a resource whose kind names a gateway plugin:
+#   sms.gateway.smpp  an SMPP bind (smppflow)
+#   sms.gateway.http  a vendor's HTTP API
+#   sms.gateway.mock  an in-process sandbox
+# Anything under `plugin` is the plugin's own settings. Everything else is how
+# the platform routes to, pays for and protects the provider.
+#
+# A provider with `countries` is a platform provider for those countries. One
+# without is a catch-all, tried last. `assigned_only` keeps a provider out of
+# the general routes: it serves only the users and tenants it is assigned to.
+
+resource "np_telecom" {
+  kind "sms.gateway.smpp"
+  description "Primary Nepal route over SMPP"
+  depends_on ["sms"]
+  config {
+    hub "sms"
+    countries ["NP"]
+    cost_per_segment 0.0110
+    quality 92
+    delivery_rate 0.97
+    tps 50
+    concurrency 8
+    timeout 10s
+    retry { max_attempts 3 initial 1s max 15s factor 2 jitter 0.2 }
+    plugin {
+      addr env("NP_SMPP_ADDR", "127.0.0.1:2775")
+      system_id env("NP_SMPP_SYSTEM_ID", "smsgw")
+      password env("NP_SMPP_PASSWORD", "sandbox")
+      window_size 16
+      enquire_interval 30s
+    }
+  }
+}
+
+resource "premium_np" {
+  kind "sms.gateway.mock"
+  description "ACME's premium Nepal route: high quality, sold to one tenant"
+  depends_on ["sms"]
+  config {
+    hub "sms"
+    countries ["NP"]
+    assigned_only true
+    cost_per_segment 0.0180
+    quality 98
+    delivery_rate 0.995
+    concurrency 4
+    retry { max_attempts 2 initial 500ms max 5s factor 2 }
+    plugin { dlr "delivered" dlr_delay 100ms }
+  }
+}
+
+resource "in_vendor" {
+  kind "sms.gateway.http"
+  description "India route over a vendor's HTTP API"
+  depends_on ["sms"]
+  config {
+    hub "sms"
+    countries ["IN"]
+    assigned_only true
+    cost_per_segment 0.0040
+    quality 88
+    delivery_rate 0.95
+    tps 100
+    concurrency 6
+    timeout 8s
+    webhook_secret env("IN_VENDOR_WEBHOOK_SECRET", "sandbox-secret")
+    retry { max_attempts 4 initial 1s max 20s factor 2 jitter 0.3 }
+    capabilities { alpha_sender true unicode true dlr true }
+    plugin {
+      url env("IN_VENDOR_URL", "http://127.0.0.1:9100/send")
+      allow_private_networks env("IN_VENDOR_ALLOW_PRIVATE", "true")
+      auth { type "bearer" token env("IN_VENDOR_TOKEN", "sandbox-token") }
+      body { to "{{to}}" from "{{from}}" text "{{text}}" reference "{{id}}" }
+      id_path "data.message_id"
+      error_path "error.code"
+      permanent_codes ["invalid_number"]
+      provider_codes ["unauthorized"]
+      dlr { id_field "id" ref_field "reference" status_field "status" delivered ["DELIVRD"] failed ["UNDELIV", "REJECTD", "EXPIRED"] }
+    }
+  }
+}
+
+resource "global_fallback" {
+  kind "sms.gateway.mock"
+  description "Catch-all for every other country: slower, dearer, last resort"
+  depends_on ["sms"]
+  config {
+    hub "sms"
+    cost_per_segment 0.0300
+    quality 70
+    delivery_rate 0.9
+    concurrency 4
+    retry { max_attempts 3 initial 1s max 10s factor 2 }
+    capabilities { unicode true dlr true }
+    plugin { dlr "delivered" dlr_delay 200ms latency 20ms }
+  }
+}
