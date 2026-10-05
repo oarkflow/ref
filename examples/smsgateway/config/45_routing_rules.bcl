@@ -5,10 +5,13 @@
 # checks them, and turns the enabled ones into a decision table.
 #
 #   routing_rules (table)  ──►  custom_routing (a rules definition, generated)
-#                                     │ evaluated for every candidate provider,
-#                                     │ after routing.bcl has allowed it
+#                                     │ the FILTER half: evaluated for every
+#                                     │ candidate provider, before ranking
 #                                     ▼
-#                         allow  = use this provider first (priority) or alone (exclusive)
+#                         allow  = use this provider first (a priority the
+#                                 ranking reads) or reserve the message for it
+#                                 alone (reserves, which removes every other
+#                                 candidate whatever it scores)
 #                         deny   = never use it for this message
 #
 # A rule has conditions (all optional, all must hold) and an action:
@@ -19,13 +22,21 @@
 #               only : use only this provider
 #               avoid: never use this provider
 # A rule that uses or reserves a provider also ADMITS it: a provider assigned to
-# other accounts can be named for an account, a number or a template. The
-# provider's own limits (paused, circuit open, no unicode, OTP quality) still apply.
-# The rule with the highest priority that matches a provider decides for it, and
-# a rule's priority outweighs everything else about a provider (quality, cost).
-# The console suggests a priority from how specific the rule is (an account
-# counts for more than a country, a recipient for more than a content word), and
-# lets the operator change it.
+# other accounts can be named for an account, a number or a template. What it
+# cannot overrule are the hard limits — a provider that is switched off, whose
+# circuit is open, that cannot encode the text, or that the sender's country does
+# not allow — because those messages would be lost or unlawful.
+#
+# `only` is kept, not merely preferred: if the provider it names turns out to be
+# unusable, the message is refused rather than carried by a provider the operator
+# ruled out. `use` is the action that leaves the others as fall-backs.
+#
+# The rule with the highest priority that matches a provider decides for it. That
+# priority is a score, read by the ranking once the filtering is done, so it can
+# only order: two rules that both name a provider for one message are settled
+# before any candidate is scored. The console suggests a priority from how
+# specific the rule is (an account counts for more than a country, a recipient for
+# more than a content word), and lets the operator change it.
 #
 # The generated source is rendered from templates/rules/custom_routing.html and
 # published with rules.save, so it is checked by the engine, effective at once,
@@ -69,12 +80,12 @@ intent "admin.routing_rules.list" {
 # definition's source. The same query serves both: strings are escaped here, in
 # SQL, so what reaches the template is already safe inside a quoted BCL string.
 intent "routing_rules.publish" {
-  description "Generate custom_routing from the enabled routing rules and publish it"
-  response "rule"
+  description "Generate custom_routing from the enabled routing rules and publish it if it changed"
+  response "result"
   node "rows" {
     uses "database.query" resource "db" kind read requires [input] provides [rows]
     config {
-      statement "SELECT r.id, REPLACE(REPLACE(r.provider, '\\', '\\\\'), '\"', '\\\"') AS provider, REPLACE(REPLACE(r.account, '\\', '\\\\'), '\"', '\\\"') AS account, REPLACE(REPLACE(r.tenant, '\\', '\\\\'), '\"', '\\\"') AS tenant, REPLACE(REPLACE(r.countries, '\\', '\\\\'), '\"', '\\\"') AS countries, REPLACE(REPLACE(r.recipient_prefix, '\\', '\\\\'), '\"', '\\\"') AS recipient_prefix, REPLACE(REPLACE(r.recipients, '\\', '\\\\'), '\"', '\\\"') AS recipients, REPLACE(REPLACE(r.templates, '\\', '\\\\'), '\"', '\\\"') AS templates, REPLACE(REPLACE(r.recipient_pattern, '\\', '\\\\'), '\"', '\\\"') AS recipient_pattern, REPLACE(REPLACE(r.sender_pattern, '\\', '\\\\'), '\"', '\\\"') AS sender_pattern, REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(r.content_words, '\\', '\\\\'), '.', '\\.'), '+', '\\+'), '*', '\\*'), '?', '\\?'), '(', '\\('), ')', '\\)'), '[', '\\['), ']', '\\]'), '{', '\\{'), '}', '\\}'), '^', '\\^'), '$', '\\$'), '\\', '\\\\'), '\"', '\\\"') AS content_words, REPLACE(REPLACE(r.content_pattern, '\\', '\\\\'), '\"', '\\\"') AS content_pattern, REPLACE(REPLACE(r.types, '\\', '\\\\'), '\"', '\\\"') AS types, r.min_segments, r.max_segments, CASE r.mode WHEN 'avoid' THEN 'deny' ELSE 'allow' END AS effect, CASE r.mode WHEN 'only' THEN 'true' ELSE 'false' END AS exclusive, REPLACE(REPLACE('routing rule: ' || r.name, '\\', '\\\\'), '\"', '\\\"') AS reason, 200000 + r.priority * 1000 AS score, 1000 + r.priority AS table_priority, CASE WHEN ROW_NUMBER() OVER w = 1 THEN 'decision_schema \"for_' || r.provider || '\" { effects [allow, deny] default allow strategy first_match }' || char(10) || '  decision_table \"for_' || r.provider || '\" {' || char(10) || '    default allow' || char(10) || '    hit_policy first' || char(10) ELSE '' END AS open, CASE WHEN ROW_NUMBER() OVER w = COUNT(*) OVER (PARTITION BY r.provider) THEN '  }' || char(10) ELSE '' END AS close FROM routing_rules r WHERE r.enabled = 1 WINDOW w AS (PARTITION BY r.provider ORDER BY r.priority DESC, (CASE WHEN r.account <> '' THEN 1 ELSE 0 END + CASE WHEN r.tenant <> '' THEN 1 ELSE 0 END + CASE WHEN r.countries <> '' THEN 1 ELSE 0 END + CASE WHEN r.recipients <> '' THEN 3 ELSE 0 END + CASE WHEN r.templates <> '' THEN 2 ELSE 0 END + CASE WHEN r.recipient_prefix <> '' THEN 1 ELSE 0 END + CASE WHEN r.recipient_pattern <> '' THEN 1 ELSE 0 END + CASE WHEN r.sender_pattern <> '' THEN 1 ELSE 0 END + CASE WHEN r.content_words <> '' THEN 1 ELSE 0 END + CASE WHEN r.content_pattern <> '' THEN 1 ELSE 0 END + CASE WHEN r.types <> '' THEN 1 ELSE 0 END + CASE WHEN r.min_segments > 0 THEN 1 ELSE 0 END + CASE WHEN r.max_segments > 0 THEN 1 ELSE 0 END) DESC, r.id) ORDER BY r.provider, ROW_NUMBER() OVER w"
+      statement "SELECT r.id, REPLACE(REPLACE(r.provider, '\\', '\\\\'), '\"', '\\\"') AS provider, REPLACE(REPLACE(r.account, '\\', '\\\\'), '\"', '\\\"') AS account, REPLACE(REPLACE(r.tenant, '\\', '\\\\'), '\"', '\\\"') AS tenant, REPLACE(REPLACE(r.countries, '\\', '\\\\'), '\"', '\\\"') AS countries, REPLACE(REPLACE(r.recipient_prefix, '\\', '\\\\'), '\"', '\\\"') AS recipient_prefix, REPLACE(REPLACE(r.recipients, '\\', '\\\\'), '\"', '\\\"') AS recipients, REPLACE(REPLACE(r.templates, '\\', '\\\\'), '\"', '\\\"') AS templates, REPLACE(REPLACE(r.recipient_pattern, '\\', '\\\\'), '\"', '\\\"') AS recipient_pattern, REPLACE(REPLACE(r.sender_pattern, '\\', '\\\\'), '\"', '\\\"') AS sender_pattern, REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(r.content_words, '\\', '\\\\'), '.', '\\.'), '+', '\\+'), '*', '\\*'), '?', '\\?'), '(', '\\('), ')', '\\)'), '[', '\\['), ']', '\\]'), '{', '\\{'), '}', '\\}'), '^', '\\^'), '$', '\\$'), '\\', '\\\\'), '\"', '\\\"') AS content_words, REPLACE(REPLACE(r.content_pattern, '\\', '\\\\'), '\"', '\\\"') AS content_pattern, REPLACE(REPLACE(r.types, '\\', '\\\\'), '\"', '\\\"') AS types, r.min_segments, r.max_segments, CASE r.mode WHEN 'avoid' THEN 'deny' ELSE 'allow' END AS effect, CASE r.mode WHEN 'only' THEN 'true' ELSE 'false' END AS reserves, CASE r.mode WHEN 'avoid' THEN 'RULE_AVOID' WHEN 'only' THEN 'RULE_ONLY' ELSE 'RULE_USE' END AS code, REPLACE(REPLACE('routing rule: ' || r.name, '\\', '\\\\'), '\"', '\\\"') AS reason, 200000 + r.priority * 1000 AS score, 1000 + r.priority AS table_priority, CASE WHEN ROW_NUMBER() OVER w = 1 THEN 'decision_schema \"for_' || r.provider || '\" { effects [allow, deny] default allow strategy first_match }' || char(10) || '  decision_table \"for_' || r.provider || '\" {' || char(10) || '    default allow' || char(10) || '    hit_policy first' || char(10) ELSE '' END AS open, CASE WHEN ROW_NUMBER() OVER w = COUNT(*) OVER (PARTITION BY r.provider) THEN '  }' || char(10) ELSE '' END AS close FROM routing_rules r WHERE r.enabled = 1 WINDOW w AS (PARTITION BY r.provider ORDER BY r.priority DESC, (CASE WHEN r.account <> '' THEN 1 ELSE 0 END + CASE WHEN r.tenant <> '' THEN 1 ELSE 0 END + CASE WHEN r.countries <> '' THEN 1 ELSE 0 END + CASE WHEN r.recipients <> '' THEN 3 ELSE 0 END + CASE WHEN r.templates <> '' THEN 2 ELSE 0 END + CASE WHEN r.recipient_prefix <> '' THEN 1 ELSE 0 END + CASE WHEN r.recipient_pattern <> '' THEN 1 ELSE 0 END + CASE WHEN r.sender_pattern <> '' THEN 1 ELSE 0 END + CASE WHEN r.content_words <> '' THEN 1 ELSE 0 END + CASE WHEN r.content_pattern <> '' THEN 1 ELSE 0 END + CASE WHEN r.types <> '' THEN 1 ELSE 0 END + CASE WHEN r.min_segments > 0 THEN 1 ELSE 0 END + CASE WHEN r.max_segments > 0 THEN 1 ELSE 0 END) DESC, r.id) ORDER BY r.provider, ROW_NUMBER() OVER w"
     }
   }
   node "vars" { uses "data.transform" kind pure requires [rows] provides [vars] config { data { extract { rules "rows" } pick ["rules"] } } }
@@ -83,9 +94,72 @@ intent "routing_rules.publish" {
     config { template "rules/custom_routing" vars_fact "vars" }
   }
   node "defname" { uses "expression" kind pure provides [defname] config { expression "'custom_routing'" } }
+
+  # The generated source is fingerprinted, and the fingerprint of what was last
+  # published is kept, so a publish that would change nothing changes nothing.
+  # That is what makes it safe to run this on a timer (config/46_converge.bcl):
+  # a tick with nothing to do costs one SELECT and one UPDATE, recompiles
+  # nothing, and leaves rule_overrides and routing_published agreeing.
+  node "fingerprint" { uses "expression" kind pure requires [source] provides [fingerprint] config { expression "sha256(source.text)" } }
+  node "published_rows" {
+    uses "database.query" resource "db" kind read requires [defname] provides [published_rows]
+    config { statement "SELECT fingerprint FROM routing_published WHERE name = $1" args [defname] }
+  }
+  node "published_row" { uses "data.first" requires [published_rows] provides [published_row] config { source_fact "published_rows" optional true } }
+  node "drift" {
+    uses "data.transform" kind pure requires [published_row, fingerprint, rows, defname, source] provides [drift]
+    config {
+      data {
+        extract {
+          stored "published_row != nil ? published_row.fingerprint : ''"
+          current "fingerprint"
+          changed "published_row == nil ? true : published_row.fingerprint != fingerprint"
+          rules "len(rows)"
+          name "defname"
+          text "source.text"
+          now_ms "unix_millis()"
+        }
+      }
+    }
+  }
+  # Applied first, recorded second: a fingerprint is only ever written once the
+  # engine has taken the source, so a failure here is retried on the next tick
+  # instead of being remembered as done.
+  node "published" {
+    uses "flow.branch" kind effect requires [drift, source] provides [published]
+    config {
+      required false
+      input_fact "drift"
+      cases [ { name "changed" condition "drift.changed == true" intent "routing_rules.apply" input { text "{{ source.text }}" } } ]
+    }
+  }
+  node "recorded" {
+    uses "database.transaction" resource "db" kind effect requires [drift, published] provides [recorded]
+    config {
+      statements [
+        { name "mark" when "drift.changed == true" sql "INSERT INTO routing_published (name, fingerprint, source, rule_count, at_ms) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (name) DO UPDATE SET fingerprint = excluded.fingerprint, source = excluded.source, rule_count = excluded.rule_count, at_ms = excluded.at_ms"
+          args [drift.name, drift.current, drift.text, drift.rules, drift.now_ms] }
+      ]
+    }
+  }
+  # `recorded` writes the fingerprint, and this node is what makes that part of
+  # the plan: a node whose fact nothing reads is pruned, so the tick would have
+  # published on every pass and never recorded that it had.
+  node "result" {
+    uses "data.transform" kind pure requires [drift, published, recorded] provides [result]
+    config { data { extract { changed "drift.changed" rules "drift.rules" applied "published.matched == true" } pick ["changed", "rules", "applied"] } }
+  }
+}
+
+# What the branch above calls: hand the rendered source to the engine under its
+# own name. Kept separate so the publish can decide not to call it at all.
+intent "routing_rules.apply" {
+  description "Publish a rendered custom_routing to the engine"
+  response "rule"
+  node "defname" { uses "expression" kind pure requires [input] provides [defname] config { expression "'custom_routing'" } }
   node "rule" {
-    uses "rules.save" resource "policy" kind effect requires [source, defname] provides [rule]
-    config { name_fact "defname" source_fact "source.text" }
+    uses "rules.save" resource "policy" kind effect requires [input, defname] provides [rule]
+    config { name_fact "defname" source_fact "input.text" }
   }
 }
 

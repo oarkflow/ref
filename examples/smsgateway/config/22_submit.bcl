@@ -65,7 +65,11 @@ intent "sms.accept" {
           type "prepared.message.type"
           segments "prepared.message.segments"
           encoding "prepared.message.encoding"
-          dlr "prepared.message.dlr ? 1 : 0"
+          # What the message will actually get: a receipt only if it was asked
+          # for AND the provider this message goes to can report one. The
+          # receipts pipeline reads this column, so a carrier that cannot
+          # report never leaves the caller waiting for one.
+          dlr "lead != nil and lead.supports_dlr == 1 and prepared.message.dlr ? 1 : 0"
           text "prepared.message.text"
           price "prepared.charge.micros"
           currency "prepared.message.currency"

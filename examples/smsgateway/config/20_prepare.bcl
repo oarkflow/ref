@@ -5,7 +5,9 @@
 #                                        │                  ├─ prepared
 #                                        └─ routing ─ price ─ limits ┘
 #
-# It returns { message, user, route, charge }. sms.submit accepts and queues
+# It returns { message, user, route, lead, charge }. `lead` is the provider the
+# message goes out through: the first, highest-scored entry of route.chain.
+# sms.submit accepts and queues
 # the result; sms.explain shows it. Nothing here writes anything.
 #
 # Every judgement lives in ../rules: how a number is read, what is refused, which
@@ -157,7 +159,12 @@ intent "sms.prepare" {
           segments "analysis.segments"
           encoding "analysis.encoding"
           unicode "analysis.unicode"
+          # What the message will ask for, and whether it asked at all. `dlr`
+          # defaults to true, so the two are different: a request that never
+          # mentioned receipts is not a request for one, and treating the default
+          # as the ask would refuse most traffic over a preference nobody stated.
           dlr "coalesce(input.dlr, true)"
+          dlr_asked "input.dlr == true"
           reference "input.reference != nil ? input.reference : ''"
           ttl_s "input.expires_in != nil ? input.expires_in : 86400"
           delay_s "input.delay_seconds != nil ? input.delay_seconds : 0"
@@ -185,10 +192,14 @@ intent "sms.prepare" {
   # ---- Routing -------------------------------------------------------------
   # Every provider in the catalog with its health on this route; the rules pick
   # and order them.
+  #
+  # A provider with no price on file is not free: an unknown cost is the dearest
+  # cost on file (price_known 0 says so), so a provider nobody has priced can
+  # never win a price ranking by being absent from the price table.
   node "candidates" {
     uses "database.query" resource "db" kind read requires [message] provides [candidates]
     config {
-      statement "SELECT p.id, p.kind, p.channel, p.sandbox AS sandbox, p.state, p.quality, p.delivery_rate, p.countries, p.message_types, p.owner, p.tenants, p.users, p.assigned_only, p.supports_unicode, p.supports_dlr, p.supports_alpha, p.supports_long, p.sender_countries, p.prefix_pattern, p.max_attempts, p.backoff_initial_s, p.backoff_max_s, p.backoff_factor, COALESCE(c.per_segment, d.per_segment, 0) AS cost_per_segment, COALESCE(c.per_segment, d.per_segment, 0) * $4 AS cost, COALESCE(h.successes, 0) AS successes, COALESCE(h.failures, 0) AS failures, COALESCE(h.consecutive_failures, 0) AS consecutive_failures, CASE WHEN COALESCE(h.open_until_ms, 0) > $3 THEN 1 ELSE 0 END AS circuit_open FROM providers p LEFT JOIN provider_costs c ON c.provider = p.id AND c.country = $1 LEFT JOIN provider_costs d ON d.provider = p.id AND d.country = '*' LEFT JOIN provider_health h ON h.provider = p.id AND h.route = $2 ORDER BY p.id"
+      statement "SELECT p.id, p.kind, p.channel, p.sandbox AS sandbox, p.state, p.quality, p.delivery_rate, p.countries, p.message_types, p.owner, p.tenants, p.users, p.assigned_only, p.supports_unicode, p.supports_dlr, p.supports_alpha, p.supports_long, p.sender_countries, p.prefix_pattern, p.max_attempts, p.backoff_initial_s, p.backoff_max_s, p.backoff_factor, CASE WHEN c.per_segment IS NULL AND d.per_segment IS NULL THEN 0 ELSE 1 END AS price_known, COALESCE(c.per_segment, d.per_segment, (SELECT MAX(per_segment) FROM provider_costs WHERE country IN ($1, '*')), 1) AS cost_per_segment, COALESCE(c.per_segment, d.per_segment, (SELECT MAX(per_segment) FROM provider_costs WHERE country IN ($1, '*')), 1) * $4 AS cost, COALESCE(h.successes, 0) AS successes, COALESCE(h.failures, 0) AS failures, COALESCE(h.consecutive_failures, 0) AS consecutive_failures, CASE WHEN COALESCE(h.successes, 0) + COALESCE(h.failures, 0) > 0 THEN COALESCE(h.failures, 0) * 1.0 / (COALESCE(h.successes, 0) + COALESCE(h.failures, 0)) ELSE 0 END AS failure_rate, CASE WHEN COALESCE(h.open_until_ms, 0) > $3 THEN 1 ELSE 0 END AS circuit_open FROM providers p LEFT JOIN provider_costs c ON c.provider = p.id AND c.country = $1 LEFT JOIN provider_costs d ON d.provider = p.id AND d.country = '*' LEFT JOIN provider_health h ON h.provider = p.id AND h.route = $2 ORDER BY p.id"
       args [message.country, message.route_key, message.now_ms, message.segments]
     }
   }
@@ -199,6 +210,25 @@ intent "sms.prepare" {
   node "route" {
     uses "rules.rank" resource "policy" kind read requires [message, user, candidates, objective] provides [route]
     config { definition "routing" candidates_fact "candidates" eligibility "route_eligibility" eligibility_extra ["custom_routing/for_{id}"] ranking_fact "objective.ranking" }
+  }
+  # The provider a message goes out through is the FIRST of the chain: rules.rank
+  # filters, then orders what it kept, and sms.submit dispatches chain[0]. Nothing
+  # re-orders it afterwards; the rest of the chain is the failover order.
+  node "lead" { uses "data.first" requires [route] provides [lead] config { source_fact "route.chain" optional true } }
+  # Whether the message can keep the receipt promise it made. Asked AFTER routing
+  # and never fed into it: whether a message wants a receipt is a reporting
+  # preference, and letting it choose a carrier would make two identical messages
+  # take different routes.
+  #
+  # It is the LEAD that is asked about, not the whole chain, because the lead is
+  # what the message goes out through. A receipt-capable provider further down the
+  # chain is a fall-back, not a promise: if the carrier the message is sent over
+  # cannot report, the caller must be told now rather than wait for a receipt that
+  # cannot arrive. rules/validate.bcl refuses an explicit request in that case;
+  # messages.want_dlr records the same thing per message.
+  node "can_report" {
+    uses "data.transform" kind pure requires [lead, message] provides [can_report]
+    config { data { extract { receipt_capable "lead != nil and lead.supports_dlr == 1 and message.dlr == true" } pick ["receipt_capable"] } }
   }
 
   # ---- Price ---------------------------------------------------------------
@@ -222,12 +252,12 @@ intent "sms.prepare" {
     }
   }
   node "limits" {
-    uses "rules.decide" resource "policy" kind read requires [user, route, charge] provides [limits]
+    uses "rules.decide" resource "policy" kind read requires [user, message, route, can_report, charge] provides [limits]
     config { definition "validate" decision "limits" fail_on ["deny"] }
   }
 
   node "prepared" {
-    uses "data.transform" kind pure requires [message, user, route, charge, valid, limits] provides [prepared]
-    config { data { extract { message "message" user "user" route "route" charge "charge" } pick ["message", "user", "route", "charge"] } }
+    uses "data.transform" kind pure requires [message, user, route, lead, charge, valid, limits] provides [prepared]
+    config { data { extract { message "message" user "user" route "route" lead "lead" charge "charge" } pick ["message", "user", "route", "lead", "charge"] } }
   }
 }

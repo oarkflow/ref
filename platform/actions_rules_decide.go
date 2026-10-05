@@ -50,18 +50,18 @@ func registerRulesDecideActions(r *Registry) {
 
 	mustAction(r, "rules.rank", rulesRankAction, ActionInfo{
 		Family:       "rules",
-		Summary:      "Filter candidates with an eligibility decision and order the survivors with a ranking, best first",
+		Summary:      "FILTER candidates with an eligibility decision, then RANK the survivors by score, best first",
 		ResourceKind: "rules.engine",
-		Provides:     "{ chain, rejected, empty, transient }",
+		Provides:     `{ chain, rejected, empty, transient, reserved_for }. Filtering is decided on identity — a candidate is kept or dropped, never demoted — and only what survives is ranked`,
 		Kind:         "read",
 		Config: []ConfigField{
 			{Name: "definition", Type: "string", Required: true},
 			{Name: "candidates_fact", Type: "fact", Default: "candidates", Summary: "A list of { id, facts }, or of rows with an id (a query result)"},
-			{Name: "eligibility", Type: "string", Summary: `Decision run once per candidate with the candidate as "provider"; a deny rejects it, and an allow's attributes (priority, tier, exclusive, …) are merged into the candidate's facts`},
-			{Name: "ranking", Type: "string", Summary: "Ranking decision that orders the eligible candidates"},
-			{Name: "eligibility_extra", Type: "[]string", Summary: `Further per-candidate decisions, "definition/decision", run after eligibility (usually in a definition generated at runtime). A decision name may hold {id}, the candidate's id: "custom/for_{id}" runs the decision written for that candidate alone, and a candidate without one is simply not affected, so a large rule set is searched per candidate, not in full. A deny rejects the candidate; an allow that matched a rule sets the candidate's fact granted for the main decision to honour, and its attributes (priority, exclusive, tier) override the main decision's`},
+			{Name: "eligibility", Type: "string", Summary: `FILTER. Decision run once per candidate with the candidate as "provider": a deny drops it, and an allow's attributes (tier, priority, reserves, …) are merged into the candidate's facts. The tier and priority are not acted on here — they are what the ranking scores — so nothing in this decision decides an order`},
+			{Name: "ranking", Type: "string", Summary: `RANK. The ranking that orders what the filters kept. The only place priority takes effect, and it can only order: a score moves a candidate up or down the chain, never out of it`},
+			{Name: "eligibility_extra", Type: "[]string", Summary: `Further FILTER decisions, "definition/decision", run before eligibility (usually in a definition generated at runtime). A decision name may hold {id}, the candidate's id: "custom/for_{id}" runs the decision written for that candidate alone, and a candidate without one is simply not affected, so a large rule set is searched per candidate, not in full. A deny drops the candidate; an allow that matched a rule sets the candidate's fact granted for the main decision to honour, and its attributes (tier, priority, reserves) override the main decision's. An extra definition that is not published is skipped, so a message never fails because a generated definition is missing`},
 			{Name: "ranking_fact", Type: "fact", Summary: "Fact path holding the ranking name, to choose it per request"},
-			{Name: "limit", Type: "int", Summary: "Keep at most this many"},
+			{Name: "limit", Type: "int", Summary: "Keep at most this many, best first"},
 		},
 	})
 }
@@ -268,7 +268,7 @@ var rulesRankAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) 
 
 	live, _ := requireResource[*rulesEngineWrapper](build, spec, "a rules.engine resource")
 	// eligibility_extra: further per-candidate decisions, "definition/decision",
-	// run after the main one, usually in a definition an operator generates at
+	// run before the main one, usually in a definition an operator generates at
 	// runtime. A deny rejects the candidate; an allow that matched a rule (not
 	// the default) merges its attributes into the candidate's facts.
 	type extraRule struct {
@@ -314,6 +314,12 @@ var rulesRankAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) 
 			eligible []cand
 			rejected []any
 			trans    bool
+			// reservations are the candidates some filter said this message goes
+			// through or nowhere else. Named here whether or not the candidate
+			// survives: a reservation is about the message, not about the
+			// provider, so it binds even when the provider turns out to be
+			// unusable — and then it binds hardest of all.
+			reservations []string
 		)
 		// One environment serves every candidate: only "provider" changes, and an
 		// evaluation does not keep a reference to its input.
@@ -342,7 +348,10 @@ var rulesRankAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) 
 			for _, extra := range extras {
 				extraProgram, perr := live.program(extra.definition)
 				if perr != nil {
-					return ActionResult{}, fmt.Errorf("rules.rank: %w", perr)
+					// A generated definition that is not published yet (a fresh
+					// database, an operator's rules never rendered) must not fail
+					// every message: the candidates simply go unruled this time.
+					continue
 				}
 				decision := extra.decision
 				if extra.perCandidate {
@@ -357,16 +366,16 @@ var rulesRankAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) 
 					return ActionResult{}, fmt.Errorf("rules.rank %s/%s for %q: %w", extra.definition, decision, c.id, err)
 				}
 				if !res.Allowed {
-					rejected = append(rejected, map[string]any{
-						"id": c.id, "rule": res.PolicyID, "reason": res.Reason, "reason_code": res.ReasonCode,
-						"attributes": res.Attributes,
-					})
+					rejected = append(rejected, rejection(c.id, res))
 					refused = true
 					break
 				}
 				if res.PolicyID != "" {
 					granted = append(granted, pending{attrs: res.Attributes, rule: res.PolicyID})
 					c.facts["granted"] = true
+					if reserves(c.id, res.Attributes) {
+						reservations = append(reservations, c.id)
+					}
 				}
 			}
 			if refused {
@@ -379,21 +388,21 @@ var rulesRankAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) 
 					return ActionResult{}, fmt.Errorf("rules.rank %s/%s for %q: %w", definition, eligibility, c.id, err)
 				}
 				if !res.Allowed {
-					rejected = append(rejected, map[string]any{
-						"id": c.id, "rule": res.PolicyID, "reason": res.Reason, "reason_code": res.ReasonCode,
-						"attributes": res.Attributes,
-					})
+					rejected = append(rejected, rejection(c.id, res))
 					if t, ok := res.Attributes["transient"].(bool); ok && t {
 						trans = true
 					}
 					continue
+				}
+				if reserves(c.id, res.Attributes) {
+					reservations = append(reservations, c.id)
 				}
 				for k, v := range res.Attributes {
 					c.facts[k] = v
 				}
 				c.facts["eligibility_rule"] = res.PolicyID
 			}
-			// A rule's attributes (priority, exclusive, tier) win over the main decision's.
+			// A rule's attributes (tier, priority) win over the main decision's.
 			for _, g := range granted {
 				for k, v := range g.attrs {
 					c.facts[k] = v
@@ -403,33 +412,52 @@ var rulesRankAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) 
 			eligible = append(eligible, c)
 		}
 
-		// An exclusive candidate ends the chain at its priority: nothing ranked
-		// below it is kept.
-		floor, hasFloor := 0.0, false
-		for _, c := range eligible {
-			if ex, _ := c.facts["exclusive"].(bool); ex {
-				if p, ok := numberOf(c.facts["priority"]); ok && (!hasFloor || p > floor) {
-					floor, hasFloor = p, true
-				}
-			}
+		// RESERVE. Still filtering, and still on identity rather than on score: a
+		// candidate that reserved the message is the only one that may carry it.
+		// Where several did, the last in the order the candidates arrived in wins,
+		// which is the order the query gave and so the same on every replica.
+		reserved := ""
+		for _, id := range reservations {
+			reserved = id
 		}
-		if hasFloor {
+		if reserved != "" {
 			kept := eligible[:0]
+			met := false
 			for _, c := range eligible {
-				if p, ok := numberOf(c.facts["priority"]); !ok || p >= floor {
+				if c.id == reserved {
+					met = true
 					kept = append(kept, c)
-				} else {
-					rejected = append(rejected, map[string]any{"id": c.id, "rule": "exclusive", "reason": "a higher-priority exclusive candidate ends the chain", "reason_code": "EXCLUSIVE"})
+					continue
 				}
+				rejected = append(rejected, map[string]any{
+					"id": c.id, "rule": "reserves", "reason_code": "RESERVED_ELSEWHERE",
+					"reason":     "this message is reserved for " + reserved + ", which is the only provider that may carry it",
+					"attributes": map[string]any{"code": "RESERVED_ELSEWHERE", "reserved_for": reserved},
+				})
 			}
 			eligible = kept
+			// The reservation named a candidate that did not survive. That is not a
+			// reason to widen it: nothing carries the message, and the answer says
+			// so rather than quietly choosing a carrier the caller ruled out.
+			if !met {
+				for _, id := range reservations {
+					rejected = append(rejected, map[string]any{
+						"id": id, "rule": "reserves", "reason_code": "RESERVED_PROVIDER_UNAVAILABLE",
+						"reason":     "this message is reserved for " + id + ", and no other provider may carry it",
+						"attributes": map[string]any{"code": "RESERVED_PROVIDER_UNAVAILABLE", "reserved_for": id, "transient": true},
+					})
+				}
+				trans = true
+			}
 		}
 
-		// Best first. A candidate's score does not depend on the others, so each is
-		// scored once (n evaluations, where selecting the best of what is left again
-		// and again would take n(n+1)/2) and the chain is the stable order by score:
-		// equal scores keep the order the candidates arrived in, which is exactly what
-		// selecting the first best each time gives.
+		// RANK. Only now is anything scored, and nothing below this line can drop a
+		// candidate: a score decides the order of what the filters kept, and nothing
+		// else. Best first. A candidate's score does not depend on the others, so
+		// each is scored once (n evaluations, where selecting the best of what is
+		// left again and again would take n(n+1)/2) and the chain is the stable order
+		// by score: equal scores keep the order the candidates arrived in, which is
+		// exactly what selecting the first best each time gives.
 		type scored struct {
 			facts map[string]any
 			id    string
@@ -466,9 +494,52 @@ var rulesRankAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) 
 		return singleOutput(spec, map[string]any{
 			"chain": chain, "rejected": rejected, "ranking": name,
 			"empty": len(chain) == 0, "transient": trans && len(chain) == 0,
+			"reserved_for": reserved,
 		}), nil
 	}), nil
 })
+
+// reserves reports whether an allow asked for this candidate to be the only one
+// that may carry the message.
+//
+// `reserves` is the spelling. `exclusive` and `exclusive_required` are read as
+// the same thing: an `exclusive` used to mean "nothing of a lower priority is
+// kept", which made priority do the work of a filter — a candidate could be
+// dropped for scoring badly, and the outcome then depended on how the tiers
+// happened to be numbered. Both old spellings now mean what their names say, a
+// filter on identity, so a rule's `only` and an account's own provider behave the
+// same way and neither depends on a priority.
+func reserves(id string, attrs map[string]any) bool {
+	for _, key := range []string{"reserves", "exclusive_required", "exclusive"} {
+		if v, _ := attrs[key].(bool); v {
+			return true
+		}
+	}
+	return false
+}
+
+// rejection records why a candidate was left out. The machine-readable code is
+// wherever the rule put it: an outcome that carries `attributes { code "..." }`
+// is the usual spelling, and a rule that sets reason_code itself is rarer, so
+// both are read. Without this a caller sees a reason sentence and an empty
+// reason_code, and cannot tell a paused provider from a misaddressed rule.
+func rejection(id string, res *bcl.DecisionResult) map[string]any {
+	attrs := map[string]any{}
+	for k, v := range res.Attributes {
+		attrs[k] = v
+	}
+	code := Stringify(res.Attributes["code"])
+	if code == "" {
+		code = res.ReasonCode
+	}
+	if code == "" {
+		code = strings.ToUpper(res.Effect)
+	}
+	return map[string]any{
+		"id": id, "rule": res.PolicyID, "reason": res.Reason, "reason_code": code,
+		"attributes": attrs,
+	}
+}
 
 // candidateList reads a list of candidates however it arrived.
 func candidateList(raw any) []any {

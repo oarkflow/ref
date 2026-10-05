@@ -132,9 +132,12 @@ func TestRoutingExample(t *testing.T) {
 		{"a long message skips a provider that cannot send several segments",
 			map[string]any{"account": "alice", "to": "9841234567", "text": strings.Repeat("long ", 60), "dlr": false},
 			want{absent: []string{"np_budget"}, rejected: map[string]string{"np_budget": "no-long-messages"}}},
-		{"a message that wants a receipt skips a provider that gives none",
+		// A receipt is a reporting question, not a carrier-selection one: routing
+		// does not read dlr, so np_budget is filtered and scored like any other and
+		// the same chain comes back whichever way the request asks about receipts.
+		{"asking for a receipt does not change the route",
 			map[string]any{"account": "alice", "to": "9841234567", "text": "hello", "dlr": true},
-			want{rejected: map[string]string{"np_budget": "no-delivery-receipts"}}},
+			want{first: "np_telecom", order: []string{"np_telecom", "np_budget", "global_fallback"}}},
 
 		// ---- What an account is routed for ---------------------------------------------------
 		{"an account that wants the lowest price gets the cheapest route first",

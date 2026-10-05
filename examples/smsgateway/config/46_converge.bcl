@@ -1,0 +1,29 @@
+# ---------------------------------------------------------------------------
+# Keeping the live routing engine in step with the routing_rules table.
+#
+# custom_routing is GENERATED from the table (45_routing_rules.bcl). The table is
+# the truth; the compiled definition is what routing actually reads. Two things
+# can leave them apart:
+#
+#   a fresh database   the eight rules seeded in 01_database.bcl are rows, not
+#                      compiled decisions, so until the first publish they are
+#                      inert and every message is routed by the platform tiers
+#                      alone
+#   a lost override    the engine holds its rules in memory; a replica that came
+#                      up without the stored source, or a restored file, is
+#                      running rules the table no longer says
+#
+# Both are the failure an operator sees as "I switched that rule off and it is
+# still routing that way", so the table is re-rendered on a timer rather than
+# only when somebody edits a rule. The publish is fingerprinted
+# (routing_published), so a tick that finds nothing changed costs one query and
+# one UPDATE and recompiles nothing.
+#
+# 2s is the window in which a replica can be routing from a stale definition, and
+# it is the only thing 2s buys: a tick with nothing to do is two small queries.
+# An operator editing a rule does not wait for it at all — the console's save,
+# enable and delete all publish in the request, so a switch takes effect before
+# the response comes back.
+# ---------------------------------------------------------------------------
+
+schedule "routing_publish" { every 2s queue "bus" intent "routing_rules.publish" }

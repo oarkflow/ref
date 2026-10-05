@@ -16,7 +16,8 @@ bcl { version "1.0" }
 #                   a rule may name a provider an account would never get on its own.
 #                   The provider's own limits (paused, circuit open, no Unicode,
 #                   an OTP quality floor) still apply, and so does the country it serves.
-#   ... exclusive true   use only this one: everything of a lower priority is dropped.
+#   ... reserves true    use only this one: every other candidate is dropped, whatever it
+#                         scored, and if this one cannot take the message nothing can.
 #   decision deny   never use this provider for these messages.
 #
 # `priority` (the row's) decides between two rules that name the SAME provider for
@@ -58,7 +59,7 @@ module "overrides" {
           message.text matches "(?i)(casino|lottery|betting)"
         }
       }
-      then { outcome { decision deny reason "gambling is not carried on this route" attributes { tier "rule" priority 295000 exclusive false rule_id "no-gambling" } } }
+      then { outcome { decision deny reason "gambling is not carried on this route" attributes { tier "rule" priority 295000 rule_id "no-gambling" } } }
     }
   }
 
@@ -79,7 +80,7 @@ module "overrides" {
           message.to == "9779841234567"
         }
       }
-      then { outcome { decision allow reason "bob's VIP number uses the reserved route" attributes { tier "rule" priority 290000 exclusive false rule_id "bob-vip-number" } } }
+      then { outcome { decision allow reason "bob's VIP number uses the reserved route" attributes { tier "rule" priority 290000 rule_id "bob-vip-number" } } }
     }
   }
 
@@ -100,7 +101,7 @@ module "overrides" {
           message.type matches "^(promotional)$"
         }
       }
-      then { outcome { decision allow reason "promotions use the cheap route" attributes { tier "rule" priority 240000 exclusive false rule_id "promotions-over-the-cheap-route" } } }
+      then { outcome { decision allow reason "promotions use the cheap route" attributes { tier "rule" priority 240000 rule_id "promotions-over-the-cheap-route" } } }
     }
   }
 
@@ -120,7 +121,7 @@ module "overrides" {
           message.to matches "^977985"
         }
       }
-      then { outcome { decision allow reason "acme to the 985 range uses the premium route" attributes { tier "rule" priority 260000 exclusive false rule_id "acme-985-range" } } }
+      then { outcome { decision allow reason "acme to the 985 range uses the premium route" attributes { tier "rule" priority 260000 rule_id "acme-985-range" } } }
     }
   }
 
@@ -139,7 +140,7 @@ module "overrides" {
           message.segments >= 3
         }
       }
-      then { outcome { decision allow reason "long messages use the range route" attributes { tier "rule" priority 230000 exclusive false rule_id "long-messages" } } }
+      then { outcome { decision allow reason "long messages use the range route" attributes { tier "rule" priority 230000 rule_id "long-messages" } } }
     }
   }
 
@@ -158,7 +159,7 @@ module "overrides" {
           user.tenant == "acme"
         }
       }
-      then { outcome { decision deny reason "acme does not use the shared India route" attributes { tier "rule" priority 280000 exclusive false rule_id "acme-not-on-shared-india" } } }
+      then { outcome { decision deny reason "acme does not use the shared India route" attributes { tier "rule" priority 280000 rule_id "acme-not-on-shared-india" } } }
     }
   }
 
@@ -168,7 +169,7 @@ module "overrides" {
     default allow
     hit_policy first
 
-    # Template + exclusive: a legal notice is sent over this one route only.
+    # Template + reserves: a legal notice is sent over this one route only.
     row "legal-notices-only-here" {
       priority 1070
       when {
@@ -177,7 +178,7 @@ module "overrides" {
           message.template matches "^(legal_notice)$"
         }
       }
-      then { outcome { decision allow reason "legal notices use one audited route" attributes { tier "rule" priority 270000 exclusive true rule_id "legal-notices-only-here" } } }
+      then { outcome { decision allow reason "legal notices use one audited route" attributes { tier "rule" priority 270000 reserves true rule_id "legal-notices-only-here" } } }
     }
   }
 
@@ -197,7 +198,7 @@ module "overrides" {
           message.text matches "\\d{4,8}"
         }
       }
-      then { outcome { decision allow reason "bank codes use the OTP gateway" attributes { tier "rule" priority 250000 exclusive false rule_id "bank-codes" } } }
+      then { outcome { decision allow reason "bank codes use the OTP gateway" attributes { tier "rule" priority 250000 rule_id "bank-codes" } } }
     }
   }
 }

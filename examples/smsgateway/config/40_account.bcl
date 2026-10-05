@@ -10,7 +10,7 @@ intent "me.messages.get" {
   node "rows" {
     uses "database.query" resource "db" kind read requires [id, uid] provides [rows]
     config {
-      statement "SELECT id, state, provider, to_number AS \"to\", country, sender AS \"from\", msg_type AS type, segments, encoding, price, currency, err_code, err_text, created_ms, submitted_ms, delivered_ms, total_attempts FROM messages WHERE id = $1 AND user_id = $2"
+      statement "SELECT id, state, provider, to_number AS \"to\", country, sender AS \"from\", msg_type AS type, segments, encoding, price, currency, want_dlr, err_code, err_text, created_ms, submitted_ms, delivered_ms, total_attempts FROM messages WHERE id = $1 AND user_id = $2"
       args [id, uid] require_rows true not_found_message "no such message"
     }
   }

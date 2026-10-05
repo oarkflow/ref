@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/oarkflow/rules"
 	rulesStorage "github.com/oarkflow/rules/pkg/storage"
@@ -94,6 +96,10 @@ type rulesEngineWrapper struct {
 	// overrides, when set, persists definitions edited at runtime.
 	overrides *Database
 	table     string
+	// mu serialises publishing, and publishes counts the runtime versions handed
+	// out so that two of them never share a name.
+	mu        sync.Mutex
+	publishes atomic.Uint64
 }
 
 func openRulesEngine(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, error) {

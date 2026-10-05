@@ -29,7 +29,7 @@ UI.page(function (ctx) {
 
     var idIn = el('input', { name: 'id', required: true, pattern: '[a-z0-9_]+', value: id || '' }); if (id) idIn.readOnly = true;
     var status = el('select', { name: 'status' }, ['active', 'suspended'].map(function (s) { return el('option', { value: s, text: s }); })); status.value = u.status || 'active';
-    var obj = el('select', { name: 'objective' }, [['', '(rules decide)'], ['delivery', 'best delivery'], ['cost', 'lowest cost'], ['balanced', 'balanced']].map(function (o) { return el('option', { value: o[0], text: o[1] }); })); obj.value = u.objective || '';
+    var obj = el('select', { name: 'objective' }, [['', '(rules decide)'], ['highest_delivery', 'best delivery'], ['lowest_cost', 'lowest cost'], ['balanced', 'balanced']].map(function (o) { return el('option', { value: o[0], text: o[1] }); })); obj.value = u.objective || '';
     var inputs = {
       name: el('input', { name: 'name', value: u.name || '' }), tenant: el('input', { name: 'tenant', value: u.tenant || '', placeholder: 'defaults to the id' }), default_sender: el('input', { name: 'default_sender', value: u.default_sender || '' }),
       senders: el('input', { name: 'senders', value: pipes(u.senders).join(', '), placeholder: 'empty: any' }), countries: el('input', { name: 'countries', value: pipes(u.countries).join(', '), placeholder: 'NP, IN (empty: any)' }),

@@ -1,9 +1,18 @@
 bcl { version "1.0" }
 
-# Validation: every reason a message is refused before it is routed or paid for.
-# A row that matches refuses the request with its code and status. The facts are
-# `message` (the normalised request), `user` (the account), `number` (how the
-# recipient number was read), all assembled in config/20_prepare.bcl.
+# Validation: every reason a message is refused before it is routed or paid for,
+# and the two reasons it is refused after. A row that matches refuses the request
+# with its code and status. The facts are `message` (the normalised request),
+# `user` (the account), `number` (how the recipient number was read), and
+# `route` (the chain that survived filtering, its order and why each candidate was
+# left out), all assembled in config/20_prepare.bcl.
+#
+# The `validate` table runs before routing; the `limits` table runs after it, and
+# reads `can_report` — whether the provider the message goes to can report a
+# delivery. A receipt request is settled in `limits`, not in routing: whether a
+# message goes to one provider or another must not depend on a reporting
+# preference. The two halves of routing (filter, then rank) are in
+# rules/routing.bcl.
 
 module "validate" {
   version "1"
@@ -162,6 +171,43 @@ module "validate" {
     default allow
     hit_policy first
 
+    # A message asked for a delivery receipt and nothing on its route can report
+    # one. This is here rather than in routing because it is not a routing
+    # question: the chain was chosen without regard to dlr, and the answer is
+    # whether the promise can be kept, not where the message should go.
+    #
+    # Only a request that ASKED is refused this way. `dlr` defaults to true, so
+    # reading the effective value as the ask would refuse most ordinary traffic
+    # over a preference nobody stated. A request that did not ask is simply sent,
+    # and messages.want_dlr records what will actually arrive.
+    #
+    # can_report is about the provider the message goes to, not about anything
+    # else on its chain: a receipt-capable provider further down is a fall-back,
+    # not a promise.
+    row "asked-for-a-receipt-nothing-can-report" {
+      priority 230
+      when {
+        all {
+          message.dlr_asked == true
+          can_report.receipt_capable == false
+        }
+      }
+      then { outcome { decision deny reason "this message asks for a delivery receipt and no provider on its route can report one" attributes { code "NO_DLR_PROVIDER" status 422 } } }
+    }
+    # A routing rule reserved this message for one provider and that provider
+    # could not take it. This is not "nothing is available": something is, and the
+    # operator said not to use it. Saying so is the difference between an outage
+    # an operator can act on and one they cannot explain.
+    row "reserved-provider-unavailable" {
+      priority 220
+      when {
+        all {
+          route.empty == true
+          route.reserved_for != ""
+        }
+      }
+      then { outcome { decision deny reason "a rule reserves this message for one named provider, and that provider cannot take it right now" attributes { code "RESERVED_PROVIDER_UNAVAILABLE" status 503 } } }
+    }
     row "providers-unavailable" {
       priority 210
       when {

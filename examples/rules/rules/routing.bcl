@@ -3,27 +3,37 @@ bcl { version "1.0" }
 # Routing policy.
 #
 # For one message, each provider in the catalog (a row of the providers table,
-# with its live health) is a candidate. This file decides three things:
+# with its live health) is a candidate. Routing is two halves, and they happen in
+# this order and no other:
 #
-#   route_eligibility  per candidate: may it carry this message, and at what
-#                      priority? A deny names the reason; an allow's attributes
-#                      say which tier it belongs to and whether the tier is
-#                      exclusive (nothing ranked lower is kept).
-#   route_objective    what the message is routed for: a ranking name.
-#   route_*            rankings: how eligible candidates are ordered, best first.
-#                      The chain a message follows, and fails over along, is that
-#                      order.
+#   1. FILTER (route_eligibility) — per candidate: may this provider carry this
+#      message? A deny names the reason. An allow says which tier the provider
+#      belongs to — which the ranking then reads as a score — and whether the
+#      message is RESERVED for this provider alone. The filter decides on identity
+#      and state, never by comparing candidates, so nothing here drops a provider
+#      for scoring badly.
+#   2. RANK (the route_* rankings below) — score whatever survived, best first.
+#      That order is the chain a message is sent down and fails over along.
 #
-# Facts: message (to, country, text, from, sender_kind, type, template, dlr,
-# unicode, segments), user (id, tenant, objective), and provider (the candidate):
+# A score can move a candidate up or down the chain and never out of it. Keeping
+# the two halves apart is what makes the outcome depend on whether a provider may
+# carry a message rather than on how its tier happened to be numbered.
+#
+# What routing does NOT read: the request's dlr. A delivery receipt is a reporting
+# question, not a carrier-selection one, so a provider that cannot report one is
+# filtered and scored exactly like any other.
+#
+# Facts: message (to, country, text, from, sender_kind, type, template, unicode,
+# segments), user (id, tenant, objective), and provider (the candidate):
 # id, state, circuit_open, quality, delivery_rate, cost_per_segment, cost (this
 # message), countries, message_types, owner, users, tenants, assigned_only,
 # prefix_pattern, supports_unicode / _dlr / _alpha / _long, consecutive_failures.
 # Lists are written |a|b| so a row can test membership. A routing rule that names
 # the provider (overrides.bcl) also sets provider.granted, below.
 #
-# Priorities are scores added to a candidate in its ranking, and they are far
-# larger than anything else in a score, so a tier always outranks the next.
+# A tier's priority is a score, added by the ranking and far larger than anything
+# else in one, so a tier always outranks the next. That is an ordering statement,
+# made in the ranking — not a filter.
 
 module "routing" {
   version "1"
@@ -55,18 +65,21 @@ module "routing" {
       }
       then { outcome { decision deny reason "the provider cannot send unicode text" attributes { code "NO_UNICODE" } } }
     }
-    row "no-delivery-receipts" {
-      priority 970
+    row "granted-by-a-routing-rule" {
+      priority 950
       when {
         all {
-          message.dlr == true
-          provider.supports_dlr == 0
+          provider.granted == true
+          any {
+            provider.countries == ""
+            contains(provider.countries, "|" + message.country + "|")
+          }
         }
       }
-      then { outcome { decision deny reason "the provider cannot report delivery receipts" attributes { code "NO_DLR" } } }
+      then { outcome { decision allow attributes { tier "rule" } } }
     }
     row "no-alpha-sender" {
-      priority 960
+      priority 940
       when {
         all {
           message.sender_kind == "alpha"
@@ -76,7 +89,7 @@ module "routing" {
       then { outcome { decision deny reason "the provider cannot send from an alphanumeric sender id" attributes { code "NO_ALPHA_SENDER" } } }
     }
     row "no-long-messages" {
-      priority 950
+      priority 930
       when {
         all {
           message.segments > 1
@@ -86,7 +99,7 @@ module "routing" {
       then { outcome { decision deny reason "the provider cannot send multi-segment messages" attributes { code "NO_LONG_SMS" } } }
     }
     row "message-type-not-carried" {
-      priority 940
+      priority 920
       when {
         all {
           provider.message_types != ""
@@ -99,7 +112,7 @@ module "routing" {
     }
     # An OTP is not worth sending through a provider that drops messages.
     row "otp-quality-floor" {
-      priority 920
+      priority 910
       when {
         all {
           message.type == "otp"
@@ -109,24 +122,8 @@ module "routing" {
       then { outcome { decision deny reason "an OTP needs a provider of quality 85 or better" attributes { code "QUALITY_FLOOR" } } }
     }
     # An operator's routing rule names this provider for this message: it is
-    # admitted even when it is assigned to other accounts or owned by one. The
-    # limits above (state, circuit, capabilities, OTP quality) still apply, and so
-    # does the countries the provider serves.
-    row "granted-by-a-routing-rule" {
-      priority 915
-      when {
-        all {
-          provider.granted == true
-          any {
-            provider.countries == ""
-            contains(provider.countries, "|" + message.country + "|")
-          }
-        }
-      }
-      then { outcome { decision allow attributes { tier "rule" priority 200000 } } }
-    }
     row "a-private-provider-of-someone-else" {
-      priority 910
+      priority 900
       when {
         all {
           provider.owner != ""
@@ -141,7 +138,7 @@ module "routing" {
     row "owned-by-the-account" {
       priority 800
       when { provider.owner == user.id }
-      then { outcome { decision allow attributes { tier "user" priority 100000 exclusive true } } }
+      then { outcome { decision allow attributes { tier "user" priority 100000 reserves true } } }
     }
     # Assigned to this account, for the destination.
     row "assigned-to-the-account" {

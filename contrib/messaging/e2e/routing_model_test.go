@@ -18,11 +18,19 @@ import (
 //   - A provider's winning rule is the matching rule with the highest priority;
 //     a tie goes to the more specific rule, then to the lower id.
 //   - "avoid" removes the provider. "use" moves it above everything without a
-//     rule, ordered by rule priority; "only" does that and removes everything
-//     with a lower priority.
-//   - A rule that names a provider also admits it when only assignment kept it
-//     out, if the provider serves the destination; the provider's own limits
-//     (paused, circuit open, capabilities) still apply.
+//     rule, ordered by rule priority. "only" does that and RESERVES the message
+//     for the provider it names: a reservation is a filter on identity, so every
+//     other candidate is removed whatever it scored — and if the provider it
+//     names turns out to be unusable, nothing carries the message, because
+//     "only this one" is a statement about the message, not a preference.
+//   - A rule that names a provider also admits it when something else kept it
+//     out, as long as the provider serves the destination. What it cannot
+//     overrule is what rules/routing.bcl calls a hard limit: a provider that is
+//     switched off, whose circuit is open, that cannot encode the text, or that
+//     the sender's country does not allow. Those are the rows above the grant.
+//   - Nothing here reads the request's dlr, so a provider that cannot report a
+//     delivery receipt is filtered in exactly like any other. The receipt request
+//     is settled after routing, by rules/validate.bcl.
 //
 // Random rule sets and messages are generated from a fixed seed and the model's
 // chain must equal the router's, provider for provider, in order.
@@ -98,7 +106,6 @@ func (r modelRule) matches(m modelMessage) bool {
 type entry struct {
 	ID               string
 	Priority, Metric float64
-	Exclusive        bool
 	Granted          bool // admitted by a rule; its metric is not known
 }
 
@@ -106,6 +113,20 @@ type baseline struct {
 	chain    map[string]entry // eligible with no rules
 	rejected map[string]string
 	order    []string
+}
+
+// overrulable are the route_eligibility rows an operator's rule outranks: the
+// provider is not available to this account, or lacks something the operator
+// knowingly trades away. The hard limits (provider-not-active, circuit-open,
+// no-unicode, sender-country-not-supported) are not here, because no rule can
+// put a provider back in the chain once one of those denies it.
+var overrulable = map[string]bool{
+	"not-available-here":                 true,
+	"a-private-provider-of-someone-else": true,
+	"no-alpha-sender":                    true,
+	"no-long-messages":                   true,
+	"message-type-not-carried":           true,
+	"otp-quality-floor":                  true,
 }
 
 // expected is the model's chain.
@@ -129,15 +150,28 @@ func expected(base baseline, serves map[string][]string, rules []modelRule, m mo
 	for id := range base.rejected {
 		ids[id] = true
 	}
+	// In id order, the order the candidates arrive in: where two rules both
+	// reserve the message, the last one the engine saw is the one that binds.
+	ordered := make([]string, 0, len(ids))
 	for id := range ids {
+		ordered = append(ordered, id)
+	}
+	sort.Strings(ordered)
+	reserved := ""
+	for _, id := range ordered {
+		if w := winner[id]; w != nil && w.Mode == "only" {
+			reserved = id
+		}
+	}
+	for _, id := range ordered {
 		e, eligible := base.chain[id]
 		w := winner[id]
 		switch {
 		case w != nil && w.Mode == "avoid":
 			continue
 		case w != nil && eligible:
-			e.Priority, e.Exclusive = float64(200000+w.Priority*1000), w.Mode == "only"
-		case w != nil && !eligible && (base.rejected[id] == "not-available-here" || base.rejected[id] == "a-private-provider-of-someone-else"):
+			e.Priority = float64(200000 + w.Priority*1000)
+		case w != nil && !eligible && overrulable[base.rejected[id]]:
 			countries := serves[id]
 			ok := len(countries) == 0
 			for _, c := range countries {
@@ -146,26 +180,27 @@ func expected(base baseline, serves map[string][]string, rules []modelRule, m mo
 			if !ok {
 				continue
 			}
-			e = entry{ID: id, Priority: float64(200000 + w.Priority*1000), Exclusive: w.Mode == "only", Granted: true}
+			e = entry{ID: id, Priority: float64(200000 + w.Priority*1000), Granted: true}
 		case !eligible:
 			continue
 		}
 		out = append(out, e)
 	}
-	floor, hasFloor := 0.0, false
-	for _, e := range out {
-		if e.Exclusive && (!hasFloor || e.Priority > floor) {
-			floor, hasFloor = e.Priority, true
+	// RESERVE. A filter on identity, applied before anything is scored: the
+	// provider that reserved the message is the only one that may carry it, and
+	// if it did not survive, nothing may.
+	if reserved != "" {
+		keptOnly := out[:0]
+		for _, e := range out {
+			if e.ID == reserved {
+				keptOnly = append(keptOnly, e)
+			}
 		}
+		out = keptOnly
 	}
-	var kept []entry
-	for _, e := range out {
-		if !hasFloor || e.Priority >= floor {
-			kept = append(kept, e)
-		}
-	}
-	sort.SliceStable(kept, func(i, j int) bool {
-		a, b := kept[i], kept[j]
+	// RANK. Order only: nothing here can drop a candidate.
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
 		if a.Priority != b.Priority {
 			return a.Priority > b.Priority
 		}
@@ -174,8 +209,8 @@ func expected(base baseline, serves map[string][]string, rules []modelRule, m mo
 		}
 		return a.ID < b.ID
 	})
-	ids2 := make([]string, len(kept))
-	for i, e := range kept {
+	ids2 := make([]string, len(out))
+	for i, e := range out {
 		ids2[i] = e.ID
 	}
 	return ids2

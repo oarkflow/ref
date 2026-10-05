@@ -53,12 +53,19 @@ intent "sms.explain_as" {
           price "prepared.charge.total"
           currency "prepared.charge.currency"
           sandbox "lead != nil and lead.sandbox == 1"
+          # What the message will get, as opposed to what it asked for. Routing
+          # does not read either; this is the receipt promise, kept here so the
+          # dry run can answer it before anything is sent or charged.
+          dlr "prepared.message.dlr"
+          dlr_asked "prepared.message.dlr_asked"
+          receipt "lead != nil and lead.supports_dlr == 1 and prepared.message.dlr"
         }
-        pick ["to", "country", "type", "segments", "encoding", "objective", "route", "rejected", "price", "currency", "sandbox"]
+        pick ["to", "country", "type", "segments", "encoding", "objective", "route", "rejected", "price", "currency", "sandbox", "dlr", "dlr_asked", "receipt"]
       }
     }
   }
 }
+
 route "sms.explain" {
   description "Dry run: how a message would be read, routed and priced"
   method POST

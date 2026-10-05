@@ -63,8 +63,20 @@ intent "admin.users.put" {
       }
     }
   }
+  # The objective names the ranking the account's messages are ordered by, and
+  # rules/routing.bcl (route_objective) is what reads it. It is checked here
+  # rather than stored as free text: a word the rules do not know is not a
+  # preference, it is a silent fall-back to the default ranking, and an account
+  # that believes it asked for the cheapest carrier would be wrong.
+  node "objective_ok" {
+    uses "validate.expression" kind pure requires [body] provides [objective_ok]
+    config {
+      expression "trim(body.objective) matches '^(|lowest_cost|highest_delivery|balanced)$'"
+      message "the routing objective is one of lowest_cost, highest_delivery, balanced, or empty to let the rules decide"
+    }
+  }
   node "save" {
-    uses "database.transaction" resource "db" kind effect requires [user] provides [saved]
+    uses "database.transaction" resource "db" kind effect requires [user, objective_ok] provides [saved]
     config {
       statements [
         { name "upsert" sql "INSERT INTO users (id, tenant, name, status, default_sender, senders, countries, rate_per_second, daily_limit, max_price, objective, plan, created_ms) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) ON CONFLICT (id) DO UPDATE SET tenant = excluded.tenant, name = excluded.name, status = excluded.status, default_sender = excluded.default_sender, senders = excluded.senders, countries = excluded.countries, rate_per_second = excluded.rate_per_second, daily_limit = excluded.daily_limit, max_price = excluded.max_price, objective = excluded.objective, plan = excluded.plan"

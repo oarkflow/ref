@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // rulesFixture creates three interchangeable Nepal providers on the SMPP
@@ -42,6 +43,23 @@ func explainRoute(b *browser, to, text string, extra map[string]any) (first stri
 }
 
 func asList(v any) []any { l, _ := v.([]any); return l }
+
+// explainFull is explainRoute's whole answer, for assertions on the facts of the
+// chain (a provider's price, its score) rather than on the order of it.
+func explainFull(t *testing.T, b *browser, to, text string, extra ...map[string]any) map[string]any {
+	t.Helper()
+	body := map[string]any{"to": to, "text": text}
+	for _, e := range extra {
+		for k, v := range e {
+			body[k] = v
+		}
+	}
+	st, out := b.do("POST", "/ui/route/explain", body)
+	if st != 200 {
+		t.Fatalf("explain %s = %d %v", to, st, out)
+	}
+	return asMap(out)
+}
 
 func Stringify(v any) string {
 	if s, ok := v.(string); ok {
@@ -284,9 +302,50 @@ func TestRuleSourceCheckMarksTheLine(t *testing.T) {
 // seededRules is the number of example routing rules a fresh database starts with.
 const seededRules = 8
 
+// liveCustomRouting is the source the engine is actually running: what routing
+// reads, not what rules/ holds and not what the table says.
+func liveCustomRouting(op *browser) string {
+	_, out := op.do("GET", "/ui/admin/rules/custom_routing", nil)
+	return str(asMap(out), "source")
+}
+
+// waitForRoutingRules waits until the live definition agrees with the table.
+//
+// custom_routing is generated from routing_rules and republished on a tick
+// (config/46_converge.bcl), because rules/custom_routing.bcl is only a
+// placeholder. A test that depends on a seeded rule therefore waits for the tick
+// rather than assuming boot published it.
+func waitForRoutingRules(t *testing.T, op *browser) map[string]bool {
+	t.Helper()
+	_, list := op.do("GET", "/ui/admin/routing-rules", nil)
+	enabled := map[string]bool{}
+	for _, r := range asList(list) {
+		m := asMap(r)
+		enabled[m["id"].(string)] = m["enabled"] == 1.0
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		source := liveCustomRouting(op)
+		agrees := true
+		for id, on := range enabled {
+			if strings.Contains(source, `"`+id+`"`) != on {
+				agrees = false
+				break
+			}
+		}
+		if agrees {
+			return enabled
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the live custom_routing never agreed with routing_rules; after 15s it is:\n%s", source)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // The example rules a fresh installation starts with: they are in the table, the
-// enabled ones are already applied (no change to a rule is needed first), and they
-// work the way their notes say.
+// enabled ones reach the engine by themselves (no change to a rule is needed
+// first), and they work the way their notes say.
 func TestExampleRoutingRules(t *testing.T) {
 	s := start(t)
 	op := operator(t, s)
@@ -297,21 +356,16 @@ func TestExampleRoutingRules(t *testing.T) {
 	op.do("PUT", "/ui/admin/users/newco/password", map[string]any{"email": "ops@newco.example", "password": "a-long-password-1"})
 	newco.login("ops@newco.example", "a-long-password-1")
 
-	_, list := op.do("GET", "/ui/admin/routing-rules", nil)
-	enabled := map[string]bool{}
-	for _, r := range asList(list) {
-		m := asMap(r)
-		enabled[m["id"].(string)] = m["enabled"] == 1.0
-	}
+	enabled := waitForRoutingRules(t, op)
 	if len(enabled) != seededRules || !enabled["rr_example_demo_live_number"] || !enabled["rr_example_demo_login_code_sandbox"] || enabled["rr_example_long_messages"] {
 		t.Fatalf("the examples: %v", enabled)
 	}
-	// Already applied at start: the generated definition has the enabled examples.
-	_, src := op.do("GET", "/ui/admin/rules/custom_routing", nil)
-	for id, on := range enabled {
-		if has := strings.Contains(str(asMap(src), "source"), `"`+id+`"`); has != on {
-			t.Fatalf("rules/custom_routing.bcl and the table disagree about %s (enabled %v, in the definition %v); regenerate the file after changing the examples", id, on, has)
-		}
+	// The convergence is the point: a fresh database's rules reached the engine
+	// with nobody editing one, and the ones that are off stayed out of it. This is
+	// what an operator sees when a rule switched off in the console is still
+	// routing traffic.
+	if !strings.Contains(liveCustomRouting(op), "rr_example_promo_never_live") {
+		t.Fatalf("an enabled example never reached the engine:\n%s", liveCustomRouting(op))
 	}
 
 	// 1. Demo to 9856034617 in any written form goes to the live provider, if this installation has one.
@@ -323,20 +377,28 @@ func TestExampleRoutingRules(t *testing.T) {
 		}
 	}
 	// The example names the owner's test number; this checks the rule with another provider's help below.
+	//
+	// No `dlr` in the request on purpose. SMSPasal cannot report delivery
+	// receipts, and a request that does not ask for one must still be routable
+	// through it: `dlr` defaults to true, and the rule naming the provider has to
+	// beat the capability for it to be reachable at all.
 	if hasLive {
 		for _, to := range []string{"+977 9856034616", "009779856034616", "977 9856034616", "9779856034616", "9856034616", "09856034616"} {
+			if first, _, _ := explainRoute(demo, to, "hi", nil); first != "smspasal_real" {
+				t.Fatalf("demo to %q (default dlr): first = %s, want smspasal_real", to, first)
+			}
 			if first, _, _ := explainRoute(demo, to, "hi", map[string]any{"dlr": false}); first != "smspasal_real" {
-				t.Fatalf("demo to %q: first = %s, want smspasal_real", to, first)
+				t.Fatalf("demo to %q (dlr false): first = %s, want smspasal_real", to, first)
 			}
 		}
-		if first, _, _ := explainRoute(demo, "+9779856034617", "hi", map[string]any{"dlr": false}); first != "np_telecom" {
+		if first, _, _ := explainRoute(demo, "+9779856034617", "hi", nil); first != "np_telecom" {
 			t.Fatalf("another number: %s", first)
 		}
-		if first, _, _ := explainRoute(newco, "+9779856034616", "hi", map[string]any{"dlr": false}); first == "smspasal_real" {
+		if first, _, _ := explainRoute(newco, "+9779856034616", "hi", nil); first == "smspasal_real" {
 			t.Fatalf("another account was routed to the live provider")
 		}
 		// 3. Promotional messages never use it.
-		if _, ids, _ := explainRoute(demo, "+9779856034616", "sale", map[string]any{"type": "promotional", "dlr": false}); contains(ids, "smspasal_real") {
+		if _, ids, _ := explainRoute(demo, "+9779856034616", "sale", map[string]any{"type": "promotional"}); contains(ids, "smspasal_real") {
 			t.Fatalf("a promotional message was routed to the live provider: %v", ids)
 		}
 	}
@@ -418,6 +480,7 @@ func toJSON(v any) string {
 func TestOperatorExplainsARouteForAnAccount(t *testing.T) {
 	s := start(t)
 	op := operator(t, s)
+	waitForRoutingRules(t, op)
 	st, out := op.do("POST", "/ui/admin/route/explain", map[string]any{"account": "demo", "to": "9779841234567", "template": "otp_login", "vars": map[string]any{"brand": "A", "code": "1", "minutes": "5"}})
 	if st != 200 {
 		t.Fatalf("explain = %d %v", st, out)

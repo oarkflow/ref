@@ -35,15 +35,25 @@ POST /route   { "account": "bob", "to": "+977 985-123-4567", "text": "hello" }
 
 ## How a message is routed
 
-1. **Eligibility** (`route_eligibility`, first match wins). For each provider in turn: the
+Routing is two halves and they run in this order: **filter**, then **rank**. A provider is
+either eligible or it is not; a score then decides which of the eligible ones goes first.
+A score can never remove one.
+
+1. **Filter** (`route_eligibility`, first match wins). For each provider in turn: the
    reasons it can *never* carry this message come first (paused, circuit open, cannot send
-   Unicode, no delivery receipts, cannot send several segments, does not carry this message
-   type, an OTP needs quality 85), then the **tier** it belongs to:
+   Unicode), then an operator's rule that names it, then the limits one may knowingly trade
+   away (cannot send an alphanumeric sender, cannot send several segments, does not carry
+   this message type, an OTP needs quality 85), then the **tier** it belongs to. The filter
+   never compares providers to each other.
+
+   It does not read the request's `dlr`: a delivery receipt is a reporting question, not a
+   carrier-selection one, so a provider that cannot report one is filtered and scored like
+   any other.
 
    | Tier | Priority | A provider is in it when |
    |---|---|---|
    | rule | 200000 + 1000 × the rule's priority | an operator's rule names it for this message (`overrides.bcl`) |
-   | user | 100000, **exclusive** | the account owns it: it is the only one the account uses |
+   | user | 100000, **reserves** | the account owns it: it is the only one the account uses |
    | user | 90000 | it is assigned to the account, for this destination |
    | tenant | 70000 | it is assigned to the account's tenant, for this destination |
    | operator | 60000 | a number range it was bought for matches the recipient |
@@ -53,7 +63,7 @@ POST /route   { "account": "bob", "to": "+977 985-123-4567", "text": "hello" }
    A provider nobody assigned and no rule names is *not available* here, and the response
    says so.
 2. **Operator rules** (`overrides.bcl`, evaluated before eligibility for the candidate they
-   name). A rule can **use** a provider first, **reserve** it (`exclusive`, everything below
+   name). A rule can **use** a provider first, **reserve** it (`reserves`: everything else
    is dropped), or **deny** it. A rule that uses or reserves a provider also *admits* it when
    only assignment kept it out: that is how one account gets a route nobody else may have.
    Its own limits still apply.
@@ -68,7 +78,7 @@ POST /route   { "account": "bob", "to": "+977 985-123-4567", "text": "hello" }
 
 ## Try it
 
-Providers: `np_telecom` (primary Nepal), `np_budget` (cheap: plain short text, no receipts),
+Providers: `np_telecom` (primary Nepal), `np_budget` (cheap: plain short text only),
 `np_mobile_range` (bought for 980/981/982 numbers), `in_shared`, `global_fallback`
 (everywhere), `otp_gateway` (one-time codes only), `np_old` (paused), and four private ones:
 `np_premium` (tenant `acme`), `in_vendor` (account `alice`), `boss_own` (owned by `acme_boss`),
@@ -83,20 +93,21 @@ Every row below is a test (`contrib/messaging/e2e/rules_example_test.go`).
 | alice → `009779801234567` | `np_mobile_range` | operator tier: the range matches 980… |
 | bob → `9861234567` | `np_premium` | tenant tier: assigned to `acme` |
 | alice → `+919876543210` | `in_vendor` | account tier: assigned to alice for India |
-| acme_boss → anything | `boss_own` only | an owned route is exclusive |
+| acme_boss → anything | `boss_own` only | an owned route is reserved |
 | alice → `+14155552671` | `global_fallback` only | no country route: the catch-all |
 | alice → `9841234567`, `"type": "otp"` | `np_telecom`, then `otp_gateway` | ranked for delivery; the gateway is a platform-tier fall-back |
 | alice → `9841234567`, Devanagari text | no `np_budget` | `no-unicode` |
-| alice → a 300-character text, `"dlr": false` | no `np_budget` | `no-long-messages` |
-| thrifty → `9841234567`, `"dlr": false` | `np_budget` | `route_cost`: price outweighs quality inside a tier |
+| alice → a 300-character text | no `np_budget` | `no-long-messages` |
+| thrifty → `9841234567` | `np_budget` | `route_cost`: price outweighs quality inside a tier |
+| alice → `9841234567`, `"dlr": true` | same route | asking for a receipt does not change the route |
 | alice → "Play CASINO tonight" | no `np_telecom` | rule `no-gambling` (content) |
 | bob → `+977 984 123 4567` | `np_reserved` | rule `bob-vip-number` (account + recipient) admits a route nobody has |
 | bob → `9841234568` | no `np_reserved` | same account, other number |
-| alice → "SALE", `promotional`, `"dlr": false` | `np_budget` | rule `promotions-over-the-cheap-route` (type + country) |
+| alice → "SALE", `promotional` | `np_budget` | rule `promotions-over-the-cheap-route` (type + country) |
 | bob → `9851234567` | `np_premium` | rule `acme-985-range` (tenant + range) |
 | bob → `+919876543210` | no `in_shared` | rule `acme-not-on-shared-india` (tenant, deny) |
 | alice → a 600-character text | `np_mobile_range` | rule `long-messages` (size ≥ 3 segments) |
-| alice → `template: "legal_notice"` | `global_fallback` only | rule `legal-notices-only-here` (template, exclusive) |
+| alice → `template: "legal_notice"` | `global_fallback` only | rule `legal-notices-only-here` (template, reserves) |
 | alice → "Your code is 481516", from `BANKNP`, `otp` | `otp_gateway` | rule `bank-codes` (sender + content) |
 
 ## Change it while it runs
@@ -131,14 +142,14 @@ row "acme-sms-to-india" {
       message.country matches "^(IN)$"
     }
   }
-  then { outcome { decision allow reason "acme's India traffic" attributes { tier "rule" priority 275000 exclusive false rule_id "acme-sms-to-india" } } }
+  then { outcome { decision allow reason "acme's India traffic" attributes { tier "rule" priority 275000 rule_id "acme-sms-to-india" } } }
 }
 ```
 
 * `priority` (the row's) picks between rules that name the **same provider** for the same
   message: the highest wins. The `priority` in `attributes` ranks providers **against each
   other**; keep it `200000 + 1000 ×` the rule's priority so a rule outranks every tier.
-* `decision allow` uses the provider first; `exclusive true` uses only it; `decision deny`
+* `decision allow` uses the provider first; `reserves true` uses only it; `decision deny`
   never uses it. A rule needs `provider.id == "…"` as its first condition.
 * Conditions are `message.*`, `user.*` and `provider.*`. `matches` is a Go regular expression
   (linear time, no catastrophic backtracking); anchor it, `^( … )$`, to match a whole value.

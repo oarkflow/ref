@@ -37,7 +37,7 @@ module "custom_routing" {
 }@if(r.max_segments > 0) {          message.segments <= ${raw r.max_segments}
 }        }
       }
-      then { outcome { decision ${raw r.effect} reason "${raw r.reason}" attributes { tier "rule" priority ${raw r.score} exclusive ${raw r.exclusive} rule_id "${raw r.id}" } } }
+      then { outcome { decision ${raw r.effect} reason "${raw r.reason}" attributes { code "${raw r.code}" tier "rule" priority ${raw r.score} reserves ${raw r.reserves} rule_id "${raw r.id}" } } }
     }
 ${raw r.close}}
 }

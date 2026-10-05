@@ -164,6 +164,8 @@ func (w *rulesEngineWrapper) ensureTable(ctx context.Context) error {
 // that no longer compiles (a file changed underneath it) is skipped and logged:
 // the engine must still open.
 func (w *rulesEngineWrapper) loadOverrides(ctx context.Context) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if err := w.ensureTable(ctx); err != nil {
 		return err
 	}
@@ -192,10 +194,18 @@ func (w *rulesEngineWrapper) loadOverrides(ctx context.Context) error {
 
 // save validates and publishes new source, then stores it.
 func (w *rulesEngineWrapper) save(ctx context.Context, name, source, actor string) (string, error) {
+	// Publishing is several store operations — write a version, then make it the
+	// active one — and another publish of the same definition in between leaves
+	// the active version pointing at something half-written. An application that
+	// keeps a generated definition in step with its own table (publishing on a
+	// tick, and again whenever an operator edits a rule) does exactly that, so
+	// the writes are serialised here.
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if _, err := w.service.GetDefinition(ctx, name); err != nil {
 		return "", invalidInput("there is no rule definition named %q", name)
 	}
-	version := fmt.Sprintf("rt-%d", time.Now().UnixMilli())
+	version := w.nextVersion("rt")
 	req := rules.PublishRequest{TenantID: w.cfg.DefaultTenant, Name: name, Version: version, Source: source}
 	if _, err := w.service.Publish(ctx, req); err != nil {
 		return "", invalidInput("the rule was not saved: %s%s", err.Error(), rulesDiagnostics(ctx, w.service, req))
@@ -215,13 +225,24 @@ func (w *rulesEngineWrapper) save(ctx context.Context, name, source, actor strin
 	return version, nil
 }
 
+// nextVersion names a runtime version. It carries a counter as well as the
+// clock, because two publishes of the same definition in the same millisecond
+// used to produce the same version name — and the second one then activated the
+// first one's version, or nothing at all.
+func (w *rulesEngineWrapper) nextVersion(prefix string) string {
+	n := w.publishes.Add(1)
+	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixMilli(), n)
+}
+
 // reset goes back to the definition's file.
 func (w *rulesEngineWrapper) reset(ctx context.Context, name string) (string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	path := w.origins[name]
 	if path == "" {
 		return "", invalidInput("%q has no file to go back to", name)
 	}
-	version := fmt.Sprintf("file-%d", time.Now().UnixMilli())
+	version := w.nextVersion("file")
 	if _, err := w.service.Publish(ctx, rules.PublishRequest{TenantID: w.cfg.DefaultTenant, Name: name, Version: version, Path: path}); err != nil {
 		return "", invalidInput("the file version did not publish: %s", err.Error())
 	}
