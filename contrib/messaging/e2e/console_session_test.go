@@ -79,7 +79,7 @@ func TestSessionLoginAndRoles(t *testing.T) {
 	id, _ := asMap(out)["id"].(string)
 	eventually(t, "delivered", func() bool {
 		_, m := b.do("GET", "/ui/messages/"+id, nil)
-		return str(asMap(m), "message", "state") == "delivered"
+		return str(asMap(m), "status") == "delivered"
 	})
 	// The operator sees operator data; the session ends at logout.
 	op := s.browser()
@@ -144,8 +144,15 @@ func TestCampaignApprovalWorkflow(t *testing.T) {
 		t.Fatalf("campaign = %v", camp)
 	}
 	eventually(t, "both delivered", func() bool { return len(s.smsc.Submitted()) == 2 })
-	after, held := s.balance("demo")
-	if held != 0 || before-after < 0.0299 || before-after > 0.0301 {
+	// Wait for the money to settle before reading it: a message that has been
+	// submitted is charged, but the hold is only captured when the carrier
+	// accepts, so the balance can still be in flight here.
+	var after, held float64
+	eventually(t, "the funds are settled", func() bool {
+		after, held = s.balance("demo")
+		return held == 0 && before-after > 0.0299
+	})
+	if before-after < 0.0299 || before-after > 0.0301 {
 		t.Fatalf("balance %v -> %v held %v: two messages must be charged, the refused number must not", before, after, held)
 	}
 

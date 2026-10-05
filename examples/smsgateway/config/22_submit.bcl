@@ -107,13 +107,19 @@ intent "sms.accept" {
   }
 
   node "route_ids" { uses "data.map" kind pure requires [prepared] provides [route_ids] config { source_fact "prepared.route.chain" expression "item.id" } }
+  # The answer to "can I send this, and what will it cost" — and nothing about
+  # how it will be sent. The provider and the chain it was routed down are the
+  # gateway's business: they are in the messages row for the operator, and
+  # deliberately absent from what the account is told. An account asked to pick a
+  # carrier would be coupled to the gateway's catalog, its contracts and its
+  # failover order, and would break every time either changed.
   node "result" {
-    uses "data.transform" kind pure requires [prepared, existing, route_ids, queued, lead] provides [result]
+    uses "data.transform" kind pure requires [prepared, existing, queued, lead] provides [result]
     config {
       data {
         extract {
           id "existing.id != '' ? existing.id : prepared.message.id"
-          state "existing.id != '' ? existing.state : 'queued'"
+          status "'accepted'"
           duplicate "existing.id != ''"
           to "prepared.message.to"
           country "prepared.message.country"
@@ -122,12 +128,11 @@ intent "sms.accept" {
           segments "prepared.message.segments"
           encoding "prepared.message.encoding"
           price "prepared.charge.total"
-          currency "prepared.message.currency"
-          provider "existing.id != '' ? existing.provider : lead.id"
-          route "route_ids"
-          sandbox "lead.sandbox == 1"
+          currency "prepared.charge.currency"
+          # Whether a receipt is expected, which is a promise about this message.
+          receipt "lead != nil and lead.supports_dlr == 1 and prepared.message.dlr"
         }
-        pick ["id", "state", "duplicate", "to", "country", "from", "type", "segments", "encoding", "price", "currency", "provider", "route", "sandbox"]
+        pick ["id", "status", "duplicate", "to", "country", "from", "type", "segments", "encoding", "price", "currency", "receipt"]
       }
     }
   }

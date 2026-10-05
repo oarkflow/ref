@@ -58,7 +58,7 @@ To send for real through SMSPasal, see [SMSPasal](#smspasal-live-provider).
 | `GET /v1/admin/messages`, `/stats`; `POST /v1/admin/optouts` | operator key | Reporting and opt-outs. |
 | `POST /login`, `POST /logout`, `GET /ui/me` | none / session | Console sign-in with a session cookie. |
 | `/ui/messages`, `/ui/route/explain`, `/ui/balance`, `/ui/ledger`, `/ui/campaigns…` | session (sender or admin) | The console's API: the same intents as `/v1`, behind the session. |
-| `/ui/admin/providers`, `…/messages`, `…/stats`, `…/approvals…` | session (admin) | The operator's console API, including campaign approval. |
+| `/ui/admin/providers`, `…/messages`, `…/stats`, `…/approvals…` | session (admin) | The operator's console API, including campaign approval, and the only place carriers are named. |
 | `GET /login`, `/`, `/messages`, `/campaigns`, `/admin` | none | Console pages (SPL shells; they hold nothing private). |
 
 A send is `{ to, text | template+vars+lang, from?, type?, reference?, dlr?, delay_seconds?, expires_in? }` (the `sms_send` shape in `config/03_schemas.bcl`).
@@ -77,6 +77,7 @@ A send is `{ to, text | template+vars+lang, from?, type?, reference?, dlr?, dela
 | What a delivery receipt means, when to refund | `rules/receipts.bcl` |
 | Which template and sender a template name implies | `rules/templates.bcl` |
 | What a repeated reference means | `rules/idempotency.bcl` |
+| What an account is told about a message (status, progress, why it failed) | `rules/status.bcl` |
 | Message text | `templates/sms/*.html` (SPL) |
 | Providers, their costs, assignments, retry settings | rows in the `providers` and `provider_costs` tables, seeded in `config/01_database.bcl` |
 | Provider connections and secrets | `config/02_resources.bcl` |
@@ -107,7 +108,7 @@ An operator changes how messages are routed, validated and priced **while the ap
 | Demo: invoice texts over np_telecom | (off) words in the text, for one account. |
 | OTP texts only over np_telecom | (off) a rule that reserves the message for one route. |
 
-Use **Try a route** at the top of `/admin/rules`: pick an account, type a recipient (any form) and a template or text, and it shows the chain of providers a message would follow, which are sandbox and which LIVE, which rule decided each, and why the others were left out, without sending anything.
+Use **Try a route** at the top of `/admin/rules`: pick an account, type a recipient (any form) and a template or text, and it shows the chain of providers a message would follow, which are sandbox and which LIVE, which rule decided each, and why the others were left out, without sending anything. It is on `/admin` because it names carriers: the same question asked by an account (`POST /v1/route/explain`, and the check on the console's Send page) answers what it asked — the number, the price, whether a receipt would come — and not how the message would be carried.
 
 **The table is the routing; the engine is a copy of it.** `rules/custom_routing.bcl` is a **placeholder** — it holds no rules and exists so the engine has a definition to load at start and for *Reset to file* to return to. The rules live in `routing_rules` and the definition is generated from them (`templates/rules/custom_routing.html`) and published with `rules.save`. `config/46_converge.bcl` re-renders and republishes on a 2s tick, fingerprinted in the `routing_published` table, so:
 
@@ -144,6 +145,29 @@ Nothing in the filter compares candidates to each other, so no provider is dropp
 **The chain is scored, and the first entry is the provider used.** `rules.rank` scores every candidate the filter kept, once each — the tier's priority plus each metric's weight over its normalised range — and orders the chain by score, descending; `sms.submit` dispatches `chain[0]` and `sms.deliver` walks the rest of the chain on failure, in that order. Nothing re-orders the chain after it is built. Tier priorities are 10,000 apart, so the metrics order candidates *within* a tier, and a rule (200,000 + its own) always outranks them; `priced` is a deliberately tiny weight that settles an exact tie towards the provider whose cost is on file. A provider with **no price row is not free**: `price_known` is 0 and it is scored at the dearest price on file, so it cannot win a cost ranking by being missing from the price table.
 
 **What is checked, and how rules are decided.** A rule's recipients are read by the phone library in the default region, so `9856034616`, `+977 9856034616` and `00977 9856034616` are the same rule, and a number that cannot be dialled is refused (no message could match it). A prefix may be written with `+` or `00`. Countries are upper-cased and must be two letters; message types are lower-cased words; content words are matched as plain text (`c++` and `a.b` mean exactly that) and may not contain `|`; a provider id is lowercase letters, digits and underscores, since the rules refer to it by name. When several rules name the same provider for a message, the highest priority wins, then the more specific rule (more conditions, a recipient counting most), then the lower id, so the outcome never depends on insertion order. Providers with equal scores keep the order of their ids. The generated `custom_routing` holds one decision per provider (`for_<id>`), so a message is checked only against the rules of each candidate; 5,000 rules route in about 4 ms. `contrib/messaging/e2e/routing_model_test.go` is a reference model of all of this, checked against the running router on random rule sets and messages, provider for provider, in order. [`examples/rules`](../rules) shows the same routing on its own, with its scenarios as tests.
+
+**What an account is told, and what it is not.** An account sends a message and is told about its message. It is not told how the message is carried, and that is a deliberate line rather than a missing field.
+
+Carriers are not an incidental detail of this gateway: they are its supplier list, its contracts and its failover order. An account that could read which carrier took a message could reconstruct all three, would be coupled to every change of them, and could route around the gateway's own policy. So `provider`, the chain, the per-carrier attempts and `sandbox` are left out of the sender-facing projections — omitted from the SQL rather than blanked afterwards, because a field that is never read cannot leak — and they are all still there for the operator, on `/ui/admin/*` and `/v1/admin/*`.
+
+| | The account (`sender_auth`) | The operator (`admin_auth`) |
+|---|---|---|
+| Send | `{ id, status, duplicate, to, country, from, type, segments, encoding, price, currency, receipt }` | — |
+| One message | the same fields plus `status`, `progress`, `terminal`, `detail`, `failure`, and `created/submitted/delivered_ms` | `message` (with `provider`, `plan`, `err_text`, `total_attempts`), `attempts[]` per carrier, `health[]` — `GET /v1/admin/messages/{id}` |
+| A list | `id, to, from, type, segments, price, currency, receipt, status, created/submitted/delivered_ms` | `GET /v1/admin/messages` |
+| Dry run | `ok, to, country, type, segments, encoding, price, currency, receipt` — or the reason it cannot be sent | the same, plus `route[]`, `rejected[]`, `objective`, `reserved_for`, `sandbox` — `POST /v1/admin/route/explain` |
+
+The **status** is the account's own vocabulary, and `rules/status.bcl` is where it is defined:
+
+| status | progress | terminal | meaning |
+|---|---|---|---|
+| `accepted` | 10 | no | we have it, it is waiting its turn |
+| `sending` | 50 | no | going out now |
+| `sent` | 80 | no | the network has it; a receipt is expected if one was asked for |
+| `delivered` | 100 | yes | the handset got it |
+| `failed` | 100 | yes | it will not be delivered, and the charge has been released |
+
+`failure` says why in the account's words — `recipient_rejected` (no network can reach that number), `expired`, `no_route`, `not_delivered` — never the carrier's own error string, which is on `/admin`. `progress` and `terminal` are there so a client can draw a bar and know when to stop polling without knowing the words. The dry run's `receipt` answers "will I get a receipt for this" before anything is sent or charged.
 
 **Delivery receipts are not a routing input.** `dlr` defaults to true, so routing never reads it: whether a message wants a receipt is a reporting preference, and letting it choose a carrier would mean two identical messages differing only in that field took different routes. A provider that cannot report one (`supports_dlr` 0, as for every HTTP carrier) is filtered and scored exactly like any other — which is why an SMSPasal route is reachable at all.
 

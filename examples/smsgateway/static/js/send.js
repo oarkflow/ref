@@ -68,26 +68,18 @@ UI.page(function () {
       $('#preview-meta').textContent = b.error ? '' : b.characters + ' characters · ' + b.segments + ' segment' + (b.segments === 1 ? '' : 's') + ' · ' + b.encoding + (b.type ? ' · type ' + b.type : '') + (b.sender ? ' · sender ' + b.sender : '');
     });
   }
+  // The account's dry run: how the number was read, what it costs, and whether a
+  // receipt would come. Which carrier would carry it is deliberately not in the
+  // answer — the gateway routes, and an account asked to choose would be coupled
+  // to this gateway's supplier list and failover order.
   function renderRoute(r) {
     var box = $('#route'); box.textContent = '';
     if (!r.ok) { var e = (r.body && r.body.error) || {}; box.appendChild(el('div', { class: 'banner errb' }, [UI.icon('alert', 18), el('div', {}, [el('strong', { text: e.code === 'INSUFFICIENT_FUNDS' ? 'Not enough balance' : 'This message cannot be sent' }), el('div', { text: e.message || 'Request failed' })])])); return; }
-    var b = r.body, chain = b.route || [];
+    var b = r.body;
     box.appendChild(el('div', { class: 'stats' }, [el('span', { class: 'stat', text: b.to + ' · ' + b.country }), el('span', { class: 'stat', text: b.segments + ' segment' + (b.segments === 1 ? '' : 's') + ' · ' + b.encoding }),
-      el('span', { class: 'stat okc', text: 'Price ' + UI.money(b.price, 3) + ' ' + b.currency })]));
-    if (b.sandbox) box.appendChild(el('div', { class: 'banner warnb' }, [UI.icon('alert', 18), el('div', { text: 'Sandbox route: nothing leaves this machine. The carrier is a stand-in.' })]));
-    if (!chain.length) box.appendChild(el('div', { class: 'banner errb', text: 'No provider can carry this message.' }));
-    chain.forEach(function (p, i) {
-      box.appendChild(el('div', { class: 'routecard' + (i === 0 ? ' first' : ''), style: { animationDelay: i * 60 + 'ms' } }, [el('span', { class: 'rank', text: i + 1 }),
-        el('div', { style: { flex: 1 } }, [el('strong', { text: p.id }), ' ', el('span', { class: 'pill ' + (p.sandbox ? 'warn' : 'ok'), text: p.sandbox ? 'sandbox' : 'live' }),
-          el('div', { class: 'muted', style: { fontSize: '12.5px' }, text: (p.custom_rule ? 'by a routing rule' : 'tier ' + (p.tier || '')) + ' · via ' + p.channel + (i === 0 ? ' · tried first' : ' · fall-back') })])]));
-    });
-    var rej = b.rejected || [];
-    if (rej.length) {
-      var d = el('details', { style: { marginTop: '10px' } }, [el('summary', { class: 'muted', text: rej.length + ' provider' + (rej.length === 1 ? '' : 's') + ' not used' })]);
-      rej.forEach(function (p) { d.appendChild(el('div', { class: 'muted', style: { fontSize: '13px', margin: '6px 0' } }, [el('strong', { text: p.id + ': ' }), p.reason || p.rule || ''])); });
-      box.appendChild(d);
-    }
-    box.appendChild(el('small', { class: 'muted', text: 'Ranked for ' + (b.objective || '').replace('route_', '') }));
+      el('span', { class: 'stat okc', text: 'Price ' + UI.money(b.price, 3) + ' ' + b.currency }),
+      el('span', { class: 'stat', text: b.receipt ? 'Receipt expected' : 'No receipt' })]));
+    box.appendChild(el('div', { class: 'banner okb' }, [UI.icon('check', 18), el('div', { text: 'This message can be sent. It will be routed when you send it.' })]));
   }
   f.to.addEventListener('input', function () { later(); });
   [f.from, f.reference].forEach(function (i) { i.addEventListener('input', later); });
@@ -101,22 +93,27 @@ UI.page(function () {
       UI.toast('Accepted and queued for delivery.', 'ok', 'Message sent'); balance(); window.refreshBell && window.refreshBell(); follow(r.body);
     }));
   });
+  // Follow the message by its status word, and stop when the API says it is
+  // terminal rather than guessing from a fixed number of polls.
   function follow(m) {
     var card = $('#sent'); card.hidden = false; card.classList.remove('pane-in'); void card.offsetWidth; card.classList.add('pane-in');
     var stateHost = $('#sent-state'), body = $('#sent-body'); body.textContent = '';
     body.appendChild(el('div', { class: 'kv' }, [el('div', { html: '<span class="muted">Id</span> <code>' + m.id + '</code>' }), el('div', { html: '<span class="muted">To</span> ' + m.to + ' (' + m.country + ')' }),
-      el('div', { html: '<span class="muted">Provider</span> ' + m.provider + (m.sandbox ? ' <span class="pill warn">sandbox</span>' : ' <span class="pill ok">live</span>') }), el('div', { html: '<span class="muted">Price</span> ' + UI.money(m.price, 3) + ' ' + m.currency })]));
+      el('div', { html: '<span class="muted">Status</span> ' + (m.status || 'accepted') }), el('div', { html: '<span class="muted">Price</span> ' + UI.money(m.price, 3) + ' ' + m.currency }),
+      el('div', { html: '<span class="muted">Receipt</span> ' + (m.receipt ? 'expected' : 'none') })]));
     var tl = el('div', { class: 'timeline' }); body.appendChild(tl);
     var tries = 0;
     (function poll() {
       UI.call('GET', '/ui/messages/' + m.id).then(function (r) {
-        if (!r.ok) return; var msg = r.body.message, att = r.body.attempts || [];
-        stateHost.textContent = ''; stateHost.appendChild(UI.state(msg.state));
-        tl.textContent = ''; tl.appendChild(el('div', { class: 'ev ok' }, [el('strong', { text: 'Accepted' }), el('div', { class: 'muted', text: UI.when(msg.created_ms) })]));
-        att.forEach(function (a) { tl.appendChild(el('div', { class: 'ev ' + (a.outcome === 'accepted' ? 'ok' : a.outcome === 'failed' ? 'err' : 'warn') }, [el('strong', { text: 'Attempt ' + a.n + ' via ' + a.provider + ': ' + a.outcome }), a.err_text ? el('div', { class: 'muted', text: a.err_text }) : null])); });
-        if (msg.state === 'delivered') tl.appendChild(el('div', { class: 'ev ok' }, [el('strong', { text: 'Delivered' }), el('div', { class: 'muted', text: UI.when(msg.delivered_ms) })]));
-        if (msg.state === 'failed') tl.appendChild(el('div', { class: 'ev err' }, [el('strong', { text: 'Failed' }), el('div', { class: 'muted', text: msg.err_text || msg.err_code })]));
-        if (['delivered', 'failed'].indexOf(msg.state) < 0 && ++tries < 40) setTimeout(poll, 1500); else balance();
+        if (!r.ok) return; var msg = r.body;
+        stateHost.textContent = ''; stateHost.appendChild(UI.state(msg.status));
+        tl.textContent = '';
+        [[msg.created_ms, 'Accepted', 'ok'], [msg.submitted_ms, 'Sent to the network', 'ok'], [msg.delivered_ms, 'Delivered', 'ok']].forEach(function (e) {
+          if (e[0]) tl.appendChild(el('div', { class: 'ev ' + e[2] }, [el('strong', { text: e[1] }), el('div', { class: 'muted', text: UI.when(e[0]) })]));
+        });
+        if (msg.status === 'failed') tl.appendChild(el('div', { class: 'ev err' }, [el('strong', { text: 'Failed' }), el('div', { class: 'muted', text: msg.detail || '' })]));
+        if (msg.status === 'sent' && msg.receipt) tl.appendChild(el('div', { class: 'ev warn' }, [el('strong', { text: 'Waiting for a delivery receipt' })]));
+        if (msg.terminal || tries++ >= 60) balance(); else setTimeout(poll, 1500);
       });
     })();
   }

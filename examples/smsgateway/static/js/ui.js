@@ -69,7 +69,7 @@
     if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) { node.textContent = fmt(to); return; }
     (function step(t) { var k = Math.min(1, (t - start) / dur), e = 1 - Math.pow(1 - k, 3); node.textContent = fmt(from + (to - from) * e); if (k < 1) requestAnimationFrame(step); })(start);
   };
-  var STATE = { delivered: 'ok', sent: 'ok', submitted: 'info', queued: 'info', dispatching: 'info', pending: 'info', failed: 'err', rejected: 'err', skipped: 'warn', pending_approval: 'warn', sending: 'info', active: 'ok', paused: 'warn', disabled: 'err', suspended: 'err' };
+  var STATE = { delivered: 'ok', sent: 'ok', submitted: 'info', queued: 'info', dispatching: 'info', pending: 'info', failed: 'err', rejected: 'err', skipped: 'warn', pending_approval: 'warn', sending: 'info', accepted: 'info', active: 'ok', paused: 'warn', disabled: 'err', suspended: 'err' };
   UI.state = function (s) { return UI.el('span', { class: 'pill ' + (STATE[s] || ''), text: String(s || '').replace(/_/g, ' ') }); };
 
   // ------------------------------------------------------------------ toasts

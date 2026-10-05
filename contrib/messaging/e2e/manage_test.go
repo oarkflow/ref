@@ -96,8 +96,9 @@ func TestOperatorManagesProviders(t *testing.T) {
 	s := start(t)
 	op, acct := operator(t, s), s.browser()
 	acct.login("demo@example.com", "demo-pass-123")
+	// The chain is asked for as an operator: an account's dry run names no carrier.
 	route := func() []string {
-		_, out := acct.do("POST", "/ui/route/explain", map[string]any{"to": "+9779841234567", "text": "hi"})
+		_, out := op.do("POST", "/ui/admin/route/explain", map[string]any{"account": "demo", "to": "+9779841234567", "text": "hi"})
 		var ids []string
 		for _, r := range asMap(out)["route"].([]any) {
 			ids = append(ids, asMap(r)["id"].(string))
@@ -123,12 +124,12 @@ func TestOperatorManagesProviders(t *testing.T) {
 	// It carries a real message: its own queue entry is the channel's.
 	st, out := acct.do("POST", "/ui/messages", map[string]any{"to": "+9779841234567", "text": "through the new provider"})
 	id, _ := asMap(out)["id"].(string)
-	if st != 202 || asMap(out)["provider"] != "np_gold" {
+	if st != 202 || s.carrier(str(asMap(out), "id")) != "np_gold" {
 		t.Fatalf("send = %d %v", st, out)
 	}
 	eventually(t, "delivered over the shared channel", func() bool {
 		_, m := acct.do("GET", "/ui/messages/"+id, nil)
-		return str(asMap(m), "message", "state") == "delivered"
+		return str(asMap(m), "status") == "delivered"
 	})
 	// Assigned to an account only, it disappears for everyone else.
 	op.do("PUT", "/ui/admin/providers/np_gold", map[string]any{"channel": "np_telecom", "quality": 99, "countries": []string{"NP"}, "users": []string{"acme_bob"}, "assigned_only": true})

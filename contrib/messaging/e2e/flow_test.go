@@ -5,13 +5,16 @@ import (
 )
 
 // state reads a message through its owner's API.
+// state is the account's own status word for a message, from rules/status.bcl:
+// accepted, sending, sent, delivered or failed. It is not the gateway's internal
+// state, and it says nothing about which carrier carried it.
 func (s *stack) state(user, id string) string {
 	s.t.Helper()
 	status, out := s.do("GET", "/v1/messages/"+id, s.key(user), nil)
 	if status != 200 {
 		return ""
 	}
-	return str(out, "message", "state")
+	return str(out, "status")
 }
 
 func (s *stack) balance(user string) (balance, held float64) {
@@ -25,19 +28,24 @@ func (s *stack) balance(user string) (balance, held float64) {
 	return
 }
 
+// provider reads which carrier carried a message. It asks as an operator,
+// because an account is not told: /v1/messages/{id} has no provider field.
 func (s *stack) provider(user, id string) string {
-	_, out := s.do("GET", "/v1/messages/"+id, s.key(user), nil)
-	return str(out, "message", "provider")
+	s.t.Helper()
+	return s.carrier(id)
 }
 
 func TestSmppDeliveryAndPayment(t *testing.T) {
 	s := start(t)
 	before, _ := s.balance("demo")
 	status, out := s.send("demo", map[string]any{"to": "+977 984-123-4567", "text": "hello", "reference": "a1"})
-	if status != 202 || str(out, "provider") != "np_telecom" {
+	if status != 202 || str(out, "status") != "accepted" {
 		t.Fatalf("send = %d %v", status, out)
 	}
 	id := str(out, "id")
+	if got := s.provider("demo", id); got != "np_telecom" {
+		t.Fatalf("routed through %q, want np_telecom", got)
+	}
 	eventually(t, "delivered", func() bool { return s.state("demo", id) == "delivered" })
 	if n := len(s.smsc.Submitted()); n != 1 {
 		t.Fatalf("SMSC submissions = %d", n)
@@ -85,10 +93,13 @@ func TestInsufficientFunds(t *testing.T) {
 func TestVendorProviderAndWebhook(t *testing.T) {
 	s := start(t)
 	status, out := s.send("acme_bob", map[string]any{"to": "9841234567", "text": "via vendor"})
-	if status != 202 || str(out, "provider") != "premium_np" {
+	if status != 202 {
 		t.Fatalf("send = %d %v", status, out)
 	}
 	id := str(out, "id")
+	if got := s.provider("acme_bob", id); got != "premium_np" {
+		t.Fatalf("routed through %q, want premium_np", got)
+	}
 	eventually(t, "delivered by webhook", func() bool { return s.state("acme_bob", id) == "delivered" })
 	if len(s.vendor.Messages()) != 1 {
 		t.Fatalf("vendor messages = %d", len(s.vendor.Messages()))
@@ -148,10 +159,13 @@ func TestAccountIsolation(t *testing.T) {
 func TestSmspasalProvider(t *testing.T) {
 	s := start(t)
 	status, out := s.send("smspasal_live", map[string]any{"to": "+9779856034617", "text": "Hello from the gateway", "from": "TESTER", "dlr": false})
-	if status != 202 || str(out, "provider") != "smspasal" {
+	if status != 202 || out["receipt"] != false {
 		t.Fatalf("send = %d %v", status, out)
 	}
 	id := str(out, "id")
+	if got := s.provider("smspasal_live", id); got != "smspasal" {
+		t.Fatalf("routed through %q, want smspasal", got)
+	}
 	eventually(t, "accepted by smspasal", func() bool { return s.state("smspasal_live", id) == "delivered" })
 	got := s.vendor.Messages()
 	if len(got) != 1 || got[0].To != "9856034617" || got[0].From != "TESTER" || got[0].Text != "Hello from the gateway" {
@@ -178,11 +192,12 @@ func TestSmspasalErrorsAreClassified(t *testing.T) {
 	}
 	id := str(out, "id")
 	eventually(t, "delivered", func() bool { return s.state("smspasal_live", id) == "delivered" })
-	_, m := s.do("GET", "/v1/messages/"+id, s.key("smspasal_live"), nil)
-	if p := str(m, "message", "provider"); p != "np_telecom" {
+	if p := s.carrier(id); p != "np_telecom" {
 		t.Fatalf("delivered via %q, want np_telecom", p)
 	}
-	if a, _ := get(m, "message", "total_attempts").(float64); a != 2 {
+	// The attempt count is the operator's to see, not the account's.
+	_, full := s.admin("GET", "/v1/admin/messages/"+id, nil)
+	if a, _ := get(asMap(full), "message", "total_attempts").(float64); a != 2 {
 		t.Fatalf("attempts = %v, want 2 (one refused, no retry)", a)
 	}
 	after, held := s.balance("smspasal_live")

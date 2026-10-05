@@ -89,7 +89,7 @@ func TestRoutingDoesNotDependOnDlr(t *testing.T) {
 	// same however the request asks about receipts. The lead is the receiptless
 	// carrier because it scores best, not because of anything the request said.
 	routeOf := func(extra map[string]any) []string {
-		out := explainFull(t, demo, nepal, "hi", extra)
+		out := s.explainAs("demo", nepal, "hi", extra)
 		var ids []string
 		for _, c := range asList(asMap(out)["route"]) {
 			ids = append(ids, asMap(c)["id"].(string))
@@ -108,7 +108,7 @@ func TestRoutingDoesNotDependOnDlr(t *testing.T) {
 	if !slices.Contains(off, "no_receipts") {
 		t.Fatalf("a provider that cannot report receipts was filtered out: %v", off)
 	}
-	for _, r := range asList(asMap(explainFull(t, demo, nepal, "hi", map[string]any{"dlr": false}))["rejected"]) {
+	for _, r := range asList(s.explainAs("demo", nepal, "hi", map[string]any{"dlr": false})["rejected"]) {
 		if asMap(r)["id"] == "no_receipts" {
 			t.Fatalf("a provider that cannot report receipts was rejected by routing: %v", r)
 		}
@@ -126,7 +126,7 @@ func TestRoutingDoesNotDependOnDlr(t *testing.T) {
 	// request is then accepted, which is what shows the refusal above was about
 	// the carrier the route chose rather than about the flag.
 	putProvider(t, op, "no_receipts", map[string]any{"quality": 10, "delivery_rate": 0.8})
-	if first, ids, _ := explainRoute(demo, nepal, "hi", nil); first != "np_telecom" {
+	if first, ids, _ := s.explainRoute(demo, nepal, "hi", nil); first != "np_telecom" {
 		t.Fatalf("after demoting it: first = %s (%v)", first, ids)
 	}
 	if st, out := demo.do("POST", "/ui/messages", map[string]any{"to": nepal, "text": "hi", "dlr": true}); st != 202 {
@@ -157,12 +157,15 @@ func TestAReceiptRequestIsRefusedWhenNothingCanReportOne(t *testing.T) {
 	// A request that did not ask is sent, over the same carrier, and promises
 	// nothing: dlr defaults to true, and that is not an ask.
 	status, sent := s.send("demo", map[string]any{"to": nepal, "text": "hi"})
-	if status != 202 || str(sent, "provider") != "receiptless" {
+	if status != 202 {
 		t.Fatalf("a request that did not ask = %d %v", status, sent)
 	}
+	if got := s.carrier(str(sent, "id")); got != "receiptless" {
+		t.Fatalf("routed through %q, want receiptless", got)
+	}
 	settled := sendMessage(t, s, "demo", map[string]any{"to": nepal, "text": "hi"})
-	if d, _ := get(settled, "message", "want_dlr").(float64); d != 0 {
-		t.Fatalf("want_dlr = %v over a carrier that reports none", d)
+	if settled["receipt"] != false {
+		t.Fatalf("a receipt was promised over a carrier that reports none: %v", settled["receipt"])
 	}
 
 	// And with a carrier that can report, the same explicit request is accepted.
@@ -170,8 +173,8 @@ func TestAReceiptRequestIsRefusedWhenNothingCanReportOne(t *testing.T) {
 	if st, out := demo.do("POST", "/ui/messages", map[string]any{"to": nepal, "text": "hi", "dlr": true}); st != 202 {
 		t.Fatalf("over a carrier that reports: %d %v", st, out)
 	}
-	if d, _ := get(sendMessage(t, s, "demo", map[string]any{"to": nepal, "text": "hi", "dlr": true}), "message", "want_dlr").(float64); d != 1 {
-		t.Fatalf("want_dlr = %v over a carrier that reports receipts", d)
+	if sendMessage(t, s, "demo", map[string]any{"to": nepal, "text": "hi", "dlr": true})["receipt"] != true {
+		t.Fatalf("no receipt promised over a carrier that reports them")
 	}
 }
 
@@ -193,17 +196,17 @@ func TestARuleOverrulesSoftLimitsButNotHardOnes(t *testing.T) {
 	price(t, op, "limited", 0.011)
 
 	// Without the rule: too many segments for it, whatever its score says.
-	if first, ids, _ := explainRoute(demo, nepal, long, nil); first != "np_telecom" {
+	if first, ids, _ := s.explainRoute(demo, nepal, long, nil); first != "np_telecom" {
 		t.Fatalf("multi-segment fallback = %s (%v), want np_telecom", first, ids)
 	}
 	// Short messages do not care, and it is the best carrier for them.
-	if first, _, _ := explainRoute(demo, nepal, "hi", nil); first != "limited" {
+	if first, _, _ := s.explainRoute(demo, nepal, "hi", nil); first != "limited" {
 		t.Fatalf("single segment: %s, want limited", first)
 	}
 
 	// With it: the operator is knowingly trading the limit away.
 	id := addRule(t, op, map[string]any{"name": "long over limited", "mode": "use", "provider": "limited", "account": "demo", "priority": 10})
-	if first, ids, _ := explainRoute(demo, nepal, long, nil); first != "limited" {
+	if first, ids, _ := s.explainRoute(demo, nepal, long, nil); first != "limited" {
 		t.Fatalf("with the rule: first = %s (%v), want limited", first, ids)
 	}
 	removeRule(t, op, id)
@@ -212,7 +215,7 @@ func TestARuleOverrulesSoftLimitsButNotHardOnes(t *testing.T) {
 	// rule names it, because the message would be lost.
 	putProvider(t, op, "limited", map[string]any{"state": "paused"})
 	paused := addRule(t, op, map[string]any{"name": "over a paused provider", "mode": "use", "provider": "limited", "account": "demo", "priority": 10})
-	_, _, rejected := explainRoute(demo, nepal, "hi", nil)
+	_, _, rejected := s.explainRoute(demo, nepal, "hi", nil)
 	if !strings.Contains(rejected["limited"], "provider-not-active") {
 		t.Fatalf("the reason should be that the provider is not active, got %v", rejected)
 	}
@@ -231,7 +234,7 @@ func TestOnlyIsKeptAndNotJustPreferred(t *testing.T) {
 	const nepal = "+9779841234567"
 
 	only := addRule(t, op, map[string]any{"name": "only np_telecom", "mode": "only", "provider": "np_telecom", "priority": 10})
-	if first, _, _ := explainRoute(demo, nepal, "hi", nil); first != "np_telecom" {
+	if first, _, _ := s.explainRoute(demo, nepal, "hi", nil); first != "np_telecom" {
 		t.Fatalf("the named provider should carry the message, got %s", first)
 	}
 
@@ -257,7 +260,7 @@ func TestOnlyIsKeptAndNotJustPreferred(t *testing.T) {
 
 	// Back in use: it carries the message again.
 	putProvider(t, op, "np_telecom", map[string]any{"state": "active"})
-	if first, _, _ := explainRoute(demo, nepal, "hi", nil); first != "np_telecom" {
+	if first, _, _ := s.explainRoute(demo, nepal, "hi", nil); first != "np_telecom" {
 		t.Fatalf("after resuming: %s", first)
 	}
 	removeRule(t, op, only)
@@ -276,14 +279,14 @@ func TestAnUnpricedProviderIsNotFree(t *testing.T) {
 	putProvider(t, op, "unpriced", map[string]any{"quality": 99, "delivery_rate": 0.99})
 	price(t, op, "np_telecom", 0.011)
 
-	if first, ids, _ := explainRoute(thrifty, nepal, "hi", nil); first == "unpriced" {
+	if first, ids, _ := s.explainRoute(thrifty, nepal, "hi", nil); first == "unpriced" {
 		t.Fatalf("the unpriced provider won a lowest_cost routing: %v", ids)
 	}
 
 	// Make the priced one dearer. The unpriced one still must not come out
 	// cheaper than it by not being priced.
 	price(t, op, "np_telecom", 0.5)
-	out := explainFull(t, thrifty, nepal, "hi")
+	out := s.explainAs("thrifty", nepal, "hi", nil)
 	if ranking := str(asMap(out), "objective"); ranking != "route_cost" {
 		t.Fatalf("objective = %q, want route_cost", ranking)
 	}
@@ -322,8 +325,8 @@ func TestAnAccountsObjectiveChangesTheRankingAndIsChecked(t *testing.T) {
 	price(t, op, "cheap_np", 0.001)
 	price(t, op, "np_telecom", 0.05)
 
-	acct := account(t, s, op, "objtest", "ops@objtest.example", "a-long-password-1", map[string]any{"objective": "highest_delivery"})
-	out := explainFull(t, acct, nepal, "hi")
+	account(t, s, op, "objtest", "ops@objtest.example", "a-long-password-1", map[string]any{"objective": "highest_delivery"})
+	out := s.explainAs("objtest", nepal, "hi", nil)
 	if ranking := str(asMap(out), "objective"); ranking != "route_delivery" {
 		t.Fatalf("objective = %q, want route_delivery", ranking)
 	}
@@ -335,7 +338,7 @@ func TestAnAccountsObjectiveChangesTheRankingAndIsChecked(t *testing.T) {
 	if st, out := op.do("PUT", "/ui/admin/users/objtest", map[string]any{"objective": "lowest_cost"}); st != 200 {
 		t.Fatalf("set lowest_cost = %d %v", st, out)
 	}
-	out = explainFull(t, acct, nepal, "hi")
+	out = s.explainAs("objtest", nepal, "hi", nil)
 	if ranking := str(asMap(out), "objective"); ranking != "route_cost" {
 		t.Fatalf("objective = %q, want route_cost", ranking)
 	}
@@ -347,7 +350,7 @@ func TestAnAccountsObjectiveChangesTheRankingAndIsChecked(t *testing.T) {
 	if st, out := op.do("PUT", "/ui/admin/users/objtest", map[string]any{"objective": "balanced"}); st != 200 {
 		t.Fatalf("set balanced = %d %v", st, out)
 	}
-	if ranking := str(explainFull(t, acct, nepal, "hi"), "objective"); ranking != "route_balanced" {
+	if ranking := str(s.explainAs("objtest", nepal, "hi", nil), "objective"); ranking != "route_balanced" {
 		t.Fatalf("objective = %q, want route_balanced", ranking)
 	}
 
@@ -374,7 +377,9 @@ func TestRejectionsCarryTheirReasonCode(t *testing.T) {
 	demo.login("demo@example.com", "demo-pass-123")
 
 	putProvider(t, op, "np_telecom", map[string]any{"state": "paused"})
-	_, out := demo.do("POST", "/ui/route/explain", map[string]any{"to": "+9779841234567", "text": "hi"})
+	// The reasons are the operator's to see: an account's dry run has no
+	// `rejected`, because nothing about a carrier is an account's business.
+	out := s.explainAs("demo", "+9779841234567", "hi", nil)
 	seen := 0
 	for _, r := range asList(asMap(out)["rejected"]) {
 		e := asMap(r)
@@ -415,7 +420,7 @@ func TestTheMessageGoesThroughTheTopScoredProvider(t *testing.T) {
 	price(t, op, "smspasal", 0.012)
 
 	// The chain is scored, and the rule put smspasal first.
-	out := explainFull(t, demo, nepal, "hi")
+	out := s.explainAs("demo", nepal, "hi", nil)
 	chain := asList(asMap(out)["route"])
 	if len(chain) == 0 || asMap(chain[0])["id"] != "smspasal" {
 		t.Fatalf("chain %v, want smspasal first", chain)
@@ -430,21 +435,20 @@ func TestTheMessageGoesThroughTheTopScoredProvider(t *testing.T) {
 
 	// And the send really goes through it, not through a fallback.
 	status, sent := s.send("demo", map[string]any{"to": nepal, "text": "hi"})
-	if status != 202 || str(sent, "provider") != "smspasal" {
+	if status != 202 || str(sent, "status") != "accepted" {
 		t.Fatalf("send = %d %v", status, sent)
 	}
-	if routing := asList(sent["route"]); len(routing) == 0 || routing[0] != "smspasal" {
-		t.Fatalf("the accepted route %v does not start with the provider used", routing)
+	if got := s.carrier(str(sent, "id")); got != "smspasal" {
+		t.Fatalf("the message went through %q, want the highest-scored provider", got)
 	}
 	eventually(t, "delivered by smspasal", func() bool { return s.state("demo", str(sent, "id")) == "delivered" })
-	_, m := s.do("GET", "/v1/messages/"+str(sent, "id"), s.key("demo"), nil)
-	if str(m, "message", "provider") != "smspasal" {
-		t.Fatalf("delivered through %q, want smspasal", str(m, "message", "provider"))
+	if got := s.carrier(str(sent, "id")); got != "smspasal" {
+		t.Fatalf("delivered through %q, want smspasal", got)
 	}
-	// want_dlr is the request's dlr AND the provider's capability: this carrier
-	// reports none, so none is promised.
-	if d, _ := get(m, "message", "want_dlr").(float64); d != 0 {
-		t.Fatalf("want_dlr = %v for a provider that cannot report receipts", d)
+	// The receipt promise is the request's dlr AND the carrier's capability: this
+	// one reports none, so none is promised — and the account is told so plainly.
+	if m := s.asAccount("demo", str(sent, "id")); m["receipt"] != false {
+		t.Fatalf("a receipt was promised over a carrier that cannot report one: %v", m["receipt"])
 	}
 
 	// An explicit receipt request over a carrier that reports none is refused,
@@ -463,11 +467,11 @@ func TestTheMessageGoesThroughTheTopScoredProvider(t *testing.T) {
 		t.Fatalf("unassign smspasal = %d %v", st, out)
 	}
 	over := sendMessage(t, s, "demo", map[string]any{"to": nepal, "text": "hi", "dlr": true})
-	if str(over, "message", "provider") != "np_telecom" {
-		t.Fatalf("over a carrier that reports, delivered through %q", str(over, "message", "provider"))
+	if got := s.carrier(str(over, "id")); got != "np_telecom" {
+		t.Fatalf("over a carrier that reports, delivered through %q", got)
 	}
-	if d, _ := get(over, "message", "want_dlr").(float64); d != 1 {
-		t.Fatalf("want_dlr = %v over %q, which reports receipts", d, str(over, "message", "provider"))
+	if over["receipt"] != true {
+		t.Fatalf("a receipt was expected but not promised: %v", over["receipt"])
 	}
 }
 
@@ -479,7 +483,7 @@ func sendMessage(t *testing.T, s *stack, user string, body map[string]any) map[s
 	}
 	eventually(t, "settled", func() bool {
 		_, m := s.do("GET", "/v1/messages/"+str(out, "id"), s.key(user), nil)
-		return str(m, "message", "state") != "queued" && str(m, "message", "state") != "dispatching"
+		return asMap(m)["terminal"] == true
 	})
 	_, m := s.do("GET", "/v1/messages/"+str(out, "id"), s.key(user), nil)
 	return m
@@ -494,14 +498,14 @@ func TestSwitchingARuleOffIsEffective(t *testing.T) {
 
 	putProvider(t, op, "np_a", map[string]any{"quality": 50, "delivery_rate": 0.9})
 	id := addRule(t, op, map[string]any{"name": "demo over np_a", "mode": "use", "provider": "np_a", "account": "demo", "priority": 10})
-	if first, _, _ := explainRoute(demo, nepal, "hi", nil); first != "np_a" {
+	if first, _, _ := s.explainRoute(demo, nepal, "hi", nil); first != "np_a" {
 		t.Fatalf("with the rule on: %s, want np_a", first)
 	}
 	if st, out := op.do("PUT", "/ui/admin/routing-rules/"+id+"/enabled", map[string]any{"enabled": false}); st != 200 {
 		t.Fatalf("switch off = %d %v", st, out)
 	}
 	// Immediately, in the same round trip: not on the next tick.
-	if first, ids, _ := explainRoute(demo, nepal, "hi", nil); first == "np_a" {
+	if first, ids, _ := s.explainRoute(demo, nepal, "hi", nil); first == "np_a" {
 		t.Fatalf("a switched-off rule is still routing: %v", ids)
 	}
 	if strings.Contains(liveCustomRouting(op), `"`+id+`"`) {

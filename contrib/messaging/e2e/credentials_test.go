@@ -46,13 +46,12 @@ func TestProviderAccountsRotateAndRest(t *testing.T) {
 	}
 
 	status, out := s.send("acme_bob", map[string]any{"to": "+9779841234567", "text": "rotate"})
-	if status != 202 || str(out, "provider") != "premium_np" {
+	if status != 202 || str(out, "status") != "accepted" {
 		t.Fatalf("send = %d %v", status, out)
 	}
 	id := str(out, "id")
 	eventually(t, "delivered", func() bool { return s.state("acme_bob", id) == "delivered" })
-	_, m := s.do("GET", "/v1/messages/"+id, s.key("acme_bob"), nil)
-	if p := str(m, "message", "provider"); p != "premium_np" {
+	if p := s.carrier(id); p != "premium_np" {
 		t.Fatalf("it left the provider: delivered via %q", p)
 	}
 	got := accounts(t, op, "premium_np")
@@ -82,8 +81,7 @@ func TestProviderAccountsRotateAndRest(t *testing.T) {
 	_, out = s.send("acme_bob", map[string]any{"to": "+9779841234560", "text": "no accounts"})
 	id4 := str(out, "id")
 	eventually(t, "delivered by the next provider", func() bool { return s.state("acme_bob", id4) == "delivered" })
-	_, m = s.do("GET", "/v1/messages/"+id4, s.key("acme_bob"), nil)
-	if p := str(m, "message", "provider"); p == "premium_np" {
+	if p := s.carrier(id4); p == "premium_np" {
 		t.Fatalf("a provider with no usable account carried a message")
 	}
 	// Clearing the rest period and switching it on again brings it back; an account can be removed.
@@ -114,9 +112,8 @@ func TestSmppAccountsBindSeparately(t *testing.T) {
 	_, out := s.send("demo", map[string]any{"to": "+9779841234567", "text": "bind"})
 	id := str(out, "id")
 	eventually(t, "delivered over the working account", func() bool { return s.state("demo", id) == "delivered" })
-	_, m := s.do("GET", "/v1/messages/"+id, s.key("demo"), nil)
-	if p := str(m, "message", "provider"); p != "np_telecom" {
-		t.Fatalf("provider = %s", p)
+	if p := s.carrier(id); p != "np_telecom" {
+		t.Fatalf("carrier = %s", p)
 	}
 	if got := accounts(t, op, "np_telecom"); got["aaa_bad"]["failures"] != 1.0 || got["primary"]["used"] != 1.0 {
 		t.Fatalf("accounts = %v", got)
@@ -130,8 +127,11 @@ func TestAccountKeyAndAddressAreUsed(t *testing.T) {
 	op := operator(t, s)
 	demo := s.browser()
 	demo.login("demo@example.com", "demo-pass-123")
+	// Which carrier would carry it, and whether it is a sandbox, is the
+	// operator's question. An account's own explain says nothing about carriers,
+	// so it is asked as an operator here.
 	explain := func() map[string]any {
-		_, out := demo.do("POST", "/ui/route/explain", map[string]any{"to": "+9779856034617", "text": "hi", "dlr": false})
+		_, out := op.do("POST", "/ui/admin/route/explain", map[string]any{"account": "demo", "to": "+9779856034617", "text": "hi", "dlr": false})
 		return asMap(out)
 	}
 	e := explain()
@@ -149,16 +149,12 @@ func TestAccountKeyAndAddressAreUsed(t *testing.T) {
 	op.do("PUT", "/ui/admin/providers/smspasal/accounts/primary", map[string]any{"secret": map[string]any{"key": "wrong-key-wrong-key"}})
 	_, out := demo.do("POST", "/ui/messages", map[string]any{"to": "+9779856034617", "text": "refused", "dlr": false})
 	badID := str(asMap(out), "id")
-	eventually(t, "fails over after the key is refused", func() bool {
-		_, m := demo.do("GET", "/ui/messages/"+badID, nil)
-		return str(asMap(m), "message", "provider") == "np_telecom"
-	})
+	eventually(t, "fails over after the key is refused", func() bool { return s.carrier(badID) == "np_telecom" })
 	op.do("PUT", "/ui/admin/providers/smspasal/accounts/primary", map[string]any{"secret": map[string]any{"key": "test-key-0001"}, "reset": true})
 	_, out = demo.do("POST", "/ui/messages", map[string]any{"to": "+9779856034617", "text": "accepted", "dlr": false})
 	goodID := str(asMap(out), "id")
 	eventually(t, "accepted with the right key", func() bool {
-		_, m := demo.do("GET", "/ui/messages/"+goodID, nil)
-		return str(asMap(m), "message", "state") == "delivered" && str(asMap(m), "message", "provider") == "smspasal"
+		return s.state("demo", goodID) == "delivered" && s.carrier(goodID) == "smspasal"
 	})
 	if got := s.vendor.Messages(); len(got) == 0 || got[len(got)-1].Text != "accepted" || got[len(got)-1].To != "9856034617" {
 		t.Fatalf("the vendor saw %+v", got)
@@ -170,34 +166,59 @@ func TestAccountKeyAndAddressAreUsed(t *testing.T) {
 	_, out = demo.do("POST", "/ui/messages", map[string]any{"to": "+9779856034617", "text": "nowhere", "dlr": false})
 	nowhere := str(asMap(out), "id")
 	eventually(t, "unreachable address does not deliver through smspasal", func() bool {
-		_, m := demo.do("GET", "/ui/messages/"+nowhere, nil)
-		return str(asMap(m), "message", "state") == "delivered" && str(asMap(m), "message", "provider") != "smspasal"
+		return s.state("demo", nowhere) == "delivered" && s.carrier(nowhere) != "smspasal"
 	})
 }
 
-// The sandbox label belongs to the provider and is shown on explain and on messages.
-func TestSandboxLabel(t *testing.T) {
+// Sandbox is a property of a carrier, so it is shown to the operator and not to
+// the account: an account that could tell a stand-in from a real carrier could
+// tell which carriers the gateway has, which is the thing it is not told.
+func TestSandboxLabelIsTheOperators(t *testing.T) {
 	s := start(t)
 	op := operator(t, s)
 	demo := s.browser()
 	demo.login("demo@example.com", "demo-pass-123")
 	_, out := demo.do("POST", "/ui/messages", map[string]any{"to": "+9779841234567", "text": "labelled"})
-	if asMap(out)["sandbox"] != true {
-		t.Fatalf("send result = %v", out)
+	if _, leaked := asMap(out)["sandbox"]; leaked {
+		t.Fatalf("the account was told which carriers are sandbox: %v", out)
 	}
-	eventually(t, "message listed as sandbox", func() bool {
+	eventually(t, "the message is delivered", func() bool {
 		_, l := demo.do("GET", "/ui/messages", nil)
 		rows, _ := l.([]any)
-		return len(rows) == 1 && asMap(rows[0])["sandbox"] == 1.0
+		return len(rows) == 1 && asMap(rows[0])["status"] == "delivered"
 	})
+	_, listed := demo.do("GET", "/ui/messages", nil)
+	for _, r := range mustList(t, listed) {
+		if _, leaked := asMap(r)["sandbox"]; leaked {
+			t.Fatalf("the message list names a carrier's environment: %v", r)
+		}
+	}
+
+	// The operator sees it on both the dry run and the message list.
+	_, e := op.do("POST", "/ui/admin/route/explain", map[string]any{"account": "demo", "to": "+9779841234567", "text": "hi"})
+	if asMap(e)["sandbox"] != true {
+		t.Fatalf("the operator's dry run lost the sandbox label: %v", asMap(e))
+	}
+
 	// "np_telecom" goes live: the operator unticks Sandbox on the provider.
 	if st, out := op.do("PUT", "/ui/admin/providers/np_telecom", map[string]any{"channel": "np_telecom", "kind": "smpp", "quality": 92, "delivery_rate": 0.97, "countries": []string{"NP"}, "sandbox": false, "max_attempts": 3, "backoff_initial_s": 1, "backoff_max_s": 15}); st != 200 {
 		t.Fatalf("mark live = %d %v", st, out)
 	}
-	_, e := demo.do("POST", "/ui/route/explain", map[string]any{"to": "+9779841234567", "text": "hi"})
+	_, e = op.do("POST", "/ui/admin/route/explain", map[string]any{"account": "demo", "to": "+9779841234567", "text": "hi"})
 	if asMap(e)["sandbox"] != false {
-		t.Fatalf("after marking the channel live: %v", asMap(e)["sandbox"])
+		t.Fatalf("after marking the channel live: %v", asMap(e))
 	}
+}
+
+// mustList is a list endpoint's body, or a failure: a page of messages that did
+// not come back as a list is a bug worth stopping on.
+func mustList(t *testing.T, out any) []any {
+	t.Helper()
+	rows, ok := out.([]any)
+	if !ok {
+		t.Fatalf("expected a list, got %T: %v", out, out)
+	}
+	return rows
 }
 
 // Providers of different channels have different settings forms, and the

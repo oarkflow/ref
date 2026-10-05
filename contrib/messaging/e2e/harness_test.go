@@ -143,9 +143,72 @@ func (s *stack) do(method, path, key string, body any) (int, map[string]any) {
 	return resp.StatusCode, out
 }
 
+// doList is do for an endpoint that answers with a list, which do cannot hold.
+func (s *stack) doList(method, path, key string, body any) (int, []any) {
+	s.t.Helper()
+	var rdr io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			s.t.Fatal(err)
+		}
+		rdr = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequest(method, s.app.URL()+path, rdr)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		s.t.Fatalf("%s %s: %v", method, path, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var out []any
+	_ = json.Unmarshal(raw, &out)
+	return resp.StatusCode, out
+}
+
 func (s *stack) admin(method, path string, body any) (int, map[string]any) {
 	s.t.Helper()
 	return s.do(method, path, adminKey, body)
+}
+
+// adminList is an operator endpoint whose answer is a list, which do cannot hold
+// (it wants an object).
+func (s *stack) adminList(path string) []any {
+	s.t.Helper()
+	status, out := s.doList("GET", path, adminKey, nil)
+	if status != 200 {
+		s.t.Fatalf("GET %s = %d %v", path, status, out)
+	}
+	return out
+}
+
+// asAccountList is the account's own message list.
+func (s *stack) asAccountList(user string) []any {
+	s.t.Helper()
+	status, out := s.doList("GET", "/v1/messages", s.key(user), nil)
+	if status != 200 {
+		s.t.Fatalf("GET /v1/messages = %d", status)
+	}
+	return out
+}
+
+// carriers is every carrier in this installation, as an operator sees them: the
+// ids and channels an account must never be shown.
+func (s *stack) carriers() (ids, channels []string) {
+	for _, c := range s.adminList("/v1/admin/providers") {
+		ids = append(ids, str(asMap(c), "id"))
+		channels = append(channels, str(asMap(c), "channel"))
+	}
+	return
 }
 
 // key issues (once) an API key for a seeded user.
@@ -166,6 +229,79 @@ func (s *stack) key(user string) string {
 func (s *stack) send(user string, body map[string]any) (int, map[string]any) {
 	s.t.Helper()
 	return s.do("POST", "/v1/messages", s.key(user), body)
+}
+
+// carrier reads which carrier carried a message, from the OPERATOR's view. An
+// account is never told, so a test that wants to check the routing asks here —
+// which is the same separation the API itself keeps.
+func (s *stack) carrier(id string) string {
+	s.t.Helper()
+	status, out := s.admin("GET", "/v1/admin/messages/"+id, nil)
+	if status != 200 {
+		s.t.Fatalf("admin message %s: %d %v", id, status, out)
+	}
+	return str(asMap(out), "message", "provider")
+}
+
+// explainAs runs the OPERATOR's dry run for an account, which is the only view
+// that names carriers: an account's own dry run (POST /ui/route/explain) has no
+// carrier in it, on purpose. Every routing assertion goes through here, and so
+// does every assertion that an account is NOT shown one.
+func (s *stack) explainAs(account, to, text string, extra map[string]any) map[string]any {
+	s.t.Helper()
+	body := map[string]any{"account": account, "to": to, "text": text}
+	for k, v := range extra {
+		body[k] = v
+	}
+	status, out := s.admin("POST", "/v1/admin/route/explain", body)
+	if status != 200 {
+		s.t.Fatalf("explain %s -> %s: %d %v", account, to, status, out)
+	}
+	return asMap(out)
+}
+
+// explainRoute is explainAs for an account's own browser, so a test can ask "what
+// would happen to THIS account's message" without repeating the account id. The
+// browser only supplies who the account is; the answer comes from the operator's
+// view, because the account's own does not name carriers.
+func (s *stack) explainRoute(b *browser, to, text string, extra map[string]any) (first string, ids []string, rejected map[string]string) {
+	s.t.Helper()
+	return routeOf(s.explainAs(whoami(b), to, text, extra))
+}
+
+func routeOf(out map[string]any) (first string, ids []string, rejected map[string]string) {
+	for _, c := range asList(out["route"]) {
+		ids = append(ids, asMap(c)["id"].(string))
+	}
+	if len(ids) > 0 {
+		first = ids[0]
+	}
+	rejected = map[string]string{}
+	for _, r := range asList(out["rejected"]) {
+		rr := asMap(r)
+		rejected[rr["id"].(string)] = Stringify(rr["rule"])
+	}
+	return
+}
+
+// whoami is the account a browser is signed in as.
+func whoami(b *browser) string {
+	b.t.Helper()
+	st, me := b.do("GET", "/ui/me", nil)
+	if st != 200 {
+		b.t.Fatalf("/ui/me = %d %v", st, me)
+	}
+	return str(asMap(me), "id")
+}
+
+// asAccount is the account's own view of one message.
+func (s *stack) asAccount(user, id string) map[string]any {
+	s.t.Helper()
+	status, out := s.do("GET", "/v1/messages/"+id, s.key(user), nil)
+	if status != 200 {
+		s.t.Fatalf("message %s: %d %v", id, status, out)
+	}
+	return asMap(out)
 }
 
 func get(m map[string]any, path ...string) any {

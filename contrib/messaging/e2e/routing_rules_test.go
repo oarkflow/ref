@@ -21,31 +21,11 @@ func rulesFixture(t *testing.T, s *stack, op *browser) {
 	op.do("PUT", "/ui/admin/users/newco/password", map[string]any{"email": "ops@newco.example", "password": "a-long-password-1"})
 }
 
-func explainRoute(b *browser, to, text string, extra map[string]any) (first string, ids []string, rejected map[string]string) {
-	body := map[string]any{"to": to, "text": text}
-	for k, v := range extra {
-		body[k] = v
-	}
-	_, out := b.do("POST", "/ui/route/explain", body)
-	m := asMap(out)
-	for _, r := range asList(m["route"]) {
-		ids = append(ids, asMap(r)["id"].(string))
-	}
-	if len(ids) > 0 {
-		first = ids[0]
-	}
-	rejected = map[string]string{}
-	for _, r := range asList(m["rejected"]) {
-		rr := asMap(r)
-		rejected[rr["id"].(string)] = Stringify(rr["rule"])
-	}
-	return
-}
-
 func asList(v any) []any { l, _ := v.([]any); return l }
 
-// explainFull is explainRoute's whole answer, for assertions on the facts of the
-// chain (a provider's price, its score) rather than on the order of it.
+// explainFull is the ACCOUNT's whole dry run, which is what an assertion about
+// what an account is or is not shown must use. It names no carrier, so it is the
+// wrong tool for checking a route: use s.explainRoute or s.explainAs.
 func explainFull(t *testing.T, b *browser, to, text string, extra ...map[string]any) map[string]any {
 	t.Helper()
 	body := map[string]any{"to": to, "text": text}
@@ -95,12 +75,12 @@ func TestRoutingRulesByScope(t *testing.T) {
 	newco.login("ops@newco.example", "a-long-password-1")
 	const nepal, nepal2 = "+9779841234567", "+9779801234567"
 
-	if first, _, _ := explainRoute(demo, nepal, "hello", nil); first != "np_telecom" {
+	if first, _, _ := s.explainRoute(demo, nepal, "hello", nil); first != "np_telecom" {
 		t.Fatalf("without rules: %s", first)
 	}
 	check := func(what string, b *browser, to, text string, want string, extra map[string]any) {
 		t.Helper()
-		if first, ids, _ := explainRoute(b, to, text, extra); first != want {
+		if first, ids, _ := s.explainRoute(b, to, text, extra); first != want {
 			t.Fatalf("%s: first = %s (%v), want %s", what, first, ids, want)
 		}
 	}
@@ -168,34 +148,35 @@ func TestRoutingRulesByScope(t *testing.T) {
 
 	// Avoid and only.
 	ra := addRule(t, op, map[string]any{"name": "never np_telecom for demo", "mode": "avoid", "provider": "np_telecom", "account": "demo", "priority": 30})
-	if first, ids, rej := explainRoute(demo, nepal, "hello", nil); first == "np_telecom" || contains(ids, "np_telecom") || !strings.HasPrefix(rej["np_telecom"], "rr_") {
+	if first, ids, rej := s.explainRoute(demo, nepal, "hello", nil); first == "np_telecom" || contains(ids, "np_telecom") || !strings.HasPrefix(rej["np_telecom"], "rr_") {
 		t.Fatalf("avoid: first %s chain %v rejected %v", first, ids, rej)
 	}
-	if first, _, _ := explainRoute(newco, nepal, "hello", nil); first != "np_telecom" {
+	if first, _, _ := s.explainRoute(newco, nepal, "hello", nil); first != "np_telecom" {
 		t.Fatalf("avoid applies to another account: %s", first)
 	}
 	removeRule(t, op, ra)
 	ro := addRule(t, op, map[string]any{"name": "only np_c for demo", "mode": "only", "provider": "np_c", "account": "demo", "priority": 30})
-	if first, ids, _ := explainRoute(demo, nepal, "hello", nil); first != "np_c" || len(ids) != 1 {
+	if first, ids, _ := s.explainRoute(demo, nepal, "hello", nil); first != "np_c" || len(ids) != 1 {
 		t.Fatalf("only: %s %v", first, ids)
 	}
-	if _, ids, _ := explainRoute(newco, nepal, "hello", nil); len(ids) < 2 {
+	if _, ids, _ := s.explainRoute(newco, nepal, "hello", nil); len(ids) < 2 {
 		t.Fatalf("only applies to another account: %v", ids)
 	}
-	// A message really goes the way the explanation says.
+	// A message really goes the way the explanation says — which the account is
+	// not told, so the carrier is read from the operator's view.
 	_, out := demo.do("POST", "/ui/messages", map[string]any{"to": nepal, "text": "routed by a rule"})
-	if str(asMap(out), "provider") != "np_c" {
+	if s.carrier(str(asMap(out), "id")) != "np_c" {
 		t.Fatalf("send = %v", out)
 	}
 	// Disabling a rule switches it off; enabling brings it back.
 	if st, _ := op.do("PUT", "/ui/admin/routing-rules/"+ro+"/enabled", map[string]any{"enabled": false}); st != 200 {
 		t.Fatalf("disable = %d", st)
 	}
-	if first, _, _ := explainRoute(demo, nepal, "hello", nil); first != "np_telecom" {
+	if first, _, _ := s.explainRoute(demo, nepal, "hello", nil); first != "np_telecom" {
 		t.Fatalf("disabled rule still applies: %s", first)
 	}
 	op.do("PUT", "/ui/admin/routing-rules/"+ro+"/enabled", map[string]any{"enabled": true})
-	if first, _, _ := explainRoute(demo, nepal, "hello", nil); first != "np_c" {
+	if first, _, _ := s.explainRoute(demo, nepal, "hello", nil); first != "np_c" {
 		t.Fatalf("enabled rule does not apply: %s", first)
 	}
 }
@@ -258,7 +239,7 @@ func TestRoutingRulesAreCheckedAndKept(t *testing.T) {
 	s2 := start(t, opts{dir: dir, smsc: smsc, vendor: vendor, keepUpstreams: true})
 	demo := s2.browser()
 	demo.login("demo@example.com", "demo-pass-123")
-	if first, _, _ := explainRoute(demo, "+9779841234567", "hi", nil); first != "np_c" {
+	if first, _, _ := s2.explainRoute(demo, "+9779841234567", "hi", nil); first != "np_c" {
 		t.Fatalf("after a restart the rule does not apply: %s", first)
 	}
 	// Access.
@@ -384,43 +365,48 @@ func TestExampleRoutingRules(t *testing.T) {
 	// beat the capability for it to be reachable at all.
 	if hasLive {
 		for _, to := range []string{"+977 9856034616", "009779856034616", "977 9856034616", "9779856034616", "9856034616", "09856034616"} {
-			if first, _, _ := explainRoute(demo, to, "hi", nil); first != "smspasal_real" {
+			if first, _, _ := s.explainRoute(demo, to, "hi", nil); first != "smspasal_real" {
 				t.Fatalf("demo to %q (default dlr): first = %s, want smspasal_real", to, first)
 			}
-			if first, _, _ := explainRoute(demo, to, "hi", map[string]any{"dlr": false}); first != "smspasal_real" {
+			if first, _, _ := s.explainRoute(demo, to, "hi", map[string]any{"dlr": false}); first != "smspasal_real" {
 				t.Fatalf("demo to %q (dlr false): first = %s, want smspasal_real", to, first)
 			}
 		}
-		if first, _, _ := explainRoute(demo, "+9779856034617", "hi", nil); first != "np_telecom" {
+		if first, _, _ := s.explainRoute(demo, "+9779856034617", "hi", nil); first != "np_telecom" {
 			t.Fatalf("another number: %s", first)
 		}
-		if first, _, _ := explainRoute(newco, "+9779856034616", "hi", nil); first == "smspasal_real" {
+		if first, _, _ := s.explainRoute(newco, "+9779856034616", "hi", nil); first == "smspasal_real" {
 			t.Fatalf("another account was routed to the live provider")
 		}
 		// 3. Promotional messages never use it.
-		if _, ids, _ := explainRoute(demo, "+9779856034616", "sale", map[string]any{"type": "promotional"}); contains(ids, "smspasal_real") {
+		if _, ids, _ := s.explainRoute(demo, "+9779856034616", "sale", map[string]any{"type": "promotional"}); contains(ids, "smspasal_real") {
 			t.Fatalf("a promotional message was routed to the live provider: %v", ids)
 		}
 	}
 
 	// 2. The login code template uses the sandbox carrier, for demo only.
+	// Asked as an operator: which carrier, and which rule chose it, is not an
+	// account's to see.
 	tpl := map[string]any{"template": "otp_login", "vars": map[string]any{"brand": "Acme", "code": "1", "minutes": "5"}}
-	_, out := demo.do("POST", "/ui/route/explain", merge(map[string]any{"to": "+9779841234567"}, tpl))
-	route := asList(asMap(out)["route"])
-	if first := asMap(route[0]); first["id"] != "np_telecom" || first["custom_rule"] != "rr_example_demo_login_code_sandbox" || asMap(out)["sandbox"] != true {
+	out := s.explainAs("demo", "+9779841234567", "", merge(map[string]any{}, tpl))
+	chain := asList(out["route"])
+	if len(chain) == 0 {
+		t.Fatalf("login code template: no route %v", out)
+	}
+	if first := asMap(chain[0]); first["id"] != "np_telecom" || first["custom_rule"] != "rr_example_demo_login_code_sandbox" || out["sandbox"] != true {
 		t.Fatalf("login code template: %v", first)
 	}
-	_, out = newco.do("POST", "/ui/route/explain", merge(map[string]any{"to": "+9779841234567"}, tpl))
-	if first := asMap(asList(asMap(out)["route"])[0]); first["custom_rule"] != nil {
+	out = s.explainAs("newco", "+9779841234567", "", merge(map[string]any{}, tpl))
+	if first := asMap(asList(out["route"])[0]); first["custom_rule"] != nil {
 		t.Fatalf("another account matched demo's rule: %v", first)
 	}
 
 	// A switched-off example does nothing; switching it on makes it work.
-	if first, _, _ := explainRoute(demo, "+919876543210", "hi", nil); first != "global_fallback" {
+	if first, _, _ := s.explainRoute(demo, "+919876543210", "hi", nil); first != "global_fallback" {
 		t.Fatalf("India before: %s", first)
 	}
 	op.do("PUT", "/ui/admin/routing-rules/rr_example_india_vendor/enabled", map[string]any{"enabled": true})
-	if first, _, _ := explainRoute(demo, "+919876543210", "hi", nil); first != "in_vendor" {
+	if first, _, _ := s.explainRoute(demo, "+919876543210", "hi", nil); first != "in_vendor" {
 		t.Fatalf("India after: %s (a rule admits a provider assigned to another account)", first)
 	}
 }
@@ -442,17 +428,17 @@ func TestRoutingRuleNumberFormatsAndTemplates(t *testing.T) {
 	id := addRule(t, op, map[string]any{"name": "formats", "mode": "use", "provider": "np_a", "account": "demo",
 		"recipients": []string{"+977 9801111111", "009779802222222", "9803333333", "09804444444"}, "priority": 70})
 	for _, to := range []string{"+9779801111111", "00977 9802222222", "9779803333333", "9804444444", "+977-9804444444"} {
-		if first, _, _ := explainRoute(demo, to, "hi", nil); first != "np_a" {
+		if first, _, _ := s.explainRoute(demo, to, "hi", nil); first != "np_a" {
 			t.Fatalf("%q: first = %s, want np_a", to, first)
 		}
 	}
-	if first, _, _ := explainRoute(demo, "+9779805555555", "hi", nil); first != "np_telecom" {
+	if first, _, _ := s.explainRoute(demo, "+9779805555555", "hi", nil); first != "np_telecom" {
 		t.Fatalf("a number not in the rule: %s", first)
 	}
 	// An international number written with + is not given the default country.
 	removeRule(t, op, id)
 	id = addRule(t, op, map[string]any{"name": "india", "mode": "use", "provider": "global_fallback", "recipients": []string{"+91 98765 43210"}, "priority": 70})
-	if first, _, _ := explainRoute(demo, "+919876543210", "hi", nil); first != "global_fallback" {
+	if first, _, _ := s.explainRoute(demo, "+919876543210", "hi", nil); first != "global_fallback" {
 		t.Fatalf("international number: %s", first)
 	}
 	if _, list := op.do("GET", "/ui/admin/routing-rules", nil); !strings.Contains(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(toJSON(list), `"`, ""), "\\", ""), " ", ""), "recipients:919876543210") && !strings.Contains(toJSON(list), "919876543210") {
@@ -461,11 +447,11 @@ func TestRoutingRuleNumberFormatsAndTemplates(t *testing.T) {
 	removeRule(t, op, id)
 	// Templates.
 	id = addRule(t, op, map[string]any{"name": "receipts", "mode": "use", "provider": "np_b", "templates": []string{"payment_received"}, "priority": 20})
-	_, out := demo.do("POST", "/ui/route/explain", map[string]any{"to": "+9779841234567", "template": "payment_received", "vars": map[string]any{"currency": "NPR", "amount": "10", "date": "today", "receipt": "r1"}})
-	if first := asMap(asList(asMap(out)["route"])[0]); first["id"] != "np_b" {
+	out := s.explainAs("demo", "+9779841234567", "", map[string]any{"template": "payment_received", "vars": map[string]any{"currency": "NPR", "amount": "10", "date": "today", "receipt": "r1"}})
+	if first := asMap(asList(out["route"])[0]); first["id"] != "np_b" {
 		t.Fatalf("template rule: %v", first["id"])
 	}
-	if first, _, _ := explainRoute(demo, "+9779841234567", "plain text", nil); first == "np_b" {
+	if first, _, _ := s.explainRoute(demo, "+9779841234567", "plain text", nil); first == "np_b" {
 		t.Fatalf("a template rule applied to a plain text message")
 	}
 	removeRule(t, op, id)

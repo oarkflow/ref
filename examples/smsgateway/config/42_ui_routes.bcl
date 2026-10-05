@@ -66,6 +66,7 @@ route_group "ui_admin" {
   route "ui.admin.providers"       { method GET path "/ui/admin/providers"            intent "admin.providers.list" }
   route "ui.admin.provider_state"  { method PUT path "/ui/admin/providers/:id/state"  intent "admin.providers.state" }
   route "ui.admin.messages"        { method GET path "/ui/admin/messages"             intent "admin.messages.list" }
+  route "ui.admin.message"         { method GET path "/ui/admin/messages/:id"         intent "admin.messages.get" }
   route "ui.admin.stats"           { method GET path "/ui/admin/stats"                intent "admin.stats" }
   route "ui.admin.approvals"       { method GET path "/ui/admin/approvals"            intent "approvals.list" }
   route "ui.admin.approvals_decide" { method POST path "/ui/admin/approvals/:id"      intent "approvals.decide" }

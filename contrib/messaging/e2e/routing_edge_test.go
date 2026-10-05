@@ -36,7 +36,7 @@ func TestRoutingRuleTiesAreDeterministic(t *testing.T) {
 	// More specific at the same priority: an account and a country beat an account alone.
 	putRule(t, op, "rr_t_broad", map[string]any{"name": "broad", "mode": "avoid", "provider": "np_a", "account": "demo", "priority": 10})
 	putRule(t, op, "rr_t_narrow", map[string]any{"name": "narrow", "mode": "use", "provider": "np_a", "account": "demo", "countries": []string{"NP"}, "priority": 10})
-	if first, _, _ := explainRoute(demo, nepal, "hi", nil); first != "np_a" {
+	if first, _, _ := s.explainRoute(demo, nepal, "hi", nil); first != "np_a" {
 		t.Fatalf("the more specific rule should win: first = %s", first)
 	}
 	clearRules(t, op)
@@ -50,7 +50,7 @@ func TestRoutingRuleTiesAreDeterministic(t *testing.T) {
 			}
 			putRule(t, op, id, map[string]any{"name": id, "mode": mode, "provider": "np_a", "account": "demo", "priority": 10})
 		}
-		if first, _, _ := explainRoute(demo, nepal, "hi", nil); first != "np_a" {
+		if first, _, _ := s.explainRoute(demo, nepal, "hi", nil); first != "np_a" {
 			t.Fatalf("order %v: the lower id (use) should win, first = %s", order, first)
 		}
 		clearRules(t, op)
@@ -59,14 +59,14 @@ func TestRoutingRuleTiesAreDeterministic(t *testing.T) {
 	// A higher priority wins whatever its mode, and a lower one never overrides it.
 	putRule(t, op, "rr_t_low_use", map[string]any{"name": "low", "mode": "use", "provider": "np_a", "priority": 5})
 	putRule(t, op, "rr_t_high_avoid", map[string]any{"name": "high", "mode": "avoid", "provider": "np_a", "priority": 6})
-	if _, ids, _ := explainRoute(demo, nepal, "hi", nil); contains(ids, "np_a") {
+	if _, ids, _ := s.explainRoute(demo, nepal, "hi", nil); contains(ids, "np_a") {
 		t.Fatalf("the higher-priority avoid should win: %v", ids)
 	}
 	// Equal providers with equal scores keep a stable order: the id.
 	clearRules(t, op)
-	_, ids, _ := explainRoute(demo, nepal, "hi", nil)
+	_, ids, _ := s.explainRoute(demo, nepal, "hi", nil)
 	for i := 0; i < 5; i++ {
-		_, again, _ := explainRoute(demo, nepal, "hi", nil)
+		_, again, _ := s.explainRoute(demo, nepal, "hi", nil)
 		if strings.Join(again, ",") != strings.Join(ids, ",") {
 			t.Fatalf("the chain changed between identical requests: %v then %v", ids, again)
 		}
@@ -96,7 +96,7 @@ func TestRoutingRulesMatchTextExactly(t *testing.T) {
 	clearRules(t, op)
 	const nepal = "+9779841234567"
 	routed := func(text string) bool {
-		first, _, _ := explainRoute(demo, nepal, text, nil)
+		first, _, _ := s.explainRoute(demo, nepal, text, nil)
 		return first == "np_c"
 	}
 	cases := []struct {
@@ -159,17 +159,17 @@ func TestRoutingRuleInputIsNormalisedAndChecked(t *testing.T) {
 
 	putRule(t, op, "rr_in", map[string]any{"name": "forms", "mode": "use", "provider": "np_c", "priority": 10, "recipients": []string{" +977 984-123-4567 "}})
 	for _, to := range []string{"9841234567", "+977 9841234567", "009779841234567", "977 984 123 4567", "09841234567", "(+977) 984-123-4567"} {
-		if first, _, _ := explainRoute(demo, to, "hi", nil); first != "np_c" {
+		if first, _, _ := s.explainRoute(demo, to, "hi", nil); first != "np_c" {
 			t.Errorf("a message to %q should match the recipient: first = %s", to, first)
 		}
 	}
-	if first, _, _ := explainRoute(demo, "+9779841234568", "hi", nil); first == "np_c" {
+	if first, _, _ := s.explainRoute(demo, "+9779841234568", "hi", nil); first == "np_c" {
 		t.Errorf("another number matched")
 	}
 	removeRule(t, op, "rr_in")
 
 	putRule(t, op, "rr_prefix", map[string]any{"name": "prefix", "mode": "use", "provider": "np_c", "priority": 10, "recipient_prefix": "+977984", "countries": []string{" np "}, "types": []string{"Transactional"}})
-	if first, _, _ := explainRoute(demo, nepal, "hi", nil); first != "np_c" {
+	if first, _, _ := s.explainRoute(demo, nepal, "hi", nil); first != "np_c" {
 		t.Errorf("prefix written with +, country in lower case, type capitalised: first = %s", first)
 	}
 	removeRule(t, op, "rr_prefix")

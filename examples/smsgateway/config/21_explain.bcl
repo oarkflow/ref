@@ -1,13 +1,48 @@
-# What would happen to a message, without sending or charging anything: how its
-# number was read, whether it is valid, the chain of providers and why each
-# other provider was left out, and the price.
+# What would happen to a message, without sending or charging anything.
+#
+# There are two answers, from one dry run, and the difference between them is who
+# is asking:
+#
+#   sms.explain          the account's own. What it asked about: the number as
+#                        the gateway read it, what it would cost, whether a
+#                        receipt would come, or the reason it cannot be sent.
+#   admin.route.explain  an operator's, for any account. The same dry run, plus
+#                        the chain of carriers and why each other one was left
+#                        out — which is the operator's question and is never the
+#                        account's.
+#
+# The split matters most for what the sender's answer leaves out. A carrier chain
+# is not just internal bookkeeping: it is this gateway's supplier list, its
+# failover order and its pricing, and an account that could read it could
+# reconstruct all three. So the two projections are written out separately below
+# rather than produced by one and trimmed.
 
 # The public entry: for the caller's own account.
 intent "sms.explain" {
   description "Dry run of sms.prepare for the caller's account"
   response "result"
   input_schema "sms_send"
-  node "result" { uses "flow.subflow" kind pure requires [input] provides [result] config { intent "sms.explain_as" } }
+  node "prepared" { uses "flow.subflow" kind pure requires [input] provides [prepared] config { intent "sms.prepared" } }
+  node "result" {
+    uses "data.transform" kind pure requires [prepared] provides [result]
+    config {
+      data {
+        extract {
+          ok "true"
+          to "prepared.message.to"
+          country "prepared.message.country"
+          type "prepared.message.type"
+          segments "prepared.message.segments"
+          encoding "prepared.message.encoding"
+          price "prepared.charge.total"
+          currency "prepared.charge.currency"
+          # Whether a receipt would come, which is a promise about this message.
+          receipt "prepared.lead != nil and prepared.lead.supports_dlr == 1 and prepared.message.dlr"
+        }
+        pick ["ok", "to", "country", "type", "segments", "encoding", "price", "currency", "receipt"]
+      }
+    }
+  }
 }
 
 # For an operator: the same dry run for any account, to see where its messages would go.
@@ -24,24 +59,17 @@ shape "admin_explain" {
   prop "dlr"           { kind bool }
 }
 intent "admin.route.explain" {
-  description "Dry run of sms.prepare for a named account"
+  description "Dry run of sms.prepare for a named account, with the carriers it would use"
   response "result"
   input_schema "admin_explain"
-  node "result" { uses "flow.subflow" kind pure requires [input] provides [result] config { intent "sms.explain_as" } }
-}
-
-# The dry run itself. `account`, when present, names the account (sms.prepare
-# reads it); sms.explain cannot receive it, because its input shape rejects it.
-intent "sms.explain_as" {
-  description "Dry run of sms.prepare"
-  response "result"
-  node "prepared" { uses "flow.subflow" kind pure requires [input] provides [prepared] config { intent "sms.prepare" } }
+  node "prepared" { uses "flow.subflow" kind pure requires [input] provides [prepared] config { intent "sms.prepared" } }
   node "lead" { uses "data.first" requires [prepared] provides [lead] config { source_fact "prepared.route.chain" optional true } }
   node "result" {
     uses "data.transform" kind pure requires [prepared, lead] provides [result]
     config {
       data {
         extract {
+          ok "true"
           to "prepared.message.to"
           country "prepared.message.country"
           type "prepared.message.type"
@@ -50,27 +78,39 @@ intent "sms.explain_as" {
           objective "prepared.route.ranking"
           route "prepared.route.chain"
           rejected "prepared.route.rejected"
+          reserved_for "prepared.route.reserved_for"
           price "prepared.charge.total"
           currency "prepared.charge.currency"
           sandbox "lead != nil and lead.sandbox == 1"
-          # What the message will get, as opposed to what it asked for. Routing
-          # does not read either; this is the receipt promise, kept here so the
-          # dry run can answer it before anything is sent or charged.
           dlr "prepared.message.dlr"
           dlr_asked "prepared.message.dlr_asked"
           receipt "lead != nil and lead.supports_dlr == 1 and prepared.message.dlr"
         }
-        pick ["to", "country", "type", "segments", "encoding", "objective", "route", "rejected", "price", "currency", "sandbox", "dlr", "dlr_asked", "receipt"]
+        pick ["ok", "to", "country", "type", "segments", "encoding", "objective", "route", "rejected", "reserved_for", "price", "currency", "sandbox", "dlr", "dlr_asked", "receipt"]
       }
     }
   }
 }
 
+# The dry run itself. `account`, when present, names the account (sms.prepare
+# reads it); sms.explain cannot receive it, because its input shape rejects it.
+# No projection: this is what both of the above read, and each decides for itself
+# what its caller may see.
+intent "sms.prepared" {
+  description "Everything decided about a message before it is paid for"
+  response "prepared"
+  node "prepared" { uses "flow.subflow" kind pure requires [input] provides [prepared] config { intent "sms.prepare" } }
+}
+
 route "sms.explain" {
-  description "Dry run: how a message would be read, routed and priced"
+  description "Dry run: how a message would be read and priced"
   method POST
   path "/v1/route/explain"
   intent "sms.explain"
   auth "sender_auth"
   cache_control "no-store"
 }
+
+# The operator's dry run over the API, alongside the console's. It is the only
+# one that names carriers, so it takes the operator key and not an account's.
+route "admin.route.explain.api" { method POST path "/v1/admin/route/explain" intent "admin.route.explain" auth "admin_auth" cache_control "no-store" }

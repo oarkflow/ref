@@ -1,8 +1,18 @@
 # ---------------------------------------------------------------------------
 # What an account sees of its own messages and money. Every query is scoped to
 # the authenticated account (principal.id), so one account cannot read another's.
+#
+# These are the sender's views, and they say nothing about the carriers. A column
+# is left out of the SELECT rather than blanked afterwards, because a field that
+# is never read cannot leak: `provider` and the per-carrier `attempts` are what
+# the gateway uses to do its job, and how it did the job is the operator's
+# business (on /admin). What an account is told instead is a status word, from
+# rules/status.bcl.
 # ---------------------------------------------------------------------------
 
+# One message, with its status. The status is decided from the row's own columns
+# by rules/status.bcl, so "failed because the number is unreachable" is one word
+# to the account rather than a carrier's error string.
 intent "me.messages.get" {
   response "result"
   node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
@@ -10,29 +20,71 @@ intent "me.messages.get" {
   node "rows" {
     uses "database.query" resource "db" kind read requires [id, uid] provides [rows]
     config {
-      statement "SELECT id, state, provider, to_number AS \"to\", country, sender AS \"from\", msg_type AS type, segments, encoding, price, currency, want_dlr, err_code, err_text, created_ms, submitted_ms, delivered_ms, total_attempts FROM messages WHERE id = $1 AND user_id = $2"
+      statement "SELECT id, state, err_code, want_dlr, to_number AS \"to\", country, sender AS \"from\", msg_type AS type, segments, encoding, price, currency, created_ms, submitted_ms, delivered_ms, expires_ms FROM messages WHERE id = $1 AND user_id = $2"
       args [id, uid] require_rows true not_found_message "no such message"
     }
   }
   node "row" { uses "data.first" requires [rows] provides [row] config { source_fact "rows" } }
-  node "tries" {
-    uses "database.query" resource "db" kind read requires [row] provides [tries]
-    config { statement "SELECT n, provider, outcome, code, err_text, latency_ms, at_ms FROM attempts WHERE message_id = $1 AND n < 1000000 ORDER BY n" args [row.id] }
+  node "status" {
+    uses "rules.decide" resource "policy" kind read requires [row] provides [status]
+    input_data { extract { message "row" } pick ["message"] }
+    config { definition "status" decision "status" }
   }
   node "result" {
-    uses "data.transform" kind pure requires [row, tries] provides [result]
-    config { data { extract { message "row" attempts "tries" } pick ["message", "attempts"] } }
+    uses "data.transform" kind pure requires [row, status] provides [result]
+    config {
+      data {
+        extract {
+          id "row.id"
+          to "row.to"
+          country "row.country"
+          from "row.from"
+          type "row.type"
+          segments "row.segments"
+          encoding "row.encoding"
+          price "row.price / 1000000"
+          currency "row.currency"
+          # The account's own vocabulary, from rules/status.bcl.
+          status "status.attributes.status"
+          progress "status.attributes.progress"
+          terminal "status.attributes.terminal"
+          detail "status.attributes.detail"
+          failure "status.attributes.failure"
+          # Whether a receipt is expected, which is a promise about this message
+          # rather than a fact about the machinery that sends it.
+          receipt "row.want_dlr == 1"
+          created_ms "row.created_ms"
+          submitted_ms "row.submitted_ms"
+          delivered_ms "row.delivered_ms"
+        }
+        pick ["id", "to", "country", "from", "type", "segments", "encoding", "price", "currency", "status", "progress", "terminal", "detail", "failure", "receipt", "created_ms", "submitted_ms", "delivered_ms"]
+      }
+    }
   }
 }
 route "me.messages.get" { method GET path "/v1/messages/:id" intent "me.messages.get" auth "sender_auth" cache_control "no-store" }
 
+# The account's messages, newest first. `status` is the same CASE that
+# rules/status.bcl applies: five words, one per state. It is written out here
+# rather than evaluated per row because a list of 100 should not be 100 decision
+# runs, and because the row is already being selected — TestAccountStatusMatches
+# TheRules pins the two together, so the list and the single message can never
+# disagree about what a state is called.
 intent "me.messages.list" {
   response "rows"
-  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "uid" { uses "expression" kind pure requires [input] provides [uid] config { expression "principal.id" } }
+  # A summary, in the account's own units and words. Price is in the currency the
+  # message cost, as on one message, not the micros the row holds. The receipt
+  # promise is not here: it is a property of one message, and the list is a page
+  # of them.
+  #
+  # The status word is the CASE rules/status.bcl would give, written out so that
+  # listing 100 messages is not 100 decision runs.
+  # TestAccountStatusMatchesTheRules pins that CASE to the rules.
   node "rows" {
     uses "database.query" resource "db" kind read requires [uid] provides [rows]
     config {
-      statement "SELECT m.id, m.state, m.provider, m.to_number AS \"to\", m.sender AS \"from\", m.msg_type AS type, m.segments, m.price, m.currency, m.created_ms, COALESCE(p.sandbox, 1) AS sandbox FROM messages m LEFT JOIN providers p ON p.id = m.provider WHERE m.user_id = $1 ORDER BY m.created_ms DESC LIMIT 100"
+      statement "SELECT m.id, m.to_number AS \"to\", m.sender AS \"from\", m.msg_type AS type, m.segments, m.price / 1000000.0 AS price, m.currency, m.created_ms, m.submitted_ms, m.delivered_ms, CASE m.state WHEN 'queued' THEN 'accepted' WHEN 'dispatching' THEN 'sending' WHEN 'submitted' THEN 'sent' WHEN 'delivered' THEN 'delivered' WHEN 'failed' THEN 'failed' ELSE 'accepted' END AS status FROM messages m WHERE m.user_id = $1 ORDER BY m.created_ms DESC LIMIT 100"
       args [uid]
     }
   }

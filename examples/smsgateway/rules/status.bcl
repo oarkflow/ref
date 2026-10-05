@@ -1,0 +1,104 @@
+bcl { version "1.0" }
+
+# What an account is told about a message.
+#
+# The gateway keeps two vocabularies and this file is where they meet. The
+# internal one is the routing engine's: a state per step through the delivery
+# machine, and a carrier's own error codes. Neither belongs to the account that
+# sent the message — a carrier's identity, its state machine and its wording are
+# how the gateway runs its own business, and an account is owed an answer about
+# ITS message, not a view of the machinery.
+#
+# So a message row is projected here into five words, and those words are the
+# only status vocabulary a sender ever sees:
+#
+#   accepted   we have it and it is waiting its turn
+#   sending    it is going out now
+#   sent       the network has taken it; a receipt is expected (if one was asked for)
+#   delivered  the handset got it
+#   failed     it will not be delivered, and the charge has been released
+#
+# `progress` is how far along that is (0 to 100), so a client can show a bar
+# without knowing the words, and `terminal` says whether to stop polling.
+#
+# Facts: message { state, err_code, want_dlr, created_ms, submitted_ms,
+# delivered_ms, expires_ms } — the columns of a messages row, and nothing else.
+# In particular not `provider`: the account is not told which carrier carries its
+# message, and this is where that promise would otherwise be broken.
+#
+# The failure words are the account's, not the carrier's. `destination_rejected`
+# means a number no network can reach, `expired` means it waited too long, and
+# everything else — every carrier having refused it — is one word,
+# `not_delivered`, because "which carrier, and what did it say" is the operator's
+# question, answered on /admin, not the sender's.
+
+module "status" {
+  version "1"
+  environment "production"
+
+  decision_schema "status" { effects [allow] default allow strategy first_match }
+  decision_table "status" {
+    default allow
+    hit_policy first
+
+    # ---- Failed. Which word, is the detail below. ---------------------------
+    row "failed-the-number" {
+      priority 300
+      when { message.err_code == "destination_rejected" }
+      then { outcome { decision allow attributes { status "failed" terminal true progress 100 failure "recipient_rejected" detail "no network can reach this number" } } }
+    }
+    row "failed-expired" {
+      priority 290
+      when { message.err_code == "expired" }
+      then { outcome { decision allow attributes { status "failed" terminal true progress 100 failure "expired" detail "this message waited too long to go out" } } }
+    }
+    row "failed-no-route" {
+      priority 280
+      when { message.err_code == "all_providers_failed" }
+      then { outcome { decision allow attributes { status "failed" terminal true progress 100 failure "no_route" detail "nothing could carry this message when it was due; it has not been charged" } } }
+    }
+    row "failed" {
+      priority 270
+      when { message.state == "failed" }
+      then { outcome { decision allow attributes { status "failed" terminal true progress 100 failure "not_delivered" detail "this message could not be delivered; it has not been charged" } } }
+    }
+
+    # ---- The happy path. ---------------------------------------------------
+    row "delivered" {
+      priority 200
+      when { message.state == "delivered" }
+      then { outcome { decision allow attributes { status "delivered" terminal true progress 100 detail "the handset got it" } } }
+    }
+    row "sent-awaiting-receipt" {
+      priority 190
+      when {
+        all {
+          message.state == "submitted"
+          message.want_dlr == 1
+        }
+      }
+      then { outcome { decision allow attributes { status "sent" terminal false progress 80 detail "the network has it; waiting to hear it reached the handset" } } }
+    }
+    row "sent" {
+      priority 180
+      when { message.state == "submitted" }
+      then { outcome { decision allow attributes { status "sent" terminal false progress 80 detail "the network has it" } } }
+    }
+    row "sending" {
+      priority 170
+      when { message.state == "dispatching" }
+      then { outcome { decision allow attributes { status "sending" terminal false progress 50 detail "going out now" } } }
+    }
+    row "accepted" {
+      priority 160
+      when { message.state == "queued" }
+      then { outcome { decision allow attributes { status "accepted" terminal false progress 10 detail "accepted, waiting to go out" } } }
+    }
+
+    # ---- Anything else is treated as accepted, never as delivered. ----------
+    row "unknown" {
+      priority 1
+      then { outcome { decision allow attributes { status "accepted" terminal false progress 10 detail "accepted" } } }
+    }
+  }
+}

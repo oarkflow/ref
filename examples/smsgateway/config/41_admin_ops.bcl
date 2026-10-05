@@ -39,6 +39,37 @@ intent "admin.messages.list" {
 }
 route "admin.messages.list" { method GET path "/v1/admin/messages" intent "admin.messages.list" auth "admin_auth" cache_control "no-store" }
 
+# One message in full, for an operator: which carrier carried it, every attempt
+# with the carrier's own wording, and the state of the plan. This is where the
+# detail that an account is not shown lives — /v1/messages/{id} answers the same
+# question in the account's vocabulary and names no carrier.
+intent "admin.messages.get" {
+  description "One message with its carriers and every attempt"
+  response "result"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [id] provides [rows]
+    config {
+      statement "SELECT id, user_id, state, provider, provider_msg_id, plan, plan_index, to_number AS \"to\", country, sender AS \"from\", msg_type AS type, segments, encoding, want_dlr, price, cost, currency, err_code, err_text, attempt, total_attempts, created_ms, submitted_ms, delivered_ms FROM messages WHERE id = $1"
+      args [id] require_rows true not_found_message "no such message"
+    }
+  }
+  node "row" { uses "data.first" requires [rows] provides [row] config { source_fact "rows" } }
+  node "tries" {
+    uses "database.query" resource "db" kind read requires [row] provides [tries]
+    config { statement "SELECT n, provider, outcome, code, err_text, latency_ms, at_ms FROM attempts WHERE message_id = $1 ORDER BY n" args [row.id] }
+  }
+  node "health" {
+    uses "database.query" resource "db" kind read requires [row] provides [health]
+    config { statement "SELECT h.route, h.successes, h.failures, h.consecutive_failures, h.open_until_ms FROM provider_health h WHERE h.provider = $1 ORDER BY h.route" args [row.provider] }
+  }
+  node "result" {
+    uses "data.transform" kind pure requires [row, tries, health] provides [result]
+    config { data { extract { message "row" attempts "tries" health "health" } pick ["message", "attempts", "health"] } }
+  }
+}
+route "admin.messages.get" { method GET path "/v1/admin/messages/:id" intent "admin.messages.get" auth "admin_auth" cache_control "no-store" }
+
 intent "admin.stats" {
   response "result"
   node "since" { uses "expression" kind pure provides [since] config { expression "unix_millis() - 86400000" } }

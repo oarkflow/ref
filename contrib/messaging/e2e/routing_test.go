@@ -17,8 +17,12 @@ func TestRoutingByCountryAndAssignment(t *testing.T) {
 	} {
 		to := c.to
 		status, out := s.send(c.user, map[string]any{"to": to, "text": "route me"})
-		if status != 202 || str(out, "provider") != c.provider {
-			t.Fatalf("%s -> %s: %d %v, want %s", c.user, to, status, out, c.provider)
+		if status != 202 {
+			t.Fatalf("%s -> %s: %d %v", c.user, to, status, out)
+		}
+		// Which carrier carried it is the operator's question, not the account's.
+		if got := s.carrier(str(out, "id")); got != c.provider {
+			t.Fatalf("%s -> %s: routed through %q, want %s", c.user, to, got, c.provider)
 		}
 	}
 }
@@ -42,11 +46,12 @@ func TestTransientFailureIsRetriedOnTheSameProvider(t *testing.T) {
 	time.Sleep(1500 * time.Millisecond)
 	s.smsc.SetDown(false)
 	eventually(t, "delivered", func() bool { return s.state("demo", id) == "delivered" })
-	_, m := s.do("GET", "/v1/messages/"+id, s.key("demo"), nil)
-	if p := str(m, "message", "provider"); p != "np_telecom" {
-		t.Fatalf("provider = %s", p)
+	if p := s.carrier(id); p != "np_telecom" {
+		t.Fatalf("carrier = %s", p)
 	}
-	if n, _ := get(m, "message", "total_attempts").(float64); n < 2 {
+	// How many times it was tried is the operator's to see, not the account's.
+	_, full := s.admin("GET", "/v1/admin/messages/"+id, nil)
+	if n, _ := get(asMap(full), "message", "total_attempts").(float64); n < 2 {
 		t.Fatalf("attempts = %v, want at least 2", n)
 	}
 }
