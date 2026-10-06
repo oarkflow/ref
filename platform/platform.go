@@ -80,6 +80,10 @@ type LoadOptions struct {
 	// template.render action renders through it, so text that is not an HTTP
 	// page (an SMS body, an email subject) can be a template file too.
 	Templates TemplateRenderer
+	// SwaggerPrefix sets the base path for Swagger UI. Defaults to "/docs" (with alias "/swagger").
+	SwaggerPrefix string
+	// DisableSwagger turns off automatic Swagger UI and OpenAPI route mounting.
+	DisableSwagger bool
 	// Mutate, when set, may rewrite the decoded document before anything is
 	// validated or opened. It is how a host compiles a sandboxed variant of an
 	// application (Studio's preview swaps real datastores for temp-dir ones and
@@ -152,6 +156,9 @@ type Platform struct {
 	// if any; serve() (routes.go) evaluates every request through it before
 	// authentication runs. nil when the document declares none.
 	guard *tcpguardWrapper
+
+	swaggerPrefix  string
+	disableSwagger bool
 
 	background context.CancelFunc
 	wg         sync.WaitGroup
@@ -319,6 +326,8 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 		bulkheads:         map[string]*bulkheadLimiter{},
 		replicaID:         opts.ReplicaID,
 		templates:         opts.Templates,
+		swaggerPrefix:     opts.SwaggerPrefix,
+		disableSwagger:    opts.DisableSwagger,
 	}
 	if p.replicaID == "" {
 		p.replicaID = "replica-" + newPrefixedID("")

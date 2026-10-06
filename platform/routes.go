@@ -364,6 +364,13 @@ func (p *Platform) Mount(app *fh.App) error {
 	if err := p.mountTriggers(app); err != nil {
 		return err
 	}
+	if !p.disableSwagger {
+		prefix := p.swaggerPrefix
+		if prefix == "" {
+			prefix = "/docs"
+		}
+		_ = p.MountSwagger(app, prefix, "/swagger")
+	}
 	return nil
 }
 

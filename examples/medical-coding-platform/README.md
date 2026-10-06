@@ -243,12 +243,41 @@ CLEAR exposes **96 full endpoints**, supporting both modern clean paths and lega
 | **Admin** | `GET` | `/coders` | `/web/client/coders` | Supervisor, Admin | Directory of certified coders |
 | **System** | `GET` | `/ping` | *(none)* | Public | Healthcheck and readiness probe |
 | **System** | `GET` | `/background/service` | `/web/client/background/service` | Admin | Worker & background daemon status |
+| **Docs** | `GET` | `/docs` | *(none)* | Public | Interactive Swagger UI 5.x API Explorer |
+| **Docs** | `GET` | `/swagger` | *(none)* | Public | Swagger UI alias |
+| **Docs** | `GET` | `/docs/openapi.json` | *(none)* | Public | Live OpenAPI 3.1 specification JSON |
+| **Docs** | `GET` | `/openapi.json` | *(none)* | Public | Root OpenAPI 3.1 JSON specification |
+| **Docs** | `GET` | `/swagger.json` | *(none)* | Public | Root Swagger JSON specification |
 
-*(Total: 96 routes supporting both clean REST and `/web/client/...` endpoints).*
+*(Total: 96 clinical/admin routes + 5 Swagger UI & OpenAPI documentation endpoints).*
 
 ---
 
-## 7. Database Engine & Schema (29 Tables)
+## 7. Interactive Swagger UI & OpenAPI 3.1 Engine
+
+CLEAR includes **automatic, zero-boilerplate Swagger UI generation** directly integrated into the Ref runtime:
+
+### Endpoints Available
+- **Interactive Swagger UI**: [http://127.0.0.1:3000/docs](http://127.0.0.1:3000/docs) (or alias `/swagger`)
+- **OpenAPI 3.1 Specification**: [http://127.0.0.1:3000/docs/openapi.json](http://127.0.0.1:3000/docs/openapi.json) (or `/openapi.json`, `/swagger.json`)
+
+### Key Swagger UI Capabilities
+1. **Zero-Configuration Mounting**: Automatically mounted at `/docs` whenever `p.Mount(app)` is executed.
+2. **Smart Domain Grouping**: Automatically categorizes endpoints into clinical and operational tags (`Authentication`, `Medical Coding`, `Quality Assurance`, `Charge Data Entry`, `Chart Suspensions`, `Facilities`, `Workitems`, `Healthcare Providers`, `Chargemaster`, `CPT & Medical Terminology`, `Administration & RBAC`).
+3. **Interactive "Try it out" & Authorization**:
+   - Built-in **Authorize** modal supporting:
+     - `cookieAuth`: Session cookie authentication (`clear_session_id`).
+     - `bearerAuth`: JWT Bearer tokens (`Authorization: Bearer <token>`).
+     - `apiKeyAuth`: API key header (`X-API-Key`).
+4. **Instant Search & Deep-Linking**:
+   - Integrated live filter bar to quickly locate endpoints by path or keyword.
+   - Deep-linking (`deepLinking: true`) enables direct URL anchors to specific methods.
+   - Accordion collapse (`docExpansion: "none"`) keeps the 192 route catalog fast and navigable.
+5. **Schema Exploration**: All 22 clinical BCL shapes (`User`, `Encounter`, `DiagnosisCode`, `ProcedureCode`, etc.) are rendered with property types, constraints, and validation rules.
+
+---
+
+## 8. Database Engine & Schema (29 Tables)
 
 The database schema reflects enterprise healthcare requirements, provisioned automatically via `contrib/migrate`:
 
@@ -284,7 +313,7 @@ The database schema reflects enterprise healthcare requirements, provisioned aut
 
 ---
 
-## 8. Developer Quickstart & Verification Guide
+## 9. Developer Quickstart & Verification Guide
 
 ### Prerequisites
 - **Go 1.24+**
@@ -334,11 +363,13 @@ Output:
 INFO starting CLEAR medical coding platform env=development port=3000
 INFO migration check: database schema up to date
 INFO compiling BCL application document dir=resources/config
+INFO mounting BCL routes
+INFO Swagger UI documentation active docs=http://127.0.0.1:3000/docs swagger=http://127.0.0.1:3000/swagger openapi=http://127.0.0.1:3000/openapi.json
 INFO server listening addr=:3000
 +--------------------------------+
 | Name   : fh                    |
 | URL    : http://127.0.0.1:3000 |
-| Routes : 209                   |
+| Routes : 214                   |
 | Mode   : fast                  |
 +--------------------------------+
 ```
@@ -361,16 +392,18 @@ Two comprehensive Python test suites validate complete functionality:
    - Clinical documentation save and completion
    - Workitem queue dashboard metrics
 
-2. **96-Route Parity Test Suite**:
+2. **101-Endpoint Verification Suite (96 Routes + 5 Docs Endpoints)**:
    ```sh
    python3 scripts/verify_all_endpoints.py
    ```
    *Verifies:*
-   - All 96 routes (both clean REST and `/web/client/...` legacy paths) respond with HTTP 200 and expected schemas.
+   - All 96 clinical/admin routes (clean REST and legacy `/web/client/...`)
+   - Interactive Swagger UI viewer (`GET /docs`, `GET /swagger`)
+   - Live OpenAPI 3.1 specifications (`GET /docs/openapi.json`, `GET /openapi.json`, `GET /swagger.json`)
 
 ---
 
-## 9. Default Seed Credentials
+## 10. Default Seed Credentials
 
 The test seed script automatically configures the following accounts:
 
@@ -384,7 +417,7 @@ The test seed script automatically configures the following accounts:
 
 ---
 
-## 10. Production Deployment
+## 11. Production Deployment
 
 ### Docker / Containerized Environment
 CLEAR compiles to a single, static binary with no external runtime dependencies:

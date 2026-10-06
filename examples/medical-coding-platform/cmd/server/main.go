@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
@@ -92,6 +93,12 @@ func main() {
 		logger.Error("mounting BCL routes", zlog.Err(err))
 		log.Fatalf("clear-platform: mount error: %v", err)
 	}
+
+	logger.Info("Swagger UI documentation active",
+		zlog.String("docs", fmt.Sprintf("http://127.0.0.1:%s/docs", port)),
+		zlog.String("swagger", fmt.Sprintf("http://127.0.0.1:%s/swagger", port)),
+		zlog.String("openapi", fmt.Sprintf("http://127.0.0.1:%s/openapi.json", port)),
+	)
 
 	addr := ":" + port
 	go func() {

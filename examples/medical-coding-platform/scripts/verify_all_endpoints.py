@@ -117,6 +117,11 @@ endpoints = [
     ("GET", "/web/client/companies/comp_clear_01"),
     ("GET", "/coders"),
     ("GET", "/web/client/coders"),
+    ("GET", "/docs"),
+    ("GET", "/swagger"),
+    ("GET", "/docs/openapi.json"),
+    ("GET", "/openapi.json"),
+    ("GET", "/swagger.json"),
 ]
 
 passed = 0
