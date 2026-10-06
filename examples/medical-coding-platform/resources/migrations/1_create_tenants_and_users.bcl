@@ -1,0 +1,121 @@
+Migration "1_create_tenants_and_users" {
+  Version = "1.0.0"
+  Description = "Create companies, users, roles, and memberships tables"
+  Connection = "default"
+  Up {
+    CreateTable "companies" {
+      Field "id" {
+        type = "string"
+        size = 255
+        primary_key = true
+      }
+      Field "name" {
+        type = "string"
+        size = 255
+      }
+      Field "slug" {
+        type = "string"
+        size = 100
+        unique = true
+      }
+      Field "status" {
+        type = "string"
+        size = 20
+        default = "active"
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+      Field "updated_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+    CreateTable "users" {
+      Field "id" {
+        type = "string"
+        size = 255
+        primary_key = true
+      }
+      Field "email" {
+        type = "string"
+        size = 255
+        unique = true
+      }
+      Field "name" {
+        type = "string"
+        size = 255
+      }
+      Field "password_hash" {
+        type = "string"
+        size = 255
+      }
+      Field "roles" {
+        type = "string"
+        size = 100
+        default = "coder"
+      }
+      Field "status" {
+        type = "string"
+        size = 20
+        default = "active"
+      }
+      Field "avatar" {
+        type = "string"
+        size = 500
+        nullable = true
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+      Field "updated_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+    CreateTable "memberships" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "user_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "company_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "work_item_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "role" {
+        type = "string"
+        size = 50
+        default = "coder"
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+  }
+  Down {
+    DropTable "memberships" {
+      Cascade = true
+    }
+    DropTable "users" {
+      Cascade = true
+    }
+    DropTable "companies" {
+      Cascade = true
+    }
+  }
+}

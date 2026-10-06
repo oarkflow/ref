@@ -1,0 +1,87 @@
+route "coding.open_list" {
+  method GET
+  path "/web/client/coding/:wid/open-list"
+  intent "queues.open_list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.inprogress_list" {
+  method GET
+  path "/web/client/coding/:wid/in-progress-list"
+  intent "queues.inprogress_list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.start_coding" {
+  method POST
+  path "/web/client/coding/:wid/:eid/start-coding"
+  intent "encounters.start_coding"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.patient_details" {
+  method GET
+  path "/web/client/coding/:wid/:eid/patient-details"
+  intent "queues.patient_details"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.documentation" {
+  method GET
+  path "/web/client/coding/:wid/:eid/documentation"
+  intent "coding.get_documentation"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.save_documentation" {
+  method POST
+  path "/web/client/coding/:wid/:eid/save-coding-documentation"
+  intent "coding.save_documentation"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.verify_coding" {
+  method POST
+  path "/web/client/coding/:wid/:eid/verify-coding"
+  intent "coding.verify"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.summary" {
+  method GET
+  path "/web/client/coding/:wid/:eid/summary"
+  intent "coding.summary"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.inprogress_count" {
+  method GET
+  path "/web/client/coding/in-progress-count"
+  intent "queues.inprogress_count"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.search_encounters" {
+  method POST
+  path "/web/client/coding/search-encounters"
+  intent "encounters.search"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.abandon" {
+  method POST
+  path "/web/client/coding/:wid/:eid/abandon-encounter"
+  intent "encounters.abandon"
+  allow_anonymous true
+  cache_control "no-store"
+}

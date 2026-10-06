@@ -1,0 +1,169 @@
+intent "queues.facility_summary" {
+  description "Aggregate queue metrics across all facilities and work items"
+  response "response"
+
+  node "counts" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [summary_rows]
+    config {
+      statement "SELECT f.facility_id, f.facility_name, wi.work_item_id, wi.name AS work_item_name, wi.work_item_type, SUM(CASE WHEN ed.encounter_status = 'OPEN' THEN 1 ELSE 0 END) AS open_count, SUM(CASE WHEN ed.encounter_status = 'IN_PROGRESS' THEN 1 ELSE 0 END) AS in_progress_count, SUM(CASE WHEN ed.encounter_status = 'IN_QA' THEN 1 ELSE 0 END) AS qa_count, SUM(CASE WHEN ed.encounter_status = 'QA_IN_PROGRESS' THEN 1 ELSE 0 END) AS qa_in_progress_count, SUM(CASE WHEN ed.encounter_status = 'DE_OPEN' THEN 1 ELSE 0 END) AS de_count, SUM(CASE WHEN ed.encounter_status = 'DE_IN_PROGRESS' THEN 1 ELSE 0 END) AS de_in_progress_count, SUM(CASE WHEN ed.encounter_status = 'SUSPEND' THEN 1 ELSE 0 END) AS suspend_count, SUM(CASE WHEN ed.encounter_status = 'COMPLETE' THEN 1 ELSE 0 END) AS complete_count FROM facilities f JOIN work_items wi ON f.facility_id = wi.facility_id LEFT JOIN encounter_details ed ON wi.work_item_id = ed.work_item_id WHERE f.status = 'active' AND wi.status = 'active' GROUP BY f.facility_id, f.facility_name, wi.work_item_id, wi.name, wi.work_item_type ORDER BY f.facility_name, wi.name"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [summary_rows]
+    provides [response]
+    config {
+      data "summary_rows"
+    }
+  }
+}
+
+intent "queues.open_list" {
+  description "List open encounters available for medical coding"
+  response "response"
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "list" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [wid]
+    provides [encounters]
+    config {
+      statement "SELECT e.encounter_id, e.patient_name, e.patient_sex, e.patient_dob, e.patient_mrn, e.patient_fin, e.encounter_dos, e.encounter_location, e.encounter_reason_for_visit, e.encounter_chief_complaint, e.encounter_type, ed.work_item_id, ed.encounter_status FROM encounters e JOIN encounter_details ed ON e.encounter_id = ed.encounter_id WHERE ed.work_item_id = $1 AND ed.encounter_status = 'OPEN' ORDER BY e.encounter_dos ASC, e.encounter_id ASC LIMIT 100"
+      args [wid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [encounters]
+    provides [response]
+    config {
+      encounters "encounters"
+    }
+  }
+}
+
+intent "queues.inprogress_list" {
+  description "List encounters currently being coded by the authenticated coder"
+  response "response"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+    }
+  }
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "list" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [wid, user_id]
+    provides [encounters]
+    config {
+      statement "SELECT e.encounter_id, e.patient_name, e.patient_sex, e.patient_dob, e.patient_mrn, e.patient_fin, e.encounter_dos, e.encounter_location, e.encounter_reason_for_visit, ed.work_item_id, ed.encounter_status, ed.coding_start_time FROM encounters e JOIN encounter_details ed ON e.encounter_id = ed.encounter_id WHERE ed.work_item_id = $1 AND ed.encounter_status = 'IN_PROGRESS' AND ed.code_assigned = $2 ORDER BY ed.coding_start_time DESC"
+      args [wid, user_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [encounters]
+    provides [response]
+    config {
+      encounters "encounters"
+    }
+  }
+}
+
+intent "queues.inprogress_count" {
+  description "Get count of currently in-progress coding charts for coder"
+  response "response"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+    }
+  }
+
+  node "count" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [count_rows]
+    config {
+      statement "SELECT COUNT(*) AS in_progress_count FROM encounter_details WHERE encounter_status = 'IN_PROGRESS' AND code_assigned = $1"
+      args [user_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [count_rows]
+    provides [response]
+    config {
+      data "count_rows"
+    }
+  }
+}
+
+intent "queues.patient_details" {
+  description "Fetch patient registration header and encounter metadata"
+  response "response"
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [eid]
+    provides [patient_rows]
+    config {
+      statement "SELECT e.*, ed.work_item_id, ed.encounter_status, ed.code_assigned FROM encounters e JOIN encounter_details ed ON e.encounter_id = ed.encounter_id WHERE e.encounter_id = $1"
+      args [eid]
+      require_rows true
+      not_found_message "encounter not found"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [patient_rows]
+    provides [response]
+    config {
+      data "patient_rows"
+    }
+  }
+}

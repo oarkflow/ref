@@ -1,0 +1,100 @@
+intent "suspends.reasons_list" {
+  description "Get available suspend reasons catalog"
+  response "response"
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [reasons]
+    config {
+      statement "SELECT id, name, code, description FROM suspend_master WHERE status = 'active' ORDER BY name ASC"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [reasons]
+    provides [response]
+    config {
+      data "reasons"
+    }
+  }
+}
+
+intent "suspends.suspend_chart" {
+  description "Suspend an active encounter and place it into the suspend queue"
+  response "response"
+  input_schema "suspend_chart_input"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+    }
+  }
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "insert_event" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [eid, wid, user_id, input]
+    provides [event_saved]
+    config {
+      statement "INSERT INTO suspend_events (encounter_id, work_item_id, suspend_reason_id, suspend_reason, suspend_note, event_dos, created_by, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)"
+      args [eid, wid, input.reason_id, input.suspend_reason, input.suspend_note, input.event_dos, user_id]
+    }
+  }
+
+  node "update_details" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [eid, wid]
+    provides [details_updated]
+    config {
+      statement "UPDATE encounter_details SET encounter_status = 'SUSPEND', updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $1 AND work_item_id = $2"
+      args [eid, wid]
+      require_affected true
+      not_found_message "encounter not found"
+    }
+  }
+
+  node "update_header" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [details_updated, eid]
+    provides [header_updated]
+    config {
+      statement "UPDATE encounters SET status = 'SUSPEND', updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $1"
+      args [eid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [event_saved, details_updated, header_updated]
+    provides [response]
+    config {
+      status "suspended"
+    }
+  }
+}

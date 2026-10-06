@@ -1,0 +1,63 @@
+intent "de.start_de" {
+  description "Claim chart for Data Entry processing"
+  response "response"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_de_01'"
+    }
+  }
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "claim" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [wid, eid, user_id]
+    provides [claimed]
+    config {
+      statement "UPDATE encounter_details SET encounter_status = 'DE_IN_PROGRESS', dataentry_assigned = $1, updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $2 AND work_item_id = $3 AND encounter_status = 'DE_OPEN'"
+      args [user_id, eid, wid]
+      require_affected true
+      not_found_message "encounter not available for Data Entry"
+    }
+  }
+
+  node "update_header" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [claimed, eid]
+    provides [header_updated]
+    config {
+      statement "UPDATE encounters SET status = 'DE_IN_PROGRESS', updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $1"
+      args [eid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [claimed, header_updated]
+    provides [response]
+    config {
+      status "claimed_for_de"
+    }
+  }
+}

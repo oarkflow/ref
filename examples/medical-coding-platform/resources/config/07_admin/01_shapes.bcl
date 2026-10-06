@@ -1,0 +1,13 @@
+shape "login_credentials" {
+  kind object
+  prop "email"    { kind string required true }
+  prop "password" { kind string required true sensitive true }
+}
+
+shape "user_create_input" {
+  kind object
+  prop "email"    { kind string required true }
+  prop "name"     { kind string required true }
+  prop "password" { kind string required true sensitive true min_length 8 }
+  prop "role"     { kind string required true default "coder" }
+}

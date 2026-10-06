@@ -1,0 +1,36 @@
+intent "dos.preview" {
+  description "Normalise and validate date of service period for an encounter"
+  response "response"
+  input_schema "coding_doc_input"
+
+  node "period" {
+    uses "dos.period"
+    requires [input]
+    provides [period]
+    config {
+      date "input.dos"
+    }
+  }
+
+  node "validation" {
+    uses "dos.validate"
+    requires [input]
+    provides [validation]
+    config {
+      date "input.dos"
+      max_span_days 60
+      max_age_days 365
+      fail false
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [period, validation]
+    provides [response]
+    config {
+      period "period"
+      validation "validation"
+    }
+  }
+}

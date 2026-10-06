@@ -1,0 +1,101 @@
+role "super_admin" {
+  description "Unrestricted root administrator"
+  permissions ["*"]
+}
+
+role "admin" {
+  description "Healthcare system administrator"
+  permissions [
+    "admin:*",
+    "facilities:*",
+    "workitems:*",
+    "providers:*",
+    "chargemaster:*",
+    "encounters:*",
+    "coding:*",
+    "qa:*",
+    "data_entry:*",
+    "suspends:*",
+    "reports:*"
+  ]
+  inherits ["manager"]
+}
+
+role "manager" {
+  description "Clinical coding supervisor and queue manager"
+  permissions [
+    "facilities:read",
+    "workitems:read",
+    "providers:read",
+    "chargemaster:read",
+    "encounters:*",
+    "coding:read",
+    "qa:read",
+    "data_entry:read",
+    "suspends:*",
+    "reports:read"
+  ]
+  inherits ["user"]
+}
+
+role "coder" {
+  description "Medical coder assigned to encounter documentation"
+  permissions [
+    "facilities:read",
+    "workitems:read",
+    "providers:read",
+    "chargemaster:read",
+    "encounters:read",
+    "encounters:claim",
+    "coding:read",
+    "coding:write",
+    "suspends:write"
+  ]
+  inherits ["user"]
+}
+
+role "qa" {
+  description "Quality assurance specialist"
+  permissions [
+    "facilities:read",
+    "workitems:read",
+    "providers:read",
+    "encounters:read",
+    "qa:read",
+    "qa:write",
+    "coding:read"
+  ]
+  inherits ["user"]
+}
+
+role "data_entry" {
+  description "Data entry specialist for technical and professional charges"
+  permissions [
+    "facilities:read",
+    "workitems:read",
+    "encounters:read",
+    "data_entry:read",
+    "data_entry:write"
+  ]
+  inherits ["user"]
+}
+
+role "suspend_manager" {
+  description "Manager responsible for releasing chart blocks and query resolution"
+  permissions [
+    "facilities:read",
+    "encounters:read",
+    "suspends:read",
+    "suspends:write",
+    "suspends:release"
+  ]
+  inherits ["user"]
+}
+
+role "user" {
+  description "Standard authenticated healthcare staff"
+  permissions [
+    "profile:read",
+    "profile:update"
+  ]
+}

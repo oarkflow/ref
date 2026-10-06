@@ -1,0 +1,27 @@
+shape "new_encounter_input" {
+  kind object
+  prop "patient_name"              { kind string required true }
+  prop "patient_sex"               { kind string required true }
+  prop "patient_dob"               { kind string required true }
+  prop "patient_mrn"               { kind string required true }
+  prop "patient_fin"               { kind string required true }
+  prop "encounter_dos"             { kind string required true format date }
+  prop "encounter_dos_end"         { kind string format date }
+  prop "encounter_location"        { kind string }
+  prop "encounter_reason_for_visit" { kind string }
+  prop "encounter_chief_complaint" { kind string }
+  prop "encounter_type"            { kind string default "Emergency" }
+  prop "patient_status"            { kind string default "Discharged" }
+  prop "emergency"                 { kind integer default 1 }
+  prop "admitted"                  { kind integer default 0 }
+  prop "observation"               { kind integer default 0 }
+}
+
+shape "encounter_search_input" {
+  kind object
+  prop "mrn"          { kind string }
+  prop "fin"          { kind string }
+  prop "patient_name" { kind string }
+  prop "dos"          { kind string }
+  prop "status"       { kind string }
+}

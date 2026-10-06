@@ -1,0 +1,19 @@
+intent "coding.verify" {
+  description "Pre-submission clinical code validation and billing check"
+  response "response"
+  input_schema "coding_doc_input"
+
+  node "validation" {
+    uses "expression"
+    provides [status]
+    config {
+      expression "'valid'"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [status]
+    provides [response]
+  }
+}

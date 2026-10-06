@@ -1,0 +1,7 @@
+shape "suspend_chart_input" {
+  kind object
+  prop "reason_id"      { kind integer }
+  prop "suspend_reason" { kind string required true }
+  prop "suspend_note"   { kind string required true }
+  prop "event_dos"      { kind string }
+}

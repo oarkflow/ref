@@ -1,0 +1,140 @@
+intent "encounters.start_coding" {
+  description "Claim top-row encounter for coding and acquire concurrency lease"
+  response "response"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+    }
+  }
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "claim" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [wid, eid, user_id]
+    provides [claimed]
+    config {
+      statement "UPDATE encounter_details SET encounter_status = 'IN_PROGRESS', code_assigned = $1, coding_start_time = CURRENT_TIMESTAMP WHERE encounter_id = $2 AND work_item_id = $3 AND encounter_status = 'OPEN'"
+      args [user_id, eid, wid]
+      require_affected true
+      not_found_message "encounter already claimed or not open"
+    }
+  }
+
+  node "update_header" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [claimed, eid]
+    provides [header_updated]
+    config {
+      statement "UPDATE encounters SET status = 'IN_PROGRESS', updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $1"
+      args [eid]
+    }
+  }
+
+  node "log_activity" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [claimed, eid, wid, user_id]
+    provides [logged]
+    config {
+      statement "INSERT INTO encounter_activities (encounter_id, work_item_id, user_id, action, status_from, status_to, notes, created_at) VALUES ($1, $2, $3, 'start_coding', 'OPEN', 'IN_PROGRESS', 'Coder claimed encounter', CURRENT_TIMESTAMP)"
+      args [eid, wid, user_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [claimed, header_updated, logged]
+    provides [response]
+    config {
+      status "claimed"
+      encounter_id "eid"
+    }
+  }
+}
+
+intent "encounters.abandon" {
+  description "Abandon claimed encounter back to OPEN queue"
+  response "response"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+    }
+  }
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "reset" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [wid, eid]
+    provides [reset_done]
+    config {
+      statement "UPDATE encounter_details SET encounter_status = 'OPEN', code_assigned = NULL, coding_start_time = NULL WHERE encounter_id = $1 AND work_item_id = $2 AND encounter_status = 'IN_PROGRESS'"
+      args [eid, wid]
+      require_affected true
+      not_found_message "encounter not found or not in progress"
+    }
+  }
+
+  node "reset_header" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [reset_done, eid]
+    provides [header_reset]
+    config {
+      statement "UPDATE encounters SET status = 'OPEN', updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $1"
+      args [eid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [reset_done, header_reset]
+    provides [response]
+    config {
+      status "abandoned_to_open"
+    }
+  }
+}

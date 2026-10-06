@@ -1,0 +1,31 @@
+route "de.queue_list" {
+  method GET
+  path "/web/client/coding/:wid/de-list"
+  intent "de.queue_list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "de.inprogress_list" {
+  method GET
+  path "/web/client/coding/:wid/de-in-progress-list"
+  intent "de.inprogress_list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "de.start_de" {
+  method POST
+  path "/web/client/coding/:wid/:eid/start-de"
+  intent "de.start_de"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "de.complete" {
+  method POST
+  path "/web/client/coding/:wid/:eid/complete-dataentry"
+  intent "de.complete"
+  allow_anonymous true
+  cache_control "no-store"
+}

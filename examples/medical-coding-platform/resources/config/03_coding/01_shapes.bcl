@@ -1,0 +1,33 @@
+shape "cpt_item" {
+  kind object
+  prop "cpt_code"  { kind string required true }
+  prop "modifier1" { kind string }
+  prop "modifier2" { kind string }
+  prop "units"     { kind number min 0 default 1 }
+}
+
+shape "dx_item" {
+  kind object
+  prop "icd_code" { kind string required true }
+  prop "priority" { kind integer default 1 }
+  prop "poa"      { kind string default "Y" }
+}
+
+shape "em_item" {
+  kind object
+  prop "em_code"        { kind string required true }
+  prop "modifier"       { kind string }
+  prop "mdm_level"      { kind string }
+  prop "downcode_reason" { kind string }
+}
+
+shape "coding_doc_input" {
+  kind object
+  prop "dos"              { kind string required true format date }
+  prop "em"               { kind object }
+  prop "cpt_codes"        { kind array items "cpt_item" }
+  prop "dx_codes"         { kind array items "dx_item" }
+  prop "request_qa"       { kind boolean default false }
+  prop "qa_notes"         { kind string }
+  prop "documentation"    { kind string }
+}

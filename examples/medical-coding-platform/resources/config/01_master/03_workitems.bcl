@@ -1,0 +1,130 @@
+intent "workitems.list" {
+  description "List all active work items across facilities"
+  response "response"
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [work_items]
+    config {
+      statement "SELECT wi.work_item_id, wi.facility_id, f.facility_name, wi.work_item_type, wi.name, wi.status FROM work_items wi JOIN facilities f ON wi.facility_id = f.facility_id WHERE wi.status = 'active' ORDER BY f.facility_name, wi.name"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [work_items]
+    provides [response]
+    config {
+      data "work_items"
+    }
+  }
+}
+
+intent "workitems.types" {
+  description "Get available work item types"
+  response "response"
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [types]
+    config {
+      statement "SELECT id, type_key, name, description FROM work_item_types ORDER BY id"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [types]
+    provides [response]
+    config {
+      data "types"
+    }
+  }
+}
+
+intent "workitems.description_settings" {
+  description "Fetch work item configuration settings and facility metadata"
+  response "response"
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "id"
+    }
+  }
+
+  node "info" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [wid]
+    provides [workitem_rows]
+    config {
+      statement "SELECT wi.work_item_id, wi.facility_id, f.facility_name, wi.work_item_type, wi.name, wi.status FROM work_items wi JOIN facilities f ON wi.facility_id = f.facility_id WHERE wi.work_item_id = $1"
+      args [wid]
+    }
+  }
+
+  node "settings" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [wid]
+    provides [settings_rows]
+    config {
+      statement "SELECT setting_key, setting_value FROM work_item_settings WHERE work_item_id = $1"
+      args [wid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [workitem_rows, settings_rows]
+    provides [response]
+    config {
+      work_item "workitem_rows"
+      settings "settings_rows"
+    }
+  }
+}
+
+intent "workitems.create" {
+  description "Register a new work item queue"
+  response "response"
+  input_schema "workitem_input"
+
+  node "id" {
+    uses "expression"
+    provides [work_item_id]
+    config {
+      expression "'wi_' + timestamp()"
+    }
+  }
+
+  node "insert" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [work_item_id, input]
+    provides [saved]
+    config {
+      statement "INSERT INTO work_items (work_item_id, facility_id, work_item_type, name, status, created_at, updated_at) VALUES ($1, $2, $3, $4, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+      args [work_item_id, input.facility_id, input.work_item_type, input.name]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [work_item_id, saved]
+    provides [response]
+    config {
+      work_item_id "work_item_id"
+      status "created"
+    }
+  }
+}

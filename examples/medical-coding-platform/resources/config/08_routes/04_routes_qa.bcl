@@ -1,0 +1,31 @@
+route "qa.queue_list" {
+  method GET
+  path "/web/client/coding/:wid/qa-list"
+  intent "qa.queue_list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "qa.inprogress_list" {
+  method GET
+  path "/web/client/coding/:wid/qa-in-progress-list"
+  intent "qa.inprogress_list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "qa.start_qa" {
+  method POST
+  path "/web/client/coding/:wid/:eid/start-qa"
+  intent "qa.start_qa"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "qa.save_documentation" {
+  method POST
+  path "/web/client/coding/:wid/:eid/save-qa-documentation"
+  intent "qa.save_documentation"
+  allow_anonymous true
+  cache_control "no-store"
+}

@@ -1,0 +1,35 @@
+route "auth.login" {
+  method POST
+  path "/login"
+  intent "auth.login"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "auth.me" {
+  method GET
+  path "/me"
+  intent "auth.me"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.user_info" {
+  method POST
+  path "/web/client/user/info"
+  intent "auth.me"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.user_roles" {
+  method POST
+  path "/web/client/user/roles"
+  intent "auth.user_roles"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}

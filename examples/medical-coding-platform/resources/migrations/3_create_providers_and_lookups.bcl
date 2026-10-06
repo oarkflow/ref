@@ -1,0 +1,153 @@
+Migration "3_create_providers_and_lookups" {
+  Version = "1.0.0"
+  Description = "Create provider directories, CPT and ICD-10 lookups"
+  Connection = "default"
+  Up {
+    CreateTable "provider_types" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "name" {
+        type = "string"
+        size = 100
+      }
+      Field "description" {
+        type = "string"
+        size = 255
+        nullable = true
+      }
+    }
+    CreateTable "providers" {
+      Field "provider_id" {
+        type = "string"
+        size = 255
+        primary_key = true
+      }
+      Field "first_name" {
+        type = "string"
+        size = 100
+      }
+      Field "last_name" {
+        type = "string"
+        size = 100
+      }
+      Field "npi" {
+        type = "string"
+        size = 20
+        unique = true
+      }
+      Field "provider_type" {
+        type = "string"
+        size = 50
+      }
+      Field "email" {
+        type = "string"
+        size = 255
+        nullable = true
+      }
+      Field "status" {
+        type = "string"
+        size = 20
+        default = "active"
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+    CreateTable "provider_wi" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "provider_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "work_item_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "client_ref" {
+        type = "string"
+        size = 100
+        nullable = true
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+    CreateTable "lu_cpt" {
+      Field "cpt_code" {
+        type = "string"
+        size = 20
+        primary_key = true
+      }
+      Field "description" {
+        type = "string"
+        size = 500
+      }
+      Field "short_desc" {
+        type = "string"
+        size = 100
+        nullable = true
+      }
+      Field "nfrvu" {
+        type = "real"
+        default = 0
+      }
+      Field "facrvu" {
+        type = "real"
+        default = 0
+      }
+      Field "effective_date" {
+        type = "string"
+        size = 20
+      }
+    }
+    CreateTable "icd10" {
+      Field "code" {
+        type = "string"
+        size = 20
+        primary_key = true
+      }
+      Field "description" {
+        type = "string"
+        size = 500
+      }
+      Field "short_desc" {
+        type = "string"
+        size = 100
+        nullable = true
+      }
+      Field "kind" {
+        type = "string"
+        size = 10
+        default = "CM"
+      }
+    }
+  }
+  Down {
+    DropTable "icd10" {
+      Cascade = true
+    }
+    DropTable "lu_cpt" {
+      Cascade = true
+    }
+    DropTable "provider_wi" {
+      Cascade = true
+    }
+    DropTable "providers" {
+      Cascade = true
+    }
+    DropTable "provider_types" {
+      Cascade = true
+    }
+  }
+}

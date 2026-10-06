@@ -1,0 +1,117 @@
+intent "providers.list" {
+  description "Get complete physician and midlevel provider directory"
+  response "response"
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [providers]
+    config {
+      statement "SELECT p.provider_id, p.first_name, p.last_name, p.npi, p.provider_type, p.email, p.status FROM providers p WHERE p.status = 'active' ORDER BY p.last_name, p.first_name"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [providers]
+    provides [response]
+    config {
+      data "providers"
+    }
+  }
+}
+
+intent "providers.types" {
+  description "Get physician/midlevel provider categories"
+  response "response"
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [types]
+    config {
+      statement "SELECT id, name, description FROM provider_types ORDER BY id"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [types]
+    provides [response]
+    config {
+      data "types"
+    }
+  }
+}
+
+intent "providers.save" {
+  description "Create or update provider record"
+  response "response"
+  input_schema "provider_input"
+
+  node "id" {
+    uses "expression"
+    provides [provider_id]
+    config {
+      expression "'prv_' + timestamp()"
+    }
+  }
+
+  node "insert" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [provider_id, input]
+    provides [saved]
+    config {
+      statement "INSERT INTO providers (provider_id, first_name, last_name, npi, provider_type, email, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, 'active', CURRENT_TIMESTAMP)"
+      args [provider_id, input.first_name, input.last_name, input.npi, input.provider_type, input.email]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [provider_id, saved]
+    provides [response]
+    config {
+      provider_id "provider_id"
+      status "saved"
+    }
+  }
+}
+
+intent "providers.by_workitem" {
+  description "Get providers associated with a work item and their client references"
+  response "response"
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [wid]
+    provides [providers]
+    config {
+      statement "SELECT p.provider_id, p.first_name, p.last_name, p.npi, p.provider_type, pw.client_ref FROM providers p JOIN provider_wi pw ON p.provider_id = pw.provider_id WHERE pw.work_item_id = $1 AND p.status = 'active'"
+      args [wid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [providers]
+    provides [response]
+    config {
+      data "providers"
+    }
+  }
+}

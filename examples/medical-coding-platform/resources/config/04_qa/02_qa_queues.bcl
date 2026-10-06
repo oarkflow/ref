@@ -1,0 +1,75 @@
+intent "qa.queue_list" {
+  description "List encounters waiting for quality assurance review"
+  response "response"
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "list" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [wid]
+    provides [encounters]
+    config {
+      statement "SELECT e.encounter_id, e.patient_name, e.patient_mrn, e.patient_fin, e.encounter_dos, ed.work_item_id, ed.encounter_status, ed.code_assigned FROM encounters e JOIN encounter_details ed ON e.encounter_id = ed.encounter_id WHERE ed.work_item_id = $1 AND ed.encounter_status = 'IN_QA' ORDER BY e.encounter_dos ASC LIMIT 100"
+      args [wid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [encounters]
+    provides [response]
+    config {
+      encounters "encounters"
+    }
+  }
+}
+
+intent "qa.inprogress_list" {
+  description "List encounters currently being reviewed by QA reviewer"
+  response "response"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_qa_01'"
+    }
+  }
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "list" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [wid, user_id]
+    provides [encounters]
+    config {
+      statement "SELECT e.encounter_id, e.patient_name, e.patient_mrn, e.patient_fin, e.encounter_dos, ed.work_item_id, ed.encounter_status, ed.qa_assigned, ed.qa_start_time FROM encounters e JOIN encounter_details ed ON e.encounter_id = ed.encounter_id WHERE ed.work_item_id = $1 AND ed.encounter_status = 'QA_IN_PROGRESS' AND ed.qa_assigned = $2 ORDER BY ed.qa_start_time DESC"
+      args [wid, user_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [encounters]
+    provides [response]
+    config {
+      encounters "encounters"
+    }
+  }
+}

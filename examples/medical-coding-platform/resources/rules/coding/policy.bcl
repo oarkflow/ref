@@ -1,0 +1,15 @@
+bcl { version "1.0" }
+
+import "./_schema.bcl"
+
+decision_table "coding_policy" {
+  default allow
+  hit_policy first
+
+  row "pediatric_cpt_check" {
+    when { input.patient_age < 18 && input.cpt_code == "99386" }
+    then { decision deny reason "CPT 99386 is restricted to adult patients 40-64 years" }
+    reason "CPT 99386 is restricted to adult patients 40-64 years"
+    reason_code "AGE_CPT_RESTRICTION"
+  }
+}

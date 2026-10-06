@@ -1,0 +1,94 @@
+intent "chargemaster.save" {
+  description "Add or update chargemaster code entry"
+  response "response"
+  input_schema "charge_code_input"
+
+  node "insert" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [input]
+    provides [saved]
+    config {
+      statement "INSERT INTO charge_master (work_item_id, cpt_hcpcs_code, description, charge_type, charge_amount, effective_date, profee_type, facility_type, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+      args [input.work_item_id, input.cpt_hcpcs_code, input.description, input.charge_type, input.charge_amount, input.effective_date, input.profee_type, input.facility_type]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [saved]
+    provides [response]
+    config {
+      status "saved"
+    }
+  }
+}
+
+intent "chargemaster.list" {
+  description "Get chargemaster code list for review"
+  response "response"
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [wid]
+    provides [codes]
+    config {
+      statement "SELECT id, work_item_id, cpt_hcpcs_code, description, charge_type, charge_amount, effective_date, profee_type, facility_type, status FROM charge_master WHERE work_item_id = $1 AND status = 'active' ORDER BY cpt_hcpcs_code ASC"
+      args [wid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [codes]
+    provides [response]
+    config {
+      data "codes"
+    }
+  }
+}
+
+intent "chargemaster.effective_dates" {
+  description "Get unique chargemaster effective dates for a work item"
+  response "response"
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [wid]
+    provides [dates]
+    config {
+      statement "SELECT DISTINCT effective_date FROM charge_master WHERE work_item_id = $1 AND effective_date IS NOT NULL ORDER BY effective_date DESC"
+      args [wid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [dates]
+    provides [response]
+    config {
+      data "dates"
+    }
+  }
+}

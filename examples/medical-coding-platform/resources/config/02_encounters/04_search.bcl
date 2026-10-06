@@ -1,0 +1,26 @@
+intent "encounters.search" {
+  description "Multi-parameter search across encounters by MRN, FIN, patient name, or status"
+  response "response"
+  input_schema "encounter_search_input"
+
+  node "search" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [input]
+    provides [results]
+    config {
+      statement "SELECT e.encounter_id, e.patient_name, e.patient_sex, e.patient_dob, e.patient_mrn, e.patient_fin, e.encounter_dos, e.encounter_location, e.status, ed.work_item_id, ed.encounter_status, ed.code_assigned FROM encounters e JOIN encounter_details ed ON e.encounter_id = ed.encounter_id WHERE ($1 = '' OR e.patient_mrn LIKE '%' || $1 || '%') AND ($2 = '' OR e.patient_fin LIKE '%' || $2 || '%') AND ($3 = '' OR e.patient_name LIKE '%' || $3 || '%') AND ($4 = '' OR ed.encounter_status = $4) ORDER BY e.encounter_dos DESC LIMIT 200"
+      args ["input.mrn", "input.fin", "input.patient_name", "input.status"]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [results]
+    provides [response]
+    config {
+      encounters "results"
+    }
+  }
+}

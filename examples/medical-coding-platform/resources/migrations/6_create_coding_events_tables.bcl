@@ -1,0 +1,412 @@
+Migration "6_create_coding_events_tables" {
+  Version = "1.0.0"
+  Description = "Create coding event tables for E&M, CPT, DX, HCPCS, CDI, and PQRS"
+  Connection = "default"
+  Up {
+    CreateTable "event_em_pro" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "encounter_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "work_item_id" {
+        type = "string"
+        size = 255
+      }
+      Field "event_dos" {
+        type = "string"
+        size = 20
+        index = true
+      }
+      Field "em_code" {
+        type = "string"
+        size = 20
+      }
+      Field "provider_id" {
+        type = "string"
+        size = 255
+      }
+      Field "midlevel_id" {
+        type = "string"
+        size = 255
+      }
+      Field "modifier" {
+        type = "string"
+        size = 20
+      }
+      Field "mdm_level" {
+        type = "string"
+        size = 50
+      }
+      Field "downcode_reason" {
+        type = "string"
+        size = 255
+      }
+      Field "units" {
+        type = "real"
+        default = 1
+      }
+      Field "created_by" {
+        type = "string"
+        size = 255
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+    CreateTable "event_em_fac" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "encounter_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "work_item_id" {
+        type = "string"
+        size = 255
+      }
+      Field "event_dos" {
+        type = "string"
+        size = 20
+      }
+      Field "em_code" {
+        type = "string"
+        size = 20
+      }
+      Field "units" {
+        type = "real"
+        default = 1
+      }
+      Field "created_by" {
+        type = "string"
+        size = 255
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+    CreateTable "event_cpt_pro" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "encounter_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "work_item_id" {
+        type = "string"
+        size = 255
+      }
+      Field "event_dos" {
+        type = "string"
+        size = 20
+        index = true
+      }
+      Field "cpt_code" {
+        type = "string"
+        size = 20
+        index = true
+      }
+      Field "modifier1" {
+        type = "string"
+        size = 10
+      }
+      Field "modifier2" {
+        type = "string"
+        size = 10
+      }
+      Field "units" {
+        type = "real"
+        default = 1
+      }
+      Field "provider_id" {
+        type = "string"
+        size = 255
+      }
+      Field "charge_code" {
+        type = "string"
+        size = 50
+      }
+      Field "created_by" {
+        type = "string"
+        size = 255
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+    CreateTable "event_cpt_fac" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "encounter_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "work_item_id" {
+        type = "string"
+        size = 255
+      }
+      Field "event_dos" {
+        type = "string"
+        size = 20
+      }
+      Field "cpt_code" {
+        type = "string"
+        size = 20
+      }
+      Field "modifier1" {
+        type = "string"
+        size = 10
+      }
+      Field "units" {
+        type = "real"
+        default = 1
+      }
+      Field "created_by" {
+        type = "string"
+        size = 255
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+    CreateTable "event_dx_pro" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "encounter_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "work_item_id" {
+        type = "string"
+        size = 255
+      }
+      Field "event_dos" {
+        type = "string"
+        size = 20
+      }
+      Field "icd_code" {
+        type = "string"
+        size = 20
+        index = true
+      }
+      Field "priority" {
+        type = "integer"
+        default = 1
+      }
+      Field "order_no" {
+        type = "integer"
+        default = 1
+      }
+      Field "poa" {
+        type = "string"
+        size = 5
+      }
+      Field "created_by" {
+        type = "string"
+        size = 255
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+    CreateTable "event_dx_fac" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "encounter_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "work_item_id" {
+        type = "string"
+        size = 255
+      }
+      Field "event_dos" {
+        type = "string"
+        size = 20
+      }
+      Field "icd_code" {
+        type = "string"
+        size = 20
+      }
+      Field "priority" {
+        type = "integer"
+        default = 1
+      }
+      Field "created_by" {
+        type = "string"
+        size = 255
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+    CreateTable "event_hcpcs_pro" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "encounter_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "work_item_id" {
+        type = "string"
+        size = 255
+      }
+      Field "event_dos" {
+        type = "string"
+        size = 20
+      }
+      Field "hcpcs_code" {
+        type = "string"
+        size = 20
+      }
+      Field "modifier" {
+        type = "string"
+        size = 10
+      }
+      Field "units" {
+        type = "real"
+        default = 1
+      }
+      Field "created_by" {
+        type = "string"
+        size = 255
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+    CreateTable "event_cdi_pro" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "encounter_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "work_item_id" {
+        type = "string"
+        size = 255
+      }
+      Field "event_dos" {
+        type = "string"
+        size = 20
+      }
+      Field "query_type" {
+        type = "string"
+        size = 100
+      }
+      Field "notes" {
+        type = "string"
+        size = 2000
+      }
+      Field "created_by" {
+        type = "string"
+        size = 255
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+    CreateTable "event_pqrs_pro" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "encounter_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "work_item_id" {
+        type = "string"
+        size = 255
+      }
+      Field "measure_id" {
+        type = "string"
+        size = 50
+      }
+      Field "code" {
+        type = "string"
+        size = 50
+      }
+      Field "created_by" {
+        type = "string"
+        size = 255
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+  }
+  Down {
+    DropTable "event_pqrs_pro" {
+      Cascade = true
+    }
+    DropTable "event_cdi_pro" {
+      Cascade = true
+    }
+    DropTable "event_hcpcs_pro" {
+      Cascade = true
+    }
+    DropTable "event_dx_fac" {
+      Cascade = true
+    }
+    DropTable "event_dx_pro" {
+      Cascade = true
+    }
+    DropTable "event_cpt_fac" {
+      Cascade = true
+    }
+    DropTable "event_cpt_pro" {
+      Cascade = true
+    }
+    DropTable "event_em_fac" {
+      Cascade = true
+    }
+    DropTable "event_em_pro" {
+      Cascade = true
+    }
+  }
+}

@@ -1,0 +1,258 @@
+Migration "5_create_encounters_and_details" {
+  Version = "1.0.0"
+  Description = "Create encounters, encounter details, active views, and activities"
+  Connection = "default"
+  Up {
+    CreateTable "encounters" {
+      Field "encounter_id" {
+        type = "string"
+        size = 255
+        primary_key = true
+      }
+      Field "patient_name" {
+        type = "string"
+        size = 255
+      }
+      Field "patient_sex" {
+        type = "string"
+        size = 10
+      }
+      Field "patient_dob" {
+        type = "string"
+        size = 20
+      }
+      Field "patient_mrn" {
+        type = "string"
+        size = 100
+        index = true
+      }
+      Field "patient_fin" {
+        type = "string"
+        size = 100
+        index = true
+      }
+      Field "encounter_dos" {
+        type = "string"
+        size = 20
+        index = true
+      }
+      Field "encounter_dos_end" {
+        type = "string"
+        size = 20
+        nullable = true
+      }
+      Field "encounter_location" {
+        type = "string"
+        size = 100
+        nullable = true
+      }
+      Field "encounter_reason_for_visit" {
+        type = "string"
+        size = 500
+        nullable = true
+      }
+      Field "encounter_chief_complaint" {
+        type = "string"
+        size = 500
+        nullable = true
+      }
+      Field "encounter_type" {
+        type = "string"
+        size = 50
+        nullable = true
+      }
+      Field "encounter_disch_disp" {
+        type = "string"
+        size = 100
+        nullable = true
+      }
+      Field "patient_status" {
+        type = "string"
+        size = 50
+        nullable = true
+      }
+      Field "admitted" {
+        type = "integer"
+        default = 0
+      }
+      Field "emergency" {
+        type = "integer"
+        default = 0
+      }
+      Field "observation" {
+        type = "integer"
+        default = 0
+      }
+      Field "status" {
+        type = "string"
+        size = 50
+        default = "OPEN"
+        index = true
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+      Field "updated_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+    CreateTable "encounter_details" {
+      Field "encounter_details_id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "encounter_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "work_item_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "encounter_status" {
+        type = "string"
+        size = 50
+        default = "OPEN"
+        index = true
+      }
+      Field "code_assigned" {
+        type = "string"
+        size = 255
+        nullable = true
+      }
+      Field "coding_start_time" {
+        type = "datetime"
+        nullable = true
+      }
+      Field "code_complete_ts" {
+        type = "datetime"
+        nullable = true
+      }
+      Field "code_complete" {
+        type = "integer"
+        default = 0
+      }
+      Field "qa_flag" {
+        type = "integer"
+        default = 0
+      }
+      Field "qa_assigned" {
+        type = "string"
+        size = 255
+        nullable = true
+      }
+      Field "qa_start_time" {
+        type = "datetime"
+        nullable = true
+      }
+      Field "qa_complete" {
+        type = "integer"
+        default = 0
+      }
+      Field "dataentry_assigned" {
+        type = "string"
+        size = 255
+        nullable = true
+      }
+      Field "dataentry_complete" {
+        type = "integer"
+        default = 0
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+      Field "updated_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+    CreateTable "encounter_views" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "encounter_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "work_item_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "user_id" {
+        type = "string"
+        size = 255
+      }
+      Field "encounter_status" {
+        type = "string"
+        size = 50
+      }
+      Field "expires_at" {
+        type = "datetime"
+      }
+    }
+    CreateTable "encounter_activities" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "encounter_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "work_item_id" {
+        type = "string"
+        size = 255
+      }
+      Field "user_id" {
+        type = "string"
+        size = 255
+      }
+      Field "action" {
+        type = "string"
+        size = 100
+      }
+      Field "status_from" {
+        type = "string"
+        size = 50
+      }
+      Field "status_to" {
+        type = "string"
+        size = 50
+      }
+      Field "notes" {
+        type = "string"
+        size = 1000
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+  }
+  Down {
+    DropTable "encounter_activities" {
+      Cascade = true
+    }
+    DropTable "encounter_views" {
+      Cascade = true
+    }
+    DropTable "encounter_details" {
+      Cascade = true
+    }
+    DropTable "encounters" {
+      Cascade = true
+    }
+  }
+}

@@ -1,0 +1,15 @@
+route "admin.users" {
+  method GET
+  path "/users"
+  intent "admin.users_list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "admin.users_store" {
+  method POST
+  path "/users/store"
+  intent "admin.user_create"
+  allow_anonymous true
+  cache_control "no-store"
+}

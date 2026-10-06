@@ -1,0 +1,59 @@
+intent "facilities.list" {
+  description "List all healthcare facilities"
+  response "response"
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [facilities]
+    config {
+      statement "SELECT facility_id, facility_name, client_id, status, created_at FROM facilities WHERE status = 'active' ORDER BY facility_name ASC"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [facilities]
+    provides [response]
+    config {
+      data "facilities"
+    }
+  }
+}
+
+intent "facilities.create" {
+  description "Register a new healthcare facility"
+  response "response"
+  input_schema "facility_input"
+
+  node "id" {
+    uses "expression"
+    provides [facility_id]
+    config {
+      expression "'fac_' + timestamp()"
+    }
+  }
+
+  node "insert" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [facility_id, input]
+    provides [saved]
+    config {
+      statement "INSERT INTO facilities (facility_id, facility_name, client_id, status, created_at, updated_at) VALUES ($1, $2, $3, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+      args [facility_id, input.facility_name, input.client_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [facility_id, saved]
+    provides [response]
+    config {
+      facility_id "facility_id"
+      status "created"
+    }
+  }
+}

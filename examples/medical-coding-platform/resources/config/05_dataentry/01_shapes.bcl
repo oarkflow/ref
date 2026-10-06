@@ -1,0 +1,4 @@
+shape "de_complete_input" {
+  kind object
+  prop "notes" { kind string }
+}

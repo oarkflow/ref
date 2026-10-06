@@ -1,0 +1,5 @@
+decision_schema "coding_policy" {
+  effects [allow, deny]
+  default allow
+  strategy first_match
+}

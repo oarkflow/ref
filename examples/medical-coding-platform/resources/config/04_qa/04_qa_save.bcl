@@ -1,0 +1,86 @@
+intent "qa.save_documentation" {
+  description "Save QA findings and determine if encounter is approved or returned to coding"
+  response "response"
+  input_schema "qa_save_input"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_qa_01'"
+    }
+  }
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "target_status" {
+    uses "expression"
+    requires [input]
+    provides [next_status]
+    config {
+      expression "input.return_to_coder ? 'IN_PROGRESS' : 'COMPLETE'"
+    }
+  }
+
+  node "save_event" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [eid, wid, user_id, input]
+    provides [event_saved]
+    config {
+      statement "INSERT INTO qa_events (encounter_id, work_item_id, qa_user_id, agreement_status, notes, created_at) VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)"
+      args [eid, wid, user_id, input.agreement_status, input.notes]
+    }
+  }
+
+  node "update_details" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [eid, wid, next_status]
+    provides [details_updated]
+    config {
+      statement "UPDATE encounter_details SET encounter_status = $1, qa_complete = CASE WHEN $1 = 'COMPLETE' THEN 1 ELSE 0 END, updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $2 AND work_item_id = $3 AND encounter_status = 'QA_IN_PROGRESS'"
+      args [next_status, eid, wid]
+      require_affected true
+      not_found_message "encounter not in QA in progress status"
+    }
+  }
+
+  node "update_header" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [details_updated, eid, next_status]
+    provides [header_updated]
+    config {
+      statement "UPDATE encounters SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $2"
+      args [next_status, eid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [event_saved, details_updated, header_updated, next_status]
+    provides [response]
+    config {
+      status "qa_saved"
+      encounter_status "next_status"
+    }
+  }
+}

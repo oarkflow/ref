@@ -1,0 +1,75 @@
+intent "de.queue_list" {
+  description "List charts ready for billing Data Entry"
+  response "response"
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "list" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [wid]
+    provides [encounters]
+    config {
+      statement "SELECT e.encounter_id, e.patient_name, e.patient_mrn, e.patient_fin, e.encounter_dos, ed.work_item_id, ed.encounter_status FROM encounters e JOIN encounter_details ed ON e.encounter_id = ed.encounter_id WHERE ed.work_item_id = $1 AND ed.encounter_status = 'DE_OPEN' ORDER BY e.encounter_dos ASC LIMIT 100"
+      args [wid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [encounters]
+    provides [response]
+    config {
+      encounters "encounters"
+    }
+  }
+}
+
+intent "de.inprogress_list" {
+  description "List encounters currently being processed by Data Entry operator"
+  response "response"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_de_01'"
+    }
+  }
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "list" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [wid, user_id]
+    provides [encounters]
+    config {
+      statement "SELECT e.encounter_id, e.patient_name, e.patient_mrn, e.patient_fin, e.encounter_dos, ed.work_item_id, ed.encounter_status, ed.dataentry_assigned FROM encounters e JOIN encounter_details ed ON e.encounter_id = ed.encounter_id WHERE ed.work_item_id = $1 AND ed.encounter_status = 'DE_IN_PROGRESS' AND ed.dataentry_assigned = $2 ORDER BY ed.updated_at DESC"
+      args [wid, user_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [encounters]
+    provides [response]
+    config {
+      encounters "encounters"
+    }
+  }
+}

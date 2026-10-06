@@ -1,0 +1,89 @@
+resource "database" {
+  kind "database.sql"
+  description "Primary SQL database for medical encounters, chargemaster, and clinical codes"
+  config {
+    driver env("DB_DRIVER", "sqlite")
+    dsn env("DB_DSN", "file:.data/clear/app.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+    max_open_connections env("DB_MAX_OPEN_CONNECTIONS", "25")
+    max_idle_connections env("DB_MAX_IDLE_CONNECTIONS", "10")
+    connection_max_lifetime 30m
+    ping true
+  }
+}
+
+resource "cache" {
+  kind "cache.sql"
+  description "Multi-replica SQL backed cache for lookups and rate limits"
+  config {
+    database "database"
+    table "clear_cache"
+  }
+}
+
+resource "limits" {
+  kind "ratelimit.store"
+  description "Shared token-bucket rate limiter"
+  config {
+    cache "cache"
+  }
+}
+
+resource "jobs" {
+  kind "queue.sql"
+  description "Durable queue for asynchronous chart kickout and audit logs"
+  config {
+    database "database"
+    table "clear_jobs"
+    workers 2
+    max_attempts 5
+  }
+}
+
+resource "sessions" {
+  kind "session.sql"
+  description "Signed sessions for browser-based clinical coding workspace"
+  config {
+    database "database"
+    secret env("SESSION_SECRET", "super-secure-argon2id-medical-coding-session-secret-32-bytes")
+    cookie "clear_session_id"
+    max_age 24h
+    secure env("SESSION_COOKIE_SECURE", "false")
+  }
+}
+
+resource "session_auth" {
+  kind "auth.session"
+  description "Resolves principal identity and roles from session"
+  config {
+    session "sessions"
+    roles_claim "roles"
+  }
+}
+
+resource "jwt" {
+  kind "auth.jwt"
+  description "Bearer JWT provider for REST API clients"
+  config {
+    secret env("JWT_SECRET", "super-secure-argon2id-medical-coding-jwt-secret-32-bytes")
+    issuer "clear-medical-platform"
+    ttl 24h
+  }
+}
+
+resource "authorization" {
+  kind "authz.rbac"
+  description "Role-based authorization engine with hierarchical inheritance"
+  config {
+    superuser_roles ["super_admin", "admin"]
+    default_roles ["coder"]
+  }
+}
+
+resource "policy_engine" {
+  kind "rules.engine"
+  description "Clinical and billing rules engine"
+  config {
+    environment env("APP_ENV", "development")
+    dir "./resources/rules"
+  }
+}

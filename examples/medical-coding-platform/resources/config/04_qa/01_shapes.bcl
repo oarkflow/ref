@@ -1,0 +1,6 @@
+shape "qa_save_input" {
+  kind object
+  prop "agreement_status" { kind string default "AGREE" }
+  prop "notes"            { kind string }
+  prop "return_to_coder"  { kind boolean default false }
+}

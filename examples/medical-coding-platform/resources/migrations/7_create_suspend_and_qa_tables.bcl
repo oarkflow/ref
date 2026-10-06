@@ -1,0 +1,155 @@
+Migration "7_create_suspend_and_qa_tables" {
+  Version = "1.0.0"
+  Description = "Create suspend reasons, suspend events, and QA tracking tables"
+  Connection = "default"
+  Up {
+    CreateTable "suspend_master" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "name" {
+        type = "string"
+        size = 100
+      }
+      Field "code" {
+        type = "string"
+        size = 50
+        unique = true
+      }
+      Field "description" {
+        type = "string"
+        size = 255
+        nullable = true
+      }
+      Field "status" {
+        type = "string"
+        size = 20
+        default = "active"
+      }
+    }
+    CreateTable "suspend_reasons" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "work_item_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "suspend_master_id" {
+        type = "integer"
+      }
+      Field "is_active" {
+        type = "integer"
+        default = 1
+      }
+    }
+    CreateTable "suspend_events" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "encounter_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "work_item_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "suspend_reason_id" {
+        type = "integer"
+        nullable = true
+      }
+      Field "suspend_reason" {
+        type = "string"
+        size = 255
+      }
+      Field "suspend_note" {
+        type = "string"
+        size = 2000
+        nullable = true
+      }
+      Field "event_dos" {
+        type = "string"
+        size = 20
+        nullable = true
+      }
+      Field "created_by" {
+        type = "string"
+        size = 255
+      }
+      Field "resolved_by" {
+        type = "string"
+        size = 255
+        nullable = true
+      }
+      Field "resolved_at" {
+        type = "datetime"
+        nullable = true
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+    CreateTable "qa_events" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "encounter_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "work_item_id" {
+        type = "string"
+        size = 255
+      }
+      Field "qa_user_id" {
+        type = "string"
+        size = 255
+      }
+      Field "coder_user_id" {
+        type = "string"
+        size = 255
+      }
+      Field "agreement_status" {
+        type = "string"
+        size = 50
+      }
+      Field "notes" {
+        type = "string"
+        size = 2000
+        nullable = true
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+  }
+  Down {
+    DropTable "qa_events" {
+      Cascade = true
+    }
+    DropTable "suspend_events" {
+      Cascade = true
+    }
+    DropTable "suspend_reasons" {
+      Cascade = true
+    }
+    DropTable "suspend_master" {
+      Cascade = true
+    }
+  }
+}

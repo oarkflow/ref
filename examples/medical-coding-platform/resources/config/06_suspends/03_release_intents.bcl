@@ -1,0 +1,75 @@
+intent "suspends.release_chart" {
+  description "Release suspended chart back into active coding queue"
+  response "response"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_admin_01'"
+    }
+  }
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "update_event" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [eid, wid, user_id]
+    provides [event_updated]
+    config {
+      statement "UPDATE suspend_events SET resolved_by = $1, resolved_at = CURRENT_TIMESTAMP WHERE encounter_id = $2 AND work_item_id = $3 AND resolved_at IS NULL"
+      args [user_id, eid, wid]
+    }
+  }
+
+  node "update_details" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [eid, wid]
+    provides [details_updated]
+    config {
+      statement "UPDATE encounter_details SET encounter_status = 'OPEN', updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $1 AND work_item_id = $2 AND encounter_status = 'SUSPEND'"
+      args [eid, wid]
+      require_affected true
+      not_found_message "encounter not found or not in suspend status"
+    }
+  }
+
+  node "update_header" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [details_updated, eid]
+    provides [header_updated]
+    config {
+      statement "UPDATE encounters SET status = 'OPEN', updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $1"
+      args [eid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [details_updated, header_updated]
+    provides [response]
+    config {
+      status "released_to_open"
+    }
+  }
+}

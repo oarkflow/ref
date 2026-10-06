@@ -1,0 +1,48 @@
+Migration "8_create_audit_and_views" {
+  Version = "1.0.0"
+  Description = "Create audit log table for HIPAA compliance and operational tracking"
+  Connection = "default"
+  Up {
+    CreateTable "audit_log" {
+      Field "id" {
+        type = "integer"
+        primary_key = true
+        auto_increment = true
+      }
+      Field "action" {
+        type = "string"
+        size = 100
+        index = true
+      }
+      Field "actor_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "target_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+      Field "detail" {
+        type = "string"
+        size = 2000
+        nullable = true
+      }
+      Field "ip_address" {
+        type = "string"
+        size = 50
+        nullable = true
+      }
+      Field "created_at" {
+        type = "datetime"
+        default = "now()"
+      }
+    }
+  }
+  Down {
+    DropTable "audit_log" {
+      Cascade = true
+    }
+  }
+}

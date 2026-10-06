@@ -1,0 +1,240 @@
+Seed "seed_company" {
+  rows = 1
+  table = "companies"
+  Field "id" { value = "comp_clear_01" }
+  Field "name" { value = "Edelberg Care Associates" }
+  Field "slug" { value = "edelberg-care" }
+  Field "status" { value = "active" }
+}
+
+Seed "seed_admin" {
+  rows = 1
+  table = "users"
+  Field "id" { value = "usr_admin_01" }
+  Field "email" { value = "admin@example.com" }
+  Field "name" { value = "Alice Administrator" }
+  Field "password_hash" { value = "$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg" }
+  Field "roles" { value = "admin" }
+  Field "avatar" { value = "" }
+  Field "status" { value = "active" }
+}
+
+Seed "seed_coder" {
+  rows = 1
+  table = "users"
+  Field "id" { value = "usr_coder_01" }
+  Field "email" { value = "coder@example.com" }
+  Field "name" { value = "Gita Coder" }
+  Field "password_hash" { value = "$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg" }
+  Field "roles" { value = "coder" }
+  Field "avatar" { value = "" }
+  Field "status" { value = "active" }
+}
+
+Seed "seed_qa" {
+  rows = 1
+  table = "users"
+  Field "id" { value = "usr_qa_01" }
+  Field "email" { value = "qa@example.com" }
+  Field "name" { value = "Quinn QA" }
+  Field "password_hash" { value = "$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg" }
+  Field "roles" { value = "qa" }
+  Field "avatar" { value = "" }
+  Field "status" { value = "active" }
+}
+
+Seed "seed_de" {
+  rows = 1
+  table = "users"
+  Field "id" { value = "usr_de_01" }
+  Field "email" { value = "de@example.com" }
+  Field "name" { value = "Dave DataEntry" }
+  Field "password_hash" { value = "$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg" }
+  Field "roles" { value = "data_entry" }
+  Field "avatar" { value = "" }
+  Field "status" { value = "active" }
+}
+
+Seed "seed_facility" {
+  rows = 1
+  table = "facilities"
+  Field "facility_id" { value = "fac_memorial" }
+  Field "facility_name" { value = "Memorial General Hospital" }
+  Field "client_id" { value = "comp_clear_01" }
+  Field "status" { value = "active" }
+}
+
+Seed "seed_workitem_type" {
+  rows = 1
+  table = "work_item_types"
+  Field "id" { value = 1 }
+  Field "type_key" { value = "Both" }
+  Field "name" { value = "Both (ProFee & Facility)" }
+  Field "description" { value = "Combined professional and technical billing" }
+}
+
+Seed "seed_workitem" {
+  rows = 1
+  table = "work_items"
+  Field "work_item_id" { value = "wi_memorial_er" }
+  Field "facility_id" { value = "fac_memorial" }
+  Field "work_item_type" { value = "Both" }
+  Field "name" { value = "Emergency Department" }
+  Field "status" { value = "active" }
+}
+
+Seed "seed_provider_1" {
+  rows = 1
+  table = "providers"
+  Field "provider_id" { value = "prv_house" }
+  Field "first_name" { value = "Gregory" }
+  Field "last_name" { value = "House" }
+  Field "npi" { value = "1234567890" }
+  Field "provider_type" { value = "Physician" }
+  Field "email" { value = "house@example.com" }
+  Field "status" { value = "active" }
+}
+
+Seed "seed_provider_2" {
+  rows = 1
+  table = "providers"
+  Field "provider_id" { value = "prv_watson" }
+  Field "first_name" { value = "John" }
+  Field "last_name" { value = "Watson" }
+  Field "npi" { value = "0987654321" }
+  Field "provider_type" { value = "Physician" }
+  Field "email" { value = "watson@example.com" }
+  Field "status" { value = "active" }
+}
+
+Seed "seed_cpt_99281" {
+  rows = 1
+  table = "lu_cpt"
+  Field "cpt_code" { value = "99281" }
+  Field "description" { value = "Emergency department visit level 1" }
+  Field "short_desc" { value = "ED visit level 1" }
+  Field "nfrvu" { value = 0.65 }
+  Field "facrvu" { value = 0.65 }
+  Field "effective_date" { value = "2026-01-01" }
+}
+
+Seed "seed_cpt_99283" {
+  rows = 1
+  table = "lu_cpt"
+  Field "cpt_code" { value = "99283" }
+  Field "description" { value = "Emergency department visit level 3" }
+  Field "short_desc" { value = "ED visit level 3" }
+  Field "nfrvu" { value = 2.15 }
+  Field "facrvu" { value = 2.15 }
+  Field "effective_date" { value = "2026-01-01" }
+}
+
+Seed "seed_cpt_99285" {
+  rows = 1
+  table = "lu_cpt"
+  Field "cpt_code" { value = "99285" }
+  Field "description" { value = "Emergency department visit level 5, high complexity" }
+  Field "short_desc" { value = "ED visit level 5" }
+  Field "nfrvu" { value = 4.85 }
+  Field "facrvu" { value = 4.85 }
+  Field "effective_date" { value = "2026-01-01" }
+}
+
+Seed "seed_icd_chest_pain" {
+  rows = 1
+  table = "icd10"
+  Field "code" { value = "R07.9" }
+  Field "description" { value = "Chest pain, unspecified" }
+  Field "short_desc" { value = "Chest pain" }
+  Field "kind" { value = "CM" }
+}
+
+Seed "seed_icd_abdominal_pain" {
+  rows = 1
+  table = "icd10"
+  Field "code" { value = "R10.9" }
+  Field "description" { value = "Unspecified abdominal pain" }
+  Field "short_desc" { value = "Abdominal pain" }
+  Field "kind" { value = "CM" }
+}
+
+Seed "seed_suspend_1" {
+  rows = 1
+  table = "suspend_master"
+  Field "id" { value = 1 }
+  Field "name" { value = "Missing Medical Record" }
+  Field "code" { value = "MISSING_DOC" }
+  Field "description" { value = "Provider documentation or chart notes missing from encounter" }
+  Field "status" { value = "active" }
+}
+
+Seed "seed_suspend_2" {
+  rows = 1
+  table = "suspend_master"
+  Field "id" { value = 2 }
+  Field "name" { value = "Provider Query Pending" }
+  Field "code" { value = "QUERY_PENDING" }
+  Field "description" { value = "CDI or Coder query sent to physician awaiting clinical clarification" }
+  Field "status" { value = "active" }
+}
+
+Seed "seed_encounter_1" {
+  rows = 1
+  table = "encounters"
+  Field "encounter_id" { value = "enc_1001" }
+  Field "patient_name" { value = "Jane Doe" }
+  Field "patient_sex" { value = "F" }
+  Field "patient_dob" { value = "1985-05-12" }
+  Field "patient_mrn" { value = "MRN-1001" }
+  Field "patient_fin" { value = "FIN-2001" }
+  Field "encounter_dos" { value = "2026-03-10" }
+  Field "encounter_dos_end" { value = "2026-03-10" }
+  Field "encounter_location" { value = "ED Main" }
+  Field "encounter_reason_for_visit" { value = "Acute chest discomfort" }
+  Field "encounter_chief_complaint" { value = "Chest pain radiating to shoulder" }
+  Field "encounter_type" { value = "Emergency" }
+  Field "encounter_disch_disp" { value = "Home" }
+  Field "patient_status" { value = "Discharged" }
+  Field "emergency" { value = 1 }
+  Field "status" { value = "OPEN" }
+}
+
+Seed "seed_encounter_detail_1" {
+  rows = 1
+  table = "encounter_details"
+  Field "encounter_id" { value = "enc_1001" }
+  Field "work_item_id" { value = "wi_memorial_er" }
+  Field "encounter_status" { value = "OPEN" }
+  Field "code_assigned" { value = "" }
+}
+
+Seed "seed_encounter_2" {
+  rows = 1
+  table = "encounters"
+  Field "encounter_id" { value = "enc_1002" }
+  Field "patient_name" { value = "Robert Smith" }
+  Field "patient_sex" { value = "M" }
+  Field "patient_dob" { value = "1972-11-20" }
+  Field "patient_mrn" { value = "MRN-1002" }
+  Field "patient_fin" { value = "FIN-2002" }
+  Field "encounter_dos" { value = "2026-03-11" }
+  Field "encounter_dos_end" { value = "2026-03-11" }
+  Field "encounter_location" { value = "ED FastTrack" }
+  Field "encounter_reason_for_visit" { value = "Severe lower quadrant abdominal pain" }
+  Field "encounter_chief_complaint" { value = "Abdominal cramping" }
+  Field "encounter_type" { value = "Emergency" }
+  Field "encounter_disch_disp" { value = "Admitted" }
+  Field "patient_status" { value = "Admitted" }
+  Field "emergency" { value = 1 }
+  Field "admitted" { value = 1 }
+  Field "status" { value = "OPEN" }
+}
+
+Seed "seed_encounter_detail_2" {
+  rows = 1
+  table = "encounter_details"
+  Field "encounter_id" { value = "enc_1002" }
+  Field "work_item_id" { value = "wi_memorial_er" }
+  Field "encounter_status" { value = "OPEN" }
+  Field "code_assigned" { value = "" }
+}

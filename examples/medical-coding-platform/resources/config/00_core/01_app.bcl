@@ -1,0 +1,3 @@
+name "clear-medical-coding"
+version env("APP_VERSION", "2.0.0")
+environment env("APP_ENV", "development")

@@ -1,0 +1,40 @@
+intent "tasks.kickout_overdue" {
+  description "Release encounters abandoned in progress back to open queues"
+  response "response"
+
+  node "kickout_coding" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    provides [coding_kickout]
+    config {
+      statement "UPDATE encounter_details SET encounter_status = 'OPEN', code_assigned = NULL WHERE encounter_status = 'IN_PROGRESS' AND coding_start_time < datetime('now', '-4 hours')"
+    }
+  }
+
+  node "kickout_de" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    provides [de_kickout]
+    config {
+      statement "UPDATE encounter_details SET encounter_status = 'DE_OPEN', dataentry_assigned = NULL WHERE encounter_status = 'DE_IN_PROGRESS' AND updated_at < datetime('now', '-4 hours')"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [coding_kickout, de_kickout]
+    provides [response]
+    config {
+      status "completed"
+    }
+  }
+}
+
+schedule "hourly_kickout" {
+  description "Reclaim abandoned charts every hour"
+  cron "0 * * * *"
+  queue "jobs"
+  intent "tasks.kickout_overdue"
+}

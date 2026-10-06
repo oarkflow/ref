@@ -1,0 +1,47 @@
+route "facilities.summary" {
+  method GET
+  path "/web/client/coding/facilities/info"
+  intent "queues.facility_summary"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "facilities.list" {
+  method GET
+  path "/web/client/facilities"
+  intent "facilities.list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "facilities.create" {
+  method POST
+  path "/web/client/admin/facilities"
+  intent "facilities.create"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "workitems.list" {
+  method GET
+  path "/web/client/workitem"
+  intent "workitems.list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "workitems.types" {
+  method GET
+  path "/web/client/workitem/types"
+  intent "workitems.types"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "workitems.description_settings" {
+  method GET
+  path "/web/client/workitem/:id/description-with-settings"
+  intent "workitems.description_settings"
+  allow_anonymous true
+  cache_control "no-store"
+}

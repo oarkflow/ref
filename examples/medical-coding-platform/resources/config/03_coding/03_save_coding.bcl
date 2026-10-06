@@ -1,0 +1,196 @@
+intent "coding.save_documentation" {
+  description "Persist completed medical coding documentation and advance encounter state"
+  response "response"
+  input_schema "coding_doc_input"
+  timeout 10s
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+    }
+  }
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "target_status" {
+    uses "expression"
+    requires [input]
+    provides [next_status]
+    config {
+      expression "input.request_qa ? 'IN_QA' : 'COMPLETE'"
+    }
+  }
+
+  node "save_details" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [wid, eid, user_id, input, next_status]
+    provides [details_saved]
+    config {
+      statement "UPDATE encounter_details SET encounter_status = $1, code_complete = 1, code_complete_ts = CURRENT_TIMESTAMP, qa_flag = CASE WHEN $2 = 1 THEN 1 ELSE 0 END, updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $3 AND work_item_id = $4 AND encounter_status = 'IN_PROGRESS'"
+      args [next_status, "input.request_qa ? 1 : 0", eid, wid]
+      require_affected true
+      not_found_message "encounter not found or not currently in progress"
+    }
+  }
+
+  node "update_header" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [details_saved, eid, next_status]
+    provides [header_updated]
+    config {
+      statement "UPDATE encounters SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $2"
+      args [next_status, eid]
+    }
+  }
+
+  node "log_activity" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [details_saved, eid, wid, user_id, next_status, input]
+    provides [logged]
+    config {
+      statement "INSERT INTO encounter_activities (encounter_id, work_item_id, user_id, action, status_from, status_to, notes, created_at) VALUES ($1, $2, $3, 'save_coding', 'IN_PROGRESS', $4, COALESCE($5, 'Coding complete'), CURRENT_TIMESTAMP)"
+      args [eid, wid, user_id, next_status, "input.qa_notes"]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [details_saved, header_updated, logged, next_status]
+    provides [response]
+    config {
+      status "saved"
+      encounter_status "next_status"
+    }
+  }
+}
+
+intent "coding.get_documentation" {
+  description "Fetch complete coding documentation for an encounter"
+  response "response"
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "header" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [eid]
+    provides [encounter_rows]
+    config {
+      statement "SELECT e.*, ed.work_item_id, ed.encounter_status, ed.code_assigned FROM encounters e JOIN encounter_details ed ON e.encounter_id = ed.encounter_id WHERE e.encounter_id = $1"
+      args [eid]
+      require_rows true
+      not_found_message "encounter not found"
+    }
+  }
+
+  node "em_pro" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [eid]
+    provides [em_rows]
+    config {
+      statement "SELECT * FROM event_em_pro WHERE encounter_id = $1 ORDER BY event_dos"
+      args [eid]
+    }
+  }
+
+  node "cpt_pro" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [eid]
+    provides [cpt_rows]
+    config {
+      statement "SELECT * FROM event_cpt_pro WHERE encounter_id = $1 ORDER BY event_dos, cpt_code"
+      args [eid]
+    }
+  }
+
+  node "dx_pro" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [eid]
+    provides [dx_rows]
+    config {
+      statement "SELECT * FROM event_dx_pro WHERE encounter_id = $1 ORDER BY priority ASC"
+      args [eid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [encounter_rows, em_rows, cpt_rows, dx_rows]
+    provides [response]
+    config {
+      encounter "encounter_rows"
+      em "em_rows"
+      cpt "cpt_rows"
+      dx "dx_rows"
+    }
+  }
+}
+
+intent "coding.summary" {
+  description "Get documentation charge and code summary for encounter"
+  response "response"
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "cpt_count" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [eid]
+    provides [cpt_summary]
+    config {
+      statement "SELECT COUNT(*) AS total_cpt, COALESCE(SUM(units), 0) AS total_units FROM event_cpt_pro WHERE encounter_id = $1"
+      args [eid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [cpt_summary]
+    provides [response]
+    config {
+      data "cpt_summary"
+    }
+  }
+}

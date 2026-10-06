@@ -1,0 +1,63 @@
+route "chargemaster.save" {
+  method POST
+  path "/web/client/charge-code/save"
+  intent "chargemaster.save"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "chargemaster.review_list" {
+  method POST
+  path "/web/client/charge-code/:wid/review-charge-code-list"
+  intent "chargemaster.list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "chargemaster.effective_dates" {
+  method GET
+  path "/web/client/charge-code/:wid/get-effective-date"
+  intent "chargemaster.effective_dates"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "providers.list" {
+  method GET
+  path "/web/client/provider"
+  intent "providers.list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "providers.types" {
+  method GET
+  path "/web/client/provider/types"
+  intent "providers.types"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "providers.save" {
+  method POST
+  path "/web/client/provider/save"
+  intent "providers.save"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "providers.by_workitem" {
+  method GET
+  path "/web/client/facility/:wid/providers"
+  intent "providers.by_workitem"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "metadata.rules" {
+  method GET
+  path "/web/client/metadata/rules"
+  intent "admin.rules"
+  allow_anonymous true
+  cache_control "no-store"
+}

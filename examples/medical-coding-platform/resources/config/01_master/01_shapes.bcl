@@ -1,0 +1,39 @@
+shape "facility_input" {
+  kind object
+  prop "facility_name" { kind string required true max_length 255 }
+  prop "client_id"     { kind string required true max_length 255 }
+}
+
+shape "workitem_input" {
+  kind object
+  prop "facility_id"      { kind string required true }
+  prop "work_item_type"   { kind string required true }
+  prop "name"             { kind string required true }
+}
+
+shape "workitem_setting_input" {
+  kind object
+  prop "key"   { kind string required true }
+  prop "value" { kind string required true }
+}
+
+shape "provider_input" {
+  kind object
+  prop "first_name"    { kind string required true }
+  prop "last_name"     { kind string required true }
+  prop "npi"           { kind string required true pattern "^[0-9]{10}$" }
+  prop "provider_type" { kind string required true }
+  prop "email"         { kind string }
+}
+
+shape "charge_code_input" {
+  kind object
+  prop "work_item_id"   { kind string required true }
+  prop "cpt_hcpcs_code" { kind string required true }
+  prop "description"    { kind string required true }
+  prop "charge_type"    { kind string default "PB" }
+  prop "charge_amount"  { kind number min 0 }
+  prop "effective_date" { kind string format date }
+  prop "profee_type"    { kind string }
+  prop "facility_type"  { kind string }
+}
