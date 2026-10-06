@@ -132,6 +132,40 @@ intent "queues.inprogress_count" {
   }
 }
 
+intent "queues.de_inprogress_count" {
+  description "Get count of currently in-progress data entry charts for operator"
+  response "response"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_de_01'"
+    }
+  }
+
+  node "count" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [count_rows]
+    config {
+      statement "SELECT COUNT(*) AS in_progress_count FROM encounter_details WHERE encounter_status = 'DE_IN_PROGRESS' AND dataentry_assigned = $1"
+      args [user_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [count_rows]
+    provides [response]
+    config {
+      data "count_rows"
+    }
+  }
+}
+
 intent "queues.patient_details" {
   description "Fetch patient registration header and encounter metadata"
   response "response"

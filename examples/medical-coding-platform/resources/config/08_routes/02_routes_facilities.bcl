@@ -1,5 +1,13 @@
 route "facilities.summary" {
   method GET
+  path "/coding/facilities/info"
+  intent "queues.facility_summary"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.facilities.summary" {
+  method GET
   path "/web/client/coding/facilities/info"
   intent "queues.facility_summary"
   allow_anonymous true
@@ -7,6 +15,14 @@ route "facilities.summary" {
 }
 
 route "facilities.list" {
+  method GET
+  path "/facilities"
+  intent "facilities.list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.facilities.list" {
   method GET
   path "/web/client/facilities"
   intent "facilities.list"
@@ -16,6 +32,14 @@ route "facilities.list" {
 
 route "facilities.create" {
   method POST
+  path "/admin/facilities"
+  intent "facilities.create"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.facilities.create" {
+  method POST
   path "/web/client/admin/facilities"
   intent "facilities.create"
   allow_anonymous true
@@ -24,13 +48,45 @@ route "facilities.create" {
 
 route "workitems.list" {
   method GET
+  path "/workitem"
+  intent "workitems.list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.workitems.list" {
+  method GET
   path "/web/client/workitem"
   intent "workitems.list"
   allow_anonymous true
   cache_control "no-store"
 }
 
+route "workitems.create" {
+  method POST
+  path "/workitem"
+  intent "workitems.create"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.workitems.create" {
+  method POST
+  path "/web/client/workitem"
+  intent "workitems.create"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
 route "workitems.types" {
+  method GET
+  path "/workitem/types"
+  intent "workitems.types"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.workitems.types" {
   method GET
   path "/web/client/workitem/types"
   intent "workitems.types"
@@ -38,10 +94,130 @@ route "workitems.types" {
   cache_control "no-store"
 }
 
+route "workitems.types_create" {
+  method POST
+  path "/workitem/types"
+  intent "workitems.types_create"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.workitems.types_create" {
+  method POST
+  path "/web/client/workitem/types"
+  intent "workitems.types_create"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "workitems.description" {
+  method GET
+  path "/workitem/:wid/description"
+  intent "workitems.description"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.workitems.description" {
+  method GET
+  path "/web/client/workitem/:wid/description"
+  intent "workitems.description"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
 route "workitems.description_settings" {
   method GET
-  path "/web/client/workitem/:id/description-with-settings"
+  path "/workitem/:wid/description-with-settings"
   intent "workitems.description_settings"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.workitems.description_settings" {
+  method GET
+  path "/web/client/workitem/:wid/description-with-settings"
+  intent "workitems.description_settings"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "workitems.settings_get" {
+  method GET
+  path "/workitem/:wid/settings"
+  intent "workitems.description_settings"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.workitems.settings_get" {
+  method GET
+  path "/web/client/workitem/:wid/settings"
+  intent "workitems.description_settings"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "workitems.settings_update" {
+  method POST
+  path "/workitem/:wid/settings"
+  intent "workitems.settings_update"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.workitems.settings_update" {
+  method POST
+  path "/web/client/workitem/:wid/settings"
+  intent "workitems.settings_update"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "workitems.by_facility" {
+  method GET
+  path "/facility/:fid/workitems"
+  intent "workitems.list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.workitems.by_facility" {
+  method GET
+  path "/web/client/facility/:fid/workitems"
+  intent "workitems.list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "workitems.by_company" {
+  method GET
+  path "/workitem/:cid/workitems"
+  intent "workitems.by_company"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.workitems.by_company" {
+  method GET
+  path "/web/client/workitem/:cid/workitems"
+  intent "workitems.by_company"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "workitems.get_by_id" {
+  method GET
+  path "/coding/workitem/:wid"
+  intent "workitems.get_by_id"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.workitems.get_by_id" {
+  method GET
+  path "/web/client/coding/workitem/:wid"
+  intent "workitems.get_by_id"
   allow_anonymous true
   cache_control "no-store"
 }

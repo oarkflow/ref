@@ -54,7 +54,7 @@ intent "workitems.description_settings" {
     uses "request.param"
     provides [wid]
     config {
-      name "id"
+      name "wid"
     }
   }
 
@@ -128,3 +128,168 @@ intent "workitems.create" {
     }
   }
 }
+
+intent "workitems.types_create" {
+  description "Create a new work item type"
+  response "response"
+  input_schema "workitem_type_input"
+
+  node "insert" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [input]
+    provides [saved]
+    config {
+      statement "INSERT INTO work_item_types (type_key, name, description) VALUES (LOWER(REPLACE($1, ' ', '_')), $1, $1)"
+      args [input.work_item_description]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [saved]
+    provides [response]
+    config {
+      status "created"
+      description "input.work_item_description"
+    }
+  }
+}
+
+intent "workitems.settings_update" {
+  description "Update work item configuration settings"
+  response "response"
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "upsert" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [wid, input]
+    provides [saved]
+    config {
+      statement "INSERT INTO work_item_settings (work_item_id, setting_key, setting_value, created_at) VALUES ($1, $2, $3, CURRENT_TIMESTAMP)"
+      args [wid, input.key, input.value]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [saved]
+    provides [response]
+    config {
+      message "Work item settings updated successfully"
+    }
+  }
+}
+
+intent "workitems.description" {
+  description "Fetch work item description and basic details"
+  response "response"
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [wid]
+    provides [details]
+    config {
+      statement "SELECT wi.work_item_id, wi.facility_id, f.facility_name, wi.work_item_type, wi.name, wi.status FROM work_items wi JOIN facilities f ON wi.facility_id = f.facility_id WHERE wi.work_item_id = $1"
+      args [wid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [details]
+    provides [response]
+    config {
+      data "details"
+    }
+  }
+}
+
+intent "workitems.by_company" {
+  description "Get work items for a given company"
+  response "response"
+
+  node "cid" {
+    uses "request.param"
+    provides [cid]
+    config {
+      name "cid"
+    }
+  }
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [cid]
+    provides [work_items]
+    config {
+      statement "SELECT wi.work_item_id, wi.facility_id, f.facility_name, wi.work_item_type, wi.name, wi.status FROM work_items wi JOIN facilities f ON wi.facility_id = f.facility_id WHERE f.client_id = $1 AND wi.status = 'active'"
+      args [cid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [work_items]
+    provides [response]
+    config {
+      data "work_items"
+    }
+  }
+}
+
+intent "workitems.get_by_id" {
+  description "Get work item encounter list overview by work item ID"
+  response "response"
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [wid]
+    provides [workitem]
+    config {
+      statement "SELECT wi.work_item_id, wi.facility_id, f.facility_name, wi.work_item_type, wi.name, wi.status FROM work_items wi JOIN facilities f ON wi.facility_id = f.facility_id WHERE wi.work_item_id = $1"
+      args [wid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [workitem]
+    provides [response]
+    config {
+      data "workitem"
+    }
+  }
+}
+

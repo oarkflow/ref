@@ -156,7 +156,7 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	if strings.HasSuffix(opts.ConfigDir, ".bcl") {
 		p, err = platform.LoadFile(ctx, opts.ConfigDir, lo)
 	} else {
-		p, err = platform.LoadDir(ctx, opts.ConfigDir, lo)
+		p, err = platform.LoadDirRecursive(ctx, opts.ConfigDir, lo)
 	}
 	if err != nil {
 		return nil, err

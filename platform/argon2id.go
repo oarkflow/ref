@@ -80,11 +80,24 @@ func HashPasswordArgon2id(password string, params ...Argon2idParams) (string, er
 // If the hash is unrecognized, it falls back to a dummy constant-time verification to prevent timing attacks.
 func VerifyPassword(password, encodedHash string) (bool, error) {
 	if strings.HasPrefix(encodedHash, "$argon2id$") {
-		return verifyArgon2id(password, encodedHash)
+		match, err := verifyArgon2id(password, encodedHash)
+		if err == nil && match {
+			return true, nil
+		}
+		// Fallback to bcrypt if argon2id check failed
+		if bErr := bcrypt.CompareHashAndPassword([]byte(encodedHash), []byte(password)); bErr == nil {
+			return true, nil
+		}
+		return match, err
 	}
 	if strings.HasPrefix(encodedHash, "$2a$") || strings.HasPrefix(encodedHash, "$2b$") || strings.HasPrefix(encodedHash, "$2y$") {
 		err := bcrypt.CompareHashAndPassword([]byte(encodedHash), []byte(password))
 		return err == nil, nil
+	}
+
+	// Fallback to bcrypt on arbitrary legacy hash formats
+	if err := bcrypt.CompareHashAndPassword([]byte(encodedHash), []byte(password)); err == nil {
+		return true, nil
 	}
 
 	// Constant-time dummy verification on invalid hash to mitigate user enumeration

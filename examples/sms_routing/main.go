@@ -417,7 +417,7 @@ func runServer(env *AppEnv, args []string) {
 	fmt.Println("  GET  /api/sms/phone-numbers- Multi-format phone number dataset (42 records)")
 	fmt.Println("  GET  /api/sms/stats        - Real-time router throughput and failover stats")
 	fmt.Println("  POST /api/sms/dlr          - Ingest delivery receipt feedback")
-	fmt.Println("\nPress Ctrl+C to terminate server.\n")
+	fmt.Println("\nPress Ctrl+C to terminate server.")
 
 	server := &http.Server{Addr: *addr, Handler: mux}
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

@@ -84,3 +84,178 @@ intent "qa.save_documentation" {
     }
   }
 }
+
+intent "qa.edit_documentation" {
+  description "Edit and update QA documentation"
+  response "response"
+  input_schema "qa_save_input"
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [eid, wid]
+    provides [response]
+    config {
+      status "updated"
+      message "QA documentation updated"
+    }
+  }
+}
+
+intent "qa.verify" {
+  description "Pre-submission QA verification check"
+  response "response"
+
+  node "response" {
+    uses "collect"
+    requires [input]
+    provides [response]
+    config {
+      status "valid"
+    }
+  }
+}
+
+intent "qa.verify_qa" {
+  description "Final QA sign-off verification"
+  response "response"
+
+  node "response" {
+    uses "collect"
+    requires [input]
+    provides [response]
+    config {
+      status "verified"
+    }
+  }
+}
+
+intent "qa.request_qa" {
+  description "Request QA review on an encounter"
+  response "response"
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [wid, eid]
+    provides [updated]
+    config {
+      statement "UPDATE encounter_details SET encounter_status = 'IN_QA', qa_flag = 1, updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $1 AND work_item_id = $2"
+      args [eid, wid]
+      require_affected true
+      not_found_message "encounter not found"
+    }
+  }
+
+  node "update_header" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [updated, eid]
+    provides [header_updated]
+    config {
+      statement "UPDATE encounters SET status = 'IN_QA', updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $1"
+      args [eid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [header_updated]
+    provides [response]
+    config {
+      status "IN_QA"
+      message "Encounter queued for QA review"
+    }
+  }
+}
+
+intent "qa.return_to_coding" {
+  description "Return an encounter from QA review back to medical coding queue"
+  response "response"
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [wid, eid]
+    provides [updated]
+    config {
+      statement "UPDATE encounter_details SET encounter_status = 'IN_PROGRESS', qa_complete = 0, updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $1 AND work_item_id = $2"
+      args [eid, wid]
+      require_affected true
+      not_found_message "encounter not found"
+    }
+  }
+
+  node "update_header" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [updated, eid]
+    provides [header_updated]
+    config {
+      statement "UPDATE encounters SET status = 'IN_PROGRESS', updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $1"
+      args [eid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [header_updated]
+    provides [response]
+    config {
+      status "IN_PROGRESS"
+      message "Encounter returned to coder"
+    }
+  }
+}
+

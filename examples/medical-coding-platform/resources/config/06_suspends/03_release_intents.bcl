@@ -73,3 +73,82 @@ intent "suspends.release_chart" {
     }
   }
 }
+
+intent "suspends.release_batch" {
+  description "Batch release all suspended encounters for a work item"
+  response "response"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_admin_01'"
+    }
+  }
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "update_events" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [wid, user_id]
+    provides [events_updated]
+    config {
+      statement "UPDATE suspend_events SET resolved_by = $1, resolved_at = CURRENT_TIMESTAMP WHERE work_item_id = $2 AND resolved_at IS NULL"
+      args [user_id, wid]
+    }
+  }
+
+  node "update_details" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [wid]
+    provides [details_updated]
+    config {
+      statement "UPDATE encounter_details SET encounter_status = 'OPEN', updated_at = CURRENT_TIMESTAMP WHERE work_item_id = $1 AND encounter_status = 'SUSPEND'"
+      args [wid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [details_updated]
+    provides [response]
+    config {
+      status "batch_released"
+      message "All suspended encounters released to open queue"
+    }
+  }
+}
+
+intent "suspends.update_note" {
+  description "Update suspend note for an active suspend event"
+  response "response"
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [wid, input]
+    provides [response]
+    config {
+      status "updated"
+      message "Suspend note updated"
+    }
+  }
+}
+

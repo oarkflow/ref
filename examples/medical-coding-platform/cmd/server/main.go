@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/oarkflow/fh"
-	"github.com/oarkflow/ref/examples/medical-coding-platform/internal/bootstrap"
+	"github.com/oarkflow/ref/config"
 	"github.com/oarkflow/ref/observer"
 	promobserver "github.com/oarkflow/ref/observer/prometheus"
 	slogobserver "github.com/oarkflow/ref/observer/slog"
@@ -28,14 +28,14 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	_ = bootstrap.LoadDotenv(bootstrap.DotenvPath())
+	_ = config.LoadDotenv(config.DotenvPath())
 
-	secretsDir := env("SECRETS_DIR", "./.data/secrets")
-	_ = bootstrap.LoadSecretFile("SESSION_SECRET", filepath.Join(secretsDir, "session_secret"))
-	_ = bootstrap.LoadSecretFile("JWT_SECRET", filepath.Join(secretsDir, "jwt_secret"))
+	secretsDir := config.Env("SECRETS_DIR", "./.data/secrets")
+	_ = config.LoadSecretFile("SESSION_SECRET", filepath.Join(secretsDir, "session_secret"))
+	_ = config.LoadSecretFile("JWT_SECRET", filepath.Join(secretsDir, "jwt_secret"))
 
-	port := env("PORT", "3000")
-	envName := env("APP_ENV", "development")
+	port := config.Env("PORT", "3000")
+	envName := config.Env("APP_ENV", "development")
 
 	zlogOpts := zlog.Options{
 		Level: zlog.DebugLevel,
@@ -44,7 +44,7 @@ func main() {
 	logger := zlog.New(zlogOpts)
 	logger.Info("starting CLEAR medical coding platform", zlog.String("env", envName), zlog.String("port", port))
 
-	bclDir := bootstrap.ResolveDir("examples/medical-coding-platform/resources/config", "./resources/config", "resources/config")
+	bclDir := config.ResolveDir("examples/medical-coding-platform/resources/config", "./resources/config", "resources/config")
 
 	opts := platform.DefaultLoadOptions()
 	opts.Profile = envName
@@ -63,7 +63,7 @@ func main() {
 		log.Fatalf("clear-platform: migration check failed: %v", err)
 	}
 
-	p, err := LoadRecursiveConfig(ctx, bclDir, opts)
+	p, err := platform.LoadDirRecursive(ctx, bclDir, opts)
 	if err != nil {
 		logger.Error("compiling BCL application document", zlog.String("dir", bclDir), zlog.Err(err))
 		log.Fatalf("clear-platform: compiling %s: %v", bclDir, err)
@@ -107,9 +107,3 @@ func main() {
 	logger.Info("server stopped gracefully")
 }
 
-func env(key, fallback string) string {
-	if v, ok := os.LookupEnv(key); ok && v != "" {
-		return v
-	}
-	return fallback
-}

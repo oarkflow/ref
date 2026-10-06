@@ -5,4 +5,5 @@
 /examples/starter/bin/
 node_modules
 bin/
-examples/smsgateway/config/91_live_account.bcl
+examples/medical-coding-platform/migrator
+examples/medical-coding-platform/server

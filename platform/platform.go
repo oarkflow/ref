@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"maps"
 	"os"
@@ -214,6 +215,34 @@ func LoadDir(ctx context.Context, dir string, opts LoadOptions) (*Platform, erro
 		return nil, fmt.Errorf("ref/platform: no .bcl files found in %q", dir)
 	}
 	sort.Strings(files)
+	return LoadFiles(ctx, files, opts)
+}
+
+// LoadDirRecursive parses, validates and compiles all .bcl files in a directory
+// and its subdirectories into a single generation, sorted deterministically
+// by relative path so modular configs (e.g. 00_core, 01_master) load in order.
+func LoadDirRecursive(ctx context.Context, dir string, opts LoadOptions) (*Platform, error) {
+	var files []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && strings.HasSuffix(d.Name(), ".bcl") {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ref/platform: walk BCL dir %q: %w", dir, err)
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("ref/platform: no .bcl files found in %q (or its subdirectories)", dir)
+	}
+	sort.Slice(files, func(i, j int) bool {
+		relI, _ := filepath.Rel(dir, files[i])
+		relJ, _ := filepath.Rel(dir, files[j])
+		return relI < relJ
+	})
 	return LoadFiles(ctx, files, opts)
 }
 

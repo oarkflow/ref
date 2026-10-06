@@ -1,0 +1,296 @@
+intent "encounters.patient_header" {
+  description "Fetch patient registration header and clinical encounter metadata"
+  response "response"
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [eid]
+    provides [header_rows]
+    config {
+      statement "SELECT e.encounter_id, e.patient_name, e.patient_sex, e.patient_dob, e.patient_mrn, e.patient_fin, e.encounter_dos, e.encounter_dos_end, e.encounter_location, e.encounter_reason_for_visit, e.encounter_chief_complaint, e.encounter_type, e.patient_status, e.emergency, e.admitted, e.observation, e.status, ed.work_item_id, ed.encounter_status, ed.code_assigned FROM encounters e JOIN encounter_details ed ON e.encounter_id = ed.encounter_id WHERE e.encounter_id = $1"
+      args [eid]
+      require_rows true
+      not_found_message "encounter not found"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [header_rows]
+    provides [response]
+    config {
+      data "header_rows"
+    }
+  }
+}
+
+intent "encounters.save_patient_details" {
+  description "Update patient registration details on encounter"
+  response "response"
+  input_schema "patient_details_input"
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [eid, input]
+    provides [updated]
+    config {
+      statement "UPDATE encounters SET patient_name = COALESCE($1, patient_name), patient_sex = COALESCE($2, patient_sex), patient_dob = COALESCE($3, patient_dob), patient_status = COALESCE($4, patient_status), updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $5"
+      args [input.patient_name, input.patient_sex, input.patient_dob, input.patient_status, eid]
+      require_affected true
+      not_found_message "encounter not found"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [updated]
+    provides [response]
+    config {
+      status "updated"
+      message "Patient details updated successfully"
+    }
+  }
+}
+
+intent "encounters.update_dos" {
+  description "Update date of service for encounter"
+  response "response"
+  input_schema "update_dos_input"
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [eid, input]
+    provides [updated]
+    config {
+      statement "UPDATE encounters SET encounter_dos = $1, encounter_dos_end = COALESCE($2, encounter_dos_end), updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $3"
+      args [input.encounter_dos, input.encounter_dos_end, eid]
+      require_affected true
+      not_found_message "encounter not found"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [updated]
+    provides [response]
+    config {
+      status "updated"
+      message "Encounter DOS updated successfully"
+    }
+  }
+}
+
+intent "encounters.add_new" {
+  description "Add a new clinical encounter to a work item queue"
+  response "response"
+  input_schema "new_encounter_input"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_system'"
+    }
+  }
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "eid" {
+    uses "expression"
+    provides [new_eid]
+    config {
+      expression "'enc_' + timestamp()"
+    }
+  }
+
+  node "insert_encounter" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [new_eid, input]
+    provides [enc_saved]
+    config {
+      statement "INSERT INTO encounters (encounter_id, patient_name, patient_sex, patient_dob, patient_mrn, patient_fin, encounter_dos, encounter_dos_end, encounter_location, encounter_reason_for_visit, encounter_chief_complaint, encounter_type, patient_status, emergency, admitted, observation, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'OPEN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+      args [new_eid, input.patient_name, input.patient_sex, input.patient_dob, input.patient_mrn, input.patient_fin, input.encounter_dos, input.encounter_dos_end, input.encounter_location, input.encounter_reason_for_visit, input.encounter_chief_complaint, input.encounter_type, input.patient_status, input.emergency, input.admitted, input.observation]
+    }
+  }
+
+  node "insert_detail" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [enc_saved, new_eid, wid]
+    provides [detail_saved]
+    config {
+      statement "INSERT INTO encounter_details (encounter_id, work_item_id, encounter_status, code_complete, qa_flag, qa_complete, dataentry_complete, created_at, updated_at) VALUES ($1, $2, 'OPEN', 0, 0, 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+      args [new_eid, wid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [new_eid, detail_saved]
+    provides [response]
+    config {
+      encounter_id "new_eid"
+      status "OPEN"
+    }
+  }
+}
+
+intent "encounters.new_with_start_coding" {
+  description "Add a new encounter and immediately claim it for medical coding"
+  response "response"
+  input_schema "new_encounter_input"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+    }
+  }
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "eid" {
+    uses "expression"
+    provides [new_eid]
+    config {
+      expression "'enc_' + timestamp()"
+    }
+  }
+
+  node "insert_encounter" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [new_eid, input]
+    provides [enc_saved]
+    config {
+      statement "INSERT INTO encounters (encounter_id, patient_name, patient_sex, patient_dob, patient_mrn, patient_fin, encounter_dos, encounter_dos_end, encounter_location, encounter_reason_for_visit, encounter_chief_complaint, encounter_type, patient_status, emergency, admitted, observation, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'IN_PROGRESS', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+      args [new_eid, input.patient_name, input.patient_sex, input.patient_dob, input.patient_mrn, input.patient_fin, input.encounter_dos, input.encounter_dos_end, input.encounter_location, input.encounter_reason_for_visit, input.encounter_chief_complaint, input.encounter_type, input.patient_status, input.emergency, input.admitted, input.observation]
+    }
+  }
+
+  node "insert_detail" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [enc_saved, new_eid, wid, user_id]
+    provides [detail_saved]
+    config {
+      statement "INSERT INTO encounter_details (encounter_id, work_item_id, encounter_status, code_assigned, coding_start_time, code_complete, qa_flag, qa_complete, dataentry_complete, created_at, updated_at) VALUES ($1, $2, 'IN_PROGRESS', $3, CURRENT_TIMESTAMP, 0, 0, 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+      args [new_eid, wid, user_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [new_eid, detail_saved]
+    provides [response]
+    config {
+      encounter_id "new_eid"
+      status "IN_PROGRESS"
+    }
+  }
+}
+
+intent "encounters.create" {
+  description "Alias for encounter creation under work item"
+  response "response"
+  input_schema "new_encounter_input"
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "eid" {
+    uses "expression"
+    provides [new_eid]
+    config {
+      expression "'enc_' + timestamp()"
+    }
+  }
+
+  node "insert_encounter" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [new_eid, input]
+    provides [enc_saved]
+    config {
+      statement "INSERT INTO encounters (encounter_id, patient_name, patient_sex, patient_dob, patient_mrn, patient_fin, encounter_dos, encounter_dos_end, encounter_location, encounter_reason_for_visit, encounter_chief_complaint, encounter_type, patient_status, emergency, admitted, observation, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'OPEN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+      args [new_eid, input.patient_name, input.patient_sex, input.patient_dob, input.patient_mrn, input.patient_fin, input.encounter_dos, input.encounter_dos_end, input.encounter_location, input.encounter_reason_for_visit, input.encounter_chief_complaint, input.encounter_type, input.patient_status, input.emergency, input.admitted, input.observation]
+    }
+  }
+
+  node "insert_detail" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [enc_saved, new_eid, wid]
+    provides [detail_saved]
+    config {
+      statement "INSERT INTO encounter_details (encounter_id, work_item_id, encounter_status, code_complete, qa_flag, qa_complete, dataentry_complete, created_at, updated_at) VALUES ($1, $2, 'OPEN', 0, 0, 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+      args [new_eid, wid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [new_eid, detail_saved]
+    provides [response]
+    config {
+      encounter_id "new_eid"
+      status "OPEN"
+    }
+  }
+}
+

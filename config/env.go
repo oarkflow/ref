@@ -1,11 +1,17 @@
-package bootstrap
+package config
 
 import (
 	"bufio"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
+// LoadDotenv loads a dotenv file (e.g. .env) line-by-line into os environment variables.
+// Lines starting with # or empty lines are ignored.
+// "export KEY=VAL" syntax is supported.
+// Quoted values (single or double quotes) are unquoted.
+// Variables that already exist in os.LookupEnv are preserved.
 func LoadDotenv(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -53,6 +59,7 @@ func unquote(value string) string {
 	return value
 }
 
+// DotenvPath returns ENV_FILE if set in the environment, or defaults to ".env".
 func DotenvPath() string {
 	if p := os.Getenv("ENV_FILE"); p != "" {
 		return p
@@ -60,6 +67,9 @@ func DotenvPath() string {
 	return ".env"
 }
 
+// LoadSecretFile reads a file (such as a mounted Kubernetes secret or Docker secret)
+// and sets its contents into the specified environment variable envVar, unless that
+// environment variable is already set.
 func LoadSecretFile(envVar, path string) error {
 	if _, exists := os.LookupEnv(envVar); exists {
 		return nil
@@ -76,4 +86,27 @@ func LoadSecretFile(envVar, path string) error {
 		return nil
 	}
 	return os.Setenv(envVar, value)
+}
+
+// ResolveDir checks candidate paths in order and returns the first candidate that exists
+// and is a directory as an absolute path. If none match, it returns the first candidate.
+func ResolveDir(candidates ...string) string {
+	for _, c := range candidates {
+		if fi, err := os.Stat(c); err == nil && fi.IsDir() {
+			abs, _ := filepath.Abs(c)
+			return abs
+		}
+	}
+	if len(candidates) > 0 {
+		return candidates[0]
+	}
+	return "."
+}
+
+// Env reads an environment variable, returning fallback if key is not set or empty.
+func Env(key, fallback string) string {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		return v
+	}
+	return fallback
 }

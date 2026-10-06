@@ -1,5 +1,13 @@
 route "qa.queue_list" {
   method GET
+  path "/coding/:wid/qa-list"
+  intent "qa.queue_list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.qa.queue_list" {
+  method GET
   path "/web/client/coding/:wid/qa-list"
   intent "qa.queue_list"
   allow_anonymous true
@@ -7,6 +15,14 @@ route "qa.queue_list" {
 }
 
 route "qa.inprogress_list" {
+  method GET
+  path "/coding/:wid/qa-in-progress-list"
+  intent "qa.inprogress_list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.qa.inprogress_list" {
   method GET
   path "/web/client/coding/:wid/qa-in-progress-list"
   intent "qa.inprogress_list"
@@ -16,6 +32,14 @@ route "qa.inprogress_list" {
 
 route "qa.start_qa" {
   method POST
+  path "/coding/:wid/:eid/start-qa"
+  intent "qa.start_qa"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.qa.start_qa" {
+  method POST
   path "/web/client/coding/:wid/:eid/start-qa"
   intent "qa.start_qa"
   allow_anonymous true
@@ -24,8 +48,96 @@ route "qa.start_qa" {
 
 route "qa.save_documentation" {
   method POST
+  path "/coding/:wid/:eid/save-qa-documentation"
+  intent "qa.save_documentation"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.qa.save_documentation" {
+  method POST
   path "/web/client/coding/:wid/:eid/save-qa-documentation"
   intent "qa.save_documentation"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "qa.edit_documentation" {
+  method POST
+  path "/coding/:wid/:eid/edit-qa-documentation"
+  intent "qa.edit_documentation"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.qa.edit_documentation" {
+  method POST
+  path "/web/client/coding/:wid/:eid/edit-qa-documentation"
+  intent "qa.edit_documentation"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "qa.verify" {
+  method POST
+  path "/coding/:wid/:eid/qa-verify"
+  intent "qa.verify"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.qa.verify" {
+  method POST
+  path "/web/client/coding/:wid/:eid/qa-verify"
+  intent "qa.verify"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "qa.verify_qa" {
+  method POST
+  path "/coding/:wid/:eid/verify-qa"
+  intent "qa.verify_qa"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.qa.verify_qa" {
+  method POST
+  path "/web/client/coding/:wid/:eid/verify-qa"
+  intent "qa.verify_qa"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "qa.request_qa" {
+  method POST
+  path "/coding/:wid/:eid/request-qa"
+  intent "qa.request_qa"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.qa.request_qa" {
+  method POST
+  path "/web/client/coding/:wid/:eid/request-qa"
+  intent "qa.request_qa"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "qa.return_to_coding" {
+  method POST
+  path "/coding/:wid/:eid/return-to-coding"
+  intent "qa.return_to_coding"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.qa.return_to_coding" {
+  method POST
+  path "/web/client/coding/:wid/:eid/return-to-coding"
+  intent "qa.return_to_coding"
   allow_anonymous true
   cache_control "no-store"
 }

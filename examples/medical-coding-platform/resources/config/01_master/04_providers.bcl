@@ -115,3 +115,56 @@ intent "providers.by_workitem" {
     }
   }
 }
+
+intent "providers.review" {
+  description "Review provider details prior to persistence"
+  response "response"
+  input_schema "provider_review_input"
+
+  node "response" {
+    uses "collect"
+    requires [input]
+    provides [response]
+    config {
+      status "valid"
+      provider "input"
+    }
+  }
+}
+
+intent "providers.details" {
+  description "Get provider details by provider ID"
+  response "response"
+
+  node "pid" {
+    uses "request.param"
+    provides [pid]
+    config {
+      name "pid"
+    }
+  }
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [pid]
+    provides [provider_rows]
+    config {
+      statement "SELECT p.provider_id, p.first_name, p.last_name, p.npi, p.provider_type, p.email, p.status, p.created_at FROM providers p WHERE p.provider_id = $1"
+      args [pid]
+      require_rows true
+      not_found_message "provider not found"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [provider_rows]
+    provides [response]
+    config {
+      data "provider_rows"
+    }
+  }
+}
+

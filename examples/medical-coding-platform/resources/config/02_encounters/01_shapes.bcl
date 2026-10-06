@@ -25,3 +25,21 @@ shape "encounter_search_input" {
   prop "dos"          { kind string }
   prop "status"       { kind string }
 }
+
+shape "update_dos_input" {
+  kind object
+  prop "encounter_dos"     { kind string required true }
+  prop "encounter_dos_end" { kind string }
+}
+
+shape "patient_details_input" {
+  kind object
+  prop "patient_name"        { kind string }
+  prop "patient_sex"         { kind string }
+  prop "patient_dob"         { kind string }
+  prop "patient_status"      { kind string }
+  prop "transfer_dest"       { kind string }
+  prop "injury_date"         { kind string }
+  prop "lmp_date"            { kind string }
+}
+

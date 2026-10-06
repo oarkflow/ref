@@ -7,6 +7,49 @@ route "auth.login" {
   cache_control "no-store"
 }
 
+route "web_client.login" {
+  method POST
+  path "/web/client/login"
+  intent "auth.login"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "auth.login_info" {
+  method GET
+  path "/login"
+  intent "auth.login_info"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.login_info" {
+  method GET
+  path "/web/client/login"
+  intent "auth.login_info"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "auth.logout" {
+  method POST
+  path "/logout"
+  intent "auth.logout"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.logout" {
+  method POST
+  path "/web/client/logout"
+  intent "auth.logout"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
 route "auth.me" {
   method GET
   path "/me"
@@ -16,10 +59,37 @@ route "auth.me" {
   cache_control "no-store"
 }
 
+route "web_client.me" {
+  method GET
+  path "/web/client/me"
+  intent "auth.me"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "user.info" {
+  method POST
+  path "/user/info"
+  intent "auth.user_info"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
 route "web_client.user_info" {
   method POST
   path "/web/client/user/info"
-  intent "auth.me"
+  intent "auth.user_info"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "user.roles" {
+  method POST
+  path "/user/roles"
+  intent "auth.user_roles"
   session "sessions"
   allow_anonymous true
   cache_control "no-store"
@@ -29,6 +99,24 @@ route "web_client.user_roles" {
   method POST
   path "/web/client/user/roles"
   intent "auth.user_roles"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "user.roles_by_id" {
+  method GET
+  path "/user/roles/:user_id"
+  intent "auth.user_roles_by_id"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.user_roles_by_id" {
+  method GET
+  path "/web/client/user/roles/:user_id"
+  intent "auth.user_roles_by_id"
   session "sessions"
   allow_anonymous true
   cache_control "no-store"

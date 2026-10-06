@@ -1,5 +1,13 @@
 route "coding.open_list" {
   method GET
+  path "/coding/:wid/open-list"
+  intent "queues.open_list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.open_list" {
+  method GET
   path "/web/client/coding/:wid/open-list"
   intent "queues.open_list"
   allow_anonymous true
@@ -8,13 +16,61 @@ route "coding.open_list" {
 
 route "coding.inprogress_list" {
   method GET
+  path "/coding/:wid/in-progress-list"
+  intent "queues.inprogress_list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.inprogress_list" {
+  method GET
   path "/web/client/coding/:wid/in-progress-list"
   intent "queues.inprogress_list"
   allow_anonymous true
   cache_control "no-store"
 }
 
+route "coding.inprogress_count" {
+  method GET
+  path "/coding/in-progress-count"
+  intent "queues.inprogress_count"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.inprogress_count" {
+  method GET
+  path "/web/client/coding/in-progress-count"
+  intent "queues.inprogress_count"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.de_inprogress_count" {
+  method GET
+  path "/coding/de-in-progress-count"
+  intent "queues.de_inprogress_count"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.de_inprogress_count" {
+  method GET
+  path "/web/client/coding/de-in-progress-count"
+  intent "queues.de_inprogress_count"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
 route "coding.start_coding" {
+  method POST
+  path "/coding/:wid/:eid/start-coding"
+  intent "encounters.start_coding"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.start_coding" {
   method POST
   path "/web/client/coding/:wid/:eid/start-coding"
   intent "encounters.start_coding"
@@ -22,7 +78,31 @@ route "coding.start_coding" {
   cache_control "no-store"
 }
 
+route "coding.patient_header" {
+  method GET
+  path "/coding/:wid/:eid/patient-header"
+  intent "encounters.patient_header"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.patient_header" {
+  method GET
+  path "/web/client/coding/:wid/:eid/patient-header"
+  intent "encounters.patient_header"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
 route "coding.patient_details" {
+  method GET
+  path "/coding/:wid/:eid/patient-details"
+  intent "queues.patient_details"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.patient_details" {
   method GET
   path "/web/client/coding/:wid/:eid/patient-details"
   intent "queues.patient_details"
@@ -30,7 +110,31 @@ route "coding.patient_details" {
   cache_control "no-store"
 }
 
+route "coding.save_patient_details" {
+  method POST
+  path "/coding/:wid/:eid/save-patient-details"
+  intent "encounters.save_patient_details"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.save_patient_details" {
+  method POST
+  path "/web/client/coding/:wid/:eid/save-patient-details"
+  intent "encounters.save_patient_details"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
 route "coding.documentation" {
+  method GET
+  path "/coding/:wid/:eid/documentation"
+  intent "coding.get_documentation"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.documentation" {
   method GET
   path "/web/client/coding/:wid/:eid/documentation"
   intent "coding.get_documentation"
@@ -40,13 +144,45 @@ route "coding.documentation" {
 
 route "coding.save_documentation" {
   method POST
+  path "/coding/:wid/:eid/save-coding-documentation"
+  intent "coding.save_documentation"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.save_documentation" {
+  method POST
   path "/web/client/coding/:wid/:eid/save-coding-documentation"
   intent "coding.save_documentation"
   allow_anonymous true
   cache_control "no-store"
 }
 
+route "coding.edit_documentation" {
+  method POST
+  path "/coding/:wid/:eid/edit-coding-documentation"
+  intent "coding.edit_documentation"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.edit_documentation" {
+  method POST
+  path "/web/client/coding/:wid/:eid/edit-coding-documentation"
+  intent "coding.edit_documentation"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
 route "coding.verify_coding" {
+  method POST
+  path "/coding/:wid/:eid/verify-coding"
+  intent "coding.verify"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.verify_coding" {
   method POST
   path "/web/client/coding/:wid/:eid/verify-coding"
   intent "coding.verify"
@@ -54,7 +190,31 @@ route "coding.verify_coding" {
   cache_control "no-store"
 }
 
+route "coding.verify_edit_coding" {
+  method POST
+  path "/coding/:wid/:eid/verify-edit-coding"
+  intent "coding.verify_edit"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.verify_edit_coding" {
+  method POST
+  path "/web/client/coding/:wid/:eid/verify-edit-coding"
+  intent "coding.verify_edit"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
 route "coding.summary" {
+  method GET
+  path "/coding/:wid/:eid/summary"
+  intent "coding.summary"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.summary" {
   method GET
   path "/web/client/coding/:wid/:eid/summary"
   intent "coding.summary"
@@ -62,15 +222,15 @@ route "coding.summary" {
   cache_control "no-store"
 }
 
-route "coding.inprogress_count" {
-  method GET
-  path "/web/client/coding/in-progress-count"
-  intent "queues.inprogress_count"
+route "coding.search_encounters" {
+  method POST
+  path "/coding/search-encounters"
+  intent "encounters.search"
   allow_anonymous true
   cache_control "no-store"
 }
 
-route "coding.search_encounters" {
+route "web_client.coding.search_encounters" {
   method POST
   path "/web/client/coding/search-encounters"
   intent "encounters.search"
@@ -78,10 +238,178 @@ route "coding.search_encounters" {
   cache_control "no-store"
 }
 
+route "coding.search_encounters_wid" {
+  method POST
+  path "/coding/:wid/search"
+  intent "encounters.search"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.search_encounters_wid" {
+  method POST
+  path "/web/client/coding/:wid/search"
+  intent "encounters.search"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.completed_list" {
+  method GET
+  path "/coding/:wid/completed-list"
+  intent "queues.inprogress_list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.completed_list" {
+  method GET
+  path "/web/client/coding/:wid/completed-list"
+  intent "queues.inprogress_list"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
 route "coding.abandon" {
+  method POST
+  path "/coding/:wid/:eid/abandon"
+  intent "encounters.abandon"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.abandon" {
+  method POST
+  path "/web/client/coding/:wid/:eid/abandon"
+  intent "encounters.abandon"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.abandon_alias" {
+  method POST
+  path "/coding/:wid/:eid/abandon-encounter"
+  intent "encounters.abandon"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.abandon_alias" {
   method POST
   path "/web/client/coding/:wid/:eid/abandon-encounter"
   intent "encounters.abandon"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.add_new_encounter" {
+  method POST
+  path "/coding/:wid/add-new-encounter"
+  intent "encounters.add_new"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.add_new_encounter" {
+  method POST
+  path "/web/client/coding/:wid/add-new-encounter"
+  intent "encounters.add_new"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.new_with_start_coding" {
+  method POST
+  path "/coding/:wid/new-encounter-with-start-coding"
+  intent "encounters.new_with_start_coding"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.new_with_start_coding" {
+  method POST
+  path "/web/client/coding/:wid/new-encounter-with-start-coding"
+  intent "encounters.new_with_start_coding"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.encounter_create" {
+  method POST
+  path "/coding/encounter/:wid"
+  intent "encounters.create"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.encounter_create" {
+  method POST
+  path "/web/client/coding/encounter/:wid"
+  intent "encounters.create"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "encounter.update_dos" {
+  method POST
+  path "/encounter/:wid/:eid/update-dos"
+  intent "encounters.update_dos"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.encounter.update_dos" {
+  method POST
+  path "/web/client/encounter/:wid/:eid/update-dos"
+  intent "encounters.update_dos"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.pqrs_measures" {
+  method POST
+  path "/coding/:wid/:dos/pqrs-measures"
+  intent "coding.pqrs_measures"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.pqrs_measures" {
+  method POST
+  path "/web/client/coding/:wid/:dos/pqrs-measures"
+  intent "coding.pqrs_measures"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.pqrs_codes" {
+  method POST
+  path "/coding/:wid/:eid/pqrs-codes"
+  intent "coding.pqrs_codes"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.pqrs_codes" {
+  method POST
+  path "/web/client/coding/:wid/:eid/pqrs-codes"
+  intent "coding.pqrs_codes"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "coding.pqrs_codes_by_id" {
+  method POST
+  path "/coding/:wid/:eid/pqrs-codes-by-id"
+  intent "coding.pqrs_codes_by_id"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web_client.coding.pqrs_codes_by_id" {
+  method POST
+  path "/web/client/coding/:wid/:eid/pqrs-codes-by-id"
+  intent "coding.pqrs_codes_by_id"
   allow_anonymous true
   cache_control "no-store"
 }

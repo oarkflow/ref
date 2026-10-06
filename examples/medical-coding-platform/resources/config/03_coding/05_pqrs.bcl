@@ -1,0 +1,99 @@
+intent "coding.pqrs_measures" {
+  description "Get PQRS quality measures applicable for work item and service date"
+  response "response"
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "dos" {
+    uses "request.param"
+    provides [dos]
+    config {
+      name "dos"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [wid, dos]
+    provides [response]
+    config {
+      work_item_id "wid"
+      dos "dos"
+      measures []
+    }
+  }
+}
+
+intent "coding.pqrs_codes" {
+  description "Fetch recorded PQRS codes for an encounter"
+  response "response"
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [eid]
+    provides [pqrs_rows]
+    config {
+      statement "SELECT * FROM event_pqrs_pro WHERE encounter_id = $1"
+      args [eid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [pqrs_rows]
+    provides [response]
+    config {
+      data "pqrs_rows"
+    }
+  }
+}
+
+intent "coding.pqrs_codes_by_id" {
+  description "Fetch specific PQRS code detail for an encounter by code ID"
+  response "response"
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [eid]
+    provides [pqrs_rows]
+    config {
+      statement "SELECT * FROM event_pqrs_pro WHERE encounter_id = $1"
+      args [eid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [pqrs_rows]
+    provides [response]
+    config {
+      data "pqrs_rows"
+    }
+  }
+}

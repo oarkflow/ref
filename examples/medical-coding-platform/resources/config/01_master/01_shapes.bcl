@@ -11,6 +11,11 @@ shape "workitem_input" {
   prop "name"             { kind string required true }
 }
 
+shape "workitem_type_input" {
+  kind object
+  prop "work_item_description" { kind string required true }
+}
+
 shape "workitem_setting_input" {
   kind object
   prop "key"   { kind string required true }
@@ -26,6 +31,13 @@ shape "provider_input" {
   prop "email"         { kind string }
 }
 
+shape "provider_review_input" {
+  kind object
+  prop "first_name" { kind string }
+  prop "last_name"  { kind string }
+  prop "npi"        { kind string }
+}
+
 shape "charge_code_input" {
   kind object
   prop "work_item_id"   { kind string required true }
@@ -37,3 +49,17 @@ shape "charge_code_input" {
   prop "profee_type"    { kind string }
   prop "facility_type"  { kind string }
 }
+
+shape "cpt_input" {
+  kind object
+  prop "cpt_code"          { kind string required true }
+  prop "short_description" { kind string required true }
+  prop "long_description"  { kind string }
+  prop "status"            { kind string default "active" }
+}
+
+shape "bulk_delete_input" {
+  kind object
+  prop "ids" { kind array }
+}
+

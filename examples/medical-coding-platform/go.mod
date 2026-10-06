@@ -4,7 +4,6 @@ go 1.26.5
 
 require (
 	github.com/oarkflow/fh v0.0.26
-	github.com/oarkflow/migrate v0.0.29
 	github.com/oarkflow/ref v0.0.0
 	github.com/oarkflow/zlog v0.0.3
 	github.com/prometheus/client_golang v1.24.1
@@ -31,12 +30,14 @@ require (
 	github.com/oarkflow/authz v0.0.6 // indirect
 	github.com/oarkflow/bcl v0.0.37 // indirect
 	github.com/oarkflow/cli v0.0.3 // indirect
+	github.com/oarkflow/config v0.0.1 // indirect
 	github.com/oarkflow/convert v0.0.6 // indirect
 	github.com/oarkflow/date v0.0.4 // indirect
 	github.com/oarkflow/expr v0.0.11 // indirect
 	github.com/oarkflow/ip v0.0.11 // indirect
 	github.com/oarkflow/jet v0.0.4 // indirect
 	github.com/oarkflow/json v0.0.28 // indirect
+	github.com/oarkflow/migrate v0.0.29 // indirect
 	github.com/oarkflow/rules v0.0.5 // indirect
 	github.com/oarkflow/squealx v0.0.79 // indirect
 	github.com/oarkflow/tcpguard v0.0.16 // indirect
@@ -46,6 +47,7 @@ require (
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/redis/go-redis/v9 v9.22.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	github.com/urfave/cli/v3 v3.14.0 // indirect
 	github.com/xo/terminfo v1.2.0 // indirect
 	go.uber.org/atomic v1.12.0 // indirect

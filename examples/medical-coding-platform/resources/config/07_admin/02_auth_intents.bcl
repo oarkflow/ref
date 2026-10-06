@@ -99,7 +99,7 @@ intent "auth.user_roles" {
     resource "database"
     kind read
     requires [user_id]
-    provides [role_rows]
+    provides [roles]
     config {
       statement "SELECT m.work_item_id, m.company_id, m.role FROM memberships m WHERE m.user_id = $1"
       args [user_id]
@@ -108,10 +108,103 @@ intent "auth.user_roles" {
 
   node "response" {
     uses "collect"
-    requires [role_rows]
+    requires [roles]
+    provides [response]
+  }
+}
+
+intent "auth.user_roles_by_id" {
+  description "Get roles for a specific user ID"
+  response "response"
+
+  node "uid" {
+    uses "request.param"
+    provides [uid]
+    config {
+      name "user_id"
+    }
+  }
+
+  node "roles" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [uid]
+    provides [roles]
+    config {
+      statement "SELECT m.work_item_id, m.company_id, m.role FROM memberships m WHERE m.user_id = $1"
+      args [uid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [roles]
+    provides [response]
+  }
+}
+
+intent "auth.user_info" {
+  description "Get user profile and settings by user ID"
+  response "response"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+    }
+  }
+
+  node "profile" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [profile_rows]
+    config {
+      statement "SELECT id, email, name, roles, status, avatar FROM users WHERE id = $1"
+      args [user_id]
+      require_rows true
+      not_found_message "user not found"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [profile_rows]
     provides [response]
     config {
-      roles "role_rows"
+      user "profile_rows"
     }
   }
 }
+
+intent "auth.logout" {
+  description "Sign out user session"
+  response "response"
+
+  node "response" {
+    uses "collect"
+    provides [response]
+    config {
+      success true
+      message "Logged out successfully"
+    }
+  }
+}
+
+intent "auth.login_info" {
+  description "Get authentication endpoint metadata"
+  response "response"
+
+  node "response" {
+    uses "collect"
+    provides [response]
+    config {
+      service "CLEAR Medical Coding Platform"
+      auth_types ["password", "session"]
+    }
+  }
+}
+

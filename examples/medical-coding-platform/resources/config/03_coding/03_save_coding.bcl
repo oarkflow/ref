@@ -194,3 +194,68 @@ intent "coding.summary" {
     }
   }
 }
+
+intent "coding.edit_documentation" {
+  description "Edit and update existing coding documentation"
+  response "response"
+  input_schema "coding_doc_input"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+    }
+  }
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "update_details" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [wid, eid, user_id]
+    provides [details_updated]
+    config {
+      statement "UPDATE encounter_details SET updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $1 AND work_item_id = $2"
+      args [eid, wid]
+    }
+  }
+
+  node "log_edit" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [details_updated, eid, wid, user_id]
+    provides [logged]
+    config {
+      statement "INSERT INTO encounter_activities (encounter_id, work_item_id, user_id, action, status_from, status_to, notes, created_at) VALUES ($1, $2, $3, 'edit_coding', 'IN_PROGRESS', 'IN_PROGRESS', 'Coding documentation edited', CURRENT_TIMESTAMP)"
+      args [eid, wid, user_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [details_updated]
+    provides [response]
+    config {
+      status "updated"
+      message "Coding documentation successfully updated"
+    }
+  }
+}
+

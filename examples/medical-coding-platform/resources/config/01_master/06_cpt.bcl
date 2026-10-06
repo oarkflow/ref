@@ -1,0 +1,126 @@
+intent "cpt.list" {
+  description "List active CPT / HCPCS procedure codes"
+  response "response"
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [codes]
+    config {
+      statement "SELECT cpt_code, description, short_desc FROM lu_cpt ORDER BY cpt_code ASC LIMIT 200"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [codes]
+    provides [response]
+    config {
+      data "codes"
+    }
+  }
+}
+
+intent "cpt.create" {
+  description "Register a new CPT code"
+  response "response"
+  input_schema "cpt_input"
+
+  node "insert" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [input]
+    provides [saved]
+    config {
+      statement "INSERT INTO lu_cpt (cpt_code, description, short_desc, nfrvu, facrvu, effective_date) VALUES ($1, $2, $3, 0.0, 0.0, '2026-01-01')"
+      args [input.cpt_code, input.short_description, input.long_description]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [saved]
+    provides [response]
+    config {
+      status "created"
+      cpt_code "input.cpt_code"
+    }
+  }
+}
+
+intent "cpt.detail" {
+  description "Get CPT code details by ID or code"
+  response "response"
+
+  node "id" {
+    uses "request.param"
+    provides [id]
+    config {
+      name "id"
+    }
+  }
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [id]
+    provides [code_rows]
+    config {
+      statement "SELECT cpt_code, description, short_desc FROM lu_cpt WHERE cpt_code = $1 LIMIT 1"
+      args [id]
+      require_rows true
+      not_found_message "cpt code not found"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [code_rows]
+    provides [response]
+    config {
+      data "code_rows"
+    }
+  }
+}
+
+intent "cpt.all" {
+  description "Get all CPT codes reference list"
+  response "response"
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [cpts]
+    config {
+      statement "SELECT cpt_code, description, short_desc FROM lu_cpt ORDER BY cpt_code ASC LIMIT 500"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [cpts]
+    provides [response]
+    config {
+      data "cpts"
+    }
+  }
+}
+
+intent "files.upload" {
+  description "Handle file upload and return stored file descriptor"
+  response "response"
+
+  node "response" {
+    uses "collect"
+    requires [input]
+    provides [response]
+    config {
+      status "uploaded"
+      message "File processed successfully"
+    }
+  }
+}

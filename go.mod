@@ -24,6 +24,21 @@ require (
 )
 
 require (
+	github.com/brianvoe/gofakeit/v6 v6.28.0 // indirect
+	github.com/goccy/go-reflect v1.2.0 // indirect
+	github.com/gookit/color v1.6.1 // indirect
+	github.com/oarkflow/cli v0.0.3 // indirect
+	github.com/oarkflow/date v0.0.4 // indirect
+	github.com/oarkflow/expr v0.0.11 // indirect
+	github.com/oarkflow/jet v0.0.4 // indirect
+	github.com/oarkflow/json v0.0.28 // indirect
+	github.com/oarkflow/migrate v0.0.29 // indirect
+	github.com/oarkflow/squealx v0.0.78 // indirect
+	github.com/urfave/cli/v3 v3.13.0 // indirect
+	github.com/xo/terminfo v1.2.0 // indirect
+)
+
+require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

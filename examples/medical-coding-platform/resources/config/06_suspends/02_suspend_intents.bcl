@@ -58,10 +58,11 @@ intent "suspends.suspend_chart" {
     requires [eid, wid, user_id, input]
     provides [event_saved]
     config {
-      statement "INSERT INTO suspend_events (encounter_id, work_item_id, suspend_reason_id, suspend_reason, suspend_note, event_dos, created_by, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)"
+      statement "INSERT INTO suspend_events (encounter_id, work_item_id, suspend_reason_id, suspend_reason, suspend_note, event_dos, created_by, created_at) VALUES ($1, $2, $3, $4, $5, COALESCE($6, CURRENT_DATE), $7, CURRENT_TIMESTAMP)"
       args [eid, wid, input.reason_id, input.suspend_reason, input.suspend_note, input.event_dos, user_id]
     }
   }
+
 
   node "update_details" {
     uses "database.exec"
@@ -98,3 +99,72 @@ intent "suspends.suspend_chart" {
     }
   }
 }
+
+intent "suspends.suspended_list" {
+  description "List suspended encounters for work item"
+  response "response"
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [wid]
+    provides [encounters]
+    config {
+      statement "SELECT e.encounter_id, e.patient_name, e.patient_mrn, e.patient_fin, e.encounter_dos, ed.work_item_id, ed.encounter_status, se.suspend_reason, se.suspend_note FROM encounters e JOIN encounter_details ed ON e.encounter_id = ed.encounter_id LEFT JOIN suspend_events se ON e.encounter_id = se.encounter_id WHERE ed.work_item_id = $1 AND ed.encounter_status = 'SUSPEND' ORDER BY e.encounter_dos ASC"
+      args [wid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [encounters]
+    provides [response]
+    config {
+      encounters "encounters"
+    }
+  }
+}
+
+intent "suspends.encounter_suspends" {
+  description "Get suspend event history for an encounter"
+  response "response"
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [eid]
+    provides [suspends]
+    config {
+      statement "SELECT * FROM suspend_events WHERE encounter_id = $1 ORDER BY created_at DESC"
+      args [eid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [suspends]
+    provides [response]
+    config {
+      data "suspends"
+    }
+  }
+}
+

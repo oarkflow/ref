@@ -34,6 +34,8 @@ intent "chargemaster.list" {
     provides [wid]
     config {
       name "wid"
+      required false
+      default ""
     }
   }
 
@@ -44,7 +46,7 @@ intent "chargemaster.list" {
     requires [wid]
     provides [codes]
     config {
-      statement "SELECT id, work_item_id, cpt_hcpcs_code, description, charge_type, charge_amount, effective_date, profee_type, facility_type, status FROM charge_master WHERE work_item_id = $1 AND status = 'active' ORDER BY cpt_hcpcs_code ASC"
+      statement "SELECT id, work_item_id, cpt_hcpcs_code, description, charge_type, charge_amount, effective_date, profee_type, facility_type, status FROM charge_master WHERE status = 'active' AND ($1 = '' OR work_item_id = $1) ORDER BY cpt_hcpcs_code ASC"
       args [wid]
     }
   }
@@ -92,3 +94,71 @@ intent "chargemaster.effective_dates" {
     }
   }
 }
+
+intent "chargemaster.review" {
+  description "Validate and preview chargemaster codes before storing"
+  response "response"
+
+  node "response" {
+    uses "collect"
+    requires [input]
+    provides [response]
+    config {
+      status "valid"
+      preview "input"
+    }
+  }
+}
+
+intent "chargemaster.update" {
+  description "Update an existing chargemaster code entry"
+  response "response"
+
+  node "cid" {
+    uses "request.param"
+    provides [cid]
+    config {
+      name "cid"
+    }
+  }
+
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [cid, input]
+    provides [updated]
+    config {
+      statement "UPDATE charge_master SET description = $1, charge_amount = $2, effective_date = $3, profee_type = $4, facility_type = $5, updated_at = CURRENT_TIMESTAMP WHERE id = $6"
+      args [input.description, input.charge_amount, input.effective_date, input.profee_type, input.facility_type, cid]
+      require_affected true
+      not_found_message "charge code not found"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [updated]
+    provides [response]
+    config {
+      status "updated"
+    }
+  }
+}
+
+intent "chargemaster.bulk_delete" {
+  description "Deactivate charge codes in bulk"
+  response "response"
+  input_schema "bulk_delete_input"
+
+  node "response" {
+    uses "collect"
+    requires [input]
+    provides [response]
+    config {
+      status "deleted"
+      message "Selected charge codes deactivated"
+    }
+  }
+}
+

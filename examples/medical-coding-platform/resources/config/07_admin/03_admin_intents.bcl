@@ -92,3 +92,398 @@ intent "admin.rules" {
     }
   }
 }
+
+intent "admin.coders_list" {
+  description "Get list of medical coders"
+  response "response"
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [coders]
+    config {
+      statement "SELECT id, email, name, status FROM users WHERE roles LIKE '%coder%' ORDER BY name ASC"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [coders]
+    provides [response]
+    config {
+      data "coders"
+    }
+  }
+}
+
+intent "admin.background_service" {
+  description "Get status of background services and workers"
+  response "response"
+
+  node "status_expr" {
+    uses "expression"
+    provides [status]
+    config {
+      expression "'healthy'"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [status]
+    provides [response]
+  }
+}
+
+
+
+intent "admin.user_get" {
+  description "Get user by ID"
+  response "response"
+
+  node "id" {
+    uses "request.param"
+    provides [user_id]
+    config {
+      name "id"
+    }
+  }
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [user_rows]
+    config {
+      statement "SELECT id, email, name, roles, status, created_at FROM users WHERE id = $1"
+      args [user_id]
+      require_rows true
+      not_found_message "user not found"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [user_rows]
+    provides [response]
+    config {
+      data "user_rows"
+    }
+  }
+}
+
+intent "admin.user_update" {
+  description "Update user profile and status"
+  response "response"
+
+  node "id" {
+    uses "request.param"
+    provides [user_id]
+    config {
+      name "id"
+    }
+  }
+
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [user_id, input]
+    provides [updated]
+    config {
+      statement "UPDATE users SET name = COALESCE($1, name), status = COALESCE($2, status), updated_at = CURRENT_TIMESTAMP WHERE id = $3"
+      args [input.name, input.status, user_id]
+      require_affected true
+      not_found_message "user not found"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [updated]
+    provides [response]
+    config {
+      status "updated"
+    }
+  }
+}
+
+intent "admin.change_password" {
+  description "Change user password with Argon2id"
+  response "response"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_admin_01'"
+    }
+  }
+
+  node "hasher" {
+    uses "auth.password_hash"
+    requires [input]
+    provides [pwd_hash]
+    config {
+      value_fact "input.password"
+      algorithm "argon2id"
+      memory 65536
+      iterations 3
+      parallelism 4
+      min_length 8
+    }
+  }
+
+  node "update" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [user_id, pwd_hash]
+    provides [updated]
+    config {
+      statement "UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"
+      args [pwd_hash, user_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [updated]
+    provides [response]
+    config {
+      status "password_updated"
+    }
+  }
+}
+
+intent "admin.assign_roles" {
+  description "Assign role to user for company/workitem"
+  response "response"
+
+  node "insert" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [input]
+    provides [saved]
+    config {
+      statement "INSERT INTO memberships (user_id, company_id, work_item_id, role, created_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)"
+      args [input.user_id, input.company_id, input.work_item_id, input.role]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [saved]
+    provides [response]
+    config {
+      status "role_assigned"
+    }
+  }
+}
+
+intent "admin.revoke_roles" {
+  description "Revoke role from user"
+  response "response"
+
+  node "delete" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [input]
+    provides [deleted]
+    config {
+      statement "DELETE FROM memberships WHERE user_id = $1 AND role = $2"
+      args [input.user_id, input.role]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [deleted]
+    provides [response]
+    config {
+      status "role_revoked"
+    }
+  }
+}
+
+intent "admin.update_roles" {
+  description "Update user assigned roles"
+  response "response"
+
+  node "response" {
+    uses "collect"
+    requires [input]
+    provides [response]
+    config {
+      status "roles_updated"
+    }
+  }
+}
+
+intent "admin.user_permissions" {
+  description "Get granted permissions for user"
+  response "response"
+
+  node "id" {
+    uses "request.param"
+    provides [user_id]
+    config {
+      name "id"
+    }
+  }
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [user_id]
+    provides [user]
+    config {
+      statement "SELECT id, email, name, roles, status FROM users WHERE id = $1"
+      args [user_id]
+      require_rows true
+      not_found_message "user not found"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [user]
+    provides [response]
+  }
+}
+
+intent "admin.roles_list" {
+  description "Get available system roles"
+  response "response"
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [roles]
+    config {
+      statement "SELECT 'super_admin' AS slug, 'Super Administrator' AS name, 1 AS id, 'Unrestricted root administrator' AS description UNION ALL SELECT 'admin', 'Healthcare System Administrator', 2, 'Healthcare system administrator' UNION ALL SELECT 'manager', 'Coding Supervisor & Queue Manager', 3, 'Clinical coding supervisor and queue manager' UNION ALL SELECT 'coder', 'Medical Coder', 4, 'Medical coder assigned to encounter documentation' UNION ALL SELECT 'qa', 'Quality Assurance Auditor', 5, 'Quality assurance specialist' UNION ALL SELECT 'data_entry', 'Data Entry Specialist', 6, 'Data entry specialist for technical and professional charges' UNION ALL SELECT 'suspend_manager', 'Chart Block Release Manager', 7, 'Manager responsible for releasing chart blocks and query resolution' UNION ALL SELECT 'user', 'Authenticated Staff Member', 8, 'Standard authenticated healthcare staff' ORDER BY id"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [roles]
+    provides [response]
+  }
+}
+
+intent "admin.role_create" {
+  description "Define a new system role"
+  response "response"
+
+  node "response" {
+    uses "collect"
+    requires [input]
+    provides [response]
+    config {
+      status "created"
+    }
+  }
+}
+
+intent "admin.companies_list" {
+  description "List registered healthcare organizations and clients"
+  response "response"
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [companies]
+    config {
+      statement "SELECT id, name, slug, status, created_at FROM companies WHERE status = 'active' ORDER BY name ASC"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [companies]
+    provides [response]
+    config {
+      data "companies"
+    }
+  }
+}
+
+intent "admin.company_create" {
+  description "Register a new client company"
+  response "response"
+
+  node "id" {
+    uses "expression"
+    provides [company_id]
+    config {
+      expression "'cmp_' + timestamp()"
+    }
+  }
+
+  node "insert" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [company_id, input]
+    provides [saved]
+    config {
+      statement "INSERT INTO companies (id, name, slug, status, created_at) VALUES ($1, $2, LOWER(REPLACE($2, ' ', '-')), 'active', CURRENT_TIMESTAMP)"
+      args [company_id, input.name]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [company_id, saved]
+    provides [response]
+    config {
+      id "company_id"
+      status "created"
+    }
+  }
+}
+
+intent "admin.company_get" {
+  description "Get company by ID"
+  response "response"
+
+  node "id" {
+    uses "request.param"
+    provides [company_id]
+    config {
+      name "id"
+    }
+  }
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [company_id]
+    provides [company_rows]
+    config {
+      statement "SELECT id, name, slug, status, created_at FROM companies WHERE id = $1"
+      args [company_id]
+      require_rows true
+      not_found_message "company not found"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [company_rows]
+    provides [response]
+    config {
+      data "company_rows"
+    }
+  }
+}
+
