@@ -306,6 +306,43 @@ func (r *Registry) Replace(name string, factory ActionFactory) error {
 	return nil
 }
 
+// RegisterDynamicAction registers or replaces an action at runtime.
+// Unlike RegisterAction, if the action already exists, it is dynamically updated.
+func (r *Registry) RegisterDynamicAction(name string, factory ActionFactory, info ...ActionInfo) error {
+	name = normalizeName(name)
+	if name == "" || factory == nil {
+		return fmt.Errorf("ref/platform: dynamic action name and factory are required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.actions[name] = factory
+	doc := ActionInfo{Name: name}
+	if len(info) > 0 {
+		doc = info[0]
+		doc.Name = name
+	}
+	r.actionDoc[name] = doc
+	return nil
+}
+
+// RegisterDynamicResource registers or replaces a resource provider at runtime.
+func (r *Registry) RegisterDynamicResource(kind string, factory ResourceFactory, info ...ResourceKindInfo) error {
+	kind = normalizeName(kind)
+	if kind == "" || factory == nil {
+		return fmt.Errorf("ref/platform: dynamic resource kind and factory are required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resources[kind] = factory
+	doc := ResourceKindInfo{Name: kind}
+	if len(info) > 0 {
+		doc = info[0]
+		doc.Name = kind
+	}
+	r.kinds[kind] = doc
+	return nil
+}
+
 func (r *Registry) resource(kind string) (ResourceFactory, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

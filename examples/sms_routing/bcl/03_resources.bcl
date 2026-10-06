@@ -1,0 +1,244 @@
+# =============================================================================
+# Direct Carrier SMPP Connections
+# =============================================================================
+
+resource "carrier_ntc_smpp" {
+  kind "service.smpp"
+  config {
+    addr        "smsc.ntc.np:2775"
+    system_id   "ref_ntc_client"
+    password    "secret_ntc_123"
+    queue       "bus"
+    receipt_job "sms.dlr"
+  }
+}
+
+resource "carrier_ncell_smpp" {
+  kind "service.smpp"
+  config {
+    addr        "smsc.ncell.com.np:2775"
+    system_id   "ref_ncell_client"
+    password    "secret_ncell_123"
+    queue       "bus"
+    receipt_job "sms.dlr"
+  }
+}
+
+resource "airtel_direct_smpp" {
+  kind "service.smpp"
+  config {
+    addr        "smsc.airtel.in:2775"
+    system_id   "ref_airtel_client"
+    password    "secret_airtel_123"
+    queue       "bus"
+    receipt_job "sms.dlr"
+  }
+}
+
+resource "jio_direct_smpp" {
+  kind "service.smpp"
+  config {
+    addr        "smsc.jio.com:2775"
+    system_id   "ref_jio_client"
+    password    "secret_jio_123"
+    queue       "bus"
+    receipt_job "sms.dlr"
+  }
+}
+
+resource "bt_direct_smpp" {
+  kind "service.smpp"
+  config {
+    addr        "smsc.bt.com:2775"
+    system_id   "ref_bt_client"
+    password    "secret_bt_123"
+    queue       "bus"
+    receipt_job "sms.dlr"
+  }
+}
+
+resource "singtel_apac_smpp" {
+  kind "service.smpp"
+  config {
+    addr        "smsc.singtel.com:2775"
+    system_id   "ref_singtel_client"
+    password    "secret_singtel_123"
+    queue       "bus"
+    receipt_job "sms.dlr"
+  }
+}
+
+resource "etisalat_mena_smpp" {
+  kind "service.smpp"
+  config {
+    addr        "smsc.etisalat.ae:2775"
+    system_id   "ref_etisalat_client"
+    password    "secret_etisalat_123"
+    queue       "bus"
+    receipt_job "sms.dlr"
+  }
+}
+
+# =============================================================================
+# HTTP SMS Gateways & Regional Aggregators
+# =============================================================================
+
+resource "sparrow_sms_http" {
+  kind "service.httpsms"
+  config {
+    provider "custom_rest"
+    endpoint "https://api.sparrowsms.com/v2/sms"
+    api_key  "SPARROW_TOKEN_TEST"
+    queue    "bus"
+  }
+}
+
+resource "route_mobile_http" {
+  kind "service.httpsms"
+  config {
+    provider "custom_rest"
+    endpoint "https://api.routemobile.com/v1/sms"
+    api_key  "ROUTE_TOKEN_TEST"
+    queue    "bus"
+  }
+}
+
+resource "twilio_us_direct" {
+  kind "service.httpsms"
+  config {
+    provider    "twilio"
+    account_sid "AC_TEST_TWILIO_SID"
+    auth_token  "AUTH_TOKEN_TEST"
+    from        "+15005550006"
+    queue       "bus"
+    receipt_job "sms.dlr"
+  }
+}
+
+resource "aws_sns_us" {
+  kind "service.httpsms"
+  config {
+    provider "aws_sns"
+    region   "us-east-1"
+    queue    "bus"
+  }
+}
+
+resource "bandwidth_us" {
+  kind "service.httpsms"
+  config {
+    provider "custom_rest"
+    endpoint "https://messaging.bandwidth.com/api/v2/users/test/messages"
+    api_key  "BW_SECRET_TEST"
+    queue    "bus"
+  }
+}
+
+resource "messagebird_eu" {
+  kind "service.httpsms"
+  config {
+    provider "messagebird"
+    api_key  "MESSAGEBIRD_KEY_TEST"
+    queue    "bus"
+  }
+}
+
+resource "sinch_eu_http" {
+  kind "service.httpsms"
+  config {
+    provider "custom_rest"
+    endpoint "https://sms.api.sinch.com/xms/v1/test/batches"
+    api_key  "SINCH_API_TOKEN"
+    queue    "bus"
+  }
+}
+
+resource "zenvia_latam_http" {
+  kind "service.httpsms"
+  config {
+    provider "custom_rest"
+    endpoint "https://api.zenvia.com/v2/channels/sms/messages"
+    api_key  "ZENVIA_KEY_TEST"
+    queue    "bus"
+  }
+}
+
+resource "africastalking_http" {
+  kind "service.httpsms"
+  config {
+    provider "custom_rest"
+    endpoint "https://api.africastalking.com/version1/messaging"
+    api_key  "AT_KEY_TEST"
+    queue    "bus"
+  }
+}
+
+resource "infobip_global_http" {
+  kind "service.httpsms"
+  config {
+    provider "infobip"
+    endpoint "https://api.infobip.com"
+    api_key  "INFOBIP_API_KEY_TEST"
+    queue    "bus"
+  }
+}
+
+resource "vonage_global_fallback" {
+  kind "service.httpsms"
+  config {
+    provider   "vonage"
+    api_key    "VONAGE_KEY_TEST"
+    api_secret "VONAGE_SECRET_TEST"
+    from       "BrandFallback"
+    queue      "bus"
+  }
+}
+
+# =============================================================================
+# Policy & Rules Engine
+# =============================================================================
+
+resource "policy_engine" {
+  kind "rules.engine"
+  config {
+    environment "production"
+  }
+}
+
+# =============================================================================
+# Multi-Provider Parameter-Based SMS Router
+# =============================================================================
+
+resource "gateway" {
+  kind "sms.router"
+  config {
+    providers [
+      { name "carrier_ntc_smpp",      resource "carrier_ntc_smpp",      priority 10, cost 0.012, tier 1, enabled true },
+      { name "carrier_ncell_smpp",    resource "carrier_ncell_smpp",    priority 10, cost 0.014, tier 1, enabled true },
+      { name "sparrow_sms_http",      resource "sparrow_sms_http",      priority 6,  cost 0.018, tier 2, enabled true },
+      { name "airtel_direct_smpp",    resource "airtel_direct_smpp",    priority 10, cost 0.005, tier 1, enabled true },
+      { name "jio_direct_smpp",       resource "jio_direct_smpp",       priority 10, cost 0.0048,tier 1, enabled true },
+      { name "route_mobile_http",     resource "route_mobile_http",     priority 6,  cost 0.0062,tier 2, enabled true },
+      { name "twilio_us_direct",      resource "twilio_us_direct",      priority 10, cost 0.0079,tier 1, enabled true },
+      { name "aws_sns_us",            resource "aws_sns_us",            priority 8,  cost 0.00645,tier 2, enabled true },
+      { name "bandwidth_us",          resource "bandwidth_us",          priority 7,  cost 0.0055,tier 2, enabled true },
+      { name "bt_direct_smpp",        resource "bt_direct_smpp",        priority 10, cost 0.022, tier 1, enabled true },
+      { name "messagebird_eu",        resource "messagebird_eu",        priority 9,  cost 0.045, tier 1, enabled true },
+      { name "sinch_eu_http",         resource "sinch_eu_http",         priority 7,  cost 0.040, tier 2, enabled true },
+      { name "singtel_apac_smpp",     resource "singtel_apac_smpp",     priority 10, cost 0.028, tier 1, enabled true },
+      { name "zenvia_latam_http",     resource "zenvia_latam_http",     priority 9,  cost 0.035, tier 1, enabled true },
+      { name "etisalat_mena_smpp",    resource "etisalat_mena_smpp",    priority 10, cost 0.025, tier 1, enabled true },
+      { name "africastalking_http",   resource "africastalking_http",   priority 9,  cost 0.020, tier 1, enabled true },
+      { name "infobip_global_http",   resource "infobip_global_http",   priority 7,  cost 0.055, tier 2, enabled true },
+      { name "vonage_global_fallback",resource "vonage_global_fallback",priority 5,  cost 0.060, tier 3, enabled true }
+    ]
+    routing_rules         "sms_routing"
+    rules_engine          "policy_engine"
+    failover              true
+    max_retries           3
+    retry_budget          "50ms"
+    min_success_rate      0.80
+    health_check_interval "30s"
+    dlr_feedback_queue    "bus"
+  }
+}

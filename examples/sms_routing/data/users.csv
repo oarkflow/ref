@@ -1,0 +1,48 @@
+user_id,name,email,phone_raw,country_code,customer_tier,traffic_type,preferred_encoding,max_cost_per_sms,monthly_volume_est,sender_id,status
+usr_001,Everest Bank Ltd,alerts@everestbank.np,+9779841234567,NP,vip,otp,gsm7,0.02,1500000,EVRSTB,active
+usr_002,Ncell Tech Portal,dev@ncell.com.np,9801234567,NP,vip,critical_alert,gsm7,0.025,500000,NCELL,active
+usr_003,Daraz Nepal,marketing@daraz.com.np,984-123-4567,NP,enterprise,marketing,ucs2,0.015,2000000,DARAZ,active
+usr_004,Kathmandu Bakery,info@ktmbakery.np,9779812345678,NP,starter,marketing,gsm7,0.012,5000,BAKERY,active
+usr_005,HDFC Digital Bank,alerts@hdfcbank.com,+919876543210,IN,vip,otp,gsm7,0.008,10000000,HDFCBK,active
+usr_006,Swiggy India,ops@swiggy.in,09876543210,IN,enterprise,transactional,gsm7,0.006,8000000,SWIGGY,active
+usr_007,Flipkart Online,promo@flipkart.com,+91 98230-12345,IN,enterprise,marketing,ucs2,0.005,15000000,FLPKRT,active
+usr_008,Zerodha Broking,security@zerodha.com,9823012345,IN,vip,critical_alert,gsm7,0.01,3000000,ZRODHA,active
+usr_009,Bangalore Kirana,owner@kirana.in,+919876543210,IN,starter,marketing,gsm7,0.006,2000,KIRANA,active
+usr_010,Stripe Payments US,auth@stripe.com,+14155552671,US,vip,otp,gsm7,0.012,20000000,STRIPE,active
+usr_011,Uber Technologies,dispatch@uber.com,(415) 555-2671,US,enterprise,transactional,gsm7,0.01,12000000,UBER,active
+usr_012,Netflix Streaming,verify@netflix.com,415-555-0199,US,enterprise,otp,gsm7,0.009,9000000,NFLX,active
+usr_013,DoorDash Delivery,support@doordash.com,415.555.3344,US,business,transactional,gsm7,0.008,5000000,DOORD,active
+usr_014,Silicon Valley Promo,ads@svpromo.io,1-800-555-0199,US,business,marketing,gsm7,0.006,3000000,SVPROM,active
+usr_015,Acme Retail Store,info@acmeretail.us,+14155552671,US,starter,marketing,gsm7,0.006,8000,ACMERT,active
+usr_016,Shopify Canada,notifications@shopify.com,+14165550199,CA,enterprise,transactional,gsm7,0.01,6000000,SHOPIF,active
+usr_017,Royal Bank of Canada,security@rbc.com,(416) 555-0199,CA,vip,otp,gsm7,0.012,4000000,RBCBNK,active
+usr_018,Revolut UK,security@revolut.com,+447911123456,GB,vip,otp,gsm7,0.035,7000000,REVOLT,active
+usr_019,Deliveroo London,ops@deliveroo.co.uk,07911 123456,GB,enterprise,transactional,gsm7,0.03,4500000,DLVROO,active
+usr_020,Monzo Bank,alerts@monzo.com,+44 7700 900123,GB,vip,critical_alert,gsm7,0.032,2500000,MONZO,active
+usr_021,Camden Vintage Store,info@camdenvintage.co.uk,+447911123456,GB,starter,marketing,gsm7,0.025,3000,CAMDEN,active
+usr_022,N26 Bank Berlin,auth@n26.com,+4915123456789,DE,vip,otp,gsm7,0.055,3500000,N26BNK,active
+usr_023,Delivery Hero Germany,orders@deliveryhero.de,0151 23456789,DE,enterprise,transactional,gsm7,0.048,5000000,DLVHER,active
+usr_024,Zalando Fashion,promo@zalando.de,+4915123456789,DE,enterprise,marketing,ucs2,0.042,4000000,ZALNDO,active
+usr_025,BNP Paribas Paris,securite@bnpparibas.fr,+33612345678,FR,vip,otp,gsm7,0.055,6000000,BNPPAR,active
+usr_026,BlaBlaCar France,contact@blablacar.fr,06 12 34 56 78,FR,business,transactional,gsm7,0.045,1200000,BLABLA,active
+usr_027,Rakuten Group Tokyo,auth@rakuten.co.jp,+819012345678,JP,vip,otp,ucs2,0.04,8000000,RAKUTN,active
+usr_028,Mercari Japan,info@mercari.jp,090-1234-5678,JP,enterprise,transactional,ucs2,0.035,4000000,MRCARI,active
+usr_029,Kyoto Tea Merchant,order@kyototea.jp,+819012345678,JP,starter,marketing,ucs2,0.03,4000,KYOTEA,active
+usr_030,Canva Sydney,auth@canva.com,+61412345678,AU,enterprise,otp,gsm7,0.035,5000000,CANVA,active
+usr_031,Afterpay Australia,alerts@afterpay.com,0412 345 678,AU,vip,transactional,gsm7,0.032,3500000,AFTPAY,active
+usr_032,Careem Dubai,dispatch@careem.com,+971501234567,AE,enterprise,transactional,gsm7,0.03,3000000,CAREEM,active
+usr_033,Emirates NBD Bank,auth@emiratesnbd.ae,050 123 4567,AE,vip,otp,gsm7,0.035,4500000,ENBD,active
+usr_034,Noon E-Commerce,promo@noon.com,+971501234567,AE,enterprise,marketing,ucs2,0.028,6000000,NOONAE,active
+usr_035,Grab Southeast Asia,verify@grab.com,+6591234567,SG,vip,otp,gsm7,0.032,9000000,GRAB,active
+usr_036,Shopee Singapore,dispatch@shopee.sg,9123 4567,SG,enterprise,marketing,ucs2,0.03,7500000,SHOPEE,active
+usr_037,DBS Bank Singapore,2fa@dbs.com,+6591234567,SG,vip,critical_alert,gsm7,0.035,5500000,DBSBNK,active
+usr_038,Nubank Brasil,seguranca@nubank.com.br,+5511987654321,BR,vip,otp,gsm7,0.04,11000000,NUBANK,active
+usr_039,iFood Brasil,pedidos@ifood.com.br,(11) 98765-4321,BR,enterprise,transactional,gsm7,0.038,6500000,IFOOD,active
+usr_040,Magazine Luiza,marketing@magalu.com.br,+5511987654321,BR,business,marketing,ucs2,0.036,4000000,MAGALU,active
+usr_041,Standard Bank South Africa,alerts@standardbank.co.za,+27821234567,ZA,vip,otp,gsm7,0.025,4000000,STDBNK,active
+usr_042,Takealot Cape Town,orders@takealot.com,082 123 4567,ZA,enterprise,transactional,gsm7,0.022,2500000,TKLOT,active
+usr_043,Flutterwave Nigeria,auth@flutterwave.com,+2348031234567,NG,vip,otp,gsm7,0.025,5000000,FLTWVE,active
+usr_044,Paystack Lagos,security@paystack.com,0803 123 4567,NG,enterprise,transactional,gsm7,0.022,3500000,PSTACK,active
+usr_045,M-Pesa Safaricom Kenya,info@safaricom.co.ke,+254712345678,KE,vip,critical_alert,gsm7,0.025,8000000,MPESA,active
+usr_046,Toss Payments Seoul,security@toss.im,+821012345678,KR,vip,otp,ucs2,0.035,6000000,TOSS,active
+usr_047,Coupang Seoul,delivery@coupang.com,010-1234-5678,KR,enterprise,transactional,ucs2,0.032,9000000,COUPNG,active

@@ -234,6 +234,68 @@ type Notification struct {
 }
 
 // ---------------------------------------------------------------------------
+// SMS Provider Contract
+// ---------------------------------------------------------------------------
+
+// SMSProvider is the typed contract for SMS gateway adapters.
+// Gateway adapters (SMPP, HTTP/Twilio, HTTP/Vonage, AWS SNS, etc.) satisfy it.
+type SMSProvider interface {
+	// Submit sends one message. It returns an SMSResult where OK reports
+	// acceptance or success, and Error describes any gateway-level refusal or failure.
+	Submit(ctx context.Context, msg SMSMessage) (SMSResult, error)
+	// ProviderID returns a stable identifier used in routing audit records.
+	ProviderID() string
+}
+
+// SMSMessage is the transport-neutral SMS payload.
+type SMSMessage struct {
+	From       string            `json:"from"`
+	To         string            `json:"to"`      // E.164 formatted destination
+	Text       string            `json:"text"`
+	Encoding   string            `json:"encoding,omitempty"` // gsm7 | ucs2 | auto
+	DLR        bool              `json:"dlr,omitempty"`
+	DLRJobType string            `json:"dlr_job_type,omitempty"` // queue job type for receipt
+	Tags       map[string]string `json:"tags,omitempty"`         // metadata forwarded to provider or router
+}
+
+// SMSResult is the outcome of one Submit call.
+type SMSResult struct {
+	OK            bool      `json:"ok"`
+	ProviderMsgID string    `json:"provider_message_id,omitempty"`
+	ProviderID    string    `json:"provider_id,omitempty"`
+	Segments      int       `json:"segments,omitempty"`
+	LatencyMs     int64     `json:"latency_ms,omitempty"`
+	Attempts      int       `json:"attempts,omitempty"`
+	Error         *SMSError `json:"error,omitempty"`
+}
+
+// SMSError describes a gateway-level failure.
+type SMSError struct {
+	Kind       string `json:"kind"`               // timeout | auth | invalid_dest | throttled | rejected | unknown
+	Protocol   string `json:"protocol,omitempty"` // smpp | http
+	StatusCode int    `json:"status,omitempty"`   // HTTP status or SMPP status integer
+	Code       string `json:"code,omitempty"`     // provider-specific code
+	Message    string `json:"message,omitempty"`
+	Retryable  bool   `json:"retryable"`
+}
+
+// SMSProviderHealth allows the routing engine to query a provider's current
+// health before dispatching. Adapters that cannot report health should not
+// implement it; the router treats them as always-healthy.
+type SMSProviderHealth interface {
+	Health(ctx context.Context) SMSHealthReport
+}
+
+// SMSHealthReport is a snapshot of a provider's observed reliability.
+type SMSHealthReport struct {
+	Available    bool    `json:"available"`
+	SuccessRate  float64 `json:"success_rate"` // last 5 minutes, 0–1
+	AvgLatencyMs int64   `json:"avg_latency_ms"`
+	OpenWindow   int     `json:"open_window"` // available capacity in sliding window
+}
+
+
+// ---------------------------------------------------------------------------
 // Model providers
 // ---------------------------------------------------------------------------
 

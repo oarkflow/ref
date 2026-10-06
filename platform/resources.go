@@ -34,4 +34,7 @@ func registerBuiltinResources(r *Registry) {
 	registerOrgResources(r)
 	registerPipelineResources(r)
 	registerWorkflowResources(r)
+	registerWorkflowManagerResources(r)
+	registerAppManagerResources(r)
+	registerSMSRouterResources(r)
 }

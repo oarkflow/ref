@@ -1,0 +1,56 @@
+intent "notification.send_otp" {
+  node "dispatch-otp" {
+    uses "sms.send"
+    resource "gateway"
+    requires [message]
+    provides [sent]
+    config {
+      to_fact             "message.to"
+      from_fact           "message.from"
+      text_fact           "message.text"
+      country_fact        "message.country"
+      mno_fact            "message.mno"
+      customer_tier_fact  "message.customer_tier"
+      traffic_type_fact   "message.traffic_type"
+      encoding_fact       "message.encoding"
+      dlr                 true
+      dlr_job_type        "sms.dlr"
+      capture             true
+    }
+  }
+}
+
+intent "sms.dispatch_routed" {
+  node "route-and-send" {
+    uses "sms.send"
+    resource "gateway"
+    requires [message]
+    provides [sent]
+    config {
+      to_fact             "message.to"
+      from_fact           "message.from"
+      text_fact           "message.text"
+      country_fact        "message.country"
+      mno_fact            "message.mno"
+      customer_tier_fact  "message.customer_tier"
+      traffic_type_fact   "message.traffic_type"
+      encoding_fact       "message.encoding"
+      provider_failed_fact "message.provider_failed"
+      dlr                 true
+      dlr_job_type        "sms.dlr"
+      capture             true
+    }
+  }
+}
+
+intent "sms.process_dlr" {
+  node "record-dlr" {
+    uses "sms.record_dlr"
+    resource "gateway"
+    requires [dlr]
+    provides [recorded]
+    config {
+      dlr_fact "dlr"
+    }
+  }
+}

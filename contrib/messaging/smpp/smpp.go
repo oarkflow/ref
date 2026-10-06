@@ -121,6 +121,7 @@ type Client struct {
 	conns map[string]*conn
 
 	publish func(job string, payload any) error
+	tracker *healthTracker
 }
 
 // conn is one bind. A Client keeps one per set of credentials in use, so the
@@ -171,7 +172,7 @@ func open(_ context.Context, spec platform.ResourceSpec) (platform.Resource, io.
 	if cfg.ConnectTimeout == 0 {
 		cfg.ConnectTimeout = cfgdec.Duration(10 * time.Second)
 	}
-	c := &Client{name: spec.Name, cfg: cfg}
+	c := &Client{name: spec.Name, cfg: cfg, tracker: newHealthTracker(cfg.WindowSize)}
 	if cfg.Queue != "" {
 		if cfg.ReceiptJob == "" {
 			return nil, nil, fmt.Errorf("service.smpp %q: receipt_job is required with queue", spec.Name)
@@ -322,8 +323,8 @@ type Message struct {
 	SystemID, Password string
 }
 
-// Submit sends one message. It returns the carrier's message id.
-func (c *Client) Submit(ctx context.Context, m Message) (string, *Failure) {
+// SubmitSMPP sends one message through the SMPP session. It returns the carrier's message id.
+func (c *Client) SubmitSMPP(ctx context.Context, m Message) (string, *Failure) {
 	mgr, f := c.connect(ctx, m.SystemID, m.Password)
 	if f != nil {
 		return "", f
@@ -458,7 +459,7 @@ func buildSubmit(build platform.BuildContext, spec platform.NodeSpec) (platform.
 		m.Reference = strings.TrimSpace(m.Reference)
 
 		started := time.Now()
-		id, f := client.Submit(ctx.Context, m)
+		id, f := client.SubmitSMPP(ctx.Context, m)
 		out := map[string]any{"ok": f == nil, "latency_ms": time.Since(started).Milliseconds(), "provider_message_id": id}
 		if f != nil {
 			out["error"] = map[string]any{

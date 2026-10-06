@@ -1,0 +1,19 @@
+id,name,protocol,country_coverage,tier,priority,cost_per_sms,tps_limit,health_status,success_rate,avg_latency_ms
+carrier_ntc_smpp,Nepal Telecom SMPP Direct,smpp,NP,1,10,0.012,100,healthy,0.992,35
+carrier_ncell_smpp,Ncell SMPP Direct,smpp,NP,1,10,0.014,120,healthy,0.989,42
+sparrow_sms_http,Sparrow SMS Nepal Aggregator,http,NP,2,6,0.018,30,healthy,0.945,110
+airtel_direct_smpp,Bharti Airtel SMPP Direct,smpp,IN,1,10,0.0050,200,healthy,0.994,28
+jio_direct_smpp,Reliance Jio SMPP Direct,smpp,IN,1,10,0.0048,250,healthy,0.995,25
+route_mobile_http,Route Mobile India Aggregator,http,IN,2,6,0.0062,80,healthy,0.958,95
+twilio_us_direct,Twilio North America Gateway,http,"US,CA",1,10,0.0079,150,healthy,0.998,65
+aws_sns_us,AWS SNS US Messaging,http,"US,CA",2,8,0.00645,100,healthy,0.985,85
+bandwidth_us,Bandwidth US Bulk SMS,http,US,2,7,0.0055,120,healthy,0.970,105
+bt_direct_smpp,British Telecom Direct SMPP,smpp,GB,1,10,0.022,80,healthy,0.996,40
+messagebird_eu,MessageBird Europe Gateway,http,"GB,DE,FR,NL,IT,ES",1,9,0.045,100,healthy,0.991,75
+sinch_eu_http,Sinch Europe Bulk SMS,http,"GB,DE,FR",2,7,0.040,90,healthy,0.965,115
+singtel_apac_smpp,Singtel APAC Direct SMPP,smpp,"SG,MY,ID,JP,AU",1,10,0.028,70,healthy,0.993,48
+infobip_global_http,Infobip Global Aggregator,http,GLOBAL,2,7,0.055,100,healthy,0.982,90
+vonage_global_fallback,Vonage Nexmo Global Fallback,http,GLOBAL,3,5,0.060,80,healthy,0.975,130
+zenvia_latam_http,Zenvia LATAM Direct Gateway,http,"BR,AR,MX,CL",1,9,0.035,80,healthy,0.988,80
+etisalat_mena_smpp,Etisalat e& MENA SMPP Direct,smpp,"AE,SA,EG",1,10,0.025,120,healthy,0.995,30
+africastalking_http,Africa's Talking Regional Gateway,http,"NG,KE,ZA,GH,UG",1,9,0.020,90,healthy,0.986,88

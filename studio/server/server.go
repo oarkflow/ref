@@ -108,6 +108,8 @@ type Config struct {
 	Now func() time.Time
 	// Logf logs internal errors (default: discard).
 	Logf func(format string, args ...any)
+	// AppManager runs application management and lifecycle operations.
+	AppManager platform.AppManager
 }
 
 // Server is the Studio API.
@@ -140,6 +142,8 @@ type Server struct {
 
 	// flows caches each draft's journey graph for its current version.
 	flows flowCache
+	// appMgr is the application lifecycle manager.
+	appMgr platform.AppManager
 }
 
 // New builds a Server from cfg.
@@ -230,6 +234,9 @@ func New(cfg Config) (*Server, error) {
 		Events() (<-chan preview.Status, func())
 	}); ok {
 		s.forwardPreviewEvents(ev)
+	}
+	if s.cfg.AppManager != nil {
+		s.appMgr = s.cfg.AppManager
 	}
 	s.routes()
 	return s, nil
@@ -615,6 +622,20 @@ func (s *Server) routes() {
 	s.route("POST "+api+"/revisions/{id}/activate", rv, s.activate)
 	s.route("POST "+api+"/rollback", ad, s.rollback)
 	s.route("GET "+api+"/audit", ad, s.auditList)
+
+	// Application Management Console routes
+	s.route("GET "+api+"/apps", v, s.listApps)
+	s.route("POST "+api+"/apps", e, s.createApp)
+	s.route("GET "+api+"/apps/{id}", v, s.getApp)
+	s.route("PUT "+api+"/apps/{id}", e, s.updateApp)
+	s.route("POST "+api+"/apps/{id}/activate", rv, s.activateApp)
+	s.route("POST "+api+"/apps/{id}/deactivate", rv, s.deactivateApp)
+	s.route("DELETE "+api+"/apps/{id}", ad, s.deleteApp)
+	s.route("POST "+api+"/apps/{id}/rollback", ad, s.rollbackApp)
+	s.route("GET "+api+"/apps/{id}/health", v, s.appHealth)
+	s.route("GET "+api+"/apps/{id}/metrics", v, s.appMetrics)
+	s.route("GET "+api+"/apps/{id}/logs", v, s.appLogs)
+	s.route("POST "+api+"/apps/{id}/run", e, s.runAppIntent)
 
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, errf(http.StatusNotFound, "not_found", "no such endpoint"))

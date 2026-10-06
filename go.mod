@@ -7,7 +7,7 @@ require (
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/oarkflow/authz v0.0.6
-	github.com/oarkflow/bcl v0.0.36
+	github.com/oarkflow/bcl v0.0.37
 	github.com/oarkflow/fh v0.0.26
 	github.com/oarkflow/rules v0.0.5
 	github.com/oarkflow/tcpguard v0.0.16
@@ -38,7 +38,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
-	github.com/oarkflow/config v0.0.1 // indirect
+	github.com/oarkflow/config v0.0.1
 	github.com/oarkflow/convert v0.0.6 // indirect
 	github.com/oarkflow/interpreter v0.0.13 // indirect
 	github.com/oarkflow/ip v0.0.11 // indirect
@@ -53,7 +53,7 @@ require (
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/metric v1.46.0 // indirect
 	go.uber.org/atomic v1.12.0 // indirect
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.59.0
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect

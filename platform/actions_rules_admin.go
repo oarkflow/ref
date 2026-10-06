@@ -285,6 +285,25 @@ func registerRulesAdminActions(r *Registry) {
 		ResourceKind: "rules.engine", Provides: "The decision result with its trace", Kind: "read",
 		Config: append(append([]ConfigField{}, cfg...), ConfigField{Name: "decision_fact", Type: "fact", Default: "input.decision"}, ConfigField{Name: "facts_fact", Type: "fact", Default: "input.facts"}),
 	})
+	mustAction(r, "rules.publish_dynamic", rulesPublishDynamicAction, ActionInfo{
+		Family: "rules", Summary: "Create and publish a new rule definition directly from source text",
+		ResourceKind: "rules.engine", Provides: "{ name, version }", Kind: "effect",
+		Config: []ConfigField{
+			{Name: "name", Type: "template"},
+			{Name: "name_fact", Type: "fact", Default: "input.name"},
+			{Name: "source", Type: "template"},
+			{Name: "source_fact", Type: "fact", Default: "input.source"},
+		},
+	})
+	mustAction(r, "rules.simulate", rulesSimulateAction, ActionInfo{
+		Family: "rules", Summary: "Simulate condition or policy evaluation against draft source text without saving",
+		ResourceKind: "rules.engine", Provides: "The decision result with its trace", Kind: "read",
+		Config: []ConfigField{
+			{Name: "source_fact", Type: "fact", Default: "input.source"},
+			{Name: "decision_fact", Type: "fact", Default: "input.decision"},
+			{Name: "facts_fact", Type: "fact", Default: "input.facts"},
+		},
+	})
 }
 
 func engineOf(build BuildContext, spec NodeSpec) (*rulesEngineWrapper, error) {
@@ -500,5 +519,125 @@ var rulesCheckAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec)
 			return ActionResult{}, invalidInput("%s", message)
 		}
 		return singleOutput(spec, map[string]any{"valid": valid, "diagnostics": diagnostics}), nil
+	}), nil
+})
+
+var rulesPublishDynamicAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) (Action, error) {
+	engine, err := engineOf(build, spec)
+	if err != nil {
+		return nil, err
+	}
+	if err := exactlyOneOutput(spec); err != nil {
+		return nil, err
+	}
+	nameTmpl, _ := configTemplate(spec.Config, "name", "")
+	nameFact := configString(spec.Config, "name_fact", "input.name")
+	sourceTmpl, _ := configTemplate(spec.Config, "source", "")
+	sourceFact := configString(spec.Config, "source_fact", "input.source")
+
+	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
+		env := actionEnv(ctx)
+		name := ""
+		if nameFact != "" {
+			if v, ok := resolvePath(ctx.Inputs, nameFact); ok {
+				name = Stringify(v)
+			}
+		}
+		if name == "" && nameTmpl != nil {
+			name, _ = nameTmpl.Render(env)
+		}
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return ActionResult{}, invalidInput("rules.publish_dynamic requires name")
+		}
+
+		source := ""
+		if sourceFact != "" {
+			if v, ok := resolvePath(ctx.Inputs, sourceFact); ok {
+				source = Stringify(v)
+			}
+		}
+		if source == "" && sourceTmpl != nil {
+			source, _ = sourceTmpl.Render(env)
+		}
+		if strings.TrimSpace(source) == "" {
+			return ActionResult{}, invalidInput("rules.publish_dynamic requires non-empty source")
+		}
+
+		engine.mu.Lock()
+		defer engine.mu.Unlock()
+		version := engine.nextVersion("dyn")
+		req := rules.PublishRequest{
+			TenantID: engine.cfg.DefaultTenant,
+			Name:     name,
+			Version:  version,
+			Source:   source,
+		}
+		if _, err := engine.service.Publish(ctx.Context, req); err != nil {
+			return ActionResult{}, invalidInput("the rule could not be published: %s%s", err.Error(), rulesDiagnostics(ctx.Context, engine.service, req))
+		}
+		if engine.overrides != nil {
+			_, _ = engine.overrides.ExecContext(ctx.Context, rebind(engine.overrides.Dialect, fmt.Sprintf("DELETE FROM %s WHERE name = $1", engine.table)), name)
+			_, _ = engine.overrides.ExecContext(ctx.Context, rebind(engine.overrides.Dialect,
+				fmt.Sprintf("INSERT INTO %s (name, source, version, updated_by, updated_ms) VALUES ($1, $2, $3, $4, $5)", engine.table)),
+				name, source, version, ctx.Principal.ID, time.Now().UnixMilli())
+		}
+
+		return singleOutput(spec, map[string]any{"name": name, "version": version}), nil
+	}), nil
+})
+
+var rulesSimulateAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) (Action, error) {
+	engine, err := engineOf(build, spec)
+	if err != nil {
+		return nil, err
+	}
+	if err := exactlyOneOutput(spec); err != nil {
+		return nil, err
+	}
+	sourceFact := configString(spec.Config, "source_fact", "input.source")
+	decisionFact := configString(spec.Config, "decision_fact", "input.decision")
+	factsFact := configString(spec.Config, "facts_fact", "input.facts")
+
+	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
+		source := ruleFact(ctx, sourceFact)
+		decision := ruleFact(ctx, decisionFact)
+		if strings.TrimSpace(source) == "" {
+			return ActionResult{}, invalidInput("rules.simulate requires source")
+		}
+		if decision == "" {
+			return ActionResult{}, invalidInput("rules.simulate requires decision")
+		}
+
+		tempName := fmt.Sprintf("sim_%d", time.Now().UnixNano())
+		tempVersion := fmt.Sprintf("v_%d", time.Now().UnixNano())
+		req := rules.PublishRequest{
+			TenantID: engine.cfg.DefaultTenant,
+			Name:     tempName,
+			Version:  tempVersion,
+			Source:   source,
+		}
+		_, err := engine.service.Publish(ctx.Context, req)
+		if err != nil {
+			return ActionResult{}, invalidInput("rule compilation failed: %s", err.Error())
+		}
+		record, err := engine.service.GetDefinition(ctx.Context, tempName)
+		if err != nil || record.Program == nil {
+			return ActionResult{}, invalidInput("rule compiled program unavailable")
+		}
+
+		facts := map[string]any{}
+		if v, ok := resolvePath(ctx.Inputs, factsFact); ok {
+			if m, ok := v.(map[string]any); ok {
+				facts = m
+			}
+		}
+
+		res, err := evaluateDecision(record.Program, decision, facts, true)
+		if err != nil {
+			return ActionResult{}, invalidInput("evaluation error: %s", err.Error())
+		}
+
+		return singleOutput(spec, decisionMap(res, true)), nil
 	}), nil
 })

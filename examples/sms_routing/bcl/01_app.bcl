@@ -1,0 +1,4 @@
+app "sms_routing_service" {
+  version "1.0.0"
+  description "Multi-provider SMS routing with health-aware failover and rules-based dispatch"
+}

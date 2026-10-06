@@ -54,6 +54,9 @@ func registerBuiltins(r *Registry) {
 	registerFlagActions(r)
 	registerDocumentActions(r)
 	registerMoneyActions(r)
+	registerSMSActions(r)
+	registerDynamicWorkflowActions(r)
+	registerAppActions(r)
 }
 
 // registerCoreActions installs the handful of primitives every application uses

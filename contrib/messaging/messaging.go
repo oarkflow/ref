@@ -6,6 +6,7 @@
 package messaging
 
 import (
+	"github.com/oarkflow/ref/contrib/messaging/httpsms"
 	"github.com/oarkflow/ref/contrib/messaging/phonecheck"
 	"github.com/oarkflow/ref/contrib/messaging/queuebroker"
 	"github.com/oarkflow/ref/contrib/messaging/sim"
@@ -16,6 +17,7 @@ import (
 func Register() {
 	queuebroker.Register()
 	smpp.Register()
+	httpsms.Register()
 	sim.Register()
 	phonecheck.Register()
 }
