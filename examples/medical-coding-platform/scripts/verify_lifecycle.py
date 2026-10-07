@@ -38,14 +38,14 @@ def get(url, cookie=None):
         return e.code, json.loads(e.read().decode("utf-8"))
 
 print("1. Testing Argon2id Login (doctor@clear.io):")
-status, res, cookie = post("/login", {"email": "doctor@clear.io", "password": "DoctorPass123!"})
+status, res, cookie = post("/login", {"email": "doctor@clear.io", "password": "DoctorSecret123!"})
 assert status == 200, f"Expected 200, got {status}: {res}"
 assert res.get("principal", {}).get("email") == "doctor@clear.io"
 assert cookie is not None
 print("   [PASS] Logged in successfully, session cookie received.")
 
 print("\n2. Testing Bcrypt Legacy Fallback Login (legacy_user@clear.io):")
-status, res, legacy_cookie = post("/login", {"email": "legacy_user@clear.io", "password": "LegacyBcryptPassword123!"})
+status, res, legacy_cookie = post("/login", {"email": "legacy_user@clear.io", "password": "LegacySecret123!"})
 assert status == 200, f"Expected 200, got {status}: {res}"
 assert res.get("principal", {}).get("email") == "legacy_user@clear.io"
 assert legacy_cookie is not None

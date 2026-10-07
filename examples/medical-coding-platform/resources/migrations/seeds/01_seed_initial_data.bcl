@@ -11,10 +11,22 @@ Seed "seed_admin" {
   rows = 1
   table = "users"
   Field "id" { value = "usr_admin_01" }
-  Field "email" { value = "admin@example.com" }
+  Field "email" { value = "doctor@clear.io" }
   Field "name" { value = "Alice Administrator" }
-  Field "password_hash" { value = "$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg" }
-  Field "roles" { value = "admin" }
+  Field "password_hash" { value = "$argon2id$v=19$m=65536,t=3,p=4$JiGoSvrF2047ZnH7Bf8MEg$xFaNkjp0i5IyBpjs0srstwilTilMiit/mWK5+pryvd4" }
+  Field "roles" { value = "admin,super_admin" }
+  Field "avatar" { value = "" }
+  Field "status" { value = "active" }
+}
+
+Seed "seed_legacy" {
+  rows = 1
+  table = "users"
+  Field "id" { value = "usr_legacy_01" }
+  Field "email" { value = "legacy_user@clear.io" }
+  Field "name" { value = "Legacy User" }
+  Field "password_hash" { value = "$2b$10$XGCXmCGb4HkQh0ZbteiEYu7gSvbtE0NN5JEzVNzKs4W4r0tcZtc76" }
+  Field "roles" { value = "coder" }
   Field "avatar" { value = "" }
   Field "status" { value = "active" }
 }
@@ -23,9 +35,9 @@ Seed "seed_coder" {
   rows = 1
   table = "users"
   Field "id" { value = "usr_coder_01" }
-  Field "email" { value = "coder@example.com" }
+  Field "email" { value = "coder@clear.io" }
   Field "name" { value = "Gita Coder" }
-  Field "password_hash" { value = "$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg" }
+  Field "password_hash" { value = "$argon2id$v=19$m=65536,t=3,p=4$JiGoSvrF2047ZnH7Bf8MEg$xFaNkjp0i5IyBpjs0srstwilTilMiit/mWK5+pryvd4" }
   Field "roles" { value = "coder" }
   Field "avatar" { value = "" }
   Field "status" { value = "active" }
@@ -35,10 +47,10 @@ Seed "seed_qa" {
   rows = 1
   table = "users"
   Field "id" { value = "usr_qa_01" }
-  Field "email" { value = "qa@example.com" }
+  Field "email" { value = "auditor@clear.io" }
   Field "name" { value = "Quinn QA" }
-  Field "password_hash" { value = "$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg" }
-  Field "roles" { value = "qa" }
+  Field "password_hash" { value = "$argon2id$v=19$m=65536,t=3,p=4$JiGoSvrF2047ZnH7Bf8MEg$xFaNkjp0i5IyBpjs0srstwilTilMiit/mWK5+pryvd4" }
+  Field "roles" { value = "qa_auditor" }
   Field "avatar" { value = "" }
   Field "status" { value = "active" }
 }
@@ -47,9 +59,9 @@ Seed "seed_de" {
   rows = 1
   table = "users"
   Field "id" { value = "usr_de_01" }
-  Field "email" { value = "de@example.com" }
+  Field "email" { value = "de@clear.io" }
   Field "name" { value = "Dave DataEntry" }
-  Field "password_hash" { value = "$argon2id$v=19$m=65536,t=3,p=4$/eQZGdn1LlBDaLJJF7Q+Hw$f8boI7+C7bkL59d67yZoojy0/RVEW/ULcNOAP0f4RTg" }
+  Field "password_hash" { value = "$argon2id$v=19$m=65536,t=3,p=4$JiGoSvrF2047ZnH7Bf8MEg$xFaNkjp0i5IyBpjs0srstwilTilMiit/mWK5+pryvd4" }
   Field "roles" { value = "data_entry" }
   Field "avatar" { value = "" }
   Field "status" { value = "active" }

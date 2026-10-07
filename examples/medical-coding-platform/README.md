@@ -417,7 +417,326 @@ The test seed script automatically configures the following accounts:
 
 ---
 
-## 11. Production Deployment
+## 11. API Reference
+
+### Authentication
+
+All authenticated endpoints require a session cookie obtained via `POST /login` or a Bearer token.
+
+#### POST /login
+
+Authenticate with email and password.
+
+**Request:**
+```json
+{
+  "email": "doctor@clear.io",
+  "password": "DoctorSecret123!"
+}
+```
+
+**Response (200):**
+```json
+{
+  "principal": {
+    "id": "usr_admin_01",
+    "email": "doctor@clear.io",
+    "name": "Alice Administrator",
+    "roles": ["admin", "super_admin"],
+    "tenant_id": "comp_clear_01"
+  }
+}
+```
+
+**Response (401):**
+```json
+{
+  "error": {
+    "code": "INVALID_CREDENTIALS",
+    "message": "Invalid email or password"
+  }
+}
+```
+
+#### POST /logout
+
+Destroy the current session. Returns 204 No Content.
+
+#### GET /me
+
+Returns the current authenticated user's profile.
+
+**Response (200):**
+```json
+{
+  "id": "usr_admin_01",
+  "email": "doctor@clear.io",
+  "name": "Alice Administrator",
+  "roles": ["admin", "super_admin"],
+  "tenant_id": "comp_clear_01"
+}
+```
+
+---
+
+### Encounters & Coding
+
+#### POST /coding/:work_item_id/:encounter_id/start-coding
+
+Claim an encounter for coding.
+
+**Request:** `{}` (empty body)
+
+**Response (200):**
+```json
+{
+  "claimed": 1,
+  "encounter_id": "enc_1002",
+  "status": "IN_PROGRESS"
+}
+```
+
+#### POST /coding/:work_item_id/:encounter_id/save-coding-documentation
+
+Save coding documentation and optionally complete the encounter.
+
+**Request:**
+```json
+{
+  "dos": "2026-03-11",
+  "documentation": "Patient examined and discharged in stable condition.",
+  "request_qa": false
+}
+```
+
+**Response (200):**
+```json
+{
+  "header_updated": 1,
+  "next_status": "COMPLETE"
+}
+```
+
+#### GET /coding/:work_item_id/:encounter_id/summary
+
+Get coding summary for an encounter.
+
+**Response (200):**
+```json
+{
+  "encounter_id": "enc_1002",
+  "patient_name": "Robert Smith",
+  "status": "IN_PROGRESS",
+  "diagnosis_codes": [],
+  "procedure_codes": []
+}
+```
+
+#### POST /coding/:work_item_id/:encounter_id/suspend
+
+Suspend an encounter with a reason.
+
+**Request:**
+```json
+{
+  "reason_id": 1,
+  "suspend_reason": "Missing Medical Record",
+  "suspend_note": "Awaiting pathology report",
+  "event_dos": "2026-03-11"
+}
+```
+
+**Response (200):**
+```json
+{
+  "event_saved": 1,
+  "encounter_id": "enc_1002",
+  "status": "SUSPENDED"
+}
+```
+
+#### POST /coding/:work_item_id/:encounter_id/release-suspends
+
+Release all suspends on an encounter.
+
+**Request:** `{}` (empty body)
+
+**Response (200):**
+```json
+{
+  "header_updated": 1,
+  "status": "IN_PROGRESS"
+}
+```
+
+---
+
+### Queues
+
+#### GET /coding/:work_item_id/open-list
+
+List encounters in OPEN status.
+
+**Response (200):**
+```json
+{
+  "encounters": [
+    {
+      "encounter_id": "enc_1001",
+      "patient_name": "Jane Doe",
+      "encounter_dos": "2026-03-10",
+      "status": "OPEN"
+    }
+  ],
+  "total": 1
+}
+```
+
+#### GET /coding/:work_item_id/in-progress-list
+
+List encounters in IN_PROGRESS status.
+
+#### GET /coding/facilities/info
+
+Get facility queue summary metrics.
+
+**Response (200):**
+```json
+{
+  "summary_rows": [
+    {
+      "facility_id": "fac_memorial",
+      "facility_name": "Memorial General Hospital",
+      "open_count": 1,
+      "in_progress_count": 0,
+      "complete_count": 0
+    }
+  ]
+}
+```
+
+---
+
+### QA Workflow
+
+#### POST /coding/:work_item_id/:encounter_id/start-qa
+
+Start QA review on a completed encounter.
+
+**Request:** `{}` (empty body)
+
+**Response (200):**
+```json
+{
+  "claimed": 1,
+  "status": "QA_IN_PROGRESS"
+}
+```
+
+#### POST /coding/:work_item_id/:encounter_id/qa-verify
+
+Verify QA review and finalize.
+
+**Request:**
+```json
+{
+  "passed": true,
+  "notes": "All codes verified against documentation"
+}
+```
+
+**Response (200):**
+```json
+{
+  "verified": 1,
+  "status": "BILLED"
+}
+```
+
+---
+
+### User & Role Management
+
+#### POST /users/roles/assign
+
+Assign a role to a user.
+
+**Request:**
+```json
+{
+  "user_id": "usr_coder_01",
+  "company_id": "comp_clear_01",
+  "work_item_id": "wi_memorial_er",
+  "role": "coder"
+}
+```
+
+**Response (200):**
+```json
+{
+  "saved": 1
+}
+```
+
+#### POST /users/roles/revoke
+
+Revoke a role from a user.
+
+**Request:**
+```json
+{
+  "user_id": "usr_coder_01",
+  "role": "coder"
+}
+```
+
+**Response (200):**
+```json
+{
+  "deleted": 1
+}
+```
+
+#### GET /user/roles/:user_id
+
+Get roles for a specific user.
+
+**Response (200):**
+```json
+{
+  "user_id": "usr_coder_01",
+  "roles": ["coder"]
+}
+```
+
+---
+
+### Error Response Format
+
+All errors follow a consistent structure:
+
+```json
+{
+  "error": {
+    "code": "ERROR_CODE",
+    "message": "Human-readable description"
+  }
+}
+```
+
+Common error codes:
+| HTTP | Code | Description |
+|------|------|-------------|
+| 401 | `INVALID_CREDENTIALS` | Login failed |
+| 403 | `FORBIDDEN` | Insufficient role/permissions |
+| 404 | `NOT_FOUND` | Resource not found |
+| 409 | `CONFLICT` | State transition not allowed |
+| 422 | `VALIDATION_ERROR` | Invalid request body |
+| 429 | `RATE_LIMITED` | Too many requests |
+
+---
+
+## 12. Production Deployment
 
 ### Docker / Containerized Environment
 CLEAR compiles to a single, static binary with no external runtime dependencies:
