@@ -37,7 +37,7 @@ require (
 	github.com/oarkflow/ip v0.0.11 // indirect
 	github.com/oarkflow/jet v0.0.4 // indirect
 	github.com/oarkflow/json v0.0.28 // indirect
-	github.com/oarkflow/migrate v0.0.29 // indirect
+	github.com/oarkflow/migrate v0.0.30 // indirect
 	github.com/oarkflow/rules v0.0.5 // indirect
 	github.com/oarkflow/squealx v0.0.79 // indirect
 	github.com/oarkflow/tcpguard v0.0.16 // indirect

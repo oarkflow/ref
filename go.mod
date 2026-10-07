@@ -9,6 +9,7 @@ require (
 	github.com/oarkflow/authz v0.0.6
 	github.com/oarkflow/bcl v0.0.37
 	github.com/oarkflow/fh v0.0.26
+	github.com/oarkflow/migrate v0.0.30
 	github.com/oarkflow/rules v0.0.5
 	github.com/oarkflow/tcpguard v0.0.16
 	github.com/oarkflow/template v0.0.4
@@ -32,7 +33,6 @@ require (
 	github.com/oarkflow/expr v0.0.11 // indirect
 	github.com/oarkflow/jet v0.0.4 // indirect
 	github.com/oarkflow/json v0.0.28 // indirect
-	github.com/oarkflow/migrate v0.0.29 // indirect
 	github.com/oarkflow/squealx v0.0.78 // indirect
 	github.com/urfave/cli/v3 v3.13.0 // indirect
 	github.com/xo/terminfo v1.2.0 // indirect
