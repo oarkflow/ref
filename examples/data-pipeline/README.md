@@ -18,15 +18,15 @@ make run dir=./examples/data-pipeline            # http://127.0.0.1:8080, SQLite
 ETL_DB_DRIVER=pgx ETL_DSN='postgres://user:pass@host/db?sslmode=disable' ETL_DB_CONNECTIONS=5 make run dir=./examples/data-pipeline
 ```
 
-Development accounts (password is `<name>-pass-123`). Roles are edited on the Access tab; these are the built-in ones:
+Development accounts. Roles are edited on the Access tab; these are the built-in ones:
 
-| Account | Role | Can |
+| Account / password | Role | Can |
 |---|---|---|
-| `admin@example.com` | admin | everything, including users and roles |
-| `operator@example.com` | operate | read, run, replay, edit and pause sources, monitoring, take destinations offline |
-| `feeder@example.com` | ingest | send data and nothing else |
-| `replayer@example.com` | replay | read and replay held batches |
-| `analyst@example.com` | read | read everything, monitoring and the audit trail |
+| `admin@example.com` / `admin-pass-123` | admin | everything, including users and roles |
+| `operator@example.com` / `operator-pass-123` | operate | read, run, replay, edit and pause sources, monitoring, take destinations offline |
+| `feeder@example.com` / `feeder-pass-123` | ingest | send data and nothing else |
+| `replayer@example.com` / `replayer-pass-123` | replay | read and replay held batches |
+| `analyst@example.com` / `analyst-pass-123` | read | read everything, monitoring and the audit trail |
 
 The tabs you see follow your permissions. Create a role limited to some sources (Access, Roles) and a person with it to see scoped access: they see, send to and monitor only those sources.
 

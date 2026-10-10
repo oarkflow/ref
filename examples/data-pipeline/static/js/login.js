@@ -36,12 +36,14 @@
     '<div class="row" style="justify-content:space-between"><a href="/forgot">Forgot your password?</a><a href="/register">Create an account</a></div>' +
     '<div><p class="note">Development accounts, one click. Each holds different roles, so you can see what each is allowed to do.</p><div class="quick" id="quick"></div></div></div>';
   var f = C.$('#f');
+  // Already signed in (for example in another tab): nothing to do here.
+  C.whenReady.then(function () { if (C.authenticated) location.href = '/'; });
   function go(email, password) {
     C.call('POST', '/login', { email: email, password: password }).then(function (r) {
       if (r.ok) {
         // With a second factor, reload as this person (the secure session is bound
         // to who is signed in) and ask for the code.
-        var claims = r.body.principal && r.body.principal.claims;
+        var claims = (r.body.signed_in || r.body.principal || {}).claims;
         location.href = claims && Number(claims.mfa_enabled) === 1 ? '/login?mfa=1' : '/';
         return;
       }

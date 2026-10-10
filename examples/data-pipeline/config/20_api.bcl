@@ -24,12 +24,12 @@ intent "auth.login" {
   }
   # A wrong password is not an error here: it is counted first, then refused.
   node "login" {
-    uses "auth.login" resource "sessions" kind pure requires [input, users] provides [principal]
+    uses "auth.login" resource "sessions" kind pure requires [input, users] provides [signed_in]
     on_error continue
-    fallback { principal { id "" } }
+    fallback { signed_in { id "" } }
     config { user_fact "users" password_fact "input.password" roles_field "roles" session_fields ["pw_changed_ms", "mfa_enabled"] }
   }
-  node "ok" { uses "expression" kind pure requires [principal] provides [ok] config { expression "principal.id != '' ? 1 : 0" } }
+  node "ok" { uses "expression" kind pure requires [signed_in] provides [ok] config { expression "signed_in.id != '' ? 1 : 0" } }
   node "record" {
     uses "database.exec" resource "db" kind effect requires [input, ok, now_ms] provides [recorded]
     config {
@@ -40,9 +40,9 @@ intent "auth.login" {
   node "check" { uses "validate.expression" kind pure requires [ok, recorded] provides [checked] config { expression "ok == 1" code "INVALID_CREDENTIALS" category "auth" message "invalid credentials" } }
   # With a second factor the session starts unfinished: nothing but the code
   # entry works until it is given (see auth.mfa).
-  node "second" { uses "expression" kind pure requires [principal, checked] provides [second_done] config { expression "principal.claims.mfa_enabled != 1" } }
+  node "second" { uses "expression" kind pure requires [signed_in, checked] provides [second_done] config { expression "signed_in.claims.mfa_enabled != 1" } }
   node "mark" { uses "session.set" resource "sessions" kind effect requires [second_done] provides [marked] config { key "mfa_ok" value_fact "second_done" } }
-  node "response" { uses "collect" requires [principal, marked] provides [response] }
+  node "response" { uses "collect" requires [signed_in, marked] provides [response] }
 }
 route "auth.login" {
   method POST

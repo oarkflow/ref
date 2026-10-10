@@ -18,7 +18,7 @@
   function pct(v) { return (v * 100).toFixed(v > 0 && v < .1 ? 1 : 0) + '%'; }
 
   // ---- loading -------------------------------------------------------------------
-  function get(path, key, fallback) { return C.call('GET', path).then(function (r) { if (r.ok) S[key] = r.body; else if (fallback !== undefined) S[key] = fallback; return r; }); }
+  function get(path, key, fallback) { return C.call('GET', path).then(function (r) { if (r.ok) S[key] = (r.body == null && fallback !== undefined) ? fallback : r.body; else if (fallback !== undefined) S[key] = fallback; return r; }); }
   // Permissions are asked for again on every refresh, before anything else: a role
   // changed or an account disabled shows up within seconds (a disabled account is
   // answered with 401 and sent to the sign-in page).
@@ -181,7 +181,7 @@
     }).join('') + '</tbody></table></div></div><div class="stack">' + detail() + '</div></div>';
   }
   function quarantineTable(rows, compact) {
-    if (!rows.length) return '<div class="empty">Nothing has been quarantined.</div>';
+    if (!rows || !rows.length) return '<div class="empty">Nothing has been quarantined.</div>';
     return '<div class="tablewrap"><table><thead><tr>' + (compact ? '' : '<th>Batch</th><th>Source</th>') + '<th>Row</th><th>Rule</th><th>Reason</th><th>Data</th></tr></thead><tbody>' + rows.map(function (q) {
       return '<tr>' + (compact ? '' : '<td class="mono">' + q.batch_id + '</td><td>' + esc(q.source_id) + '</td>') + '<td>' + q.row_no + '</td><td>' + esc(q.rule) + '</td><td class="wrap">' + esc(q.reason) + '</td><td class="mono wrap">' + esc(JSON.stringify(q.row)) + '</td></tr>';
     }).join('') + '</tbody></table></div>';

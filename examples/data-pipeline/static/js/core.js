@@ -17,6 +17,9 @@
     };
   });
   ready.catch(function () {});
+  C.whenReady = ready;
+  // Makes the next page load register this browser's device again (see secure.js).
+  C.forgetDevice = function () { try { localStorage.removeItem('pipeline.device.principal'); } catch (e) { /* ignore */ } };
   C.fatal = function (msg) {
     var b = C.$('#fatal');
     if (!b) { b = document.createElement('div'); b.id = 'fatal'; b.setAttribute('role', 'alert'); b.className = 'fatal'; document.body.prepend(b); }
@@ -29,13 +32,30 @@
       return r.json().catch(function () { return {}; }).then(function (j) {
         // A 401 means the session is gone (signed out, disabled): go and sign in again.
         // A wrong password is also a 401, but it is an answer to show, not a reason to leave.
-        var code = j && j.error && j.error.code, wrongPassword = code === 'INVALID_CREDENTIALS';
+        var code = j && ((j.error && j.error.code) || j.code), wrongPassword = code === 'INVALID_CREDENTIALS';
+        // The secure session was set up for a different sign-in than the one the browser
+        // holds now (signed in or out in another tab, or the server restarted). Reload once:
+        // the page then registers its device again for who it really is.
+        if (r.status === 401 && (code === 'SESSION_BINDING_FAILED' || code === 'DEVICE_REGISTRATION_FORBIDDEN')) {
+          var tried = false;
+          try { tried = sessionStorage.getItem('pipeline.rebind') === '1'; sessionStorage.setItem('pipeline.rebind', '1'); } catch (e) { /* ignore */ }
+          if (!tried) { C.forgetDevice(); location.reload(); return new Promise(function () {}); }
+          return { status: 0, ok: false, body: { error: { code: 'TRANSPORT', message: 'The secure session does not match your sign-in. Close other tabs of this site and reload.' } } };
+        }
+        try { sessionStorage.removeItem('pipeline.rebind'); } catch (e) { /* ignore */ }
         // Signed in with a password but the second factor is still owed: go and give it.
         if (r.status === 401 && code === 'MFA_REQUIRED' && location.search.indexOf('mfa=1') < 0) { location.href = '/login?mfa=1'; return new Promise(function () {}); }
         if (r.status === 401 && !wrongPassword && code !== 'MFA_REQUIRED' && path !== '/login') { location.href = '/login'; return new Promise(function () {}); }
         return { status: r.status, ok: r.status < 400, body: j };
       });
     }, function (err) {
+      // The server refused the secure envelope (it was restarted, or the sign-in changed
+      // elsewhere): reload once so the page registers its device again.
+      if (err && /unprotected response|session|device/i.test(String(err.message))) {
+        var again = false;
+        try { again = sessionStorage.getItem('pipeline.rebind') === '1'; sessionStorage.setItem('pipeline.rebind', '1'); } catch (e) { /* ignore */ }
+        if (!again) { C.forgetDevice(); location.reload(); return new Promise(function () {}); }
+      }
       return { status: 0, ok: false, body: { error: { code: 'TRANSPORT', message: err && err.message ? err.message : 'the secure transport failed' } } };
     });
   };
