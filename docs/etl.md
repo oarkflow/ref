@@ -46,7 +46,7 @@ Applications keep their own user table and map `principal.roles` to role ids (`r
 
 `etl.monitor` returns, for a window: the throughput series (batches, rows in, delivered, quarantined, held per bucket), each source's health (freshness against `expect_every`, last batch, rows, reject rate, held, average and p95 latency), per-stage runs, failures and timings, the queue (batches waiting, oldest wait, sweeper age) and the alerts.
 
-Alerts are computed from current state, not stored, so they clear when the cause does:
+Alerts are computed from current state, so they clear when the cause does, and every one is also recorded: when it opened and cleared, who acknowledged it and why, and whether anyone was told. `EvaluateAlerts` (run by the sweeper every `alert_poll`) keeps that history and calls the `notify` intent once per opening and once per clearing, retrying until it succeeds; an acknowledged alert is silenced until its time is up (`etl.alert_ack`, `etl.alert_history`).
 
 | Alert | Raised when | Severity |
 |---|---|---|
@@ -83,6 +83,8 @@ resource "flow" {
     breaker_threshold 5       # failures in a row that open a destination's circuit
     breaker_cooldown "30s"
     retention "720h"          # delete finished batches' checkpoints after this
+    notify "alerts.notify"    # intent told when an alert opens or clears
+    alert_poll "10s"
     sources [ { id "orders" owner "Sales" format "csv" destination "billing" max_reject_rate 0.2
                 retry { max_attempts 4 base "2s" cap "30s" }
                 rules [ { name "id" column "id" check "required" } ] } ]
@@ -93,7 +95,7 @@ intent "ingest" { response "r" node "r" { uses "etl.ingest" resource "flow" kind
 
 Source options: `expect_every` ("1h": the freshness window), `max_reject_rate`, `retry`, `max_rows` (refuse bigger uploads, default 100000), `reject_duplicates` (refuse content already accepted under another key), `output_rules` (the contract a transform's output must meet; a break holds the batch), `allow_row_change` (a transform may add or drop rows; by default it may not). Rule `check`: `required`, `type` (`int`, `float`, `bool`, `date`, `string`), `regex` (`pattern`), `range` (`min`, `max`), `enum` (`values`), `unique`, `expr` (an expression over the row; numeric text counts as a number). `column` and `check` are the BCL spellings, because `field` and `kind` are reserved inside BCL objects.
 
-Actions: `etl.ingest`, `etl.advance`, `etl.run`, `etl.replay`, `etl.sources`, `etl.source_put`, `etl.source_pause`, `etl.batches`, `etl.batch` (batch, resume point, lineage, quarantine, audit, logs), `etl.quarantine`, `etl.audit`, `etl.verify_audit`, `etl.summary`, `etl.me`, `etl.permissions`, `etl.roles`, `etl.role_put`, `etl.role_delete`, `etl.require`, `etl.note`, `etl.monitor`, `etl.alerts`, `etl.logs`, `etl.counters`, `etl.health`, `etl.metrics`.
+Actions: `etl.ingest`, `etl.advance`, `etl.run`, `etl.replay`, `etl.sources`, `etl.source_put`, `etl.source_pause`, `etl.batches`, `etl.batch` (batch, resume point, lineage, quarantine, audit, logs), `etl.quarantine`, `etl.audit`, `etl.verify_audit`, `etl.summary`, `etl.me`, `etl.permissions`, `etl.roles`, `etl.role_put`, `etl.role_delete`, `etl.require`, `etl.note`, `etl.monitor`, `etl.alerts`, `etl.logs`, `etl.counters`, `etl.alert_ack`, `etl.alert_history`, `etl.health`, `etl.metrics`.
 
 ## Storage
 

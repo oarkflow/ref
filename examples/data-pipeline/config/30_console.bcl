@@ -12,7 +12,7 @@ intent "console.page" {
   response "page"
   node "page" {
     uses "constant" kind pure provides [page]
-    config { value { app_name "Pipeline Control Room" asset_version "15" title "Control room" } }
+    config { value { app_name "Pipeline Control Room" asset_version "18" title "Control room" } }
   }
 }
 

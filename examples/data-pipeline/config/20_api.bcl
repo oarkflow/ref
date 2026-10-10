@@ -10,24 +10,39 @@ shape "login_input" {
 }
 
 intent "auth.login" {
-  description "Verify an email and password and start a session"
+  description "Verify an email and password and start a session; five wrong passwords lock the account for fifteen minutes"
   response "response"
   input_schema "login_input"
   timeout 5s
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
+  # Only an active person who is not locked is found. Anyone else (unknown email,
+  # pending, disabled, locked, service account) is simply not found, and gets the
+  # same refusal as a wrong password.
   node "find_user" {
-    uses "database.query" resource "db" kind read speculation pre_auth_safe requires [input] provides [users]
-    config { statement "SELECT id, email, name, password_hash, roles, status FROM users WHERE email = LOWER($1) AND email <> '' AND kind = 'human' AND status = 'active' LIMIT 1" args [input.email] }
+    uses "database.query" resource "db" kind read speculation pre_auth_safe requires [input, now_ms] provides [users]
+    config { statement "SELECT id, email, name, password_hash, roles, status, pw_changed_ms, mfa_enabled FROM users WHERE email = LOWER($1) AND email <> '' AND kind = 'human' AND status = 'active' AND locked_until_ms <= $2 LIMIT 1" args [input.email, now_ms] }
   }
+  # A wrong password is not an error here: it is counted first, then refused.
   node "login" {
     uses "auth.login" resource "sessions" kind pure requires [input, users] provides [principal]
-    config { user_fact "users" password_fact "input.password" roles_field "roles" }
+    on_error continue
+    fallback { principal { id "" } }
+    config { user_fact "users" password_fact "input.password" roles_field "roles" session_fields ["pw_changed_ms", "mfa_enabled"] }
   }
-  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
-  node "touch" {
-    uses "database.exec" resource "db" kind effect requires [principal, now_ms] provides [touched]
-    config { statement "UPDATE users SET last_login_ms = $1 WHERE id = $2" args [now_ms, principal.id] }
+  node "ok" { uses "expression" kind pure requires [principal] provides [ok] config { expression "principal.id != '' ? 1 : 0" } }
+  node "record" {
+    uses "database.exec" resource "db" kind effect requires [input, ok, now_ms] provides [recorded]
+    config {
+      statement "UPDATE users SET failed_attempts = CASE WHEN $2 = 1 THEN 0 ELSE failed_attempts + 1 END, locked_until_ms = CASE WHEN $2 = 1 THEN 0 WHEN failed_attempts + 1 >= 5 THEN $3 + 900000 ELSE locked_until_ms END, last_login_ms = CASE WHEN $2 = 1 THEN $3 ELSE last_login_ms END WHERE email = LOWER($1) AND kind = 'human' AND locked_until_ms <= $3"
+      args [input.email, ok, now_ms]
+    }
   }
-  node "response" { uses "collect" requires [principal, touched] provides [response] }
+  node "check" { uses "validate.expression" kind pure requires [ok, recorded] provides [checked] config { expression "ok == 1" code "INVALID_CREDENTIALS" category "auth" message "invalid credentials" } }
+  # With a second factor the session starts unfinished: nothing but the code
+  # entry works until it is given (see auth.mfa).
+  node "second" { uses "expression" kind pure requires [principal, checked] provides [second_done] config { expression "principal.claims.mfa_enabled != 1" } }
+  node "mark" { uses "session.set" resource "sessions" kind effect requires [second_done] provides [marked] config { key "mfa_ok" value_fact "second_done" } }
+  node "response" { uses "collect" requires [principal, marked] provides [response] }
 }
 route "auth.login" {
   method POST
@@ -53,7 +68,7 @@ intent "ui.me" {
   node "can" { uses "etl.me" resource "flow" kind read provides [can] }
   node "me" {
     uses "data.transform" kind pure requires [input, can] provides [me]
-    config { data { extract { id "principal.id" name "principal.username" roles "can.roles" permissions "can.permissions" } pick ["id", "name", "roles", "permissions"] } }
+    config { data { extract { id "principal.id" name "principal.username" roles "can.roles" permissions "can.permissions" mfa_required "can.mfa_required" } pick ["id", "name", "roles", "permissions", "mfa_required"] } }
   }
 }
 route "ui.me" { method GET path "/ui/me" intent "ui.me" session "sessions" auth "session_auth" cache_control "no-store" }
@@ -77,7 +92,8 @@ intent "etl.verify"    { response "r" node "r" { uses "etl.verify_audit" resourc
 
 intent "destinations.list" {
   response "rows"
-  node "rows" { uses "database.query" resource "db" kind read provides [rows] config { statement "SELECT d.id, d.name, d.online, d.note, d.changed_by, d.changed_ms, (SELECT COUNT(*) FROM warehouse_batches w WHERE w.destination = d.id) AS batches, (SELECT COALESCE(SUM(row_count), 0) FROM warehouse_batches w WHERE w.destination = d.id) AS rows FROM destinations d ORDER BY d.id" } }
+  node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "read" } }
+  node "rows" { uses "database.query" resource "db" kind read requires [gate] provides [rows] config { statement "SELECT d.id, d.name, d.online, d.note, d.changed_by, d.changed_ms, (SELECT COUNT(*) FROM warehouse_batches w WHERE w.destination = d.id) AS batches, (SELECT COALESCE(SUM(row_count), 0) FROM warehouse_batches w WHERE w.destination = d.id) AS rows FROM destinations d ORDER BY d.id" } }
 }
 
 intent "destinations.set" {
@@ -104,7 +120,8 @@ intent "destinations.set" {
 
 intent "warehouse.list" {
   response "rows"
-  node "rows" { uses "database.query" resource "db" kind read provides [rows] config { statement "SELECT batch_key, batch_id, source_id, destination, row_count, delivered_ms FROM warehouse_batches ORDER BY delivered_ms DESC LIMIT 50" } }
+  node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "read" } }
+  node "rows" { uses "database.query" resource "db" kind read requires [gate] provides [rows] config { statement "SELECT batch_key, batch_id, source_id, destination, row_count, delivered_ms FROM warehouse_batches ORDER BY delivered_ms DESC LIMIT 50" } }
 }
 
 # ---- routes: console (session) and machines (API key) ----------------------

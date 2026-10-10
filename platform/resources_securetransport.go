@@ -23,6 +23,7 @@ import (
 	"github.com/oarkflow/fh/mw/securetransport"
 	responseprotocol "github.com/oarkflow/fh/pkg/httpsignature"
 	protocol "github.com/oarkflow/fh/pkg/securetransport"
+	"github.com/oarkflow/fh/pkg/storage/kv"
 )
 
 // SecureTransport is the transport.secure resource: github.com/oarkflow/fh's
@@ -92,6 +93,8 @@ func registerSecureTransportResources(r *Registry) {
 			{Name: "config_path", Type: "string", Default: "/secure-config.json", Summary: "Where the client fetches its pins and one-time registration grant"},
 			{Name: "wasm_dir", Type: "string", Default: "static/wasm", Summary: "Directory holding the built client and its asset-manifest.json (make wasm)"},
 			{Name: "wasm_prefix", Type: "string", Default: "/static/wasm", Summary: "URL prefix the client files are served under"},
+			{Name: "state_dir", Type: "string", Summary: "Keep registered devices and replay records here (files, mode 0600), so they survive a restart and a handshake cannot be replayed after one. Without it they are kept in memory"},
+			{Name: "persist_sessions", Type: "bool", Default: "false", Summary: "Also keep the encrypted sessions' keys in state_dir, so open pages carry on across a restart (key material on disk)"},
 			{Name: "grant_ttl", Type: "duration", Default: "90s"},
 			{Name: "require_embedded_trust", Type: "bool", Default: "false", Summary: "Require the client build to embed the origin and both public keys (always on outside loopback)"},
 			{Name: "secure_cookies", Type: "bool", Summary: "Mark the bootstrap cookie Secure (default: when every origin is https)"},
@@ -102,7 +105,7 @@ func registerSecureTransportResources(r *Registry) {
 func openSecureTransport(_ context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("transport.secure", spec.Config, "session", "origins", "protect", "preauth", "key_id", "server_key", "server_key_file",
 		"create_key_file", "allow_ephemeral_key", "sign_responses", "signing_key_file", "signing_key_id", "config_path", "wasm_dir", "wasm_prefix",
-		"grant_ttl", "require_embedded_trust", "secure_cookies"); err != nil {
+		"grant_ttl", "require_embedded_trust", "secure_cookies", "state_dir", "persist_sessions"); err != nil {
 		return nil, nil, err
 	}
 	fail := func(format string, args ...any) (Resource, io.Closer, error) {
@@ -128,7 +131,7 @@ func openSecureTransport(_ context.Context, spec ResourceSpec) (Resource, io.Clo
 		signKeyID: configString(spec.Config, "signing_key_id", "etl-response-1"), signEnabled: configBool(spec.Config, "sign_responses", true),
 		assetBase: strings.TrimRight(configString(spec.Config, "wasm_prefix", "/static/wasm"), "/"), embedded: configBool(spec.Config, "require_embedded_trust", false)}
 	if s.protect = configStrings(spec.Config, "protect"); len(s.protect) == 0 {
-		s.protect = []string{"/ui/", "/login", "/logout", "/register", "/forgot", "/reset"}
+		s.protect = []string{"/ui/", "/login", "/login/mfa", "/logout", "/register", "/forgot", "/reset"}
 	}
 	if s.preauth = configStrings(spec.Config, "preauth"); len(s.preauth) == 0 {
 		s.preauth = []string{"/login", "/register", "/forgot", "/reset"}
@@ -216,7 +219,24 @@ func openSecureTransport(_ context.Context, spec ResourceSpec) (Resource, io.Clo
 		return fail("asset-manifest.json lacks integrity pins for securefetch.wasm and wasm_exec.js: run make wasm")
 	}
 
-	t, err := securetransport.New(s.transportConfig())
+	cfg := s.transportConfig()
+	if dir := configString(spec.Config, "state_dir", ""); dir != "" {
+		open := func(name string) (kv.Store, error) {
+			return kv.NewFileStore(filepath.Join(dir, name), kv.WithFileGCInterval(10*time.Minute))
+		}
+		if cfg.DeviceStore, err = open("devices"); err != nil {
+			return fail("state_dir: %v", err)
+		}
+		if cfg.ReplayStore, err = open("replay"); err != nil {
+			return fail("state_dir: %v", err)
+		}
+		if configBool(spec.Config, "persist_sessions", false) {
+			if cfg.SessionStore, err = open("sessions"); err != nil {
+				return fail("state_dir: %v", err)
+			}
+		}
+	}
+	t, err := securetransport.New(cfg)
 	if err != nil {
 		return fail("%v", err)
 	}

@@ -260,7 +260,7 @@ func TestACircuitBreakerSparesAFailingDestination(t *testing.T) {
 		if waiting != 3 {
 			t.Fatalf("%d batches waiting, want 3", waiting)
 		}
-		if c := e.Circuits(); len(c) != 1 || c[0].State != "open" {
+		if c := e.Circuits(ctx); len(c) != 1 || c[0].State != "open" {
 			t.Fatalf("circuits %+v", c)
 		}
 		v, _ := e.Monitor(ctx, admin, time.Hour)
@@ -283,7 +283,7 @@ func TestACircuitBreakerSparesAFailingDestination(t *testing.T) {
 				t.Fatalf("%s is %s: %s", id, b.Status, b.LastError)
 			}
 		}
-		if c := e.Circuits(); len(c) != 0 {
+		if c := e.Circuits(ctx); len(c) != 0 {
 			t.Fatalf("circuit should have closed: %+v", c)
 		}
 		if counter(t, e.Store, "etl_circuit_opened_total", "*") < 1 || counter(t, e.Store, "etl_circuit_waits_total", "*") < 3 {

@@ -100,7 +100,7 @@ intent "auth.reset" {
       statements [
         {
           name "set password"
-          sql "UPDATE users SET password_hash = $1 WHERE status = 'active' AND kind = 'human' AND id = (SELECT user_id FROM password_resets WHERE token_hash = $2 AND used = 0 AND expires_ms > $3)"
+          sql "UPDATE users SET password_hash = $1, pw_changed_ms = $3, failed_attempts = 0, locked_until_ms = 0 WHERE status = 'active' AND kind = 'human' AND id = (SELECT user_id FROM password_resets WHERE token_hash = $2 AND used = 0 AND expires_ms > $3)"
           args [hash, token_hash, now_ms]
           require_affected true
           failure { code "INVALID_TOKEN" status 400 message "This reset link is invalid or has expired. Ask for a new one." }

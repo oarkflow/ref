@@ -29,8 +29,10 @@
       return r.json().catch(function () { return {}; }).then(function (j) {
         // A 401 means the session is gone (signed out, disabled): go and sign in again.
         // A wrong password is also a 401, but it is an answer to show, not a reason to leave.
-        var wrongPassword = j && j.error && j.error.code === 'INVALID_CREDENTIALS';
-        if (r.status === 401 && !wrongPassword && path !== '/login') { location.href = '/login'; return new Promise(function () {}); }
+        var code = j && j.error && j.error.code, wrongPassword = code === 'INVALID_CREDENTIALS';
+        // Signed in with a password but the second factor is still owed: go and give it.
+        if (r.status === 401 && code === 'MFA_REQUIRED' && location.search.indexOf('mfa=1') < 0) { location.href = '/login?mfa=1'; return new Promise(function () {}); }
+        if (r.status === 401 && !wrongPassword && code !== 'MFA_REQUIRED' && path !== '/login') { location.href = '/login'; return new Promise(function () {}); }
         return { status: r.status, ok: r.status < 400, body: j };
       });
     }, function (err) {

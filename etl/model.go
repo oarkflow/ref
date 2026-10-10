@@ -288,8 +288,66 @@ type Store interface {
 	Prune(ctx context.Context, before time.Time) (int, error)
 	// Counters returns every durable counter.
 	Counters(ctx context.Context) ([]CounterRow, error)
+	// RecordBreaker counts the result of a call to a destination and returns the
+	// breaker's state: Threshold consecutive failures open it for Cooldown. The
+	// state is shared by every process using the store.
+	RecordBreaker(ctx context.Context, destination string, ok bool, now time.Time, threshold int, cooldown time.Duration) (BreakerState, error)
+	Breakers(ctx context.Context) ([]BreakerState, error)
+	// SyncAlerts makes the stored open alerts match the current ones: new ones
+	// are opened, ones no longer true are cleared, the rest are updated. It
+	// returns what changed so the caller can notify.
+	SyncAlerts(ctx context.Context, current []Alert, now time.Time) (opened, cleared []AlertRecord, err error)
+	// ListAlerts returns alert records, newest first; openOnly limits it to open ones.
+	ListAlerts(ctx context.Context, openOnly bool, limit int) ([]AlertRecord, error)
+	AckAlert(ctx context.Context, id, by, note string, until time.Time) error
+	MarkNotified(ctx context.Context, rid string, at time.Time) error
+	// SourceStats aggregates batches created since `since`, per source.
+	SourceStats(ctx context.Context, since time.Time, sources []string) ([]SourceStat, error)
+	// LatencySample returns up to limit end-to-end seconds of recently delivered batches of a source.
+	LatencySample(ctx context.Context, sourceID string, since time.Time, limit int) ([]float64, error)
+	// PruneCounters removes hourly counters older than the given hour (UTC, YYYYMMDDHH).
+	PruneCounters(ctx context.Context, beforeHour string) (int, error)
 	// Series buckets batches created since `since` into windows of `bucket`.
 	Series(ctx context.Context, since time.Time, bucket time.Duration, sources []string) ([]Point, error)
+}
+
+// BreakerState is one destination's circuit breaker.
+type BreakerState struct {
+	Destination string    `json:"destination"`
+	Failures    int       `json:"failures"`
+	OpenUntil   time.Time `json:"open_until"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// AlertRecord is an alert with its life: when it opened and cleared, who
+// acknowledged it, and whether anyone was told.
+type AlertRecord struct {
+	Alert
+	RID        string    `json:"rid"`
+	OpenedAt   time.Time `json:"opened_at"`
+	ClearedAt  time.Time `json:"cleared_at"`
+	AckedBy    string    `json:"acked_by,omitempty"`
+	AckedNote  string    `json:"acked_note,omitempty"`
+	AckedUntil time.Time `json:"acked_until"`
+	NotifiedAt time.Time `json:"notified_at"`
+}
+
+// Acknowledged reports whether the alert is silenced at the given time.
+func (a AlertRecord) Acknowledged(now time.Time) bool {
+	return a.AckedBy != "" && a.AckedUntil.After(now)
+}
+
+// SourceStat is one source's batches over a window.
+type SourceStat struct {
+	SourceID    string    `json:"source_id"`
+	Batches     int       `json:"batches"`
+	RowsIn      int       `json:"rows_in"`
+	Delivered   int       `json:"delivered"`
+	Quarantined int       `json:"quarantined"`
+	Held        int       `json:"held"`
+	Retrying    int       `json:"retrying"`
+	LastBatchAt time.Time `json:"last_batch_at"`
+	AvgSeconds  float64   `json:"avg_seconds"`
 }
 
 // CounterDelta is an amount to add to a durable counter.

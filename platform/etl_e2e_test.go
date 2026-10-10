@@ -19,7 +19,7 @@ resource "db" {
     migrations [
       "CREATE TABLE IF NOT EXISTS switch (on_ INTEGER NOT NULL)",
       "CREATE TABLE IF NOT EXISTS dest (batch_key TEXT PRIMARY KEY, batch_id TEXT NOT NULL)",
-      "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, roles TEXT NOT NULL, status TEXT NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, roles TEXT NOT NULL, status TEXT NOT NULL, pw_changed_ms BIGINT NOT NULL DEFAULT 0)",
       "INSERT INTO users (id, roles, status) VALUES ('mallory', 'read', 'active') ON CONFLICT (id) DO NOTHING",
       "INSERT INTO users (id, roles, status) VALUES ('feeder', 'ingest', 'active') ON CONFLICT (id) DO NOTHING",
       "INSERT INTO users (id, roles, status) VALUES ('olive', 'read,replay', 'active') ON CONFLICT (id) DO NOTHING",
@@ -39,7 +39,7 @@ resource "flow" {
   kind "etl.engine"
   config {
     database "db"
-    principal_query "SELECT roles, status FROM users WHERE id = $1"
+    principal_query "SELECT roles, status, pw_changed_ms FROM users WHERE id = $1"
     deliver "dest.put"
     poll "10ms"
     sources [
@@ -227,5 +227,30 @@ func TestETLEngineEndToEnd(t *testing.T) {
 	time.Sleep(2100 * time.Millisecond)
 	if status, body := h.call("GET", "/me", mallory, nil); status != 401 {
 		t.Fatalf("a disabled account must be signed out: %d %v", status, body)
+	}
+
+	// A session that began before the password was changed is over; one that
+	// began after is fine. Keys and tokens without the claim are not affected.
+	stale := h.token("jwt", "root", []string{"admin"}, map[string]any{"pw_changed_ms": 7})
+	if status, body := h.call("GET", "/me", stale, nil); status != 401 {
+		t.Fatalf("a session older than the password must end: %d %v", status, body)
+	}
+	fresh := h.token("jwt", "root", []string{"admin"}, map[string]any{"pw_changed_ms": 0})
+	if status, _ := h.call("GET", "/me", fresh, nil); status != 200 {
+		t.Fatalf("a session as new as the password is fine: %d", status)
+	}
+
+	// Signed in with a password, second factor still owed: only "me" answers, and says so.
+	pending := h.token("jwt", "root", []string{"admin"}, map[string]any{"mfa_enabled": 1})
+	if _, body := h.call("GET", "/me", pending, nil); dig(body, "mfa_required") != true {
+		t.Fatalf("me should say the second factor is owed: %v", body)
+	}
+	status, body = h.call("GET", "/summary", pending, nil)
+	if status != 401 || dig(body, "error", "code") != "MFA_REQUIRED" {
+		t.Fatalf("everything else needs the second factor first: %d %v", status, body)
+	}
+	done := h.token("jwt", "root", []string{"admin"}, map[string]any{"mfa_enabled": 1, "mfa_ok": true})
+	if status, _ := h.call("GET", "/summary", done, nil); status != 200 {
+		t.Fatalf("with the second factor given: %d", status)
 	}
 }

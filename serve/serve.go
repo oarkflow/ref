@@ -22,6 +22,7 @@ package serve
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -66,6 +67,9 @@ type Options struct {
 	// Ready is closed with the listen address once the server accepts
 	// connections. Optional; tests use it.
 	Ready func(addr string)
+	// TLSCertFile and TLSKeyFile (env TLS_CERT_FILE, TLS_KEY_FILE) serve HTTPS
+	// (TLS 1.3 or later). Both or neither.
+	TLSCertFile, TLSKeyFile string
 	// Log receives lifecycle logging.
 	Log *slog.Logger
 }
@@ -102,6 +106,15 @@ func (o *Options) defaults() error {
 	if o.Env == "" {
 		o.Env = envOr("APP_ENV", "development")
 	}
+	if o.TLSCertFile == "" {
+		o.TLSCertFile = os.Getenv("TLS_CERT_FILE")
+	}
+	if o.TLSKeyFile == "" {
+		o.TLSKeyFile = os.Getenv("TLS_KEY_FILE")
+	}
+	if (o.TLSCertFile == "") != (o.TLSKeyFile == "") {
+		return errors.New("serve: TLS needs both TLS_CERT_FILE and TLS_KEY_FILE")
+	}
 	if o.Addr == "" {
 		switch {
 		case os.Getenv("REF_ADDR") != "":
@@ -131,6 +144,7 @@ type App struct {
 	Server   *fh.App
 	Addr     string
 	listener net.Listener
+	tls      bool
 	served   chan error
 }
 
@@ -174,9 +188,20 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		_ = p.Close()
 		return nil, err
 	}
-	a := &App{Platform: p, Server: srv, Addr: ln.Addr().String(), listener: ln, served: make(chan error, 1)}
+	secure := false
+	if opts.TLSCertFile != "" || opts.TLSKeyFile != "" {
+		cert, cerr := tls.LoadX509KeyPair(opts.TLSCertFile, opts.TLSKeyFile)
+		if cerr != nil {
+			_ = ln.Close()
+			_ = p.Close()
+			return nil, fmt.Errorf("serve: TLS certificate: %w", cerr)
+		}
+		ln = tls.NewListener(ln, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13, NextProtos: []string{"http/1.1"}})
+		secure = true
+	}
+	a := &App{Platform: p, Server: srv, Addr: ln.Addr().String(), listener: ln, served: make(chan error, 1), tls: secure}
 	go func() { a.served <- srv.Serve(ln) }()
-	opts.Log.Info("serving", "addr", a.Addr, "dir", opts.Dir, "env", opts.Env)
+	opts.Log.Info("serving", "addr", a.Addr, "dir", opts.Dir, "env", opts.Env, "tls", secure)
 	if opts.Ready != nil {
 		opts.Ready(a.Addr)
 	}
@@ -185,14 +210,18 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 
 // URL is the base URL of the running server, usable from the same host.
 func (a *App) URL() string {
+	scheme := "http://"
+	if a.tls {
+		scheme = "https://"
+	}
 	host, port, err := net.SplitHostPort(a.Addr)
 	if err != nil {
-		return "http://" + a.Addr
+		return scheme + a.Addr
 	}
 	if host == "" || host == "::" || host == "0.0.0.0" {
 		host = "127.0.0.1"
 	}
-	return "http://" + net.JoinHostPort(host, port)
+	return scheme + net.JoinHostPort(host, port)
 }
 
 // Wait blocks until the server stops.

@@ -2,7 +2,7 @@
   var C = window.C, $ = C.$, esc = C.esc, app = $('#app');
   var STAGES = ['Source ingestion and validation', 'Transformation and enrichment', 'Reliable system-to-system transfer', 'Delivery queues and retry paths', 'Access controls and audit trails', 'Monitoring and data lineage'];
   var S = { me: null, tab: 'overview', sub: 'users', sum: null, batches: [], sources: [], dests: [], quarantine: [], audit: [], verify: null, warehouse: [], failures: [], sel: null, detail: null,
-    filter: '', panel: null, mon: null, win: '24h', health: null, logs: [], counters: [], logq: { level: 'info', q: '', trace: '' }, users: [], roles: [], perms: [], keys: [], newKey: null, mailbox: [], link: null };
+    filter: '', panel: null, mon: null, win: '24h', health: null, logs: [], counters: [], logq: { level: 'info', q: '', trace: '' }, users: [], roles: [], perms: [], keys: [], newKey: null, mailbox: [], link: null, mfa: null, mfaSetup: null, mfaCodes: null, history: [] };
 
   // ---- permissions, as the engine resolved them for this person ----------------
   function can(p, src) { var s = S.me.permissions && S.me.permissions[p]; if (s === undefined) return false; return s === null || !src || s.indexOf(src) >= 0; }
@@ -35,7 +35,8 @@
       if (S.sel) jobs.push(C.call('GET', '/ui/etl/batches/' + S.sel).then(function (r) { if (r.ok) S.detail = r.body; }));
     }
     if (['overview', 'sources'].indexOf(t) >= 0) jobs.push(get('/ui/etl/sources', 'sources', []));
-    if (t === 'monitoring' && can('monitor.read')) jobs.push(get('/ui/etl/monitor?window=' + S.win, 'mon'));
+    if (t === 'monitoring' && can('monitor.read')) jobs.push(get('/ui/etl/monitor?window=' + S.win, 'mon'), get('/ui/etl/alerts/history?limit=30', 'history', []));
+    if (t === 'account') jobs.push(get('/ui/me/mfa', 'mfa'));
     if (t === 'overview' && can('monitor.read')) jobs.push(get('/ui/etl/alerts', 'alerts', []));
     if (t === 'observability' && can('monitor.read')) {
       var q = S.logq, qs = '?level=' + q.level + (q.q ? '&q=' + encodeURIComponent(q.q) : '') + (q.trace ? '&trace=' + encodeURIComponent(q.trace) : '') + '&limit=150';
@@ -67,6 +68,13 @@
       return '<div class="stage ' + (n ? 'busy' : '') + '"><span class="n">0' + (i + 1) + '</span><span class="t">' + t + '</span><span class="c">' + n + '</span><span class="pill ' + st[1] + '">' + st[0] + '</span></div>';
     }).join('') + '</div>';
   }
+  function historyCard() {
+    if (!S.history.length) return '';
+    return '<div class="card"><h2>Alert history</h2>' + S.history.slice(0, 12).map(function (a) {
+      var open = !a.cleared_at || a.cleared_at.indexOf('0001') === 0;
+      return '<div class="dest"><div><strong>' + esc(a.title) + '</strong><div class="note">' + esc(a.source_id || 'system') + ' · opened ' + C.when(a.opened_at) + (open ? '' : ' · cleared ' + C.when(a.cleared_at)) + (a.acked_by ? ' · acknowledged by ' + esc(a.acked_by) : '') + '</div></div><span class="pill ' + (open ? ({ critical: 'bad', warning: 'warn', info: 'info' }[a.severity] || '') : '') + '">' + (open ? 'open' : 'cleared') + '</span></div>';
+    }).join('') + '</div>';
+  }
   function circuitsCard(list) {
     if (!list || !list.length) return '';
     return '<div class="card"><h2>Circuit breakers</h2>' + list.map(function (c) {
@@ -84,8 +92,12 @@
     list = list || [];
     if (!list.length) return '<div class="card"><h2>Alerts</h2><div class="empty">Nothing needs attention.</div></div>';
     return '<div class="card"><h2>Alerts <span class="note">· ' + list.length + ' open</span></h2>' + list.slice(0, limit || 50).map(function (a) {
-      return '<div class="alert ' + a.severity + '"><div class="row" style="justify-content:space-between">' + sev(a.severity) + '<span class="note">' + (a.since ? ago(a.since) : '') + '</span></div><strong>' + esc(a.title) + '</strong>' +
-        '<div class="note">' + esc(a.message) + '</div>' + (a.batch_id ? '<button class="btn small" data-act="open-batch" data-id="' + a.batch_id + '">Open ' + a.batch_id + '</button>' : '') + '</div>';
+      var acked = a.acked_by && new Date(a.acked_until) > new Date();
+      return '<div class="alert ' + (acked ? 'info' : a.severity) + '"><div class="row" style="justify-content:space-between">' + sev(a.severity) + (acked ? '<span class="pill info">Acknowledged</span>' : '') + '<span class="note">' + (a.since ? ago(a.since) : '') + '</span></div><strong>' + esc(a.title) + '</strong>' +
+        '<div class="note">' + esc(a.message) + '</div>' + (acked ? '<div class="note">Silenced by ' + esc(a.acked_by) + ' until ' + C.when(a.acked_until) + (a.acked_note ? ': ' + esc(a.acked_note) : '') + '</div>' : '') +
+        '<div class="row">' + (a.batch_id ? '<button class="btn small" data-act="open-batch" data-id="' + a.batch_id + '">Open ' + a.batch_id + '</button>' : '') +
+        (!acked && can('advance') ? '<button class="btn small" data-act="ack-open" data-id="' + esc(a.id) + '">Acknowledge</button>' : '') + '</div>' +
+        (S.ackFor === a.id ? '<div class="form" style="margin-top:8px">' + field('ack_note', 'Why (optional)', '') + '<label class="f">Silence for<select id="ack_min"><option value="60">1 hour</option><option value="240" selected>4 hours</option><option value="1440">1 day</option><option value="10080">1 week</option></select></label></div><div class="row"><button class="btn primary small" data-act="ack-save" data-id="' + esc(a.id) + '">Acknowledge</button><button class="btn small" data-act="ack-cancel">Cancel</button></div>' : '') + '</div>';
     }).join('') + '</div>';
   }
   function destinations() {
@@ -265,14 +277,14 @@
   }
   function mailbox() {
     return '<div class="card"><h2>Mailbox <span class="note">· development</span></h2><p class="note">Messages the system has queued to send. Connect an email sender to deliver them; until then an administrator reads them here.</p>' +
-      (S.mailbox.length ? S.mailbox.map(function (m) { return '<div class="alert info"><div class="row" style="justify-content:space-between"><strong>' + esc(m.subject) + '</strong><span class="note">' + C.when(Number(m.created_ms)) + '</span></div><div class="note">To ' + esc(m.to_email) + '</div><div class="mono" style="overflow-wrap:anywhere;user-select:all">' + esc(m.body) + '</div></div>'; }).join('') : '<div class="empty">No messages.</div>') + '</div>';
+      (S.mailbox.length ? S.mailbox.map(function (m) { return '<div class="alert info"><div class="row" style="justify-content:space-between"><strong>' + esc(m.subject) + '</strong><span class="note">' + C.when(Number(m.created_ms)) + '</span></div><div class="note">To ' + esc(m.to_email) + ' · ' + (Number(m.sent_ms) > 0 ? 'sent ' + C.when(Number(m.sent_ms)) : Number(m.attempts) >= 10 ? 'gave up after ' + m.attempts + ' tries' : Number(m.attempts) > 0 ? 'not delivered yet (' + m.attempts + ' tries): ' + esc(m.last_error) : 'waiting to be sent') + '</div><div class="mono" style="overflow-wrap:anywhere;user-select:all">' + esc(m.body) + '</div></div>'; }).join('') : '<div class="empty">No messages.</div>') + '</div>';
   }
   function users() {
     var rows = S.users, pending = rows.filter(function (u) { return u.status === 'pending'; });
     return (pending.length ? '<div class="alert warning"><strong>' + pending.length + ' account request' + (pending.length > 1 ? 's' : '') + ' waiting</strong><div class="note">Approve a request to give the person roles and let them sign in.</div></div>' : '') + '<div class="card"><div class="row" style="justify-content:space-between;margin-bottom:8px"><h2 style="margin:0">People and service accounts</h2><div class="row"><button class="btn small" data-act="user-new">New person</button><button class="btn small" data-act="svc-new">New service account</button></div></div>' +
       '<div class="tablewrap"><table><thead><tr><th>Id</th><th>Name</th><th>Type</th><th>Roles</th><th>Status</th><th>Last sign-in</th><th>Keys</th><th></th></tr></thead><tbody>' + rows.map(function (u) {
-        return '<tr><td class="mono">' + esc(u.id) + '</td><td>' + esc(u.name) + '<div class="note">' + esc(u.email) + '</div></td><td>' + (u.kind === 'service' ? 'Service' : 'Person') + '</td><td>' + rolePills(u.roles) + '</td><td><span class="pill ' + (u.status === 'active' ? '' : u.status === 'pending' ? 'warn' : 'bad') + '">' + esc(u.status) + '</span></td><td>' + (u.last_login_ms > 0 ? ago(Number(u.last_login_ms)) : '–') + '</td><td>' + u.keys + '</td>' +
-          '<td><div class="row">' + (u.status === 'pending' ? '<button class="btn small primary" data-act="user-edit" data-id="' + esc(u.id) + '" data-approve="1">Approve</button>' : '<button class="btn small" data-act="user-edit" data-id="' + esc(u.id) + '">Edit</button>') + (u.kind === 'human' ? '<button class="btn small" data-act="user-pw" data-id="' + esc(u.id) + '">Password</button>' : '') + (u.kind === 'human' && u.status === 'active' ? '<button class="btn small" data-act="reset-link" data-id="' + esc(u.id) + '">Reset link</button>' : '') + '<button class="btn small" data-act="keys" data-id="' + esc(u.id) + '">Keys</button></div></td></tr>';
+        return '<tr><td class="mono">' + esc(u.id) + '</td><td>' + esc(u.name) + '<div class="note">' + esc(u.email) + '</div></td><td>' + (u.kind === 'service' ? 'Service' : 'Person') + '</td><td>' + rolePills(u.roles) + '</td><td><span class="pill ' + (u.status === 'active' ? '' : u.status === 'pending' ? 'warn' : 'bad') + '">' + esc(u.status) + '</span>' + (Number(u.locked_until_ms) > Date.now() ? ' <span class="pill bad">locked</span>' : '') + (Number(u.mfa_enabled) === 1 ? ' <span class="pill info">2-step</span>' : '') + '</td><td>' + (u.last_login_ms > 0 ? ago(Number(u.last_login_ms)) : '–') + '</td><td>' + u.keys + '</td>' +
+          '<td><div class="row">' + (u.status === 'pending' ? '<button class="btn small primary" data-act="user-edit" data-id="' + esc(u.id) + '" data-approve="1">Approve</button>' : '<button class="btn small" data-act="user-edit" data-id="' + esc(u.id) + '">Edit</button>') + (u.kind === 'human' ? '<button class="btn small" data-act="user-pw" data-id="' + esc(u.id) + '">Password</button>' : '') + (u.kind === 'human' && u.status === 'active' ? '<button class="btn small" data-act="reset-link" data-id="' + esc(u.id) + '">Reset link</button>' : '') + (Number(u.locked_until_ms) > Date.now() ? '<button class="btn small" data-act="unlock" data-id="' + esc(u.id) + '">Unlock</button>' : '') + (Number(u.mfa_enabled) === 1 ? '<button class="btn small" data-act="mfa-reset" data-id="' + esc(u.id) + '">Reset 2-step</button>' : '') + '<button class="btn small" data-act="keys" data-id="' + esc(u.id) + '">Keys</button></div></td></tr>';
       }).join('') + '</tbody></table></div></div>';
   }
   function roles() {
@@ -314,11 +326,18 @@
   }
 
   // ---- account -----------------------------------------------------------------------------------
+  function mfaCard() {
+    if (!S.mfa) return '';
+    if (S.mfaCodes) return '<div class="card"><h2>Two-step sign-in is on</h2><div class="alert warning"><strong>Your recovery codes</strong><div class="note">Keep these somewhere safe. Each works once if you lose your device. They are not shown again.</div><div class="mono" style="user-select:all;line-height:1.9">' + S.mfaCodes.map(esc).join('<br>') + '</div></div><div class="row" style="margin-top:12px"><button class="btn" data-act="mfa-done">I have saved them</button></div></div>';
+    if (S.mfa.enabled) return '<div class="card"><h2>Two-step sign-in <span class="pill">on</span></h2><p class="note">Signing in needs a code from your authenticator app as well as your password. To turn it off, give your password and a current code (or a recovery code).</p><div class="form">' + field('mf_pw', 'Password', '', 'password', 'autocomplete="current-password"') + field('mf_code', 'Code', '', 'text', 'autocomplete="one-time-code"') + '</div><div class="row" style="margin-top:12px"><button class="btn danger" data-act="mfa-off">Turn off</button></div></div>';
+    if (S.mfaSetup) return '<div class="card"><h2>Set up two-step sign-in</h2><p class="note">In your authenticator app choose <em>enter a setup key</em> and type this key (or open the link on this device), then enter the 6-digit code the app shows.</p><div class="alert info"><strong>Setup key</strong><div class="mono" style="user-select:all;overflow-wrap:anywhere">' + esc(S.mfaSetup.secret) + '</div><div class="note mono" style="overflow-wrap:anywhere;user-select:all">' + esc(S.mfaSetup.uri) + '</div></div><div class="form" style="margin-top:10px">' + field('mf_code', '6-digit code', '', 'text', 'autocomplete="one-time-code" inputmode="numeric"') + '</div><div class="row" style="margin-top:12px"><button class="btn primary" data-act="mfa-on">Turn on</button><button class="btn" data-act="mfa-cancel">Cancel</button></div></div>';
+    return '<div class="card"><h2>Two-step sign-in <span class="pill warn">off</span></h2><p class="note">Add a second step to signing in: a code from an authenticator app. Recommended for anyone who can change data or manage people.</p><div class="row"><button class="btn primary" data-act="mfa-start">Set up</button></div></div>';
+  }
   function account() {
     var perms = S.me.permissions || {}, cat = S.perms.length ? S.perms : Object.keys(perms).map(function (k) { return { id: k, group: '', summary: '' }; });
     return '<div class="grid2"><div class="card"><h2>Your access</h2><dl><dt>Signed in as</dt><dd>' + esc(S.me.name) + ' <span class="note mono">' + esc(S.me.id) + '</span></dd><dt>Roles</dt><dd>' + rolePills((S.me.roles || []).join(',')) + '</dd></dl>' +
       '<div class="tablewrap"><table><thead><tr><th>Permission</th><th>Applies to</th></tr></thead><tbody>' + (Object.keys(perms).sort().map(function (k) { return '<tr><td class="mono">' + esc(k) + '</td><td>' + (perms[k] === null ? 'everything' : perms[k].map(esc).join(', ') || 'nothing') + '</td></tr>'; }).join('') || '<tr><td colspan="2" class="note">No permissions: ask an administrator for a role.</td></tr>') + '</tbody></table></div></div>' +
-      '<div class="card"><h2>Change your password</h2><div class="form">' + field('c_cur', 'Current password', '', 'password', 'autocomplete="current-password"') + field('c_new', 'New password (12+ characters)', '', 'password', 'autocomplete="new-password"') + field('c_new2', 'Confirm new password', '', 'password', 'autocomplete="new-password"') + '</div><div id="pwmsg" class="note" role="status"></div><div class="row" style="margin-top:12px"><button class="btn primary" data-act="pw-change">Change password</button></div></div></div>';
+      '<div class="stack">' + mfaCard() + '<div class="card"><h2>Change your password</h2><div class="form">' + field('c_cur', 'Current password', '', 'password', 'autocomplete="current-password"') + field('c_new', 'New password (12+ characters)', '', 'password', 'autocomplete="new-password"') + field('c_new2', 'Confirm new password', '', 'password', 'autocomplete="new-password"') + '</div><div id="pwmsg" class="note" role="status"></div><div class="row" style="margin-top:12px"><button class="btn primary" data-act="pw-change">Change password</button></div><p class="note">Changing your password ends all your sessions, this one too, and you sign in again.</p></div></div></div>';
   }
 
   var VIEWS = { overview: overview, monitoring: monitoring, observability: observability, batches: batches, failures: failures, sources: sources, quarantine: function () { return '<div class="card"><h2>Quarantined rows</h2>' + quarantineTable(S.quarantine) + '</div>'; }, audit: audit, access: access, account: account };
@@ -418,10 +437,20 @@
       C.call('PUT', '/ui/access/users/' + el.dataset.id + '/password', { password: val('p_pw'), confirm: val('p_pw2') }).then(function (r) { done(r, 'Password set'); });
     },
     'reset-link': function (el) { C.call('POST', '/ui/access/users/' + el.dataset.id + '/reset-link', {}).then(function (r) { if (r.ok) { S.link = r.body.link; S.panel = { type: 'link', id: el.dataset.id }; render(); } else C.toast(C.problem(r), true); }); },
+    'ack-open': function (el) { S.ackFor = el.dataset.id; render(); },
+    'ack-cancel': function () { S.ackFor = null; render(); },
+    'ack-save': function (el) { C.call('POST', '/ui/etl/alerts/ack', { id: el.dataset.id, note: val('ack_note'), minutes: Number(val('ack_min')) }).then(function (r) { S.ackFor = null; C.toast(r.ok ? 'Acknowledged' : C.problem(r), !r.ok); load(); }); },
+    unlock: function (el) { C.call('POST', '/ui/access/users/' + el.dataset.id + '/unlock', {}).then(function (r) { C.toast(r.ok ? 'Unlocked' : C.problem(r), !r.ok); load(); }); },
+    'mfa-reset': function (el) { C.call('POST', '/ui/access/users/' + el.dataset.id + '/mfa-reset', {}).then(function (r) { C.toast(r.ok ? 'Two-step sign-in turned off for ' + el.dataset.id : C.problem(r), !r.ok); load(); }); },
+    'mfa-start': function () { C.call('POST', '/ui/me/mfa/setup', {}).then(function (r) { if (r.ok) { S.mfaSetup = r.body; render(); } else C.toast(C.problem(r), true); }); },
+    'mfa-cancel': function () { S.mfaSetup = null; render(); },
+    'mfa-on': function () { C.call('POST', '/ui/me/mfa/enable', { code: val('mf_code') }).then(function (r) { if (r.ok) { S.mfaSetup = null; S.mfaCodes = r.body.recovery_codes; S.mfa = { enabled: true }; render(); } else C.toast(r.body.error && r.body.error.code === 'INVALID_CODE' ? 'That code is not right. Check the app and try the next code.' : C.problem(r), true); }); },
+    'mfa-done': function () { S.mfaCodes = null; load(); },
+    'mfa-off': function () { C.call('POST', '/ui/me/mfa/disable', { password: val('mf_pw'), code: val('mf_code') }).then(function (r) { if (r.ok) { C.toast('Two-step sign-in is off'); S.mfa = { enabled: false }; load(); } else C.toast(r.status === 401 ? 'The password is wrong' : r.body.error && r.body.error.code === 'INVALID_CODE' ? 'That code is not right.' : C.problem(r), true); }); },
     'pw-change': function () {
       var bad = C.passwordProblem(val('c_new'), val('c_new2')); if (bad) { C.toast(bad, true); return; }
       if (val('c_new') === val('c_cur')) { C.toast('The new password must be different from the current one.', true); return; }
-      C.call('PUT', '/ui/me/password', { current: val('c_cur'), password: val('c_new'), confirm: val('c_new2') }).then(function (r) { if (r.ok) { C.toast('Password changed'); ['c_cur', 'c_new', 'c_new2'].forEach(function (i) { document.getElementById(i).value = ''; }); } else C.toast(r.status === 401 ? 'The current password is wrong' : C.problem(r), true); });
+      C.call('PUT', '/ui/me/password', { current: val('c_cur'), password: val('c_new'), confirm: val('c_new2') }).then(function (r) { if (r.ok) { C.toast('Password changed. Signing you out…'); C.call('POST', '/logout').then(function () { location.href = '/login?changed=1'; }); } else C.toast(r.status === 401 ? 'The current password is wrong' : C.problem(r), true); });
     },
     keys: function (el) { S.newKey = null; openKeys(el.dataset.id); },
     'key-new': function (el) { C.call('POST', '/ui/access/users/' + el.dataset.id + '/keys', { name: val('k_name') || 'key' }).then(function (r) { if (r.ok) { S.newKey = r.body.api_key; openKeys(el.dataset.id); load(); } else C.toast(C.problem(r), true); }); },
@@ -459,6 +488,7 @@
 
   C.call('GET', '/ui/me').then(function (r) {
     S.me = r.body;
+    if (S.me.mfa_required) { location.href = '/login?mfa=1'; return new Promise(function () {}); }
     if (!can('read') && can('ingest')) S.tab = 'sources';
     return load();
   }).then(function () {

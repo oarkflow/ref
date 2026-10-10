@@ -3,7 +3,9 @@ package etl
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -20,6 +22,8 @@ type MemoryStore struct {
 	audit   []AuditEntry
 	roles   map[string]*Role
 	leases  map[string]lease
+	breaks  map[string]BreakerState
+	alerts  []*AlertRecord
 	counts  map[string]*CounterRow
 }
 
@@ -30,7 +34,7 @@ type lease struct {
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{sources: map[string]*Source{}, batches: map[string]*Batch{}, keys: map[string]string{},
-		cps: map[string][]Checkpoint{}, quar: map[string][]Quarantine{}, lin: map[string][]LineageEdge{}, roles: map[string]*Role{}, leases: map[string]lease{}, counts: map[string]*CounterRow{}}
+		cps: map[string][]Checkpoint{}, quar: map[string][]Quarantine{}, lin: map[string][]LineageEdge{}, roles: map[string]*Role{}, leases: map[string]lease{}, breaks: map[string]BreakerState{}, counts: map[string]*CounterRow{}}
 }
 
 func clone[T any](v *T) *T {
@@ -427,4 +431,198 @@ func (m *MemoryStore) Counters(ctx context.Context) ([]CounterRow, error) {
 		out = append(out, *r)
 	}
 	return out, nil
+}
+
+func (m *MemoryStore) RecordBreaker(ctx context.Context, dest string, ok bool, now time.Time, threshold int, cooldown time.Duration) (BreakerState, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := m.breaks[dest]
+	st.Destination, st.UpdatedAt = dest, now
+	nextBreaker(&st, ok, now, threshold, cooldown)
+	m.breaks[dest] = st
+	return st, nil
+}
+
+// nextBreaker applies one result to a breaker: success closes it, a failure
+// counts, and the threshold-th failure in a row (and every one after it) opens
+// it for the cool-down.
+func nextBreaker(st *BreakerState, ok bool, now time.Time, threshold int, cooldown time.Duration) {
+	if ok {
+		st.Failures, st.OpenUntil = 0, time.Time{}
+		return
+	}
+	st.Failures++
+	if st.Failures >= threshold {
+		st.OpenUntil = now.Add(cooldown)
+	}
+}
+
+func (m *MemoryStore) Breakers(ctx context.Context) ([]BreakerState, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []BreakerState{}
+	for _, b := range m.breaks {
+		out = append(out, b)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Destination < out[j].Destination })
+	return out, nil
+}
+
+func (m *MemoryStore) SyncAlerts(ctx context.Context, current []Alert, now time.Time) (opened, cleared []AlertRecord, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	open := map[string]*AlertRecord{}
+	for _, a := range m.alerts {
+		if a.ClearedAt.IsZero() {
+			open[a.ID] = a
+		}
+	}
+	seen := map[string]bool{}
+	for _, c := range current {
+		seen[c.ID] = true
+		if rec := open[c.ID]; rec != nil {
+			rec.Alert = c
+			continue
+		}
+		rec := &AlertRecord{Alert: c, RID: fmt.Sprintf("%s@%d", c.ID, now.UnixNano()), OpenedAt: now}
+		m.alerts = append(m.alerts, rec)
+		opened = append(opened, *rec)
+	}
+	for id, rec := range open {
+		if !seen[id] {
+			rec.ClearedAt = now
+			cleared = append(cleared, *rec)
+		}
+	}
+	return opened, cleared, nil
+}
+
+func (m *MemoryStore) ListAlerts(ctx context.Context, openOnly bool, limit int) ([]AlertRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []AlertRecord{}
+	for i := len(m.alerts) - 1; i >= 0; i-- {
+		if a := m.alerts[i]; !openOnly || a.ClearedAt.IsZero() {
+			out = append(out, *a)
+		}
+	}
+	return page(out, limit, 0), nil
+}
+
+func (m *MemoryStore) AckAlert(ctx context.Context, id, by, note string, until time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, a := range m.alerts {
+		if a.ID == id && a.ClearedAt.IsZero() {
+			a.AckedBy, a.AckedNote, a.AckedUntil = by, note, until
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (m *MemoryStore) MarkNotified(ctx context.Context, rid string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, a := range m.alerts {
+		if a.RID == rid {
+			a.NotifiedAt = at
+		}
+	}
+	return nil
+}
+
+func (m *MemoryStore) SourceStats(ctx context.Context, since time.Time, sources []string) ([]SourceStat, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	agg := map[string]*SourceStat{}
+	lat := map[string][]float64{}
+	for _, b := range m.batches {
+		if sources != nil && !contains(sources, b.SourceID) {
+			continue
+		}
+		st := agg[b.SourceID]
+		if st == nil {
+			st = &SourceStat{SourceID: b.SourceID}
+			agg[b.SourceID] = st
+		}
+		if b.CreatedAt.After(st.LastBatchAt) {
+			st.LastBatchAt = b.CreatedAt
+		}
+		switch b.Status {
+		case StatusHeld:
+			st.Held++
+		case StatusRetrying:
+			st.Retrying++
+		}
+		if b.CreatedAt.Before(since) {
+			continue
+		}
+		st.Batches++
+		st.RowsIn += b.RowsIn
+		st.Delivered += b.Delivered
+		st.Quarantined += b.Quarantined
+		if b.Status == StatusDelivered && !b.FinishedAt.IsZero() {
+			lat[b.SourceID] = append(lat[b.SourceID], b.FinishedAt.Sub(b.CreatedAt).Seconds())
+		}
+	}
+	out := []SourceStat{}
+	for id, st := range agg {
+		var sum float64
+		for _, v := range lat[id] {
+			sum += v
+		}
+		if n := len(lat[id]); n > 0 {
+			st.AvgSeconds = sum / float64(n)
+		}
+		out = append(out, *st)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SourceID < out[j].SourceID })
+	return out, nil
+}
+
+func (m *MemoryStore) LatencySample(ctx context.Context, sourceID string, since time.Time, limit int) ([]float64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var bs []*Batch
+	for _, b := range m.batches {
+		if b.SourceID == sourceID && b.Status == StatusDelivered && !b.CreatedAt.Before(since) && !b.FinishedAt.IsZero() {
+			bs = append(bs, b)
+		}
+	}
+	sort.Slice(bs, func(i, j int) bool { return bs[i].CreatedAt.After(bs[j].CreatedAt) })
+	out := []float64{}
+	for _, b := range page(bs, limit, 0) {
+		out = append(out, b.FinishedAt.Sub(b.CreatedAt).Seconds())
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) PruneCounters(ctx context.Context, beforeHour string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for k, r := range m.counts {
+		if strings.HasPrefix(r.Name, HourlyPrefix) && labelHour(r.Labels) != "" && labelHour(r.Labels) < beforeHour {
+			delete(m.counts, k)
+			n++
+		}
+	}
+	return n, nil
+}
+
+// HourlyPrefix names the per-hour counters Monitor reads and retention prunes.
+const HourlyPrefix = "etl_hourly_"
+
+// labelHour reads the hour="YYYYMMDDHH" label out of a counter's label string.
+func labelHour(labels string) string {
+	i := strings.Index(labels, `hour="`)
+	if i < 0 {
+		return ""
+	}
+	rest := labels[i+6:]
+	if j := strings.IndexByte(rest, '"'); j > 0 {
+		return rest[:j]
+	}
+	return ""
 }

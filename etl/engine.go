@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -81,8 +80,17 @@ type Engine struct {
 	BreakerThreshold int
 	BreakerCooldown  time.Duration
 
+	// MaxAbandoned caps hooks left running after a timeout (default 32): past
+	// it new hook calls fail at once instead of piling up behind a hung receiver.
+	MaxAbandoned int
+	// Notify is told when an alert opens or clears (event "opened" or "cleared").
+	// A returned error is logged and the notification is not marked sent, so it
+	// is tried again on the next evaluation.
+	Notify func(ctx context.Context, event string, a AlertRecord) error
+
 	brMu      sync.Mutex
-	breakers  map[string]*breaker
+	brCache   map[string]cachedBreaker
+	abandon   atomic.Int64 // hooks still running after their timeout
 	once      sync.Once
 	rolesMu   sync.Mutex
 	roles     []*Role
@@ -101,7 +109,7 @@ func (e *Engine) init() {
 		if e.Owner == "" {
 			e.Owner = newID("w_")
 		}
-		e.breakers = map[string]*breaker{}
+		e.brCache = map[string]cachedBreaker{}
 		if e.Logger == nil {
 			e.Logger = slog.Default()
 		}
@@ -605,11 +613,23 @@ func (e *Engine) guard(ctx context.Context, name string, t *Tally, fn func(ctx c
 	// The hook is not cancelled when the process begins to shut down: a stage in
 	// progress is allowed to finish (up to its timeout) so its outcome is
 	// recorded, instead of being abandoned half done.
+	maxAbandoned := int64(e.MaxAbandoned)
+	if maxAbandoned <= 0 {
+		maxAbandoned = 32
+	}
+	if e.abandon.Load() >= maxAbandoned {
+		t.Add("etl_hook_rejected_total", 1, "hook", name)
+		return fmt.Errorf("%s was not called: %d earlier calls are still running after their timeout", name, e.abandon.Load())
+	}
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), e.stageTimeout())
 	defer cancel()
 	done := make(chan error, 1)
+	var timedOut atomic.Bool
 	go func() {
 		defer func() {
+			if timedOut.Load() {
+				e.abandon.Add(-1) // the late hook has finally returned
+			}
 			if r := recover(); r != nil {
 				t.Add("etl_hook_panics_total", 1, "hook", name)
 				done <- fmt.Errorf("%s panicked: %v", name, r)
@@ -621,6 +641,10 @@ func (e *Engine) guard(ctx context.Context, name string, t *Tally, fn func(ctx c
 	case err := <-done:
 		return err
 	case <-cctx.Done():
+		// A Go function cannot be stopped from outside. The batch moves on; the
+		// call is counted until it returns, and too many of them block new calls.
+		timedOut.Store(true)
+		e.abandon.Add(1)
 		t.Add("etl_hook_timeouts_total", 1, "hook", name)
 		return fmt.Errorf("%s did not answer within %s", name, e.stageTimeout())
 	}
@@ -672,7 +696,7 @@ func (e *Engine) advance(ctx context.Context, actorID string, seen *Batch) (*Bat
 	// A destination that keeps failing is left alone for a while: the batch
 	// waits, and the wait does not use up one of its attempts.
 	if (stage == StageTransfer || stage == StageDelivery) && (e.Hooks.Transfer != nil || e.Hooks.Deliver != nil) {
-		if until, open := e.circuitOpen(src.Destination, now); open {
+		if until, open := e.circuitOpen(ctx, src.Destination, now); open {
 			b.NextAttemptAt, b.UpdatedAt = until, now
 			if n := len(b.Events); n == 0 || !strings.HasPrefix(b.Events[n-1].Message, "Waiting: the circuit") {
 				b.Events = append(b.Events, Event{At: now, Stage: stage, Kind: "info", Message: fmt.Sprintf("Waiting: the circuit for %s is open until %s after repeated failures; no attempt used", src.Destination, until.Format("15:04:05"))})
@@ -711,7 +735,7 @@ func (e *Engine) advance(ctx context.Context, actorID string, seen *Batch) (*Bat
 	case StageTransfer:
 		if e.Hooks.Transfer != nil {
 			runErr = e.guard(hctx, "transfer", tally, func(c context.Context) error { return e.Hooks.Transfer(c, src, b, cp.Rows) })
-			e.circuitRecord(src.Destination, now, runErr, tally)
+			e.circuitRecord(ctx, src.Destination, now, runErr, tally)
 		}
 		if runErr == nil {
 			ch.Checkpoints = []Checkpoint{{BatchID: b.ID, Stage: stage, Rows: cp.Rows, Hash: cp.Hash, At: now}}
@@ -724,7 +748,7 @@ func (e *Engine) advance(ctx context.Context, actorID string, seen *Batch) (*Bat
 				ref, err = e.Hooks.Deliver(c, src, b, cp.Rows)
 				return err
 			})
-			e.circuitRecord(src.Destination, now, runErr, tally)
+			e.circuitRecord(ctx, src.Destination, now, runErr, tally)
 		}
 		if runErr == nil {
 			b.Delivered, b.Ref = len(cp.Rows), ref
@@ -767,6 +791,12 @@ func (e *Engine) advance(ctx context.Context, actorID string, seen *Batch) (*Bat
 		tally.Add("etl_stage_runs_total", 1, "stage", stageLabel, "outcome", "ok")
 	}
 	tally.Observe("etl_stage_duration_seconds", took.Seconds(), "stage", stageLabel)
+	hour := now.UTC().Format("2006010215")
+	tally.Add(HourlyPrefix+"stage_runs", 1, "stage", stageLabel, "hour", hour)
+	tally.Add(HourlyPrefix+"stage_ms", float64(took.Milliseconds()), "stage", stageLabel, "hour", hour)
+	if runErr != nil {
+		tally.Add(HourlyPrefix+"stage_failures", 1, "stage", stageLabel, "hour", hour)
+	}
 	if b.Status == StatusDelivered {
 		tally.Add("etl_rows_total", float64(b.Delivered), "source", b.SourceID, "kind", "delivered")
 		tally.Observe("etl_batch_duration_seconds", b.FinishedAt.Sub(b.CreatedAt).Seconds(), "source", b.SourceID)
@@ -863,9 +893,13 @@ func (e *Engine) fail(b *Batch, src *Source, stage int, err error, now time.Time
 // Circuit breaker
 // ---------------------------------------------------------------------------
 
-type breaker struct {
-	fails     int
-	openUntil time.Time
+// The breaker's state lives in the store, so every process sharing it learns of
+// a sick destination from the first one to find out. Each process keeps a
+// one-second copy so the check before a call costs no query.
+
+type cachedBreaker struct {
+	state BreakerState
+	at    time.Time
 }
 
 func (e *Engine) breakerSettings() (int, time.Duration) {
@@ -879,44 +913,65 @@ func (e *Engine) breakerSettings() (int, time.Duration) {
 	return n, d
 }
 
-// circuitOpen reports whether calls to a destination are paused, and until when.
-// After the cool-down one call is let through (half open); its result decides.
-func (e *Engine) circuitOpen(dest string, now time.Time) (time.Time, bool) {
+func (e *Engine) breakerState(ctx context.Context, dest string) BreakerState {
+	e.brMu.Lock()
+	c, ok := e.brCache[dest]
+	e.brMu.Unlock()
+	if ok && time.Since(c.at) < time.Second {
+		return c.state
+	}
+	states, err := e.Store.Breakers(ctx)
+	if err != nil {
+		e.log("warn", "could not read circuit breakers", nil, 0, "error", err.Error())
+		return c.state // the last known state; closed if there is none
+	}
 	e.brMu.Lock()
 	defer e.brMu.Unlock()
-	br := e.breakers[dest]
-	if br == nil || br.openUntil.IsZero() {
+	for _, s := range states {
+		e.brCache[s.Destination] = cachedBreaker{s, time.Now()}
+	}
+	if _, found := e.brCache[dest]; !found {
+		e.brCache[dest] = cachedBreaker{BreakerState{Destination: dest}, time.Now()}
+	}
+	return e.brCache[dest].state
+}
+
+// circuitOpen reports whether calls to a destination are paused, and until when.
+// After the cool-down one call is let through (half open); its result decides.
+func (e *Engine) circuitOpen(ctx context.Context, dest string, now time.Time) (time.Time, bool) {
+	st := e.breakerState(ctx, dest)
+	if st.OpenUntil.IsZero() || !now.Before(st.OpenUntil) {
 		return time.Time{}, false
 	}
-	if now.Before(br.openUntil) {
-		return br.openUntil, true
-	}
-	return time.Time{}, false
+	return st.OpenUntil, true
 }
 
 // circuitRecord counts a result against a destination. Permanent errors are
 // data problems, not a sick destination, and do not count.
-func (e *Engine) circuitRecord(dest string, now time.Time, err error, t *Tally) {
+func (e *Engine) circuitRecord(ctx context.Context, dest string, now time.Time, err error, t *Tally) {
+	var perm permanent
+	if errors.As(err, &perm) {
+		return
+	}
 	threshold, cooldown := e.breakerSettings()
 	e.brMu.Lock()
-	defer e.brMu.Unlock()
-	br := e.breakers[dest]
-	if br == nil {
-		br = &breaker{}
-		e.breakers[dest] = br
+	before := e.brCache[dest].state
+	e.brMu.Unlock()
+	if err == nil && before.Failures == 0 {
+		return // nothing to close: skip the write on the success path
 	}
-	var perm permanent
-	switch {
-	case err == nil:
-		br.fails, br.openUntil = 0, time.Time{}
-	case errors.As(err, &perm):
-	default:
-		br.fails++
-		if br.fails >= threshold {
-			br.openUntil = now.Add(cooldown)
-			t.Add("etl_circuit_opened_total", 1, "destination", dest)
-			e.log("warn", "circuit opened", nil, 0, "destination", dest, "failures", br.fails, "until", br.openUntil.Format(time.RFC3339))
-		}
+	st, serr := e.Store.RecordBreaker(context.WithoutCancel(ctx), dest, err == nil, now, threshold, cooldown)
+	if serr != nil {
+		e.log("warn", "could not record a circuit breaker result", nil, 0, "destination", dest, "error", serr.Error())
+		return
+	}
+	e.brMu.Lock()
+	e.brCache[dest] = cachedBreaker{st, time.Now()}
+	e.brMu.Unlock()
+	wasOpen := !before.OpenUntil.IsZero() && now.Before(before.OpenUntil)
+	if !st.OpenUntil.IsZero() && !wasOpen {
+		t.Add("etl_circuit_opened_total", 1, "destination", dest)
+		e.log("warn", "circuit opened", nil, 0, "destination", dest, "failures", st.Failures, "until", st.OpenUntil.Format(time.RFC3339))
 	}
 }
 
@@ -929,26 +984,27 @@ type Circuit struct {
 }
 
 // Circuits lists the breakers that have seen a failure.
-func (e *Engine) Circuits() []Circuit {
+func (e *Engine) Circuits(ctx context.Context) []Circuit {
 	e.init()
 	now := e.now()
-	e.brMu.Lock()
-	defer e.brMu.Unlock()
+	states, err := e.Store.Breakers(ctx)
 	out := []Circuit{}
-	for dest, br := range e.breakers {
-		if br.fails == 0 {
+	if err != nil {
+		return out
+	}
+	for _, br := range states {
+		if br.Failures == 0 {
 			continue
 		}
-		c := Circuit{Destination: dest, State: "closed", Failures: br.fails, OpenUntil: br.openUntil}
-		if !br.openUntil.IsZero() {
+		c := Circuit{Destination: br.Destination, State: "closed", Failures: br.Failures, OpenUntil: br.OpenUntil}
+		if !br.OpenUntil.IsZero() {
 			c.State = "open"
-			if !now.Before(br.openUntil) {
+			if !now.Before(br.OpenUntil) {
 				c.State = "half_open"
 			}
 		}
 		out = append(out, c)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Destination < out[j].Destination })
 	return out
 }
 
@@ -957,6 +1013,9 @@ func (e *Engine) Circuits() []Circuit {
 // batches keep their checkpoints because a replay needs them.
 func (e *Engine) Prune(ctx context.Context, age time.Duration) (int, error) {
 	e.init()
+	if _, cerr := e.Store.PruneCounters(ctx, e.now().Add(-14*24*time.Hour).UTC().Format("2006010215")); cerr != nil {
+		e.log("warn", "could not prune hourly counters", nil, 0, "error", cerr.Error())
+	}
 	n, err := e.Store.Prune(ctx, e.now().Add(-age))
 	if err == nil && n > 0 {
 		t := NewTally()
@@ -1004,11 +1063,17 @@ func (e *Engine) Replay(ctx context.Context, actor Actor, id string) (*Batch, er
 // RunAll advances a batch until it is delivered, waiting, held or failed.
 func (e *Engine) RunAll(ctx context.Context, actor Actor, id string) (*Batch, error) {
 	for {
+		before := 0
+		if cur, err := e.Store.GetBatch(ctx, id); err == nil {
+			before = cur.Stage
+		}
 		b, err := e.Advance(ctx, actor, id)
 		if err != nil {
 			return b, err
 		}
-		if b.Status != StatusInFlight {
+		// Stop when it is done, or when a stage did not move it on (it is
+		// waiting for an open circuit, for example).
+		if b.Status != StatusInFlight || b.Stage == before {
 			return b, nil
 		}
 	}

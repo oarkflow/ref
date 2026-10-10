@@ -32,6 +32,7 @@ type ETLEngine struct {
 	roleMap   map[string][]string
 	poll      time.Duration
 	retention time.Duration
+	alertPoll time.Duration
 	platform  atomic.Pointer[Platform]
 	// db and principalQuery re-read a person's roles and status from the
 	// application's user table on every request (cached for a moment), so a
@@ -46,8 +47,16 @@ type ETLEngine struct {
 type liveUser struct {
 	roles  []string
 	active bool
+	pwv    string // the account's password version: it changes when the password does
 	at     time.Time
 }
+
+// Why an identity was refused.
+const (
+	idOK       = iota
+	idDisabled // the account is disabled, removed, or its password changed since this session began
+	idMFA      // signed in with a password but the second factor has not been given yet
+)
 
 const liveTTL = 2 * time.Second
 
@@ -64,7 +73,7 @@ func registerETLResources(r *Registry) {
 			{Name: "transform", Type: "intent", Summary: "Intent that transforms rows: input {source, batch, rows}, output {rows, version}"},
 			{Name: "transfer", Type: "intent", Summary: "Intent that moves rows to the receiving system: input {source, batch, rows}; ok:false or an error fails the attempt"},
 			{Name: "deliver", Type: "intent", Summary: "Intent that puts rows on the destination: input {source, batch, rows}, output {ref}; must be idempotent on batch.key"},
-			{Name: "principal_query", Type: "sql", Summary: "Takes the principal id as $1 and returns (roles, status): roles (comma separated role ids) and status ('active' to allow). Without it the roles in the session or key are trusted for the life of the session"},
+			{Name: "principal_query", Type: "sql", Summary: "Takes the principal id as $1 and returns (roles, status[, version]): roles (comma separated role ids), status ('active' to allow) and optionally a password version; a session whose pw_changed_ms claim differs from the version is ended. Without it the roles in the session or key are trusted for the life of the session"},
 			{Name: "role_map", Type: "map", Summary: "Maps a principal role to etl roles (admin, ingest, operate, replay, read); roles not listed are used as they are"},
 			{Name: "poll", Type: "duration", Default: "1s", Summary: "How often the sweeper looks for batches that are due"},
 			{Name: "stage_delay", Type: "duration", Default: "0s", Summary: "Pause between stages of one batch (makes progress visible in a demo)"},
@@ -72,6 +81,8 @@ func registerETLResources(r *Registry) {
 			{Name: "lease_ttl", Type: "duration", Default: "90s", Summary: "How long a worker owns a batch's stage; the time to recover from a worker that died mid-stage"},
 			{Name: "breaker_threshold", Type: "int", Default: "5", Summary: "Consecutive failures that open a destination's circuit"},
 			{Name: "breaker_cooldown", Type: "duration", Default: "30s", Summary: "How long an open circuit pauses calls to its destination"},
+			{Name: "notify", Type: "intent", Summary: "Intent told when an alert opens or clears: input {event, alert{id, severity, kind, source_id, batch_id, title, message, since}}; a failure is retried"},
+			{Name: "alert_poll", Type: "duration", Default: "10s", Summary: "How often alerts are worked out, recorded and announced"},
 			{Name: "retention", Type: "duration", Default: "720h", Summary: "Checkpoints of finished batches are deleted after this (0 keeps them); held batches keep theirs"},
 		},
 	})
@@ -79,7 +90,7 @@ func registerETLResources(r *Registry) {
 
 func openETLEngine(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("etl.engine", spec.Config, "database", "table_prefix", "migrate", "sources", "transform", "transfer",
-		"deliver", "principal_query", "role_map", "poll", "stage_delay", "stage_timeout", "lease_ttl", "breaker_threshold", "breaker_cooldown", "retention"); err != nil {
+		"deliver", "principal_query", "role_map", "poll", "stage_delay", "stage_timeout", "lease_ttl", "breaker_threshold", "breaker_cooldown", "retention", "notify", "alert_poll"); err != nil {
 		return nil, nil, err
 	}
 	poll, err := configDuration(spec.Config, "poll", time.Second)
@@ -110,7 +121,11 @@ func openETLEngine(ctx context.Context, spec ResourceSpec) (Resource, io.Closer,
 	if err != nil {
 		return nil, nil, err
 	}
-	res := &ETLEngine{retention: retention, name: spec.Name, poll: max(poll, 10*time.Millisecond), roleMap: map[string][]string{}}
+	alertPoll, err := configDuration(spec.Config, "alert_poll", 10*time.Second)
+	if err != nil {
+		return nil, nil, err
+	}
+	res := &ETLEngine{alertPoll: alertPoll, retention: retention, name: spec.Name, poll: max(poll, 10*time.Millisecond), roleMap: map[string][]string{}}
 	if m, ok := spec.Config["role_map"].(map[string]any); ok {
 		for from, to := range m {
 			switch v := to.(type) {
@@ -172,6 +187,20 @@ func openETLEngine(ctx context.Context, spec ResourceSpec) (Resource, io.Closer,
 		v, err := eval.Eval(expr, env)
 		return Truthy(v), err
 	}}
+	if intentName := configString(spec.Config, "notify", ""); intentName != "" {
+		res.engine.Notify = func(ctx context.Context, event string, a etl.AlertRecord) error {
+			p := res.platform.Load()
+			if p == nil {
+				return errors.New("the platform is not running")
+			}
+			nctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			defer cancel()
+			_, err := p.CallIntent(nctx, intentName, map[string]any{"event": event, "alert": map[string]any{
+				"id": a.ID, "severity": a.Severity, "kind": a.Kind, "source_id": a.SourceID, "batch_id": a.BatchID,
+				"title": a.Title, "message": a.Message, "since": a.Since.Format(time.RFC3339), "rid": a.RID}}, nil)
+			return err
+		}
+	}
 	if err := res.engine.EnsureRoles(ctx); err != nil {
 		return nil, nil, fmt.Errorf("etl.engine %q: roles: %w", spec.Name, err)
 	}
@@ -287,23 +316,32 @@ func (r *ETLEngine) hooks(transform, transfer, deliver string) etl.Hooks {
 }
 
 // identity is the caller as the engine sees it: who they are and the roles
-// they hold right now. ok is false when the person's account has been disabled
-// or removed, which ends their access at once whatever their session says.
-func (r *ETLEngine) identity(ctx context.Context, p Principal) (actor etl.Actor, ok bool) {
+// they hold right now. The second result says why access is refused:
+//
+//   - the account was disabled or removed, or the person changed their password
+//     after this session began (every other session of theirs ends then);
+//   - the person has a second factor and has not given it in this session.
+func (r *ETLEngine) identity(ctx context.Context, p Principal) (etl.Actor, int) {
 	if p.ID == "" {
-		return etl.Actor{}, true
+		return etl.Actor{}, idOK
 	}
 	roles := p.Roles
 	if r.principalQuery != "" {
 		u, err := r.lookup(ctx, p.ID)
 		if err != nil {
 			slog.Warn("etl principal lookup failed", "resource", r.name, "error", err)
-			return etl.Actor{ID: p.ID}, true // no roles: fail closed, but do not log the person out over a database blip
+			return etl.Actor{ID: p.ID}, idOK // no roles: fail closed, but do not log the person out over a database blip
 		}
 		if !u.active {
-			return etl.Actor{}, false
+			return etl.Actor{}, idDisabled
+		}
+		if claim, has := p.Claims["pw_changed_ms"]; has && u.pwv != "" && versionText(claim) != u.pwv {
+			return etl.Actor{}, idDisabled
 		}
 		roles = u.roles
+	}
+	if Truthy(p.Claims["mfa_enabled"]) && !Truthy(p.Claims["mfa_ok"]) {
+		return etl.Actor{ID: p.ID}, idMFA
 	}
 	a := etl.Actor{ID: p.ID}
 	for _, role := range roles {
@@ -313,7 +351,23 @@ func (r *ETLEngine) identity(ctx context.Context, p Principal) (actor etl.Actor,
 			a.Roles = append(a.Roles, role)
 		}
 	}
-	return a, true
+	return a, idOK
+}
+
+// versionText renders a stored version (a number that went through JSON as a
+// float, or text) the same way however it arrived.
+func versionText(v any) string {
+	switch x := v.(type) {
+	case float64:
+		return strconv.FormatInt(int64(x), 10)
+	case int64:
+		return strconv.FormatInt(x, 10)
+	case int:
+		return strconv.Itoa(x)
+	case nil:
+		return ""
+	}
+	return strings.TrimSpace(Stringify(v))
 }
 
 func (r *ETLEngine) lookup(ctx context.Context, id string) (liveUser, error) {
@@ -331,8 +385,19 @@ func (r *ETLEngine) lookup(ctx context.Context, id string) (liveUser, error) {
 	u := liveUser{at: time.Now()}
 	if rows.Next() {
 		var roles, status string
-		if err := rows.Scan(&roles, &status); err != nil {
+		var pwv any
+		var err error
+		if cols, _ := rows.Columns(); len(cols) >= 3 {
+			err = rows.Scan(&roles, &status, &pwv)
+		} else {
+			err = rows.Scan(&roles, &status)
+		}
+		if err != nil {
 			return liveUser{}, err
+		}
+		u.pwv = versionText(pwv)
+		if b, ok := pwv.([]byte); ok {
+			u.pwv = strings.TrimSpace(string(b))
 		}
 		u.active = status == "active"
 		for _, role := range strings.Split(roles, ",") {
@@ -356,8 +421,14 @@ func (r *ETLEngine) runBackground(ctx context.Context, p *Platform) {
 	r.platform.Store(p)
 	ticker := time.NewTicker(r.poll)
 	defer ticker.Stop()
-	lastPrune := time.Time{}
+	lastPrune, lastAlerts := time.Time{}, time.Time{}
 	for {
+		if time.Since(lastAlerts) >= r.alertPoll {
+			lastAlerts = time.Now()
+			if err := r.engine.EvaluateAlerts(ctx); err != nil && ctx.Err() == nil {
+				slog.Warn("etl alert evaluation failed", "resource", r.name, "error", err)
+			}
+		}
 		if r.retention > 0 && time.Since(lastPrune) > time.Hour {
 			lastPrune = time.Now()
 			if _, err := r.engine.Prune(ctx, r.retention); err != nil && ctx.Err() == nil {

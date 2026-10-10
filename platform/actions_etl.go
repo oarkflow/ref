@@ -35,6 +35,8 @@ func registerETLActions(r *Registry) {
 		{"role_put", "effect", "Create or update a role: {id, name, description, permissions, sources}", "The role", nil},
 		{"role_delete", "effect", "Delete a role that is not built in (:id)", "{deleted}", []ConfigField{id}},
 		{"monitor", "read", "Monitoring view: throughput series, per-source health, stage timings, queue and alerts (?window=24h)", "The view", nil},
+		{"alert_ack", "effect", "Silence an open alert for a while (input.id, input.note, input.minutes); it stays listed, marked acknowledged", "{acknowledged}", nil},
+		{"alert_history", "read", "Alerts that opened and cleared, newest first, with who acknowledged them (?limit=)", "The records", nil},
 		{"alerts", "read", "Open alerts, most severe first", "The alerts", nil},
 		{"logs", "read", "Recent structured logs (?level=, ?batch=, ?trace=, ?q=, ?limit=)", "The entries", nil},
 		{"health", "read", "Health probes. Without a token only the overall status; with monitor.read, every check", "{status, checks}", nil},
@@ -140,9 +142,15 @@ func (h *etlHandler) intParam(ctx *ActionContext, key string, fallback int) int 
 
 func (h *etlHandler) run(ctx *ActionContext) (ActionResult, error) {
 	h.res.platform.Store(ctx.Platform)
-	actor, active := h.res.identity(ctx.Context, ctx.Principal)
-	if !active {
-		return ActionResult{}, intent.Failure{Code: "UNAUTHENTICATED", Category: intent.CategoryAuth, Message: "this account is disabled or no longer exists"}
+	actor, state := h.res.identity(ctx.Context, ctx.Principal)
+	switch state {
+	case idDisabled:
+		return ActionResult{}, intent.Failure{Code: "UNAUTHENTICATED", Category: intent.CategoryAuth, Message: "this session has ended: the account is disabled, or its password was changed"}
+	case idMFA:
+		if h.op == "me" {
+			return h.out(map[string]any{"id": actor.ID, "roles": []string{}, "permissions": map[string][]string{}, "mfa_required": true})
+		}
+		return ActionResult{}, intent.Failure{Code: "MFA_REQUIRED", Category: intent.CategoryAuth, Message: "enter your authentication code to finish signing in"}
 	}
 	if op := h.op; op == "health" || op == "metrics" {
 		return h.observe(ctx, actor)
@@ -161,7 +169,7 @@ func (h *etlHandler) run(ctx *ActionContext) (ActionResult, error) {
 		if err != nil {
 			return ActionResult{}, etlFailure(err)
 		}
-		return h.out(map[string]any{"id": actor.ID, "roles": actor.Roles, "permissions": acc.Summary()})
+		return h.out(map[string]any{"id": actor.ID, "roles": actor.Roles, "permissions": acc.Summary(), "mfa_required": false})
 	case "permissions":
 		return h.out(etl.Permissions)
 	case "require":
@@ -207,6 +215,16 @@ func (h *etlHandler) run(ctx *ActionContext) (ActionResult, error) {
 		return h.result(v, err)
 	case "counters":
 		v, err := e.Counters(c, actor)
+		return h.result(v, err)
+	case "alert_ack":
+		body := h.body(ctx)
+		minutes := toFloat(body["minutes"])
+		if err := e.AckAlert(c, actor, Stringify(body["id"]), Stringify(body["note"]), time.Duration(minutes)*time.Minute); err != nil {
+			return ActionResult{}, etlFailure(err)
+		}
+		return h.out(map[string]any{"acknowledged": true})
+	case "alert_history":
+		v, err := e.AlertHistory(c, actor, h.intParam(ctx, "limit", 100))
 		return h.result(v, err)
 	case "alerts":
 		v, err := e.Alerts(c, actor)

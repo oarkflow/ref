@@ -1,0 +1,146 @@
+# ---------------------------------------------------------------------------
+# Second factor: time-based one-time codes (any authenticator app).
+#
+#   Set up      Account, Two-step sign-in: the page shows a setup key and an
+#               otpauth:// link; the person types the code the app shows to prove
+#               it works; eight single-use recovery codes are shown once.
+#   Sign in     Password first. If the person has a second factor the session
+#               starts unfinished: every request but the code entry is refused
+#               (MFA_REQUIRED) until a valid code is given. A code is accepted
+#               once (its time step is remembered); wrong codes count towards the
+#               same lockout as wrong passwords. A recovery code works once.
+#   Lost device An administrator resets the second factor (audited); that also
+#               ends the person's sessions.
+#
+# The secret is sealed (AES-GCM) with ETL_MFA_KEY before it is stored.
+# ---------------------------------------------------------------------------
+
+shape "mfa_code" {
+  additional_properties false
+  prop "code" { kind string required true min_length 6 max_length 40 }
+}
+
+shape "mfa_disable" {
+  additional_properties false
+  prop "password" { kind string required true sensitive true max_length 200 }
+  prop "code"     { kind string required true min_length 6 max_length 40 }
+}
+
+intent "mfa.status" {
+  response "out"
+  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "row" { uses "database.query" resource "db" kind read requires [uid] provides [rows] config { statement "SELECT mfa_enabled, mfa_recovery FROM users WHERE id = $1" args [uid] require_rows true not_found_message "no such person" } }
+  node "first" { uses "data.first" requires [rows] provides [first] config { source_fact "rows" } }
+  node "out" { uses "data.transform" kind pure requires [first] provides [out] config { data { extract { enabled "first.mfa_enabled == 1" } pick ["enabled"] } } }
+}
+route "mfa.status" { method GET path "/ui/me/mfa" intent "mfa.status" session "sessions" auth "session_auth" cache_control "no-store" }
+
+# Start setting up: make a secret, keep it sealed as pending, show it once.
+intent "mfa.setup" {
+  response "out"
+  node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "read" } }
+  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "account" { uses "expression" kind pure provides [account] config { expression "principal.username" } }
+  node "made" { uses "auth.totp_generate" kind pure requires [gate, account] provides [made] config { issuer env("ETL_MFA_ISSUER", "Pipeline Control Room") account_fact "account" } }
+  node "secret" { uses "expression" kind pure requires [made] provides [secret] config { expression "made.secret" } }
+  node "sealed" { uses "crypto.seal" kind pure requires [secret] provides [sealed] config { key env("ETL_MFA_KEY", "dev-only-mfa-sealing-key-change-me-0123") value_fact "secret" } }
+  node "store" {
+    uses "database.exec" resource "db" kind effect requires [uid, sealed] provides [stored]
+    config { statement "UPDATE users SET mfa_pending = $1 WHERE id = $2 AND mfa_enabled = 0 AND kind = 'human'" args [sealed, uid] require_affected true not_found_message "two-step sign-in is already on; turn it off first" }
+  }
+  node "out" { uses "data.transform" kind pure requires [made, stored] provides [out] config { data { extract { secret "made.secret" uri "made.uri" } pick ["secret", "uri"] } } }
+}
+route "mfa.setup" { method POST path "/ui/me/mfa/setup" intent "mfa.setup" session "sessions" auth "session_auth" cache_control "no-store" }
+
+# Prove it works, turn it on, hand over the recovery codes (once).
+intent "mfa.enable" {
+  response "out"
+  input_schema "mfa_code"
+  node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "read" } }
+  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "find" { uses "database.query" resource "db" kind read requires [gate, uid] provides [rows] config { statement "SELECT mfa_pending FROM users WHERE id = $1 AND mfa_enabled = 0 AND mfa_pending <> ''" args [uid] require_rows true not_found_message "start the setup first" } }
+  node "row" { uses "data.first" requires [rows] provides [row] config { source_fact "rows" } }
+  node "secret" { uses "crypto.unseal" kind pure requires [row] provides [secret] config { key env("ETL_MFA_KEY", "dev-only-mfa-sealing-key-change-me-0123") value_fact "row.mfa_pending" } }
+  node "totp" { uses "auth.totp_check" kind pure requires [secret, input] provides [totp] config { secret_fact "secret" code_fact "input.code" } }
+  node "good" { uses "validate.expression" kind pure requires [totp] provides [good] config { expression "totp.ok" code "INVALID_CODE" category "conflict" message "That code is not right. Check the app's clock and try the next code." } }
+  node "codes" { uses "auth.recovery_codes" kind pure requires [good] provides [codes] config { count 8 } }
+  node "step" { uses "expression" kind pure requires [totp] provides [step] config { expression "totp.step" } }
+  node "packed" { uses "expression" kind pure requires [codes] provides [packed] config { expression "codes.packed" } }
+  node "on" {
+    uses "database.exec" resource "db" kind effect requires [uid, row, step, packed] provides [turned_on]
+    config { statement "UPDATE users SET mfa_secret = mfa_pending, mfa_pending = '', mfa_enabled = 1, mfa_last_step = $2, mfa_recovery = $3 WHERE id = $1" args [uid, step, packed] require_affected true }
+  }
+  node "yes" { uses "expression" kind pure requires [turned_on] provides [yes] config { expression "true" } }
+  node "flag" { uses "session.set" resource "sessions" kind effect requires [yes] provides [flagged] config { key "mfa_enabled" value_fact "yes" } }
+  node "flag_ok" { uses "session.set" resource "sessions" kind effect requires [yes] provides [flagged_ok] config { key "mfa_ok" value_fact "yes" } }
+  node "note" { uses "etl.note" resource "flow" kind effect requires [turned_on, uid] provides [noted] config { action "user.mfa_enable" detail_fact "uid" } }
+  node "out" { uses "data.transform" kind pure requires [codes, flagged, flagged_ok, noted] provides [out] config { data { extract { enabled "true" recovery_codes "codes.codes" } set { note "Keep these codes somewhere safe. Each works once if you lose your device. They are not shown again." } pick ["enabled", "recovery_codes", "note"] } } }
+}
+route "mfa.enable" { method POST path "/ui/me/mfa/enable" intent "mfa.enable" session "sessions" auth "session_auth" cache_control "no-store" }
+
+# Turning it off needs the password and a current code (or a recovery code).
+intent "mfa.disable" {
+  response "out"
+  input_schema "mfa_disable"
+  node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "read" } }
+  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "find" { uses "database.query" resource "db" kind read requires [gate, uid] provides [rows] config { statement "SELECT password_hash, mfa_secret, mfa_last_step, mfa_recovery FROM users WHERE id = $1 AND mfa_enabled = 1" args [uid] require_rows true not_found_message "two-step sign-in is not on" } }
+  node "row" { uses "data.first" requires [rows] provides [row] config { source_fact "rows" } }
+  node "pw" { uses "auth.password_verify" kind pure requires [input, row] provides [verified] config { password_fact "input.password" hash_fact "row.password_hash" } }
+  node "secret" { uses "crypto.unseal" kind pure requires [row] provides [secret] config { key env("ETL_MFA_KEY", "dev-only-mfa-sealing-key-change-me-0123") value_fact "row.mfa_secret" } }
+  node "totp" { uses "auth.totp_check" kind pure requires [secret, input, row] provides [totp] config { secret_fact "secret" code_fact "input.code" last_step_fact "row.mfa_last_step" } }
+  node "rhash" { uses "auth.recovery_hash" kind pure requires [input] provides [rhash] config { value_fact "input.code" } }
+  node "rec" { uses "expression" kind pure requires [row, rhash] provides [rec] config { expression "row.mfa_recovery contains (',' + rhash + ',')" } }
+  node "good" { uses "validate.expression" kind pure requires [verified, totp, rec] provides [good] config { expression "totp.ok or rec" code "INVALID_CODE" category "conflict" message "That code is not right." } }
+  node "off" {
+    uses "database.exec" resource "db" kind effect requires [uid, good] provides [turned_off]
+    config { statement "UPDATE users SET mfa_enabled = 0, mfa_secret = '', mfa_pending = '', mfa_recovery = '', mfa_last_step = 0 WHERE id = $1" args [uid] require_affected true }
+  }
+  node "no" { uses "expression" kind pure requires [turned_off] provides [no] config { expression "false" } }
+  node "flag" { uses "session.set" resource "sessions" kind effect requires [no] provides [flagged] config { key "mfa_enabled" value_fact "no" } }
+  node "note" { uses "etl.note" resource "flow" kind effect requires [turned_off, uid] provides [noted] config { action "user.mfa_disable" detail_fact "uid" } }
+  node "out" { uses "data.transform" kind pure requires [flagged, noted] provides [out] config { data { extract { enabled "false" } pick ["enabled"] } } }
+}
+route "mfa.disable" { method POST path "/ui/me/mfa/disable" intent "mfa.disable" session "sessions" auth "session_auth" cache_control "no-store" }
+
+# The second step of signing in. The session already exists but is unfinished.
+intent "auth.mfa" {
+  description "Give the second factor to finish signing in"
+  response "out"
+  input_schema "mfa_code"
+  node "uid" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
+  node "find" {
+    uses "database.query" resource "db" kind read requires [uid, now_ms] provides [rows]
+    config { statement "SELECT mfa_secret, mfa_last_step, mfa_recovery FROM users WHERE id = $1 AND status = 'active' AND mfa_enabled = 1 AND locked_until_ms <= $2" args [uid, now_ms] require_rows true not_found_message "that code is not right" }
+  }
+  node "row" { uses "data.first" requires [rows] provides [row] config { source_fact "rows" } }
+  node "secret" { uses "crypto.unseal" kind pure requires [row] provides [secret] config { key env("ETL_MFA_KEY", "dev-only-mfa-sealing-key-change-me-0123") value_fact "row.mfa_secret" } }
+  node "totp" { uses "auth.totp_check" kind pure requires [secret, input, row] provides [totp] config { secret_fact "secret" code_fact "input.code" last_step_fact "row.mfa_last_step" } }
+  node "rhash" { uses "auth.recovery_hash" kind pure requires [input] provides [rhash] config { value_fact "input.code" } }
+  node "rec" { uses "expression" kind pure requires [row, rhash] provides [rec] config { expression "row.mfa_recovery contains (',' + rhash + ',')" } }
+  node "good" { uses "expression" kind pure requires [totp, rec] provides [good] config { expression "totp.ok or rec" } }
+  node "good_i" { uses "expression" kind pure requires [good] provides [good_i] config { expression "good ? 1 : 0" } }
+  node "rec_i" { uses "expression" kind pure requires [rec, totp] provides [rec_i] config { expression "(rec and not totp.ok) ? 1 : 0" } }
+  node "step" { uses "expression" kind pure requires [totp] provides [step] config { expression "totp.step" } }
+  node "record" {
+    uses "database.exec" resource "db" kind effect requires [uid, good_i, rec_i, step, rhash, now_ms] provides [recorded]
+    config {
+      statement "UPDATE users SET mfa_last_step = CASE WHEN $2 = 1 AND $3 = 0 THEN $4 ELSE mfa_last_step END, mfa_recovery = CASE WHEN $3 = 1 THEN REPLACE(mfa_recovery, ',' || $5 || ',', ',') ELSE mfa_recovery END, failed_attempts = CASE WHEN $2 = 1 THEN 0 ELSE failed_attempts + 1 END, locked_until_ms = CASE WHEN $2 = 1 THEN 0 WHEN failed_attempts + 1 >= 5 THEN $6 + 900000 ELSE locked_until_ms END WHERE id = $1"
+      args [uid, good_i, rec_i, step, rhash, now_ms]
+    }
+  }
+  node "check" { uses "validate.expression" kind pure requires [good_i, recorded] provides [checked] config { expression "good_i == 1" code "INVALID_CODE" category "conflict" message "That code is not right." } }
+  node "yes" { uses "expression" kind pure requires [checked] provides [yes] config { expression "true" } }
+  node "finish" { uses "session.set" resource "sessions" kind effect requires [yes] provides [finished] config { key "mfa_ok" value_fact "yes" } }
+  node "out" { uses "data.transform" kind pure requires [finished, rec_i] provides [out] config { data { extract { signed_in "true" used_recovery_code "rec_i == 1" } pick ["signed_in", "used_recovery_code"] } } }
+}
+route "auth.mfa" {
+  method POST
+  path "/login/mfa"
+  intent "auth.mfa"
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+  rate_limit { limiter "limiter" limit 10 window 1m message "Too many attempts. Wait a minute and try again." }
+}

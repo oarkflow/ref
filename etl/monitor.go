@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -19,6 +21,10 @@ type Alert struct {
 	Title    string    `json:"title"`
 	Message  string    `json:"message"`
 	Since    time.Time `json:"since"`
+	// Acknowledged alerts stay listed but are silenced until AckedUntil.
+	AckedBy    string    `json:"acked_by,omitempty"`
+	AckedNote  string    `json:"acked_note,omitempty"`
+	AckedUntil time.Time `json:"acked_until,omitempty"`
 }
 
 // SourceHealth is one source's last day at a glance.
@@ -82,15 +88,36 @@ func percentile(v []float64, p float64) float64 {
 	return v[i]
 }
 
-const recentBatches = 1000
-
 // Monitor builds the monitoring view for the last `window` (default 24h).
 func (e *Engine) Monitor(ctx context.Context, actor Actor, window time.Duration) (*MonitorView, error) {
 	acc, err := e.need(ctx, actor, PermMonitor, "")
 	if err != nil {
 		return nil, err
 	}
-	return e.monitor(ctx, acc.Sources(PermMonitor), window)
+	v, err := e.monitor(ctx, acc.Sources(PermMonitor), window)
+	if err != nil {
+		return nil, err
+	}
+	e.decorate(ctx, v.Alerts)
+	return v, nil
+}
+
+// decorate adds the acknowledgement state of open alerts to the computed ones.
+func (e *Engine) decorate(ctx context.Context, alerts []Alert) {
+	open, err := e.Store.ListAlerts(ctx, true, 500)
+	if err != nil {
+		return
+	}
+	by := map[string]AlertRecord{}
+	for _, r := range open {
+		by[r.ID] = r
+	}
+	now := e.now()
+	for i := range alerts {
+		if r, ok := by[alerts[i].ID]; ok && r.Acknowledged(now) {
+			alerts[i].AckedBy, alerts[i].AckedNote, alerts[i].AckedUntil = r.AckedBy, r.AckedNote, r.AckedUntil
+		}
+	}
 }
 
 func (e *Engine) monitor(ctx context.Context, scope []string, window time.Duration) (*MonitorView, error) {
@@ -104,7 +131,7 @@ func (e *Engine) monitor(ctx context.Context, scope []string, window time.Durati
 	if bucket < time.Minute {
 		bucket = time.Minute
 	}
-	v := &MonitorView{Since: since, Bucket: Dur(bucket), Series: []Point{}, Sources: []SourceHealth{}, Alerts: []Alert{}, Stages: []StageStat{}, Circuits: e.Circuits()}
+	v := &MonitorView{Since: since, Bucket: Dur(bucket), Series: []Point{}, Sources: []SourceHealth{}, Alerts: []Alert{}, Stages: []StageStat{}, Circuits: e.Circuits(ctx)}
 	var err error
 	if v.Summary, err = e.Store.Summary(ctx, scope); err != nil {
 		return nil, err
@@ -116,9 +143,13 @@ func (e *Engine) monitor(ctx context.Context, scope []string, window time.Durati
 	if err != nil {
 		return nil, err
 	}
-	batches, err := e.Store.ListBatches(ctx, Query{SourceIDs: scope, Limit: recentBatches})
+	stats, err := e.Store.SourceStats(ctx, since, scope)
 	if err != nil {
 		return nil, err
+	}
+	statBySource := map[string]SourceStat{}
+	for _, st := range stats {
+		statBySource[st.SourceID] = st
 	}
 	hb := e.heartbeat.Load()
 	v.Queue.SweeperAgeSecs = -1
@@ -137,48 +168,55 @@ func (e *Engine) monitor(ctx context.Context, scope []string, window time.Durati
 		}
 	}
 
-	byBatchSource := map[string][]*Batch{}
-	for _, b := range batches {
-		byBatchSource[b.SourceID] = append(byBatchSource[b.SourceID], b)
+	// Stage totals are exact: they are summed from hourly counters kept in the
+	// store. Percentiles come from the events of the most recent batches.
+	type stageAgg struct {
+		runs, fails, ms float64
+		d               []float64
 	}
-	stages := map[int]*struct {
-		d    []float64
-		runs int
-		fail int
-	}{}
-	for _, b := range batches {
-		if b.CreatedAt.Before(since) && b.UpdatedAt.Before(since) {
-			continue
+	stages := map[int]*stageAgg{}
+	agg := func(st int) *stageAgg {
+		if stages[st] == nil {
+			stages[st] = &stageAgg{}
 		}
-		for _, ev := range b.Events {
-			if ev.DurationMs == 0 && ev.Attempt == 0 || ev.At.Before(since) {
+		return stages[st]
+	}
+	sinceHour := since.UTC().Format("2006010215")
+	if rows, err := e.Store.Counters(ctx); err == nil {
+		for _, r := range rows {
+			if !strings.HasPrefix(r.Name, HourlyPrefix+"stage_") || labelHour(r.Labels) < sinceHour {
 				continue
 			}
-			s := stages[ev.Stage]
-			if s == nil {
-				s = &struct {
-					d    []float64
-					runs int
-					fail int
-				}{}
-				stages[ev.Stage] = s
+			st, _ := strconv.Atoi(labelValue(r.Labels, "stage"))
+			switch r.Name {
+			case HourlyPrefix + "stage_runs":
+				agg(st).runs += r.Value
+			case HourlyPrefix + "stage_failures":
+				agg(st).fails += r.Value
+			case HourlyPrefix + "stage_ms":
+				agg(st).ms += r.Value
 			}
-			s.runs++
-			s.d = append(s.d, float64(ev.DurationMs))
-			if ev.Kind == "retry" || ev.Kind == "held" {
-				s.fail++
+		}
+	}
+	recent, err := e.Store.ListBatches(ctx, Query{SourceIDs: scope, Limit: 300})
+	if err != nil {
+		return nil, err
+	}
+	for _, b := range recent {
+		for _, ev := range b.Events {
+			if ev.Attempt > 0 && !ev.At.Before(since) {
+				agg(ev.Stage).d = append(agg(ev.Stage).d, float64(ev.DurationMs))
 			}
 		}
 	}
 	for st := 1; st <= 6; st++ {
 		stat := StageStat{Stage: st, Name: StageNames[st]}
-		if s := stages[st]; s != nil {
-			var sum float64
-			for _, d := range s.d {
-				sum += d
+		if ag := stages[st]; ag != nil {
+			stat.Runs, stat.Failures = int(ag.runs), int(ag.fails)
+			if ag.runs > 0 {
+				stat.AvgMs = ag.ms / ag.runs
 			}
-			stat.Runs, stat.Failures = s.runs, s.fail
-			stat.AvgMs, stat.P95Ms = sum/float64(len(s.d)), percentile(s.d, .95)
+			stat.P95Ms = percentile(ag.d, .95)
 		}
 		v.Stages = append(v.Stages, stat)
 	}
@@ -187,44 +225,46 @@ func (e *Engine) monitor(ctx context.Context, scope []string, window time.Durati
 		if scope != nil && !contains(scope, s.ID) {
 			continue
 		}
-		h := SourceHealth{ID: s.ID, Name: s.Name, Owner: s.Owner, Destination: s.Destination, Paused: s.Paused, ExpectEvery: s.ExpectEvery}
-		var lat []float64
-		var latSum float64
-		for _, b := range byBatchSource[s.ID] {
-			if h.LastBatchAt.IsZero() || b.CreatedAt.After(h.LastBatchAt) {
-				h.LastBatchAt = b.CreatedAt
-			}
-			switch b.Status {
-			case StatusHeld:
-				h.Held++
-			case StatusRetrying:
-				h.Retrying++
-			}
-			if b.CreatedAt.Before(since) {
-				continue
-			}
-			h.Batches++
-			h.RowsIn += b.RowsIn
-			h.Quarantined += b.Quarantined
-			h.Delivered += b.Delivered
-			if b.Status == StatusDelivered && !b.FinishedAt.IsZero() {
-				d := b.FinishedAt.Sub(b.CreatedAt).Seconds()
-				lat, latSum = append(lat, d), latSum+d
-			}
-		}
+		st := statBySource[s.ID]
+		h := SourceHealth{ID: s.ID, Name: s.Name, Owner: s.Owner, Destination: s.Destination, Paused: s.Paused, ExpectEvery: s.ExpectEvery,
+			LastBatchAt: st.LastBatchAt, Batches: st.Batches, RowsIn: st.RowsIn, Delivered: st.Delivered, Quarantined: st.Quarantined,
+			Held: st.Held, Retrying: st.Retrying, AvgSeconds: st.AvgSeconds}
 		if h.RowsIn > 0 {
 			h.RejectRate = float64(h.Quarantined) / float64(h.RowsIn)
 		}
-		if len(lat) > 0 {
-			h.AvgSeconds, h.P95Seconds = latSum/float64(len(lat)), percentile(lat, .95)
+		if lat, err := e.Store.LatencySample(ctx, s.ID, since, 500); err == nil {
+			h.P95Seconds = percentile(lat, .95)
 		}
 		h.Freshness = freshness(s, h.LastBatchAt, now)
 		v.Sources = append(v.Sources, h)
 	}
-	if a := e.alerts(sources, batches, v, scope, now); a != nil {
+	// Alerts about batches look at the batches that need attention, not at
+	// whatever was most recent.
+	var problem []*Batch
+	for _, status := range []string{StatusHeld, StatusRetrying, StatusFailed, StatusInFlight} {
+		list, err := e.Store.ListBatches(ctx, Query{SourceIDs: scope, Statuses: []string{status}, Limit: 200})
+		if err != nil {
+			return nil, err
+		}
+		problem = append(problem, list...)
+	}
+	if a := e.alerts(sources, problem, v, scope, now); a != nil {
 		v.Alerts = a
 	}
 	return v, nil
+}
+
+// labelValue reads one key="value" pair out of a counter's label string.
+func labelValue(labels, key string) string {
+	i := strings.Index(labels, key+`="`)
+	if i < 0 {
+		return ""
+	}
+	rest := labels[i+len(key)+2:]
+	if j := strings.IndexByte(rest, '"'); j >= 0 {
+		return rest[:j]
+	}
+	return ""
 }
 
 func freshness(s *Source, last, now time.Time) string {
@@ -407,7 +447,7 @@ func (e *Engine) Health(ctx context.Context) (string, []HealthCheck) {
 	})
 	run("circuits", func() (string, string) {
 		open := 0
-		for _, c := range e.Circuits() {
+		for _, c := range e.Circuits(ctx) {
 			if c.State == "open" {
 				open++
 			}
@@ -492,8 +532,8 @@ func (e *Engine) MetricsText(ctx context.Context) (string, error) {
 	if hb := e.heartbeat.Load(); hb > 0 {
 		age = time.Since(time.Unix(0, hb)).Seconds()
 	}
-	g = append(g, Gauge{Name: "etl_sweeper_heartbeat_seconds", Value: age})
-	for _, c := range e.Circuits() {
+	g = append(g, Gauge{Name: "etl_sweeper_heartbeat_seconds", Value: age}, Gauge{Name: "etl_hooks_abandoned", Value: float64(e.abandon.Load())})
+	for _, c := range e.Circuits(ctx) {
 		open := 0.0
 		if c.State != "closed" {
 			open = 1
@@ -521,4 +561,101 @@ func (e *Engine) Counters(ctx context.Context, actor Actor) ([]CounterRow, error
 		return nil, err
 	}
 	return e.Store.Counters(ctx)
+}
+
+// EvaluateAlerts works out the alerts across every source, records which opened
+// and which cleared (so there is a history), and tells Notify about the ones
+// that need telling: an alert that opened and is not acknowledged is announced
+// once, retried until Notify succeeds; one that cleared is announced once.
+// Run it on a timer (the sweeper loop does).
+func (e *Engine) EvaluateAlerts(ctx context.Context) error {
+	e.init()
+	v, err := e.monitor(ctx, nil, 24*time.Hour)
+	if err != nil {
+		return err
+	}
+	now := e.now()
+	opened, cleared, err := e.Store.SyncAlerts(ctx, v.Alerts, now)
+	if err != nil {
+		return err
+	}
+	for _, a := range opened {
+		e.log("warn", "alert opened: "+a.Title, nil, 0, "alert", a.ID, "severity", a.Severity, "message", a.Message)
+	}
+	for _, a := range cleared {
+		e.log("info", "alert cleared: "+a.Title, nil, 0, "alert", a.ID)
+	}
+	if e.Notify == nil {
+		return nil
+	}
+	for _, a := range cleared {
+		if a.NotifiedAt.IsZero() || a.Severity == "info" {
+			continue // the opening was never announced, so there is nothing to take back
+		}
+		_ = e.Notify(ctx, "cleared", a)
+	}
+	open, err := e.Store.ListAlerts(ctx, true, 500)
+	if err != nil {
+		return err
+	}
+	for _, a := range open {
+		if !a.NotifiedAt.IsZero() || a.Acknowledged(now) || a.Severity == "info" {
+			continue
+		}
+		if err := e.Notify(ctx, "opened", a); err != nil {
+			e.log("warn", "alert notification failed; will retry", nil, 0, "alert", a.ID, "error", err.Error())
+			continue
+		}
+		_ = e.Store.MarkNotified(ctx, a.RID, now)
+	}
+	return nil
+}
+
+// AckAlert silences an open alert for a while and records who did it and why.
+// The alert stays listed, marked acknowledged, and is not announced again.
+func (e *Engine) AckAlert(ctx context.Context, actor Actor, id, note string, d time.Duration) error {
+	acc, err := e.need(ctx, actor, PermAdvance, "")
+	if err != nil {
+		return err
+	}
+	if d <= 0 {
+		d = 4 * time.Hour
+	}
+	if d > 7*24*time.Hour {
+		return fmt.Errorf("%w: an alert can be silenced for a week at most", ErrInvalid)
+	}
+	// An alert about a source needs the permission on that source.
+	if parts := strings.SplitN(id, ":", 3); len(parts) == 3 && parts[1] != "" && !acc.Allows(PermAdvance, parts[1]) {
+		return ErrNotFound
+	}
+	if err := e.Store.AckAlert(ctx, id, actor.ID, strings.TrimSpace(note), e.now().Add(d)); err != nil {
+		return err
+	}
+	_ = e.Store.Commit(ctx, Change{Audit: []AuditEntry{e.audit(actor.ID, "alert.ack", "", "", "", fmt.Sprintf("%s for %s: %s", id, d, note))}})
+	e.log("info", "alert acknowledged", nil, 0, "alert", id, "actor", actor.ID, "for", d.String())
+	return nil
+}
+
+// AlertHistory lists alerts that opened and cleared (and those still open), newest first.
+func (e *Engine) AlertHistory(ctx context.Context, actor Actor, limit int) ([]AlertRecord, error) {
+	acc, err := e.need(ctx, actor, PermMonitor, "")
+	if err != nil {
+		return nil, err
+	}
+	all, err := e.Store.ListAlerts(ctx, false, max(limit, 1)*3)
+	if err != nil {
+		return nil, err
+	}
+	scope := acc.Sources(PermMonitor)
+	out := []AlertRecord{}
+	for _, a := range all {
+		if scope != nil && (a.SourceID == "" || !contains(scope, a.SourceID)) {
+			continue
+		}
+		out = append(out, a)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }

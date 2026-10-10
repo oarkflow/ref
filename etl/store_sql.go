@@ -1,12 +1,17 @@
 package etl
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -96,6 +101,12 @@ func (s *SQLStore) Migrate(ctx context.Context) error {
 		`CREATE INDEX {p}audit_source_idx ON {p}audit (source_id, seq)`,
 		`CREATE INDEX {p}quarantine_source_idx ON {p}quarantine (source_id, at)`,
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS {p}counters (name %[1]s NOT NULL, labels %[1]s NOT NULL, value DOUBLE PRECISION NOT NULL, PRIMARY KEY (name, labels))`, key),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS {p}breakers (destination %[1]s PRIMARY KEY, fails INTEGER NOT NULL, open_until BIGINT NOT NULL, updated_at BIGINT NOT NULL)`, key),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS {p}alerts (
+			rid %[1]s PRIMARY KEY, id %[1]s NOT NULL, doc %[2]s NOT NULL, opened_at BIGINT NOT NULL, cleared_at BIGINT NOT NULL DEFAULT 0,
+			acked_by %[1]s NOT NULL DEFAULT '', acked_note %[1]s NOT NULL DEFAULT '', acked_until BIGINT NOT NULL DEFAULT 0, notified_at BIGINT NOT NULL DEFAULT 0)`, key, text),
+		`CREATE INDEX {p}alerts_id_idx ON {p}alerts (id, cleared_at)`,
+		`CREATE INDEX {p}alerts_opened_idx ON {p}alerts (opened_at)`,
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS {p}audit_head (id INTEGER PRIMARY KEY, seq BIGINT NOT NULL, hash %s NOT NULL)`, key),
 	}
 	for _, st := range stmts {
@@ -184,6 +195,35 @@ func isDuplicate(err error) bool {
 	return strings.Contains(m, "unique") || strings.Contains(m, "duplicate") || strings.Contains(m, "23505")
 }
 
+// packDoc is doc for rows-heavy documents: gzip, then base64 text, marked "gz:".
+// Rows compress many times over, which keeps checkpoints cheap to store.
+func packDoc(v any) string {
+	raw, _ := json.Marshal(v)
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	_, _ = zw.Write(raw)
+	_ = zw.Close()
+	return "gz:" + base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+// unpackDoc reads what packDoc wrote, and plain JSON from before it existed.
+func unpackDoc(s string) (string, error) {
+	if !strings.HasPrefix(s, "gz:") {
+		return s, nil
+	}
+	b, err := base64.StdEncoding.DecodeString(s[3:])
+	if err != nil {
+		return "", err
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		return "", err
+	}
+	defer zr.Close()
+	out, err := io.ReadAll(zr)
+	return string(out), err
+}
+
 func ns(t time.Time) int64 { return t.UnixNano() }
 
 func doc(v any) string {
@@ -267,7 +307,7 @@ func (s *SQLStore) commit(ctx context.Context, c Change) (err error) {
 		if _, err = exec(`DELETE FROM {p}checkpoints WHERE batch_id = ? AND stage = ?`, cp.BatchID, cp.Stage); err != nil {
 			return err
 		}
-		if _, err = exec(`INSERT INTO {p}checkpoints (batch_id, stage, hash, doc) VALUES (?, ?, ?, ?)`, cp.BatchID, cp.Stage, cp.Hash, doc(&cp)); err != nil {
+		if _, err = exec(`INSERT INTO {p}checkpoints (batch_id, stage, hash, doc) VALUES (?, ?, ?, ?)`, cp.BatchID, cp.Stage, cp.Hash, packDoc(&cp)); err != nil {
 			return err
 		}
 	}
@@ -449,6 +489,9 @@ func (s *SQLStore) ListBatches(ctx context.Context, q Query) ([]*Batch, error) {
 func (s *SQLStore) LatestCheckpoint(ctx context.Context, batchID string) (*Checkpoint, error) {
 	var raw string
 	err := s.db.QueryRowContext(ctx, s.q(`SELECT doc FROM {p}checkpoints WHERE batch_id = ? ORDER BY stage DESC LIMIT 1`), batchID).Scan(&raw)
+	if err == nil {
+		raw, err = unpackDoc(raw)
+	}
 	return load[Checkpoint](raw, err)
 }
 
@@ -629,4 +672,297 @@ func (s *SQLStore) Counters(ctx context.Context) ([]CounterRow, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func (s *SQLStore) RecordBreaker(ctx context.Context, dest string, ok bool, now time.Time, threshold int, cooldown time.Duration) (BreakerState, error) {
+	var st BreakerState
+	err := s.withRetry(ctx, func() error {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		lock := ""
+		if s.dialect != "sqlite" {
+			lock = " FOR UPDATE"
+		}
+		var fails int
+		var open int64
+		row := tx.QueryRowContext(ctx, s.q(`SELECT fails, open_until FROM {p}breakers WHERE destination = ?`+lock), dest)
+		exists := true
+		if err := row.Scan(&fails, &open); errors.Is(err, sql.ErrNoRows) {
+			exists = false
+		} else if err != nil {
+			return err
+		}
+		st = BreakerState{Destination: dest, Failures: fails, UpdatedAt: now}
+		if open > 0 {
+			st.OpenUntil = time.Unix(0, open).UTC()
+		}
+		nextBreaker(&st, ok, now, threshold, cooldown)
+		openNs := int64(0)
+		if !st.OpenUntil.IsZero() {
+			openNs = ns(st.OpenUntil)
+		}
+		if exists {
+			_, err = tx.ExecContext(ctx, s.q(`UPDATE {p}breakers SET fails = ?, open_until = ?, updated_at = ? WHERE destination = ?`), st.Failures, openNs, ns(now), dest)
+		} else {
+			_, err = tx.ExecContext(ctx, s.q(`INSERT INTO {p}breakers (destination, fails, open_until, updated_at) VALUES (?, ?, ?, ?)`), dest, st.Failures, openNs, ns(now))
+		}
+		if err != nil {
+			if isDuplicate(err) {
+				return errors.New("database is locked: concurrent breaker insert") // transient: try again
+			}
+			return err
+		}
+		return tx.Commit()
+	})
+	return st, err
+}
+
+func (s *SQLStore) Breakers(ctx context.Context) ([]BreakerState, error) {
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT destination, fails, open_until, updated_at FROM {p}breakers ORDER BY destination`))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []BreakerState{}
+	for rows.Next() {
+		var b BreakerState
+		var open, upd int64
+		if err := rows.Scan(&b.Destination, &b.Failures, &open, &upd); err != nil {
+			return nil, err
+		}
+		if open > 0 {
+			b.OpenUntil = time.Unix(0, open).UTC()
+		}
+		b.UpdatedAt = time.Unix(0, upd).UTC()
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+func tm(n int64) time.Time {
+	if n <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, n).UTC()
+}
+
+func scanAlert(rows *sql.Rows) (AlertRecord, error) {
+	var a AlertRecord
+	var raw string
+	var opened, cleared, until, notified int64
+	if err := rows.Scan(&a.RID, &raw, &opened, &cleared, &a.AckedBy, &a.AckedNote, &until, &notified); err != nil {
+		return a, err
+	}
+	if err := json.Unmarshal([]byte(raw), &a.Alert); err != nil {
+		return a, err
+	}
+	a.OpenedAt, a.ClearedAt, a.AckedUntil, a.NotifiedAt = tm(opened), tm(cleared), tm(until), tm(notified)
+	return a, nil
+}
+
+const alertCols = `rid, doc, opened_at, cleared_at, acked_by, acked_note, acked_until, notified_at`
+
+func (s *SQLStore) SyncAlerts(ctx context.Context, current []Alert, now time.Time) (opened, cleared []AlertRecord, err error) {
+	err = s.withRetry(ctx, func() error {
+		opened, cleared = nil, nil
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		rows, err := tx.QueryContext(ctx, s.q(`SELECT `+alertCols+` FROM {p}alerts WHERE cleared_at = 0`))
+		if err != nil {
+			return err
+		}
+		open := map[string]AlertRecord{}
+		for rows.Next() {
+			a, err := scanAlert(rows)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			open[a.ID] = a
+		}
+		rows.Close()
+		seen := map[string]bool{}
+		for _, c := range current {
+			seen[c.ID] = true
+			if rec, ok := open[c.ID]; ok {
+				if _, err := tx.ExecContext(ctx, s.q(`UPDATE {p}alerts SET doc = ? WHERE rid = ?`), doc(&c), rec.RID); err != nil {
+					return err
+				}
+				continue
+			}
+			rec := AlertRecord{Alert: c, RID: fmt.Sprintf("%s@%d", c.ID, now.UnixNano()), OpenedAt: now}
+			if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO {p}alerts (rid, id, doc, opened_at) VALUES (?, ?, ?, ?)`), rec.RID, c.ID, doc(&c), ns(now)); err != nil {
+				return err
+			}
+			opened = append(opened, rec)
+		}
+		for id, rec := range open {
+			if !seen[id] {
+				if _, err := tx.ExecContext(ctx, s.q(`UPDATE {p}alerts SET cleared_at = ? WHERE rid = ?`), ns(now), rec.RID); err != nil {
+					return err
+				}
+				rec.ClearedAt = now
+				cleared = append(cleared, rec)
+			}
+		}
+		return tx.Commit()
+	})
+	return opened, cleared, err
+}
+
+func (s *SQLStore) ListAlerts(ctx context.Context, openOnly bool, limit int) ([]AlertRecord, error) {
+	where := ""
+	if openOnly {
+		where = " WHERE cleared_at = 0"
+	}
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT `+alertCols+` FROM {p}alerts`+where+` ORDER BY opened_at DESC LIMIT ?`), limitOf(limit))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AlertRecord{}
+	for rows.Next() {
+		a, err := scanAlert(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLStore) AckAlert(ctx context.Context, id, by, note string, until time.Time) error {
+	if len(note) > 180 {
+		note = note[:180]
+	}
+	return s.withRetry(ctx, func() error {
+		res, err := s.db.ExecContext(ctx, s.q(`UPDATE {p}alerts SET acked_by = ?, acked_note = ?, acked_until = ? WHERE id = ? AND cleared_at = 0`), by, note, ns(until), id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+func (s *SQLStore) MarkNotified(ctx context.Context, rid string, at time.Time) error {
+	return s.withRetry(ctx, func() error {
+		_, err := s.db.ExecContext(ctx, s.q(`UPDATE {p}alerts SET notified_at = ? WHERE rid = ?`), ns(at), rid)
+		return err
+	})
+}
+
+func (s *SQLStore) SourceStats(ctx context.Context, since time.Time, sources []string) ([]SourceStat, error) {
+	where, args := "1 = 1", []any{}
+	if sources != nil {
+		where, args = in("source_id", sources)
+	}
+	agg := map[string]*SourceStat{}
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT source_id, MAX(created_at),
+		SUM(CASE WHEN status = 'held' THEN 1 ELSE 0 END), SUM(CASE WHEN status = 'retrying' THEN 1 ELSE 0 END)
+		FROM {p}batches WHERE `+where+` GROUP BY source_id`), args...)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id string
+		var last int64
+		var held, retrying int
+		if err := rows.Scan(&id, &last, &held, &retrying); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		agg[id] = &SourceStat{SourceID: id, LastBatchAt: tm(last), Held: held, Retrying: retrying}
+	}
+	rows.Close()
+	rows, err = s.db.QueryContext(ctx, s.q(`SELECT source_id, COUNT(*), SUM(rows_in), SUM(delivered), SUM(quarantined),
+		AVG(CASE WHEN status = 'delivered' AND finished_at > 0 THEN finished_at - created_at END)
+		FROM {p}batches WHERE `+where+` AND created_at >= ? GROUP BY source_id`), append(args, ns(since))...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var st SourceStat
+		var avg sql.NullFloat64
+		if err := rows.Scan(&id, &st.Batches, &st.RowsIn, &st.Delivered, &st.Quarantined, &avg); err != nil {
+			return nil, err
+		}
+		cur := agg[id]
+		if cur == nil {
+			cur = &SourceStat{SourceID: id}
+			agg[id] = cur
+		}
+		cur.Batches, cur.RowsIn, cur.Delivered, cur.Quarantined = st.Batches, st.RowsIn, st.Delivered, st.Quarantined
+		if avg.Valid {
+			cur.AvgSeconds = avg.Float64 / 1e9
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]SourceStat, 0, len(agg))
+	for _, st := range agg {
+		out = append(out, *st)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SourceID < out[j].SourceID })
+	return out, nil
+}
+
+func (s *SQLStore) LatencySample(ctx context.Context, sourceID string, since time.Time, limit int) ([]float64, error) {
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT finished_at - created_at FROM {p}batches
+		WHERE source_id = ? AND status = 'delivered' AND finished_at > 0 AND created_at >= ? ORDER BY created_at DESC LIMIT ?`), sourceID, ns(since), limitOf(limit))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []float64{}
+	for rows.Next() {
+		var d int64
+		if err := rows.Scan(&d); err != nil {
+			return nil, err
+		}
+		out = append(out, float64(d)/1e9)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLStore) PruneCounters(ctx context.Context, beforeHour string) (int, error) {
+	n := 0
+	err := s.withRetry(ctx, func() error {
+		n = 0
+		rows, err := s.db.QueryContext(ctx, s.q(`SELECT name, labels FROM {p}counters WHERE name LIKE ?`), HourlyPrefix+"%")
+		if err != nil {
+			return err
+		}
+		var old [][2]string
+		for rows.Next() {
+			var name, labels string
+			if err := rows.Scan(&name, &labels); err != nil {
+				rows.Close()
+				return err
+			}
+			if h := labelHour(labels); h != "" && h < beforeHour {
+				old = append(old, [2]string{name, labels})
+			}
+		}
+		rows.Close()
+		for _, k := range old {
+			if _, err := s.db.ExecContext(ctx, s.q(`DELETE FROM {p}counters WHERE name = ? AND labels = ?`), k[0], k[1]); err != nil {
+				return err
+			}
+			n++
+		}
+		return nil
+	})
+	return n, err
 }

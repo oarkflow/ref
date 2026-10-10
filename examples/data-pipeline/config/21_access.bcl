@@ -54,7 +54,7 @@ intent "users.list" {
   node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "users.manage" } }
   node "rows" {
     uses "database.query" resource "db" kind read requires [gate] provides [rows]
-    config { statement "SELECT u.id, u.name, u.email, u.roles, u.status, u.kind, u.created_ms, u.last_login_ms, (SELECT COUNT(*) FROM api_keys k WHERE k.user_id = u.id AND k.revoked = 0) AS keys FROM users u ORDER BY u.kind, u.id" }
+    config { statement "SELECT u.id, u.name, u.email, u.roles, u.status, u.kind, u.created_ms, u.last_login_ms, u.locked_until_ms, u.mfa_enabled, (SELECT COUNT(*) FROM api_keys k WHERE k.user_id = u.id AND k.revoked = 0) AS keys FROM users u ORDER BY u.kind, u.id" }
   }
 }
 
@@ -124,9 +124,10 @@ intent "users.password" {
   node "same" { uses "validate.expression" kind pure requires [input] provides [same] config { expression "input.password == input.confirm" message "The passwords do not match." } }
   node "policy" { uses "validate.expression" kind pure requires [input] provides [policy] config { expression "input.password matches '[A-Za-z]' and input.password matches '[0-9]'" message "The password needs at least one letter and one digit." } }
   node "hash" { uses "auth.password_hash" kind pure requires [gate, input, same, policy] provides [hash] config { value_fact "input.password" } }
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
   node "set" {
-    uses "database.exec" resource "db" kind effect requires [id, hash] provides [set]
-    config { statement "UPDATE users SET password_hash = $1 WHERE id = $2 AND kind = 'human'" args [hash, id] require_affected true not_found_message "no such person" }
+    uses "database.exec" resource "db" kind effect requires [id, hash, now_ms] provides [set]
+    config { statement "UPDATE users SET password_hash = $1, pw_changed_ms = $3, failed_attempts = 0, locked_until_ms = 0 WHERE id = $2 AND kind = 'human'" args [hash, id, now_ms] require_affected true not_found_message "no such person" }
   }
   node "note" { uses "etl.note" resource "flow" kind effect requires [set, id] provides [noted] config { permission "users.manage" action "user.password_reset" detail_fact "id" } }
   node "out" { uses "data.transform" kind pure requires [id, noted] provides [out] config { data { extract { id "id" updated "true" } pick ["id", "updated"] } } }
@@ -145,11 +146,46 @@ intent "me.password" {
   node "fresh" { uses "validate.expression" kind pure requires [input] provides [fresh] config { expression "input.password != input.current" message "The new password must be different from the current one." } }
   node "policy" { uses "validate.expression" kind pure requires [input] provides [policy] config { expression "input.password matches '[A-Za-z]' and input.password matches '[0-9]'" message "The password needs at least one letter and one digit." } }
   node "hash" { uses "auth.password_hash" kind pure requires [verified, input, same, fresh, policy] provides [hash] config { value_fact "input.password" } }
-  node "set" { uses "database.exec" resource "db" kind effect requires [uid, hash] provides [set] config { statement "UPDATE users SET password_hash = $1 WHERE id = $2" args [hash, uid] require_affected true } }
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
+  # Changing the password ends every session the person has, this one included
+  # (pw_changed_ms is checked on each request): they sign in again.
+  node "set" { uses "database.exec" resource "db" kind effect requires [uid, hash, now_ms] provides [set] config { statement "UPDATE users SET password_hash = $1, pw_changed_ms = $3, failed_attempts = 0, locked_until_ms = 0 WHERE id = $2" args [hash, uid, now_ms] require_affected true } }
   node "note" { uses "etl.note" resource "flow" kind effect requires [set, uid] provides [noted] config { action "user.password_change" detail_fact "uid" } }
   node "out" { uses "data.transform" kind pure requires [noted] provides [out] config { data { extract { updated "true" } pick ["updated"] } } }
 }
 route "me.password" { method PUT path "/ui/me/password" intent "me.password" session "sessions" auth "session_auth" cache_control "no-store" }
+
+# ---- lockout and second factor, administered ---------------------------------------
+
+intent "users.unlock" {
+  description "Let a locked person try again"
+  response "out"
+  node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "users.manage" } }
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "set" {
+    uses "database.exec" resource "db" kind effect requires [gate, id] provides [set]
+    config { statement "UPDATE users SET failed_attempts = 0, locked_until_ms = 0 WHERE id = $1" args [id] require_affected true not_found_message "no such person" }
+  }
+  node "note" { uses "etl.note" resource "flow" kind effect requires [set, id] provides [noted] config { permission "users.manage" action "user.unlock" detail_fact "id" } }
+  node "out" { uses "data.transform" kind pure requires [id, noted] provides [out] config { data { extract { id "id" unlocked "true" } pick ["id", "unlocked"] } } }
+}
+route "users.unlock" { method POST path "/ui/access/users/:id/unlock" intent "users.unlock" session "sessions" auth "session_auth" cache_control "no-store" }
+
+# A person who has lost their device. It also ends their sessions.
+intent "users.mfa_reset" {
+  description "Turn off a person's second factor so they can sign in with a password and set it up again"
+  response "out"
+  node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "users.manage" } }
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
+  node "set" {
+    uses "database.exec" resource "db" kind effect requires [gate, id, now_ms] provides [set]
+    config { statement "UPDATE users SET mfa_enabled = 0, mfa_secret = '', mfa_pending = '', mfa_recovery = '', mfa_last_step = 0, pw_changed_ms = $2 WHERE id = $1 AND kind = 'human'" args [id, now_ms] require_affected true not_found_message "no such person" }
+  }
+  node "note" { uses "etl.note" resource "flow" kind effect requires [set, id] provides [noted] config { permission "users.manage" action "user.mfa_reset" detail_fact "id" } }
+  node "out" { uses "data.transform" kind pure requires [id, noted] provides [out] config { data { extract { id "id" reset "true" } pick ["id", "reset"] } } }
+}
+route "users.mfa_reset" { method POST path "/ui/access/users/:id/mfa-reset" intent "users.mfa_reset" session "sessions" auth "session_auth" cache_control "no-store" }
 
 # ---- reset links and the development mailbox -----------------------------------
 
@@ -189,7 +225,7 @@ intent "mailbox.list" {
   node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "users.manage" } }
   node "rows" {
     uses "database.query" resource "db" kind read requires [gate] provides [rows]
-    config { statement "SELECT id, to_email, subject, body, created_ms FROM mail_outbox ORDER BY created_ms DESC LIMIT 30" }
+    config { statement "SELECT id, to_email, subject, body, created_ms, sent_ms, attempts, last_error FROM mail_outbox ORDER BY created_ms DESC LIMIT 30" }
   }
 }
 route "mailbox.list" { method GET path "/ui/access/mailbox" intent "mailbox.list" session "sessions" auth "session_auth" cache_control "no-store" }

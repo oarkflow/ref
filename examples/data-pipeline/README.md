@@ -50,7 +50,17 @@ Passwords are hashed with argon2id, need at least 12 characters with a letter an
 
 **Sessions.** Signed cookies (`HttpOnly`, `SameSite=Lax`; `secure true` in `config/02_resources.bcl` behind HTTPS), kept on the server. Signing out destroys the session, so a copy of the cookie stops working; a forged cookie is refused. Roles and status are read from the user table on every request (`principal_query`, cached two seconds), so disabling an account or changing a role takes effect in every open session within seconds and in every API key the account holds. Permissions are enforced on the server; the console only hides what you cannot do. You cannot disable yourself or remove your own administrator role.
 
-**Not covered.** Changing or resetting a password does not end the person's other sessions (their roles and status are rechecked, but a signed-in session stays signed in until it expires or they sign out). There is no lockout beyond the rate limit, and no MFA.
+**Lockout.** Five wrong passwords (or codes) lock the account for fifteen minutes. A locked account, an unknown email and a pending account all get the same refusal. An administrator can unlock it at once (Access, Users, *Unlock*); the lock does not extend while it is on, so it cannot be used to keep someone out forever.
+
+**Password change ends every session.** Changing a password, resetting it, or an administrator setting it ends all of that person's sessions, the current one too: the account's password version (`pw_changed_ms`) is checked against the one the session was created with on every request. API keys are not affected.
+
+**Two-step sign-in (authenticator app).** Account, *Two-step sign-in*: the page shows a setup key; entering the code the app shows turns it on and shows eight single-use recovery codes once. After that, signing in with the password starts a session that can do nothing but enter a code (`MFA_REQUIRED` for everything else); a code is accepted once (its time step is remembered), wrong codes count towards the lockout, a recovery code works once. The secret is sealed (AES-GCM, `ETL_MFA_KEY`) before it is stored. Turning it off needs the password and a code. A person who lost their device is reset by an administrator (*Reset 2-step*), which also ends their sessions.
+
+**Email.** Reset links and alert notices are written to a mail outbox in the step that caused them, and a scheduled job sends them through `service.smtp` (`ETL_SMTP_HOST`, `_PORT`, `_USERNAME`, `_PASSWORD`, `_FROM`, `ETL_SMTP_TLS`; defaults expect a test server on 127.0.0.1:1025). A message is tried ten times and stays visible in Access, Mailbox with its attempts. `ETL_ALERT_EMAIL` is who is told about alerts.
+
+## Alerts
+
+Open alerts appear on Monitoring. **Acknowledge** silences one for an hour to a week and records who and why; it stays listed, marked acknowledged, and is not announced again. Every alert's history (opened, cleared, acknowledged by) is kept (*Alert history*), and each opening and clearing is emailed once. Three things are checked by the engine itself and shown here: a held batch, a source that missed its schedule, and a destination whose circuit is open (the circuit state is shared by every process).
 
 ## Secure transport (WebAssembly)
 
@@ -72,7 +82,7 @@ ETL_ORIGIN=https://app.example.com ETL_REQUIRE_EMBEDDED_TRUST=true ETL_DEV_KEYS=
   ETL_TRANSPORT_KEY_FILE=/run/secrets/etl-transport-key ETL_SIGNING_KEY_FILE=/run/secrets/etl-signing-key  make run dir=./examples/data-pipeline
 ```
 
-The origin must match the address you open: `http://127.0.0.1:8080` and `http://localhost:8080` are allowed by default, and `ETL_ORIGIN` adds one (for another port, or the https address). In development the keys are created under `.data/secure` so pins survive restarts. Device registrations are kept in memory, so after a server restart the page registers again by itself; use a durable device store for production. The transport is tamper-resistant, not tamperproof: a script injected into the page can still read data before it is encrypted, which is why the policy above matters and why the server enforces every permission itself.
+HTTPS is served by the runner itself when `TLS_CERT_FILE` and `TLS_KEY_FILE` are set (TLS 1.3 only; plain HTTP and TLS 1.2 are refused). The origin must match the address you open: `http://127.0.0.1:8080` and `http://localhost:8080` are allowed by default, and `ETL_ORIGIN` adds one (for another port, or the https address). In development the keys are created under `.data/secure` so pins survive restarts. Registered devices and replay records are kept in files under `.data/secure/state` (`state_dir`), so they survive a restart and a recorded handshake cannot be replayed after one; with `persist_sessions true` the sessions do too. For several server processes behind a balancer use a shared store. The transport is tamper-resistant, not tamperproof: a script injected into the page can still read data before it is encrypted, which is why the policy above matters and why the server enforces every permission itself.
 
 ## Monitoring and observability
 

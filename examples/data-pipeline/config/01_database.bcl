@@ -3,6 +3,11 @@
 # lineage and the audit trail in this database (etl_* tables). SQLite by
 # default, PostgreSQL by environment. The application adds its own users and a
 # stand-in destination system (warehouse_batches, destinations).
+#
+# Upgrading an existing database: the users and mail_outbox tables gained
+# columns (pw_changed_ms, failed_attempts, locked_until_ms, mfa_*, sent_ms,
+# attempts, last_error). CREATE TABLE IF NOT EXISTS does not add them to a table
+# that exists; for a development database delete .data, otherwise ALTER TABLE.
 # ---------------------------------------------------------------------------
 
 resource "db" {
@@ -14,10 +19,10 @@ resource "db" {
     max_open_connections env("ETL_DB_CONNECTIONS", "1")
     ping true
     migrations [
-      "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL, password_hash TEXT NOT NULL, roles TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', kind TEXT NOT NULL DEFAULT 'human', created_ms BIGINT NOT NULL DEFAULT 0, last_login_ms BIGINT NOT NULL DEFAULT 0)",
+      "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL, password_hash TEXT NOT NULL, roles TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', kind TEXT NOT NULL DEFAULT 'human', created_ms BIGINT NOT NULL DEFAULT 0, last_login_ms BIGINT NOT NULL DEFAULT 0, pw_changed_ms BIGINT NOT NULL DEFAULT 0, failed_attempts INTEGER NOT NULL DEFAULT 0, locked_until_ms BIGINT NOT NULL DEFAULT 0, mfa_enabled INTEGER NOT NULL DEFAULT 0, mfa_secret TEXT NOT NULL DEFAULT '', mfa_pending TEXT NOT NULL DEFAULT '', mfa_last_step BIGINT NOT NULL DEFAULT 0, mfa_recovery TEXT NOT NULL DEFAULT '')",
       "CREATE TABLE IF NOT EXISTS password_resets (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_ms BIGINT NOT NULL, used INTEGER NOT NULL DEFAULT 0, created_ms BIGINT NOT NULL, created_by TEXT NOT NULL DEFAULT '')",
       "CREATE INDEX IF NOT EXISTS password_resets_user ON password_resets(user_id)",
-      "CREATE TABLE IF NOT EXISTS mail_outbox (id TEXT PRIMARY KEY, to_email TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL, created_ms BIGINT NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS mail_outbox (id TEXT PRIMARY KEY, to_email TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL, created_ms BIGINT NOT NULL, sent_ms BIGINT NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '')",
       "CREATE TABLE IF NOT EXISTS api_keys (key_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, prefix TEXT NOT NULL, created_ms BIGINT NOT NULL, created_by TEXT NOT NULL DEFAULT '', revoked INTEGER NOT NULL DEFAULT 0)",
       "CREATE INDEX IF NOT EXISTS api_keys_user ON api_keys(user_id)",
       "CREATE INDEX IF NOT EXISTS users_email ON users(email)",

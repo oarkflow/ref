@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"testing"
 
+	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 )
@@ -25,6 +26,24 @@ func init() {
 		t.Cleanup(func() { db.Close() })
 		return migrated(t, db, "sqlite", "t_")
 	}
+	if dsn := os.Getenv("TEST_MYSQL_DSN"); dsn != "" {
+		n := 0
+		storeFactories["mysql"] = func(t *testing.T) Store {
+			db, err := sql.Open("mysql", dsn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n++
+			prefix := "etl_m" + itoa(os.Getpid()) + "_" + itoa(n) + "_"
+			t.Cleanup(func() {
+				for _, tb := range []string{"sources", "roles", "batches", "checkpoints", "quarantine", "lineage", "audit", "audit_head", "counters", "breakers", "alerts"} {
+					_, _ = db.Exec("DROP TABLE IF EXISTS " + prefix + tb)
+				}
+				db.Close()
+			})
+			return migrated(t, db, "mysql", prefix)
+		}
+	}
 	if dsn := os.Getenv("TEST_POSTGRES_DSN"); dsn != "" {
 		n := 0
 		storeFactories["postgres"] = func(t *testing.T) Store {
@@ -35,7 +54,7 @@ func init() {
 			n++
 			prefix := "etl_t" + itoa(os.Getpid()) + "_" + itoa(n) + "_"
 			t.Cleanup(func() {
-				for _, tb := range []string{"sources", "roles", "batches", "checkpoints", "quarantine", "lineage", "audit", "audit_head", "counters"} {
+				for _, tb := range []string{"sources", "roles", "batches", "checkpoints", "quarantine", "lineage", "audit", "audit_head", "counters", "breakers", "alerts"} {
 					_, _ = db.Exec("DROP TABLE IF EXISTS " + prefix + tb)
 				}
 				db.Close()

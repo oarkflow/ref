@@ -1,0 +1,91 @@
+# ---------------------------------------------------------------------------
+# Email. Everything the system wants to say by email (reset links, alert
+# notices) is written to the mail_outbox table first, in the same step that
+# caused it, and a scheduled job sends what is waiting. A message is tried up to
+# ten times; one that cannot be sent stays in the outbox with its attempts, and
+# is visible in Access, Mailbox.
+#
+# Point it at a real server with ETL_SMTP_HOST / _PORT / _USERNAME / _PASSWORD /
+# _FROM and ETL_SMTP_TLS (starttls, implicit or none). The defaults expect a
+# local test server on 127.0.0.1:1025 (for example MailHog or Mailpit), and
+# without one the messages simply wait in the outbox.
+# ---------------------------------------------------------------------------
+
+resource "mail" {
+  kind "service.smtp"
+  description "Outgoing email"
+  config {
+    host env("ETL_SMTP_HOST", "127.0.0.1")
+    port env("ETL_SMTP_PORT", "1025")
+    username env("ETL_SMTP_USERNAME", "")
+    password env("ETL_SMTP_PASSWORD", "")
+    from env("ETL_SMTP_FROM", "pipeline@localhost")
+    tls env("ETL_SMTP_TLS", "none")
+    timeout "10s"
+  }
+}
+
+intent "mail.send_one" {
+  description "Send one queued message and record what happened"
+  response "out"
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
+  node "send" {
+    uses "service.smtp" resource "mail" kind effect requires [input] provides [sent]
+    on_error continue
+    fallback { sent { message_id "" } }
+    config { to ["{{ input.item.to_email }}"] subject "{{ input.item.subject }}" body "{{ input.item.body }}" }
+  }
+  node "ok" { uses "expression" kind pure requires [sent] provides [ok] config { expression "sent.message_id != '' ? 1 : 0" } }
+  node "record" {
+    uses "database.exec" resource "db" kind effect requires [input, ok, now_ms] provides [recorded]
+    config {
+      statement "UPDATE mail_outbox SET sent_ms = CASE WHEN $2 = 1 THEN $3 ELSE 0 END, attempts = attempts + 1, last_error = CASE WHEN $2 = 1 THEN '' ELSE 'the mail server did not accept the message' END WHERE id = $1"
+      args [input.item.id, ok, now_ms]
+    }
+  }
+  node "out" { uses "data.transform" kind pure requires [ok, recorded] provides [out] config { data { extract { sent "ok == 1" } pick ["sent"] } } }
+}
+
+# Sends what is waiting, a few at a time.
+intent "mail.deliver" {
+  response "out"
+  node "waiting" {
+    uses "database.query" resource "db" kind read provides [rows]
+    config { statement "SELECT id, to_email, subject, body FROM mail_outbox WHERE sent_ms = 0 AND attempts < 10 ORDER BY created_ms LIMIT 20" }
+  }
+  node "each" { uses "flow.foreach" kind effect requires [rows] provides [results] config { intent "mail.send_one" items_fact "rows" continue_on_error true max_items 20 } }
+  node "out" { uses "data.transform" kind pure requires [results] provides [out] config { data { extract { attempted "len(results.results)" } pick ["attempted"] } } }
+}
+
+# A schedule runs through a queue so that exactly one replica fires it.
+resource "bus" {
+  kind "queue.broker"
+  description "Durable queue for scheduled jobs"
+  config {
+    dir env("ETL_BROKER_DIR", ".data/broker")
+    node_id env("ETL_NODE_ID", "node-1")
+    concurrency 2
+    visibility_timeout 60s
+    retry { max_attempts 5 initial 500ms max 30s factor 2 jitter true }
+  }
+}
+
+schedule "mail_delivery" { every 15s queue "bus" intent "mail.deliver" }
+
+# Told by the engine when an alert opens or clears. The notice is queued for
+# ETL_ALERT_EMAIL; one notice per alert and event, however often it is retried.
+intent "alerts.notify" {
+  response "out"
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
+  node "to" { uses "constant" kind pure provides [to] config { value { email env("ETL_ALERT_EMAIL", "ops@example.com") } } }
+  node "subject" { uses "expression" kind pure requires [input] provides [subject] config { expression "'[' + input.alert.severity + '] ' + (input.event == 'opened' ? '' : 'Cleared: ') + input.alert.title" } }
+  node "key" { uses "expression" kind pure requires [input] provides [key] config { expression "input.alert.rid + ':' + input.event" } }
+  node "queue" {
+    uses "database.exec" resource "db" kind effect requires [input, to, subject, key, now_ms] provides [queued]
+    config {
+      statement "INSERT INTO mail_outbox (id, to_email, subject, body, created_ms) SELECT $1, $2, $3, $4, $5 WHERE NOT EXISTS (SELECT 1 FROM mail_outbox WHERE id = $1)"
+      args [key, to.email, subject, input.alert.message, now_ms]
+    }
+  }
+  node "out" { uses "data.transform" kind pure requires [queued] provides [out] config { data { set { queued true } pick ["queued"] } } }
+}

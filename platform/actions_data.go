@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"github.com/oarkflow/ref/intent"
 	"regexp"
 	"slices"
 	"sort"
@@ -235,6 +236,8 @@ func registerDataActions(r *Registry) {
 		Config: []ConfigField{
 			{Name: "expression", Type: "expression", Required: true},
 			{Name: "message", Type: "string", Summary: "Caller-facing message when the check fails"},
+			{Name: "code", Type: "string", Summary: "Error code to fail with instead of INVALID_INPUT"},
+			{Name: "category", Type: "string", Default: "invalid_input", Summary: "Failure category when code is set: auth, permission, conflict, invalid_input…"},
 			{Name: "message_expression", Type: "expression", Summary: "An expression for the message, when it should name what failed; evaluated only on failure, and message is used when it yields nothing"},
 		},
 	})
@@ -877,6 +880,9 @@ var validateExpressionAction = ActionFactoryFunc(func(_ BuildContext, spec NodeS
 		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
 	}
 	message := configString(spec.Config, "message", "the request did not pass validation")
+	// code and category let a check fail as something other than bad input: an
+	// authentication failure is 401, a locked account 403, and so on.
+	failCode, failCategory := configString(spec.Config, "code", ""), configString(spec.Config, "category", "invalid_input")
 	var messageExpr *Expression
 	if text := configString(spec.Config, "message_expression", ""); text != "" {
 		if messageExpr, err = CompileExpr(text); err != nil {
@@ -891,12 +897,16 @@ var validateExpressionAction = ActionFactoryFunc(func(_ BuildContext, spec NodeS
 			return ActionResult{}, err
 		}
 		if !ok {
+			text := message
 			if messageExpr != nil {
 				if v, err := messageExpr.Eval(env); err == nil && strings.TrimSpace(Stringify(v)) != "" {
-					return ActionResult{}, invalidInput("%s", Stringify(v))
+					text = Stringify(v)
 				}
 			}
-			return ActionResult{}, invalidInput("%s", message)
+			if failCode != "" {
+				return ActionResult{}, intent.Failure{Code: failCode, Category: failureCategory(failCategory), Message: text}
+			}
+			return ActionResult{}, invalidInput("%s", text)
 		}
 		return acknowledgement(spec, true), nil
 	}), nil
@@ -985,3 +995,22 @@ var dataParseCSVAction = ActionFactoryFunc(func(_ BuildContext, spec NodeSpec) (
 		return singleOutput(spec, rows), nil
 	}), nil
 })
+
+// failureCategory maps a category name from configuration to the intent category.
+func failureCategory(name string) intent.Category {
+	switch name {
+	case "not_found":
+		return intent.CategoryNotFound
+	case "conflict":
+		return intent.CategoryConflict
+	case "permission":
+		return intent.CategoryPermission
+	case "auth":
+		return intent.CategoryAuth
+	case "rate_limit":
+		return intent.CategoryRateLimit
+	case "unavailable":
+		return intent.CategoryUnavailable
+	}
+	return intent.CategoryInvalidInput
+}

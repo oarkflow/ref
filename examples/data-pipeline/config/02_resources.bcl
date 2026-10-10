@@ -17,10 +17,11 @@ resource "flow" {
     # for two seconds), not trusted from the session: disabling an account or
     # changing its roles takes effect at once, in every open session and for
     # every API key it holds.
-    principal_query "SELECT roles, status FROM users WHERE id = $1"
+    principal_query "SELECT roles, status, pw_changed_ms FROM users WHERE id = $1"
     transform "etl.transform"
     transfer "etl.transfer"
     deliver "etl.deliver"
+    notify "alerts.notify"
     poll "500ms"
     stage_timeout env("ETL_STAGE_TIMEOUT", "30s")   # one hook call; longer counts as a failed attempt
     lease_ttl "90s"                                 # a worker that dies mid-stage is replaced after this
@@ -105,7 +106,7 @@ resource "sessions" {
     secret env("ETL_SESSION_SECRET", "data-pipeline-dev-session-secret-change-me-0123456789")
     cookie "etl_sid"
     max_age 12h
-    secure false
+    secure env("ETL_COOKIE_SECURE", "false")
   }
 }
 
@@ -115,6 +116,7 @@ resource "session_auth" {
   config {
     session "sessions"
     roles_claim "roles"
+    claims ["pw_changed_ms", "mfa_enabled", "mfa_ok"]
   }
 }
 
@@ -138,6 +140,8 @@ resource "secure" {
     server_key_file env("ETL_TRANSPORT_KEY_FILE", ".data/secure/transport.key")
     signing_key_file env("ETL_SIGNING_KEY_FILE", ".data/secure/signing.key")
     create_key_file env("ETL_DEV_KEYS", "true")
+    # Registered devices and replay records survive a restart (files, mode 0600).
+    state_dir env("ETL_TRANSPORT_STATE", ".data/secure/state")
     require_embedded_trust env("ETL_REQUIRE_EMBEDDED_TRUST", "false")
   }
 }

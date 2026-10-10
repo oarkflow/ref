@@ -11,7 +11,7 @@
 dir  ?= $(DIR)
 addr ?=
 
-.PHONY: run build test tidy wasm
+.PHONY: run build test tidy wasm wasm-trusted
 
 run:
 	@test -n "$(dir)" || { echo "usage: make run dir=./examples/smsgateway [addr=:8080]"; exit 2; }
@@ -54,3 +54,10 @@ wasm:
 	  rm -rf $(WASM_APP)/static/wasm && mkdir -p $(WASM_APP)/static/wasm && \
 	  cp "$$tmp"/wasm/dist/*.js "$$tmp"/wasm/dist/*.wasm "$$tmp"/wasm/dist/asset-manifest.json "$$tmp"/wasm/dist/SHA256SUMS $(WASM_APP)/static/wasm/ && \
 	  rm -rf "$$tmp" && echo "installed $$(wc -c < $(WASM_APP)/static/wasm/securefetch.wasm) bytes of securefetch.wasm into $(WASM_APP)/static/wasm" && cat $(WASM_APP)/static/wasm/SHA256SUMS
+
+# Builds the client with the origin and the server's public keys built in (read
+# from its key files), which is what a deployment outside loopback requires.
+#   make wasm-trusted ORIGIN=https://app.example.com [KEYS=/run/secrets]
+wasm-trusted:
+	@test -n "$(ORIGIN)" || { echo "usage: make wasm-trusted ORIGIN=https://app.example.com [KEYS=dir with transport.key and signing.key]"; exit 2; }
+	$(MAKE) wasm $$(go run ./contrib/securetrust -origin "$(ORIGIN)" $(if $(KEYS),-keys "$(KEYS)",))

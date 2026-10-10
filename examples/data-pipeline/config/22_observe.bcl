@@ -2,7 +2,7 @@
 # Monitoring and observability.
 #
 #   /ui/etl/monitor   throughput, per-source health, stage timings, queue, alerts
-#   /ui/etl/alerts    open alerts, most severe first
+#   /ui/etl/alerts    open alerts, most severe first; POST .../ack silences one, .../history lists past ones
 #   /ui/etl/logs      recent structured logs, filterable by batch and trace
 #   /ui/etl/health    every health check (monitor.read)
 #   /ui/etl/counters  the durable counters: stored in the database, so they survive restarts
@@ -14,6 +14,8 @@ intent "etl.monitor" { response "r" node "r" { uses "etl.monitor" resource "flow
 intent "etl.alerts"  { response "r" node "r" { uses "etl.alerts"  resource "flow" provides [r] } }
 intent "etl.logs"    { response "r" node "r" { uses "etl.logs"    resource "flow" provides [r] } }
 intent "etl.counters" { response "r" node "r" { uses "etl.counters" resource "flow" provides [r] } }
+intent "etl.alert_ack" { response "r" node "r" { uses "etl.alert_ack" resource "flow" kind effect requires [input] provides [r] } }
+intent "etl.alert_history" { response "r" node "r" { uses "etl.alert_history" resource "flow" provides [r] } }
 intent "etl.health"  { response "r" node "r" { uses "etl.health"  resource "flow" provides [r] } }
 intent "etl.metrics" { response "r" node "r" { uses "etl.metrics" resource "flow" provides [r] } }
 
@@ -26,6 +28,8 @@ route_group "ui_observe" {
   route "ui.alerts"  { method GET path "/ui/etl/alerts"  intent "etl.alerts" }
   route "ui.logs"    { method GET path "/ui/etl/logs"    intent "etl.logs" }
   route "ui.health"  { method GET path "/ui/etl/health"  intent "etl.health" }
+  route "ui.alert_ack" { method POST path "/ui/etl/alerts/ack" intent "etl.alert_ack" }
+  route "ui.alert_history" { method GET path "/ui/etl/alerts/history" intent "etl.alert_history" }
   route "ui.counters" { method GET path "/ui/etl/counters" intent "etl.counters" }
 }
 
