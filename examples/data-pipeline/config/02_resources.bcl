@@ -7,6 +7,15 @@
 # monitor, auditor.
 # ---------------------------------------------------------------------------
 
+resource "files" {
+  kind "storage.fs"
+  description "Chunks of large batches, and files waiting to be ingested (inbox/)"
+  config {
+    dir env("ETL_BLOB_DIR", ".data/blobs")
+    max_object_bytes env("ETL_BLOB_MAX_BYTES", "1073741824")
+  }
+}
+
 resource "flow" {
   kind "etl.engine"
   description "Sources, staged runs, checkpoints, retry, hold and replay, audit trail, lineage"
@@ -21,6 +30,12 @@ resource "flow" {
     transform "etl.transform"
     transfer "etl.transfer"
     deliver "etl.deliver"
+    verify "etl.verify_delivery"
+    # Big batches are kept here, a chunk at a time, not in the database. Drop
+    # a file into .data/blobs/inbox/ and ingest it by name to load more rows
+    # than fit in memory.
+    blobs "files"
+    chunk_rows env("ETL_CHUNK_ROWS", "5000")
     notify "alerts.notify"
     poll "500ms"
     stage_timeout env("ETL_STAGE_TIMEOUT", "30s")   # one hook call; longer counts as a failed attempt

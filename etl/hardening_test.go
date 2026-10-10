@@ -44,7 +44,7 @@ func TestOneProcessLearnsFromAnothersFailures(t *testing.T) {
 func TestHooksStillRunningAfterTheirTimeoutAreCountedAndCapped(t *testing.T) {
 	eachStore(t, func(t *testing.T, e *Engine, _ *clock) {
 		ctx := context.Background()
-		e.StageTimeout, e.MaxAbandoned = 20*time.Millisecond, 2
+		e.StageTimeout, e.Grace, e.MaxAbandoned = 20*time.Millisecond, 5*time.Millisecond, 2
 		release := make(chan struct{})
 		var calls atomic.Int32
 		e.Hooks.Transform = func(context.Context, *Source, *Batch, []Row) ([]Row, string, error) {
@@ -250,6 +250,55 @@ func TestMonitoringNumbersComeFromTheStoreNotAScanOfRecentBatches(t *testing.T) 
 		}
 		if hourly(before) == 0 || hourly(after) != 0 || len(after) != len(before)-hourly(before) {
 			t.Fatalf("hourly counters: before %d after %d", hourly(before), hourly(after))
+		}
+	})
+}
+
+func TestAHookThatHonoursCancellationIsStoppedNotAbandoned(t *testing.T) {
+	eachStore(t, func(t *testing.T, e *Engine, _ *clock) {
+		ctx := context.Background()
+		e.StageTimeout, e.Grace = 20*time.Millisecond, time.Second
+		var stopped atomic.Bool
+		e.Hooks.Transform = func(c context.Context, _ *Source, _ *Batch, r []Row) ([]Row, string, error) {
+			<-c.Done() // what a database or HTTP call does
+			stopped.Store(true)
+			return nil, "", c.Err()
+		}
+		res, _ := e.Ingest(ctx, admin, "orders", "coop", rows(t, goodCSV))
+		b, _ := e.Advance(ctx, admin, res.Batch.ID)
+		time.Sleep(10 * time.Millisecond)
+		if !stopped.Load() || e.abandon.Load() != 0 {
+			t.Fatalf("a cooperative hook is stopped and not counted as abandoned (stopped=%v abandoned=%d)", stopped.Load(), e.abandon.Load())
+		}
+		if !strings.Contains(b.LastError, "stopped when cancelled") {
+			t.Fatalf("the failure should say so: %q", b.LastError)
+		}
+	})
+}
+
+func TestAHookThatCannotBeStoppedMakesTheProcessReportItselfWedged(t *testing.T) {
+	eachStore(t, func(t *testing.T, e *Engine, _ *clock) {
+		ctx := context.Background()
+		e.StageTimeout, e.Grace, e.WedgeAfter = 10*time.Millisecond, 5*time.Millisecond, 30*time.Millisecond
+		release := make(chan struct{})
+		defer close(release)
+		var told atomic.Int32
+		e.OnWedged = func(n int, d time.Duration) { told.Add(1) }
+		e.Hooks.Transform = func(context.Context, *Source, *Batch, []Row) ([]Row, string, error) {
+			<-release // ignores its context
+			return nil, "", nil
+		}
+		res, _ := e.Ingest(ctx, admin, "orders", "wedge", rows(t, goodCSV))
+		e.Advance(ctx, admin, res.Batch.ID)
+		if status, _ := e.Health(ctx); status != "degraded" {
+			t.Fatalf("a stuck call is first a warning: %s", status)
+		}
+		time.Sleep(60 * time.Millisecond)
+		e.Sweep(ctx, 1)
+		e.Sweep(ctx, 1)
+		status, checks := e.Health(ctx)
+		if status != "down" || told.Load() != 1 {
+			t.Fatalf("stuck for good: health %s (%+v), told %d times", status, checks, told.Load())
 		}
 	})
 }

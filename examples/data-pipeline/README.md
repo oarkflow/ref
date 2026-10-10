@@ -46,7 +46,7 @@ The tabs you see follow your permissions. Create a role limited to some sources 
 | Change password (Account) | Current password, new password, confirmation; the new one must differ. |
 | Admin: reset link, set password | Access, Users: *Reset link* makes a one-time link to hand over; *Password* sets one directly (with confirmation). Both are audited. |
 
-Passwords are hashed with argon2id, need at least 12 characters with a letter and a digit, and are always entered twice; the page checks as you type and the server checks again. Reset emails are written to a *mailbox* (Access, Mailbox) because no email sender is wired in; connect `service.smtp` to `mail_outbox` to deliver them.
+Passwords are hashed with argon2id, need at least 12 characters with a letter and a digit, and are always entered twice; the page checks as you type and the server checks again. Reset emails are written to a *mailbox* (Access, Mailbox); they are sent by email once `ETL_SMTP_HOST` is set.
 
 **Sessions.** Signed cookies (`HttpOnly`, `SameSite=Lax`; `secure true` in `config/02_resources.bcl` behind HTTPS), kept on the server. Signing out destroys the session, so a copy of the cookie stops working; a forged cookie is refused. Roles and status are read from the user table on every request (`principal_query`, cached two seconds), so disabling an account or changing a role takes effect in every open session within seconds and in every API key the account holds. Permissions are enforced on the server; the console only hides what you cannot do. You cannot disable yourself or remove your own administrator role.
 
@@ -56,7 +56,7 @@ Passwords are hashed with argon2id, need at least 12 characters with a letter an
 
 **Two-step sign-in (authenticator app).** Account, *Two-step sign-in*: the page shows a setup key; entering the code the app shows turns it on and shows eight single-use recovery codes once. After that, signing in with the password starts a session that can do nothing but enter a code (`MFA_REQUIRED` for everything else); a code is accepted once (its time step is remembered), wrong codes count towards the lockout, a recovery code works once. The secret is sealed (AES-GCM, `ETL_MFA_KEY`) before it is stored. Turning it off needs the password and a code. A person who lost their device is reset by an administrator (*Reset 2-step*), which also ends their sessions.
 
-**Email.** Reset links and alert notices are written to a mail outbox in the step that caused them, and a scheduled job sends them through `service.smtp` (`ETL_SMTP_HOST`, `_PORT`, `_USERNAME`, `_PASSWORD`, `_FROM`, `ETL_SMTP_TLS`; defaults expect a test server on 127.0.0.1:1025). A message is tried ten times and stays visible in Access, Mailbox with its attempts. `ETL_ALERT_EMAIL` is who is told about alerts.
+**Email.** Reset links and alert notices are written to a mail outbox in the step that caused them, and a scheduled job sends them through `service.smtp` (`ETL_SMTP_HOST`, `_PORT`, `_USERNAME`, `_PASSWORD`, `_FROM`, `ETL_SMTP_TLS`; sending stays off until `ETL_SMTP_HOST` is set, so no mail server is needed to run the example; for a local test run Mailpit and set `ETL_SMTP_HOST=127.0.0.1 ETL_SMTP_PORT=1025`). A message is tried ten times and stays visible in Access, Mailbox with its attempts. `ETL_ALERT_EMAIL` is who is told about alerts.
 
 ## Alerts
 
@@ -111,3 +111,11 @@ curl -H 'X-API-Key: dev-metrics-key-change-me-0123456' http://127.0.0.1:8080/met
 | Users, service accounts, keys, roles | `config/21_access.bcl` |
 | Monitoring, logs, health, metrics routes | `config/22_observe.bcl` |
 | Console | `templates/`, `static/` |
+
+
+## Dependencies
+
+* Nothing outside Go is needed to run the example. The secure-fetch WASM client is committed under `static/wasm`; rebuild it only to embed trust keys, with `make wasm` (TinyGo and a Go 1.26 toolchain) or `make wasm-docker` (Docker only).
+* Email is off until `ETL_SMTP_HOST` is set; no SMTP server is needed otherwise.
+* Large batches are kept in `ETL_BLOB_DIR` (default `.data/blobs`). Put a file in `.data/blobs/inbox/` and ingest it with `{"key": "...", "object": "inbox/file.csv"}`.
+* Delivery is exactly-once in effect: the example's `etl.deliver` is keyed on `delivery_key`, fenced by `epoch`, and `etl.verify_delivery` answers the engine when a call was cut off.

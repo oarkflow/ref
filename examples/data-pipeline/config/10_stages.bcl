@@ -41,8 +41,14 @@ intent "etl.transfer" {
   }
 }
 
-# Stage 4: delivery. Refuses while the destination is offline. Idempotent on the
-# batch key, so a replay never writes the same batch twice.
+# Stage 4: delivery. Refuses while the destination is offline.
+#
+# Exactly once, in effect: the write is keyed on delivery_key (the batch key, or
+# key#chunk for a big batch), so repeating it changes nothing; it carries the
+# epoch the engine gives each attempt, and a write with an older epoch than the
+# one stored is refused, so a worker that lost its lease cannot overwrite a newer
+# delivery; and if a call was cut off before the engine recorded the outcome,
+# the engine asks etl.verify_delivery before sending again.
 intent "etl.deliver" {
   description "Write the batch to the destination"
   response "out"
@@ -55,16 +61,35 @@ intent "etl.deliver" {
       statements [
         {
           name "write"
-          sql "INSERT INTO warehouse_batches (batch_key, batch_id, source_id, destination, row_count, payload, delivered_ms) SELECT $1, $2, $3, $4, $5, $6, $7 WHERE EXISTS (SELECT 1 FROM destinations WHERE id = $4 AND online = 1) ON CONFLICT (batch_key) DO UPDATE SET batch_id = excluded.batch_id, row_count = excluded.row_count, payload = excluded.payload, delivered_ms = excluded.delivered_ms"
-          args [input.batch.key, input.batch.id, input.source.id, input.source.destination, n, payload, now_ms]
+          sql "INSERT INTO warehouse_batches (batch_key, batch_id, source_id, destination, row_count, payload, delivered_ms, epoch) SELECT $1, $2, $3, $4, $5, $6, $7, $8 WHERE EXISTS (SELECT 1 FROM destinations WHERE id = $4 AND online = 1) ON CONFLICT (batch_key) DO UPDATE SET batch_id = excluded.batch_id, row_count = excluded.row_count, payload = excluded.payload, delivered_ms = excluded.delivered_ms, epoch = excluded.epoch WHERE warehouse_batches.epoch <= excluded.epoch"
+          args [input.batch.delivery_key, input.batch.id, input.source.id, input.source.destination, n, payload, now_ms, input.batch.epoch]
           require_affected true
-          failure { code "DESTINATION_OFFLINE" status 503 message "the destination is offline or not accepting writes" }
+          failure { code "DESTINATION_OFFLINE" status 503 message "the destination is offline, or a later delivery of this batch already took over" }
         }
       ]
     }
   }
   node "out" {
     uses "data.transform" kind pure requires [input, put] provides [out]
-    config { data { extract { ok "true" ref "input.source.destination + '/' + input.batch.key" } pick ["ok", "ref"] } }
+    config { data { extract { ok "true" ref "input.source.destination + '/' + input.batch.delivery_key" } pick ["ok", "ref"] } }
+  }
+}
+
+# Asked only after a delivery call was cut off before the engine recorded how it
+# ended: is the batch (or chunk) already here? If so it is recorded as delivered
+# and not sent again.
+intent "etl.verify_delivery" {
+  description "Does the destination already have this delivery?"
+  response "out"
+  node "find" {
+    uses "database.query" resource "db" kind pure requires [input] provides [found_rows]
+    config {
+      statement "SELECT destination FROM warehouse_batches WHERE batch_key = $1"
+      args [input.batch.delivery_key]
+    }
+  }
+  node "out" {
+    uses "data.transform" kind pure requires [input, found_rows] provides [out]
+    config { data { extract { found "len(found_rows) > 0" ref "input.source.destination + '/' + input.batch.delivery_key" } pick ["found", "ref"] } }
   }
 }

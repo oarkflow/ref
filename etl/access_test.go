@@ -195,7 +195,7 @@ func TestMonitoringAlertsHealthMetricsAndLogs(t *testing.T) {
 			t.Fatalf("freshness %s", v.Sources[0].Freshness)
 		}
 		status, checks := e.Health(ctx)
-		if status != "degraded" || len(checks) != 6 {
+		if status != "degraded" || len(checks) != 7 {
 			t.Fatalf("health %s %+v", status, checks)
 		}
 		text, err := e.MetricsText(ctx)

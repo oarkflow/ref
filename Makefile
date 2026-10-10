@@ -11,7 +11,7 @@
 dir  ?= $(DIR)
 addr ?=
 
-.PHONY: run build test tidy wasm wasm-trusted
+.PHONY: run build test tidy wasm wasm-docker wasm-trusted
 
 run:
 	@test -n "$(dir)" || { echo "usage: make run dir=./examples/smsgateway [addr=:8080]"; exit 2; }
@@ -54,6 +54,21 @@ wasm:
 	  rm -rf $(WASM_APP)/static/wasm && mkdir -p $(WASM_APP)/static/wasm && \
 	  cp "$$tmp"/wasm/dist/*.js "$$tmp"/wasm/dist/*.wasm "$$tmp"/wasm/dist/asset-manifest.json "$$tmp"/wasm/dist/SHA256SUMS $(WASM_APP)/static/wasm/ && \
 	  rm -rf "$$tmp" && echo "installed $$(wc -c < $(WASM_APP)/static/wasm/securefetch.wasm) bytes of securefetch.wasm into $(WASM_APP)/static/wasm" && cat $(WASM_APP)/static/wasm/SHA256SUMS
+
+# Same build without installing TinyGo or Go 1.26 locally: runs it in the
+# official TinyGo image (needs Docker). The committed client in
+# $(WASM_APP)/static/wasm is already built, so this is only needed to rebuild it
+# (for example to embed trust keys).
+TINYGO_IMAGE ?= tinygo/tinygo:0.40.1
+wasm-docker:
+	@command -v docker >/dev/null || { echo "docker is required"; exit 1; }
+	@fh="$$(go list -m -f '{{.Dir}}' github.com/oarkflow/fh)" && tmp=$$(mktemp -d) && \
+	  cp -R "$$fh/." "$$tmp" && chmod -R u+w "$$tmp" && \
+	  docker run --rm -v "$$tmp":/src -w /src $(TINYGO_IMAGE) tinygo build -target wasm -no-debug -ldflags="$(WASM_LDFLAGS)" -o wasm/dist/securefetch.wasm ./wasm/cmd/securefetch && \
+	  cp "$$tmp"/wasm/cmd/securefetch/wasm_exec.js "$$tmp"/wasm/dist/wasm_exec.js && (cd "$$tmp" && go run ./wasm/cmd/manifest -dir wasm/dist) && \
+	  rm -rf $(WASM_APP)/static/wasm && mkdir -p $(WASM_APP)/static/wasm && \
+	  cp "$$tmp"/wasm/dist/*.js "$$tmp"/wasm/dist/*.wasm "$$tmp"/wasm/dist/asset-manifest.json "$$tmp"/wasm/dist/SHA256SUMS $(WASM_APP)/static/wasm/ && \
+	  rm -rf "$$tmp" && cat $(WASM_APP)/static/wasm/SHA256SUMS
 
 # Builds the client with the origin and the server's public keys built in (read
 # from its key files), which is what a deployment outside loopback requires.

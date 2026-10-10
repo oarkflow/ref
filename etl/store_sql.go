@@ -293,7 +293,11 @@ func (s *SQLStore) commit(ctx context.Context, c Change) (err error) {
 			}
 		} else {
 			var res sql.Result
-			res, err = exec(`UPDATE {p}batches SET status = ?, stage = ?, next_at = ?, rows_in = ?, quarantined = ?, delivered = ?, finished_at = ?, lease_owner = '', lease_until = 0, revision = ?, doc = ?
+			lease := ", lease_owner = '', lease_until = 0"
+			if c.KeepLease {
+				lease = ""
+			}
+			res, err = exec(`UPDATE {p}batches SET status = ?, stage = ?, next_at = ?, rows_in = ?, quarantined = ?, delivered = ?, finished_at = ?`+lease+`, revision = ?, doc = ?
 				WHERE id = ? AND revision = ?`, b.Status, b.Stage, ns(b.NextAttemptAt), b.RowsIn, b.Quarantined, b.Delivered, ns(b.FinishedAt), nextRev, doc(&snap), b.ID, b.Revision)
 			if err != nil {
 				return err
@@ -643,18 +647,40 @@ func (s *SQLStore) FindByHash(ctx context.Context, sourceID, hash string) (*Batc
 	return load[Batch](raw, err)
 }
 
-func (s *SQLStore) Prune(ctx context.Context, before time.Time) (int, error) {
+func (s *SQLStore) Prune(ctx context.Context, before time.Time) (int, []string, error) {
 	var n int64
+	var keys []string
 	err := s.withRetry(ctx, func() error {
-		res, err := s.db.ExecContext(ctx, s.q(`DELETE FROM {p}checkpoints WHERE batch_id IN
-			(SELECT id FROM {p}batches WHERE status IN ('delivered', 'failed') AND finished_at > 0 AND finished_at < ?)`), ns(before))
+		n, keys = 0, nil
+		const finished = `(SELECT id FROM {p}batches WHERE status IN ('delivered', 'failed') AND finished_at > 0 AND finished_at < ?)`
+		rows, err := s.db.QueryContext(ctx, s.q(`SELECT doc FROM {p}checkpoints WHERE batch_id IN `+finished), ns(before))
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var raw string
+			if err := rows.Scan(&raw); err != nil {
+				rows.Close()
+				return err
+			}
+			if raw, err = unpackDoc(raw); err != nil {
+				rows.Close()
+				return err
+			}
+			var cp Checkpoint
+			if json.Unmarshal([]byte(raw), &cp) == nil {
+				keys = append(keys, checkpointKeys(&cp)...)
+			}
+		}
+		rows.Close()
+		res, err := s.db.ExecContext(ctx, s.q(`DELETE FROM {p}checkpoints WHERE batch_id IN `+finished), ns(before))
 		if err != nil {
 			return err
 		}
 		n, _ = res.RowsAffected()
 		return nil
 	})
-	return int(n), err
+	return int(n), keys, err
 }
 
 func (s *SQLStore) Counters(ctx context.Context) ([]CounterRow, error) {

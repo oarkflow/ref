@@ -71,7 +71,9 @@ func (m *MemoryStore) Commit(ctx context.Context, c Change) error {
 	if b := c.Batch; b != nil {
 		b.Revision++
 		m.batches[b.ID] = clone(b)
-		delete(m.leases, b.ID) // a commit ends the worker's lease
+		if !c.KeepLease {
+			delete(m.leases, b.ID) // a commit ends the worker's lease
+		}
 		m.keys[b.SourceID+"\x00"+b.Key] = b.ID
 	}
 	for _, d := range c.Counters {
@@ -410,17 +412,21 @@ func (m *MemoryStore) FindByHash(ctx context.Context, sourceID, hash string) (*B
 	return nil, ErrNotFound
 }
 
-func (m *MemoryStore) Prune(ctx context.Context, before time.Time) (int, error) {
+func (m *MemoryStore) Prune(ctx context.Context, before time.Time) (int, []string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	n := 0
+	var keys []string
 	for id, b := range m.batches {
 		if (b.Status == StatusDelivered || b.Status == StatusFailed) && !b.FinishedAt.IsZero() && b.FinishedAt.Before(before) {
 			n += len(m.cps[id])
+			for i := range m.cps[id] {
+				keys = append(keys, checkpointKeys(&m.cps[id][i])...)
+			}
 			delete(m.cps, id)
 		}
 	}
-	return n, nil
+	return n, keys, nil
 }
 
 func (m *MemoryStore) Counters(ctx context.Context) ([]CounterRow, error) {

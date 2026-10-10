@@ -152,6 +152,24 @@ type Batch struct {
 	Quarantined   int       `json:"quarantined"`
 	RowsOut       int       `json:"rows_out"`
 	Delivered     int       `json:"delivered"`
+	// A large batch is processed in chunks: Chunks is how many, ChunkDone how
+	// many the delivery stage has finished (so an interruption resumes there).
+	Chunks    int `json:"chunks,omitempty"`
+	ChunkDone int `json:"chunk_done,omitempty"`
+	// Epoch counts delivery calls: it is sent with each one as a fencing token,
+	// so a receiver can refuse a late call from a worker that lost its lease.
+	// Delivering is true from just before a delivery call until its outcome is
+	// recorded; if it is still true when the stage runs again, the call is in
+	// doubt and the receiver is asked (Hooks.Verify) before anything is re-sent.
+	Epoch           int64 `json:"epoch,omitempty"`
+	Delivering      bool  `json:"delivering,omitempty"`
+	DeliveringChunk int   `json:"delivering_chunk,omitempty"`
+	// Set on the copy of the batch a hook receives, never stored: which chunk
+	// this call is for, how many there are, and the idempotency key of this
+	// call (the batch key, or the batch key and the chunk number).
+	Chunk         int       `json:"chunk,omitempty"`
+	ChunkCount    int       `json:"chunk_count,omitempty"`
+	DeliveryKey   string    `json:"delivery_key,omitempty"`
 	Stage         int       `json:"stage"`
 	Status        string    `json:"status"`
 	Attempts      int       `json:"attempts"`
@@ -168,11 +186,22 @@ type Batch struct {
 // Checkpoint is the rows a stage handed on, kept so a failure can resume from
 // it. Hash is the SHA-256 of the rows, checked when they are read back.
 type Checkpoint struct {
-	BatchID string    `json:"batch_id"`
-	Stage   int       `json:"stage"`
-	Rows    []Row     `json:"rows"`
-	Hash    string    `json:"hash"`
-	At      time.Time `json:"at"`
+	BatchID string `json:"batch_id"`
+	Stage   int    `json:"stage"`
+	// Rows holds a small batch inline. A large one is kept as Chunks in the
+	// blob store, and the database holds only these references.
+	Rows   []Row      `json:"rows,omitempty"`
+	Chunks []ChunkRef `json:"chunks,omitempty"`
+	Count  int        `json:"count"` // rows in all, inline or chunked
+	Hash   string     `json:"hash"`
+	At     time.Time  `json:"at"`
+}
+
+// ChunkRef points at one chunk of rows in the blob store.
+type ChunkRef struct {
+	Key  string `json:"key"`
+	Rows int    `json:"rows"`
+	Hash string `json:"hash"`
 }
 
 // Quarantine is one row refused by a rule, kept with the reason.
@@ -241,8 +270,12 @@ type Change struct {
 	DeleteRole string
 	// Counters are added to the durable counters in the same transaction, so a
 	// counter and the state it counts can never disagree.
-	Counters    []CounterDelta
-	Batch       *Batch // Revision 0 creates; otherwise updates with a revision check
+	Counters []CounterDelta
+	Batch    *Batch // Revision 0 creates; otherwise updates with a revision check
+	// KeepLease writes the batch without ending the worker's lease on it, for a
+	// step that is not the end of the stage's work (recording that a delivery is
+	// about to be attempted, or that one chunk of several is done).
+	KeepLease   bool
 	Checkpoints []Checkpoint
 	Quarantine  []Quarantine
 	Lineage     []LineageEdge
@@ -283,9 +316,10 @@ type Store interface {
 	// FindByHash returns an earlier batch of the source with the same content.
 	FindByHash(ctx context.Context, sourceID, hash string) (*Batch, error)
 	// Prune deletes the checkpoints of batches that finished (delivered or
-	// failed) before the given time and returns how many it removed. Held
-	// batches keep theirs: a replay needs them.
-	Prune(ctx context.Context, before time.Time) (int, error)
+	// failed) before the given time and returns how many it removed, with the
+	// blob keys they referenced (for the caller to delete). Held batches keep
+	// theirs: a replay needs them.
+	Prune(ctx context.Context, before time.Time) (int, []string, error)
 	// Counters returns every durable counter.
 	Counters(ctx context.Context) ([]CounterRow, error)
 	// RecordBreaker counts the result of a call to a destination and returns the

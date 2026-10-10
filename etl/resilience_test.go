@@ -184,7 +184,7 @@ func TestACrashedWorkersBatchIsTakenOver(t *testing.T) {
 func TestAHookThatPanicsOrHangsDoesNotTakeTheWorkerDown(t *testing.T) {
 	eachStore(t, func(t *testing.T, e *Engine, clk *clock) {
 		ctx := context.Background()
-		e.StageTimeout = 40 * time.Millisecond
+		e.StageTimeout, e.Grace = 40*time.Millisecond, 10*time.Millisecond
 		var tcalls, dcalls atomic.Int32
 		e.Hooks.Transform = func(_ context.Context, _ *Source, _ *Batch, r []Row) ([]Row, string, error) {
 			if tcalls.Add(1) == 1 {

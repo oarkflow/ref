@@ -46,7 +46,7 @@ func registerETLActions(r *Registry) {
 		{"sources", "read", "List registered sources", "The sources", nil},
 		{"source_put", "effect", "Register or update a source (id, name, owner, format, destination, rules, max_reject_rate, retry); each update bumps its version", "The source", nil},
 		{"source_pause", "effect", "Pause or resume a source (input.paused, default true); a paused source refuses new batches", "The source", []ConfigField{src}},
-		{"ingest", "effect", "Validate rows from a source and start a batch; idempotent on the key (input.key or the Idempotency-Key header). Body: {source, key, rows | data}", "{batch, duplicate}", []ConfigField{src}},
+		{"ingest", "effect", "Validate rows from a source and start a batch; idempotent on the key (input.key or the Idempotency-Key header). Body: {source, key, rows | data | object}; object names a file already in the blob store (under its inbox/ prefix), read as a stream so it can be far larger than memory", "{batch, duplicate}", []ConfigField{src}},
 		{"advance", "effect", "Run a batch's next stage", "The batch", []ConfigField{id}},
 		{"run", "effect", "Run a batch until it is delivered, waiting, held or failed", "The batch", []ConfigField{id}},
 		{"replay", "effect", "Replay a held batch from its last checkpoint with the same idempotency key", "The batch", []ConfigField{id}},
@@ -335,6 +335,14 @@ func (h *etlHandler) ingest(ctx *ActionContext, actor etl.Actor) (ActionResult, 
 		if v, ok := requestValue(ctx, "header", "Idempotency-Key"); ok {
 			key = v
 		}
+	}
+	if object, _ := body["object"].(string); object != "" {
+		ictx := ctx.Context
+		res, err := h.res.engine.IngestObject(ictx, actor, sourceID, key, object)
+		if err != nil {
+			return ActionResult{}, etlFailure(err)
+		}
+		return h.out(map[string]any{"batch": res.Batch, "duplicate": res.Duplicate})
 	}
 	var rows []etl.Row
 	switch data := body["rows"].(type) {

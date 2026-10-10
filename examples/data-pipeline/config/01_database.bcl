@@ -6,7 +6,7 @@
 #
 # Upgrading an existing database: the users and mail_outbox tables gained
 # columns (pw_changed_ms, failed_attempts, locked_until_ms, mfa_*, sent_ms,
-# attempts, last_error). CREATE TABLE IF NOT EXISTS does not add them to a table
+# attempts, last_error) and warehouse_batches gained epoch. CREATE TABLE IF NOT EXISTS does not add them to a table
 # that exists; for a development database delete .data, otherwise ALTER TABLE.
 # ---------------------------------------------------------------------------
 
@@ -27,7 +27,7 @@ resource "db" {
       "CREATE INDEX IF NOT EXISTS api_keys_user ON api_keys(user_id)",
       "CREATE INDEX IF NOT EXISTS users_email ON users(email)",
       "CREATE TABLE IF NOT EXISTS destinations (id TEXT PRIMARY KEY, name TEXT NOT NULL, online INTEGER NOT NULL DEFAULT 1, note TEXT NOT NULL DEFAULT '', changed_by TEXT NOT NULL DEFAULT '', changed_ms BIGINT NOT NULL DEFAULT 0)",
-      "CREATE TABLE IF NOT EXISTS warehouse_batches (batch_key TEXT PRIMARY KEY, batch_id TEXT NOT NULL, source_id TEXT NOT NULL, destination TEXT NOT NULL, row_count INTEGER NOT NULL, payload TEXT NOT NULL, delivered_ms BIGINT NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS warehouse_batches (batch_key TEXT PRIMARY KEY, batch_id TEXT NOT NULL, source_id TEXT NOT NULL, destination TEXT NOT NULL, row_count INTEGER NOT NULL, payload TEXT NOT NULL, delivered_ms BIGINT NOT NULL, epoch BIGINT NOT NULL DEFAULT 0)",
       "INSERT INTO destinations (id, name, online, note) VALUES ('billing-api', 'Billing API', 1, '') ON CONFLICT (id) DO NOTHING",
       "INSERT INTO destinations (id, name, online, note) VALUES ('crm-sync', 'CRM sync', 1, '') ON CONFLICT (id) DO NOTHING",
       "INSERT INTO destinations (id, name, online, note) VALUES ('claims-store', 'Claims store', 1, '') ON CONFLICT (id) DO NOTHING",

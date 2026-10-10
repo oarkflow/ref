@@ -28,6 +28,12 @@ type Hooks struct {
 	// Deliver puts the rows on the destination and returns its reference for
 	// the batch. It must be idempotent on b.Key.
 	Deliver func(ctx context.Context, src *Source, b *Batch, rows []Row) (ref string, err error)
+	// Verify asks the destination whether it already has what b.DeliveryKey
+	// names. It is called only when an earlier delivery call was interrupted
+	// and its outcome is not known, so a batch that was in fact delivered is
+	// recorded as delivered and not sent a second time. Without it an
+	// interrupted delivery is repeated, and the destination must deduplicate.
+	Verify func(ctx context.Context, src *Source, b *Batch, rows []Row) (ref string, found bool, err error)
 }
 
 type permanent struct{ err error }
@@ -58,6 +64,15 @@ type Engine struct {
 	// CheckExpr reports whether an expression compiles; sources with a bad
 	// expression rule are refused when registered rather than when data arrives.
 	CheckExpr func(expr string) error
+	// Blobs holds the chunks of large batches and the files ingested by name
+	// (nil: every checkpoint is kept inline in the store, so a batch must fit in memory).
+	Blobs Blobs
+	// ChunkRows is how many rows one chunk holds (default 5000). With Blobs set,
+	// a batch bigger than this is processed a chunk at a time: memory stays at
+	// one chunk however large the batch is.
+	ChunkRows int
+	// InboxPrefix is where files to ingest by name live in Blobs (default "inbox/").
+	InboxPrefix string
 	// StageDelay is how long a batch waits between stages when a sweeper
 	// drives it (zero: as fast as the sweeper runs). Advance itself ignores it.
 	StageDelay time.Duration
@@ -80,6 +95,16 @@ type Engine struct {
 	BreakerThreshold int
 	BreakerCooldown  time.Duration
 
+	// Grace is how long a hook that has been cancelled (its timeout passed) is
+	// given to return before it is counted as abandoned (default 2s). Hooks that
+	// honour their context, as database and HTTP calls do, return well within it.
+	Grace time.Duration
+	// WedgeAfter is how long a hook may stay abandoned before the process is
+	// reported as wedged (default 2m): health goes down, so a supervisor or load
+	// balancer restarts it, and OnWedged is called once. A goroutine that ignores
+	// cancellation can only be reclaimed by restarting the process.
+	WedgeAfter time.Duration
+	OnWedged   func(abandoned int, for_ time.Duration)
 	// MaxAbandoned caps hooks left running after a timeout (default 32): past
 	// it new hook calls fail at once instead of piling up behind a hung receiver.
 	MaxAbandoned int
@@ -90,7 +115,9 @@ type Engine struct {
 
 	brMu      sync.Mutex
 	brCache   map[string]cachedBreaker
-	abandon   atomic.Int64 // hooks still running after their timeout
+	abandon   atomic.Int64 // hooks still running after their timeout and grace
+	abandonAt atomic.Int64 // unix nanoseconds since which at least one has been
+	wedged    atomic.Bool
 	once      sync.Once
 	rolesMu   sync.Mutex
 	roles     []*Role
@@ -439,110 +466,6 @@ type IngestResult struct {
 	Duplicate bool // the key was seen before with the same content
 }
 
-// Ingest validates rows from a source and creates a batch. A repeated key with
-// the same content returns the original batch; with different content it is
-// ErrKeyReused. Rows that break a rule are quarantined with the reason; if
-// they exceed the source's reject rate the whole batch is failed and nothing
-// moves. Oversize uploads and (when the source says so) duplicate content are
-// refused before any row is read.
-func (e *Engine) Ingest(ctx context.Context, actor Actor, sourceID, key string, rows []Row) (*IngestResult, error) {
-	e.init()
-	if _, err := e.need(ctx, actor, PermIngest, sourceID); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(key) == "" {
-		return nil, fmt.Errorf("%w: an idempotency key is required", ErrInvalid)
-	}
-	src, err := e.Store.GetSource(ctx, sourceID)
-	if err != nil {
-		return nil, err
-	}
-	if src.Paused {
-		return nil, fmt.Errorf("%w: source %q is paused", ErrState, sourceID)
-	}
-	limit := src.MaxRows
-	if limit <= 0 {
-		limit = 100000
-	}
-	if len(rows) > limit {
-		e.refuse(ctx, sourceID, "too_many_rows", actor.ID)
-		return nil, fmt.Errorf("%w: %d rows is more than the %d this source accepts in one batch", ErrInvalid, len(rows), limit)
-	}
-	hash := RowsHash(rows)
-	if prior, err := e.Store.FindBatch(ctx, sourceID, key); err == nil {
-		if prior.ContentHash != hash {
-			return nil, ErrKeyReused
-		}
-		return &IngestResult{Batch: prior, Duplicate: true}, nil
-	} else if !errors.Is(err, ErrNotFound) {
-		return nil, err
-	}
-	if src.RejectDuplicates {
-		if other, err := e.Store.FindByHash(ctx, sourceID, hash); err == nil {
-			e.refuse(ctx, sourceID, "duplicate_content", actor.ID)
-			return nil, fmt.Errorf("%w: batch %s already carries exactly this content (sent under key %q)", ErrDuplicate, other.ID, other.Key)
-		} else if !errors.Is(err, ErrNotFound) {
-			return nil, err
-		}
-	}
-	started := time.Now()
-	valid, rejects, err := Validate(src, rows, e.Eval)
-	if err != nil {
-		return nil, err
-	}
-	took := time.Since(started)
-	now := e.now()
-	trace, _ := ctx.Value(traceKey{}).(string)
-	if trace == "" {
-		trace = newID("t_")
-	}
-	b := &Batch{ID: newID("b_"), SourceID: sourceID, SourceVersion: src.Version, Key: key, ContentHash: hash, TraceID: trace, Actor: actor.ID, RowsIn: len(rows),
-		Stage: StageTransform, Status: StatusInFlight, CreatedAt: now, UpdatedAt: now}
-	refused := map[int]bool{}
-	for i := range rejects {
-		rejects[i].BatchID, rejects[i].SourceID, rejects[i].At = b.ID, sourceID, now
-		refused[rejects[i].RowNo] = true
-	}
-	b.Quarantined = len(refused)
-	ch := Change{Batch: b, Quarantine: rejects}
-	note := func(kind, msg string) {
-		b.Events = append(b.Events, Event{At: now, Stage: StageIngest, Kind: kind, Message: msg, DurationMs: took.Milliseconds(), Attempt: 1})
-	}
-	note("info", fmt.Sprintf("Received %d rows from %s", len(rows), sourceID))
-	failed := len(rows) > 0 && b.Quarantined > 0 && float64(b.Quarantined)/float64(len(rows)) > src.MaxRejectRate
-	if failed {
-		b.Status, b.Stage, b.FinishedAt = StatusFailed, StageIngest, now
-		b.LastError = fmt.Sprintf("%d of %d rows were refused, above the limit of %.0f%%", b.Quarantined, len(rows), src.MaxRejectRate*100)
-		note("failed", b.LastError+"; nothing was moved")
-		ch.Audit = append(ch.Audit, e.audit(actor.ID, "batch.fail", b.ID, sourceID, trace, b.LastError))
-	} else {
-		note("checkpoint", fmt.Sprintf("Validated: %d passed, %d quarantined; checkpoint written", len(valid), b.Quarantined))
-		ch.Checkpoints = []Checkpoint{{BatchID: b.ID, Stage: StageIngest, Rows: valid, Hash: RowsHash(valid), At: now}}
-		ch.Lineage = []LineageEdge{{BatchID: b.ID, Parent: "source:" + sourceID, Child: "batch:" + b.ID, Via: "ingest", At: now}}
-		ch.Audit = append(ch.Audit, e.audit(actor.ID, "batch.ingest", b.ID, sourceID, trace, fmt.Sprintf("%d rows, %d quarantined", len(rows), b.Quarantined)))
-	}
-	t := NewTally()
-	t.Add("etl_batches_ingested_total", 1, "source", sourceID)
-	t.Add("etl_rows_total", float64(len(rows)), "source", sourceID, "kind", "in")
-	t.Add("etl_rows_total", float64(b.Quarantined), "source", sourceID, "kind", "quarantined")
-	t.Observe("etl_stage_duration_seconds", took.Seconds(), "stage", "1")
-	ch.Counters = t.Deltas()
-	if err := e.Store.Commit(ctx, ch); err != nil {
-		if errors.Is(err, ErrConflict) { // a concurrent ingest with the same key won
-			if prior, ferr := e.Store.FindBatch(ctx, sourceID, key); ferr == nil && prior.ContentHash == hash {
-				return &IngestResult{Batch: prior, Duplicate: true}, nil
-			}
-		}
-		return nil, err
-	}
-	if failed {
-		e.log("warn", "batch refused at intake", b, StageIngest, "error", b.LastError, "rows", len(rows), "quarantined", b.Quarantined)
-	} else {
-		e.log("info", "batch accepted", b, StageIngest, "rows", len(rows), "quarantined", b.Quarantined, "actor", actor.ID)
-	}
-	return &IngestResult{Batch: b}, nil
-}
-
 // refuse counts an upload turned away before it became a batch.
 func (e *Engine) refuse(ctx context.Context, source, reason, actor string) {
 	t := NewTally()
@@ -628,7 +551,10 @@ func (e *Engine) guard(ctx context.Context, name string, t *Tally, fn func(ctx c
 	go func() {
 		defer func() {
 			if timedOut.Load() {
-				e.abandon.Add(-1) // the late hook has finally returned
+				if e.abandon.Add(-1) == 0 { // the late hook has finally returned
+					e.abandonAt.Store(0)
+					e.wedged.Store(false)
+				}
 			}
 			if r := recover(); r != nil {
 				t.Add("etl_hook_panics_total", 1, "hook", name)
@@ -641,12 +567,25 @@ func (e *Engine) guard(ctx context.Context, name string, t *Tally, fn func(ctx c
 	case err := <-done:
 		return err
 	case <-cctx.Done():
-		// A Go function cannot be stopped from outside. The batch moves on; the
-		// call is counted until it returns, and too many of them block new calls.
-		timedOut.Store(true)
-		e.abandon.Add(1)
 		t.Add("etl_hook_timeouts_total", 1, "hook", name)
-		return fmt.Errorf("%s did not answer within %s", name, e.stageTimeout())
+		// The context is cancelled: give a hook that honours it time to unwind.
+		grace := e.Grace
+		if grace <= 0 {
+			grace = 2 * time.Second
+		}
+		select {
+		case <-done:
+			return fmt.Errorf("%s did not answer within %s (stopped when cancelled)", name, e.stageTimeout())
+		case <-time.After(grace):
+		}
+		// A Go function cannot be stopped from outside. The batch moves on; the
+		// call is counted until it returns, too many of them block new calls,
+		// and one that lasts is reported by health so the process gets restarted.
+		timedOut.Store(true)
+		if e.abandon.Add(1) == 1 {
+			e.abandonAt.Store(time.Now().UnixNano())
+		}
+		return fmt.Errorf("%s did not answer within %s and ignored cancellation", name, e.stageTimeout())
 	}
 }
 
@@ -685,7 +624,7 @@ func (e *Engine) advance(ctx context.Context, actorID string, seen *Batch) (*Bat
 	if err != nil {
 		return nil, err
 	}
-	if RowsHash(cp.Rows) != cp.Hash {
+	if len(cp.Chunks) == 0 && RowsHash(cp.Rows) != cp.Hash {
 		e.log("error", "checkpoint is corrupt", b, b.Stage)
 		return nil, fmt.Errorf("etl: checkpoint of batch %s is corrupt", b.ID)
 	}
@@ -716,44 +655,49 @@ func (e *Engine) advance(ctx context.Context, actorID string, seen *Batch) (*Bat
 	hctx := WithTrace(ctx, b.TraceID)
 	switch stage {
 	case StageTransform:
-		rows, version := cp.Rows, "none"
-		if e.Hooks.Transform != nil {
-			runErr = e.guard(hctx, "transform", tally, func(c context.Context) (err error) {
-				rows, version, err = e.Hooks.Transform(c, src, b, cp.Rows)
-				return err
-			})
-		}
+		var out *Checkpoint
+		var version string
+		var total int
+		out, version, total, runErr = e.transformAll(hctx, src, b, cp, tally)
 		if runErr == nil {
-			runErr = e.checkContract(src, cp.Rows, rows, tally)
-		}
-		if runErr == nil {
-			b.RowsOut = len(rows)
-			ch.Checkpoints = []Checkpoint{{BatchID: b.ID, Stage: stage, Rows: rows, Hash: RowsHash(rows), At: now}}
+			b.RowsOut = total
+			out.BatchID, out.Stage, out.At = b.ID, stage, now
+			b.Chunks = len(out.Chunks)
+			ch.Checkpoints = []Checkpoint{*out}
 			ch.Lineage = []LineageEdge{{BatchID: b.ID, Parent: "batch:" + b.ID, Child: "rows:" + b.ID, Via: "transform " + version, At: now}}
-			e.event(b, now, stage, "checkpoint", fmt.Sprintf("Transformed %d rows with %s; checkpoint written", len(rows), version), started, attempt)
+			e.event(b, now, stage, "checkpoint", fmt.Sprintf("Transformed %d rows with %s; checkpoint written", total, version), started, attempt)
 		}
 	case StageTransfer:
 		if e.Hooks.Transfer != nil {
-			runErr = e.guard(hctx, "transfer", tally, func(c context.Context) error { return e.Hooks.Transfer(c, src, b, cp.Rows) })
+			runErr = e.transferAll(hctx, src, b, cp, tally)
 			e.circuitRecord(ctx, src.Destination, now, runErr, tally)
 		}
 		if runErr == nil {
-			ch.Checkpoints = []Checkpoint{{BatchID: b.ID, Stage: stage, Rows: cp.Rows, Hash: cp.Hash, At: now}}
+			next := *cp
+			next.Stage, next.At = stage, now
+			ch.Checkpoints = []Checkpoint{next}
 			e.event(b, now, stage, "checkpoint", "Transfer acknowledged by the receiver; checkpoint written", started, attempt)
 		}
 	case StageDelivery:
-		ref := b.ID
+		recovered := 0
 		if e.Hooks.Deliver != nil {
-			runErr = e.guard(hctx, "deliver", tally, func(c context.Context) (err error) {
-				ref, err = e.Hooks.Deliver(c, src, b, cp.Rows)
-				return err
-			})
-			e.circuitRecord(ctx, src.Destination, now, runErr, tally)
+			recovered, runErr = e.deliverAll(hctx, src, b, cp, tally, now)
+		} else {
+			b.Delivered, b.ChunkDone, b.Ref = cp.Count, numChunks(cp), b.ID
+			if len(cp.Chunks) == 0 {
+				b.Delivered = len(cp.Rows)
+			}
 		}
 		if runErr == nil {
-			b.Delivered, b.Ref = len(cp.Rows), ref
-			ch.Lineage = []LineageEdge{{BatchID: b.ID, Parent: "rows:" + b.ID, Child: "dest:" + src.Destination + "/" + ref, Via: "deliver", At: now}}
-			e.event(b, now, stage, "info", fmt.Sprintf("Delivered %d rows to %s as %s", b.Delivered, src.Destination, ref), started, attempt)
+			ch.Lineage = []LineageEdge{{BatchID: b.ID, Parent: "rows:" + b.ID, Child: "dest:" + src.Destination + "/" + b.Ref, Via: "deliver", At: now}}
+			msg := fmt.Sprintf("Delivered %d rows to %s as %s", b.Delivered, src.Destination, b.Ref)
+			if b.Chunks > 1 {
+				msg = fmt.Sprintf("Delivered %d rows in %d chunks to %s (last reference %s)", b.Delivered, b.Chunks, src.Destination, b.Ref)
+			}
+			if recovered > 0 {
+				msg += fmt.Sprintf("; %d chunk(s) were found already delivered after an interruption", recovered)
+			}
+			e.event(b, now, stage, "info", msg, started, attempt)
 		}
 	case StageAudit:
 		// The books must balance before a batch may count as delivered: every
@@ -1016,7 +960,8 @@ func (e *Engine) Prune(ctx context.Context, age time.Duration) (int, error) {
 	if _, cerr := e.Store.PruneCounters(ctx, e.now().Add(-14*24*time.Hour).UTC().Format("2006010215")); cerr != nil {
 		e.log("warn", "could not prune hourly counters", nil, 0, "error", cerr.Error())
 	}
-	n, err := e.Store.Prune(ctx, e.now().Add(-age))
+	n, keys, err := e.Store.Prune(ctx, e.now().Add(-age))
+	e.deleteBlobs(context.WithoutCancel(ctx), keys)
 	if err == nil && n > 0 {
 		t := NewTally()
 		t.Add("etl_pruned_checkpoints_total", float64(n))
@@ -1085,6 +1030,7 @@ func (e *Engine) RunAll(ctx context.Context, actor Actor, id string) (*Batch, er
 func (e *Engine) Sweep(ctx context.Context, limit int) (int, error) {
 	e.init()
 	e.heartbeat.Store(time.Now().UnixNano())
+	e.checkWedged()
 	due, err := e.Store.Due(ctx, e.now(), limit)
 	if err != nil {
 		return 0, err
@@ -1184,7 +1130,11 @@ func (e *Engine) Trace(ctx context.Context, actor Actor, id string) (*Trace, err
 	}
 	t := &Trace{Batch: b}
 	if cp, cerr := e.Store.LatestCheckpoint(ctx, id); cerr == nil {
-		t.Resume = &Resume{Stage: cp.Stage, NextStage: cp.Stage + 1, Rows: len(cp.Rows), Hash: cp.Hash, At: cp.At}
+		rows := len(cp.Rows)
+		if len(cp.Chunks) > 0 {
+			rows = cp.Count
+		}
+		t.Resume = &Resume{Stage: cp.Stage, NextStage: cp.Stage + 1, Rows: rows, Hash: cp.Hash, At: cp.At}
 	}
 	if t.Lineage, err = e.Store.Lineage(ctx, id); err != nil {
 		return nil, err
@@ -1225,4 +1175,31 @@ func (e *Engine) VerifyAudit(ctx context.Context, actor Actor) (badSeq, total in
 		return 0, 0, ErrForbidden
 	}
 	return e.Store.VerifyAudit(ctx)
+}
+
+// wedgedFor says how long hooks have been stuck (zero when none are).
+func (e *Engine) wedgedFor() time.Duration {
+	at := e.abandonAt.Load()
+	if at == 0 || e.abandon.Load() == 0 {
+		return 0
+	}
+	return time.Since(time.Unix(0, at))
+}
+
+func (e *Engine) wedgeAfter() time.Duration {
+	if e.WedgeAfter > 0 {
+		return e.WedgeAfter
+	}
+	return 2 * time.Minute
+}
+
+// checkWedged tells OnWedged, once per episode, that hooks have been stuck too long.
+func (e *Engine) checkWedged() {
+	if d := e.wedgedFor(); d >= e.wedgeAfter() && e.wedged.CompareAndSwap(false, true) {
+		n := int(e.abandon.Load())
+		e.log("error", "hooks are stuck and cannot be stopped; the process should be restarted", nil, 0, "abandoned", n, "for", d.String())
+		if e.OnWedged != nil {
+			e.OnWedged(n, d)
+		}
+	}
 }

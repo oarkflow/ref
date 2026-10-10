@@ -104,3 +104,12 @@ Actions: `etl.ingest`, `etl.advance`, `etl.run`, `etl.replay`, `etl.sources`, `e
 ## Browser transport and account flow
 
 The example's console reaches the engine through `transport.secure` (fh's WebAssembly secure fetch) and offers registration with approval, forgot and reset, and change of password with confirmation. They are described, with the limits, in `examples/data-pipeline/README.md`.
+
+
+## Exactly-once delivery, cancellation and large batches
+
+* `deliver` receives `batch.delivery_key` (use it, not `batch.key`, as the idempotency key), `batch.epoch` (fencing: refuse a write whose epoch is lower than the one stored), `batch.chunk` and `batch.chunks`.
+* `verify` (optional intent, same input, output `{found, ref}`) is called only after an interrupted delivery call; if `found`, the batch is recorded as delivered and not sent again.
+* `blobs` (a `storage.fs` or `storage.sql` resource) and `chunk_rows` turn on chunked batches. `POST .../batches` accepts `{"key": "...", "object": "inbox/file.csv"}` to ingest a stored file as a stream. Raise the storage resource's `max_object_bytes` for big files.
+* `stage_grace` and `wedge_after` control hook cancellation (see etl-architecture.md). Health has a `hooks` check.
+* Metrics: `etl_deliveries_recovered_total`.

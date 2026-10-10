@@ -457,6 +457,16 @@ func (e *Engine) Health(ctx context.Context) (string, []HealthCheck) {
 		}
 		return "ok", "all closed"
 	})
+	run("hooks", func() (string, string) {
+		n, d := e.abandon.Load(), e.wedgedFor()
+		switch {
+		case n == 0:
+			return "ok", "no call is stuck"
+		case d >= e.wedgeAfter():
+			return "down", fmt.Sprintf("%d call(s) have ignored cancellation for %s: only a restart reclaims them", n, d.Round(time.Second))
+		}
+		return "degraded", fmt.Sprintf("%d call(s) are still running after their timeout (%s)", n, d.Round(time.Second))
+	})
 	run("held batches", func() (string, string) {
 		sum, err := e.Store.Summary(pctx, nil)
 		if err != nil {

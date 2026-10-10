@@ -5,10 +5,12 @@
 # ten times; one that cannot be sent stays in the outbox with its attempts, and
 # is visible in Access, Mailbox.
 #
-# Point it at a real server with ETL_SMTP_HOST / _PORT / _USERNAME / _PASSWORD /
-# _FROM and ETL_SMTP_TLS (starttls, implicit or none). The defaults expect a
-# local test server on 127.0.0.1:1025 (for example MailHog or Mailpit), and
-# without one the messages simply wait in the outbox.
+# Sending is OFF until ETL_SMTP_HOST is set: nothing is dialled, nothing is
+# retried, and messages wait in the outbox (their reset links can be read in
+# Access, Mailbox). Then point it at a server with ETL_SMTP_HOST / _PORT /
+# _USERNAME / _PASSWORD / _FROM and ETL_SMTP_TLS (starttls, implicit or none).
+# For local testing run a catcher such as Mailpit (ETL_SMTP_HOST=127.0.0.1
+# ETL_SMTP_PORT=1025); no SMTP server is needed for anything else.
 # ---------------------------------------------------------------------------
 
 resource "mail" {
@@ -51,7 +53,10 @@ intent "mail.deliver" {
   response "out"
   node "waiting" {
     uses "database.query" resource "db" kind read provides [rows]
-    config { statement "SELECT id, to_email, subject, body FROM mail_outbox WHERE sent_ms = 0 AND attempts < 10 ORDER BY created_ms LIMIT 20" }
+    config {
+      statement "SELECT id, to_email, subject, body FROM mail_outbox WHERE $1 <> '' AND sent_ms = 0 AND attempts < 10 ORDER BY created_ms LIMIT 20"
+      args [env("ETL_SMTP_HOST", "")]
+    }
   }
   node "each" { uses "flow.foreach" kind effect requires [rows] provides [results] config { intent "mail.send_one" items_fact "rows" continue_on_error true max_items 20 } }
   node "out" { uses "data.transform" kind pure requires [results] provides [out] config { data { extract { attempted "len(results.results)" } pick ["attempted"] } } }

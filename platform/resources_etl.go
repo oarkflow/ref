@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/oarkflow/ref/etl"
 	"github.com/oarkflow/ref/intent"
+	"github.com/oarkflow/ref/platform/spi"
 )
 
 // ETLEngine is the etl.engine resource: registered data sources, the six-stage
@@ -72,7 +74,13 @@ func registerETLResources(r *Registry) {
 			{Name: "sources", Type: "[]map", Summary: "Sources to register at startup when they do not exist yet (id, name, owner, format, destination, rules, max_reject_rate, retry)"},
 			{Name: "transform", Type: "intent", Summary: "Intent that transforms rows: input {source, batch, rows}, output {rows, version}"},
 			{Name: "transfer", Type: "intent", Summary: "Intent that moves rows to the receiving system: input {source, batch, rows}; ok:false or an error fails the attempt"},
-			{Name: "deliver", Type: "intent", Summary: "Intent that puts rows on the destination: input {source, batch, rows}, output {ref}; must be idempotent on batch.key"},
+			{Name: "deliver", Type: "intent", Summary: "Intent that puts rows on the destination: input {source, batch, rows}, output {ref}. batch.delivery_key is the idempotency key of the call (the batch key, or key#chunk for a chunked batch) and batch.epoch a fencing token that only rises: a destination that records the highest epoch per key can refuse a late call from a worker that lost its lease"},
+			{Name: "verify", Type: "intent", Summary: "Intent that asks the destination whether it already has batch.delivery_key: input as deliver, output {found, ref}. Called only when a delivery call was interrupted and its outcome is unknown, so a batch that did arrive is recorded and not sent again. Without it an interrupted call is repeated"},
+			{Name: "blobs", Type: "string", Summary: "storage.fs / storage.sql resource that holds the chunks of large batches and the files ingested by name; without it a batch is held whole in the database and capped by max_rows"},
+			{Name: "chunk_rows", Type: "int", Default: "5000", Summary: "Rows per chunk when blobs is set: the most a hook sees in one call, and so the memory a batch needs however big it is"},
+			{Name: "inbox_prefix", Type: "string", Default: "inbox/", Summary: "Where files to ingest by name (object) must be in the blob store"},
+			{Name: "stage_grace", Type: "duration", Default: "2s", Summary: "How long a hook whose timeout passed is given to unwind after its context is cancelled before it is counted as abandoned"},
+			{Name: "wedge_after", Type: "duration", Default: "2m", Summary: "How long an abandoned hook may keep running before health reports the process as down so it is restarted"},
 			{Name: "principal_query", Type: "sql", Summary: "Takes the principal id as $1 and returns (roles, status[, version]): roles (comma separated role ids), status ('active' to allow) and optionally a password version; a session whose pw_changed_ms claim differs from the version is ended. Without it the roles in the session or key are trusted for the life of the session"},
 			{Name: "role_map", Type: "map", Summary: "Maps a principal role to etl roles (admin, ingest, operate, replay, read); roles not listed are used as they are"},
 			{Name: "poll", Type: "duration", Default: "1s", Summary: "How often the sweeper looks for batches that are due"},
@@ -90,7 +98,7 @@ func registerETLResources(r *Registry) {
 
 func openETLEngine(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("etl.engine", spec.Config, "database", "table_prefix", "migrate", "sources", "transform", "transfer",
-		"deliver", "principal_query", "role_map", "poll", "stage_delay", "stage_timeout", "lease_ttl", "breaker_threshold", "breaker_cooldown", "retention", "notify", "alert_poll"); err != nil {
+		"deliver", "verify", "blobs", "chunk_rows", "inbox_prefix", "stage_grace", "wedge_after", "principal_query", "role_map", "poll", "stage_delay", "stage_timeout", "lease_ttl", "breaker_threshold", "breaker_cooldown", "retention", "notify", "alert_poll"); err != nil {
 		return nil, nil, err
 	}
 	poll, err := configDuration(spec.Config, "poll", time.Second)
@@ -171,8 +179,32 @@ func openETLEngine(ctx context.Context, spec ResourceSpec) (Resource, io.Closer,
 		}
 		store = sqlStore
 	}
+	grace, err := configDuration(spec.Config, "stage_grace", 2*time.Second)
+	if err != nil {
+		return nil, nil, err
+	}
+	wedge, err := configDuration(spec.Config, "wedge_after", 2*time.Minute)
+	if err != nil {
+		return nil, nil, err
+	}
+	chunkRows, err := configInt(spec.Config, "chunk_rows", 5000)
+	if err != nil {
+		return nil, nil, err
+	}
+	var blobs etl.Blobs
+	if name := configString(spec.Config, "blobs", ""); name != "" {
+		resolved, ok := spec.resolved[name]
+		if !ok {
+			return nil, nil, fmt.Errorf("etl.engine %q: config.blobs names unknown resource %q", spec.Name, name)
+		}
+		os, ok := resolved.(spi.ObjectStore)
+		if !ok {
+			return nil, nil, fmt.Errorf("etl.engine %q: resource %q is not a storage resource", spec.Name, name)
+		}
+		blobs = objectBlobs{os}
+	}
 	eval := &pipelineEvaluator{}
-	res.engine = &etl.Engine{Store: store, StageDelay: delay, StageTimeout: stageTimeout, LeaseTTL: leaseTTL, BreakerThreshold: threshold, BreakerCooldown: cooldown, Eval: func(expr string, row etl.Row) (bool, error) {
+	res.engine = &etl.Engine{Store: store, Blobs: blobs, ChunkRows: chunkRows, InboxPrefix: configString(spec.Config, "inbox_prefix", "inbox/"), Grace: grace, WedgeAfter: wedge, StageDelay: delay, StageTimeout: stageTimeout, LeaseTTL: leaseTTL, BreakerThreshold: threshold, BreakerCooldown: cooldown, Eval: func(expr string, row etl.Row) (bool, error) {
 		// Text that reads as a number is a number in expressions, so a CSV
 		// column can be compared without a cast: amount < 1000.
 		env := make(map[string]any, len(row))
@@ -206,6 +238,7 @@ func openETLEngine(ctx context.Context, spec ResourceSpec) (Resource, io.Closer,
 	}
 	res.engine.CheckExpr = func(expr string) error { _, err := CompileExpr(expr); return err }
 	res.engine.Hooks = res.hooks(configString(spec.Config, "transform", ""), configString(spec.Config, "transfer", ""), configString(spec.Config, "deliver", ""))
+	res.engine.Hooks.Verify = res.verifyHook(configString(spec.Config, "verify", ""))
 
 	if raw, ok := spec.Config["sources"].([]any); ok {
 		system := etl.Actor{ID: "system:" + spec.Name, Roles: []string{etl.RoleAdmin}}
@@ -239,8 +272,9 @@ func (r *ETLEngine) hooks(transform, transfer, deliver string) etl.Hooks {
 		defer cancel()
 		out, err := p.CallIntent(hctx, name, map[string]any{
 			"source": map[string]any{"id": src.ID, "name": src.Name, "owner": src.Owner, "destination": src.Destination, "version": src.Version},
-			"batch":  map[string]any{"id": b.ID, "key": b.Key, "source_id": b.SourceID, "attempt": b.Attempts + 1, "trace_id": b.TraceID},
-			"rows":   rows,
+			"batch": map[string]any{"id": b.ID, "key": b.Key, "source_id": b.SourceID, "attempt": b.Attempts + 1, "trace_id": b.TraceID,
+				"delivery_key": b.DeliveryKey, "epoch": b.Epoch, "chunk": b.Chunk, "chunks": max(b.ChunkCount, 1)},
+			"rows": rows,
 		}, nil)
 		if err != nil {
 			var f intent.Failure
@@ -449,5 +483,75 @@ func (r *ETLEngine) runBackground(ctx context.Context, p *Platform) {
 			return
 		case <-ticker.C:
 		}
+	}
+}
+
+// objectBlobs lets any storage resource hold the engine's blobs.
+type objectBlobs struct{ store spi.ObjectStore }
+
+func (o objectBlobs) Put(ctx context.Context, key string, data []byte) error {
+	_, err := o.store.Put(ctx, key, bytes.NewReader(data), "application/octet-stream")
+	return err
+}
+
+func (o objectBlobs) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	rc, _, err := o.store.Get(ctx, key)
+	if err != nil {
+		return nil, etlNotFound(err)
+	}
+	return rc, nil
+}
+
+func (o objectBlobs) Get(ctx context.Context, key string) ([]byte, error) {
+	rc, err := o.Open(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return io.ReadAll(rc)
+}
+
+func (o objectBlobs) Delete(ctx context.Context, key string) error { return o.store.Delete(ctx, key) }
+
+// etlNotFound maps a storage "not found" to the engine's.
+func etlNotFound(err error) error {
+	var f intent.Failure
+	if errors.As(err, &f) && f.Category == intent.CategoryNotFound {
+		return etl.ErrNotFound
+	}
+	return err
+}
+
+// verifyHook asks the verify intent whether the destination already has what an
+// interrupted delivery call was sending.
+func (r *ETLEngine) verifyHook(name string) func(context.Context, *etl.Source, *etl.Batch, []etl.Row) (string, bool, error) {
+	if name == "" {
+		return nil
+	}
+	return func(ctx context.Context, src *etl.Source, b *etl.Batch, rows []etl.Row) (string, bool, error) {
+		p := r.platform.Load()
+		if p == nil {
+			return "", false, errors.New("the platform is not running")
+		}
+		hctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		out, err := p.CallIntent(hctx, name, map[string]any{
+			"source": map[string]any{"id": src.ID, "destination": src.Destination, "version": src.Version},
+			"batch": map[string]any{"id": b.ID, "key": b.Key, "source_id": b.SourceID, "trace_id": b.TraceID,
+				"delivery_key": b.DeliveryKey, "epoch": b.Epoch, "chunk": b.Chunk, "chunks": max(b.ChunkCount, 1)},
+			"rows": len(rows),
+		}, nil)
+		if err != nil {
+			return "", false, fmt.Errorf("%s: %w", name, err)
+		}
+		m, _ := out.(map[string]any)
+		if m == nil || !Truthy(m["found"]) {
+			return "", false, nil
+		}
+		ref := Stringify(m["ref"])
+		if ref == "" || ref == "<nil>" {
+			ref = b.ID
+		}
+		return ref, true, nil
 	}
 }
