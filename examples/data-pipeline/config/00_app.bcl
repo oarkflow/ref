@@ -1,0 +1,17 @@
+# Data pipeline control room.
+#
+# This directory is the whole application; there is no Go in it. The engine
+# (sources, validation, staged runs, checkpoints, retry, hold and replay, roles,
+# audit trail, lineage) is the `etl.engine` resource in REF. What is written here
+# is what is specific to this deployment: which sources exist and their rules,
+# what the transform and the delivery do, who may sign in, and the console.
+#
+#   config/      resources, intents, routes
+#   templates/   SPL pages of the console
+#   static/      console assets
+#
+# Run it:  make run dir=./examples/data-pipeline
+# Use PostgreSQL:  ETL_DB_DRIVER=pgx ETL_DSN='postgres://user:pass@host/db?sslmode=disable' make run dir=./examples/data-pipeline
+
+name "data-pipeline"
+environment env("APP_ENV", "development")

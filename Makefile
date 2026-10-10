@@ -11,7 +11,7 @@
 dir  ?= $(DIR)
 addr ?=
 
-.PHONY: run build test tidy
+.PHONY: run build test tidy wasm
 
 run:
 	@test -n "$(dir)" || { echo "usage: make run dir=./examples/smsgateway [addr=:8080]"; exit 2; }
@@ -21,9 +21,36 @@ build:
 	cd cmd/ref && go build -o ../../bin/ref .
 
 test:
-	go test ./platform ./serve
+	go test ./platform ./serve ./etl
 	cd contrib/messaging && go test ./...
 	cd cmd/ref && go vet ./...
 
 tidy:
 	cd cmd/ref && go mod tidy
+
+# The console's secure fetch is github.com/oarkflow/fh's WebAssembly transport
+# (wasm/ and mw/securetransport in that module). This builds its client with
+# TinyGo and installs it, with the module's own loader and integrity manifest,
+# into the data-pipeline example. TinyGo needs Go 1.26 or older; point GO126 at
+# one (go install golang.org/dl/go1.26.5@latest && go1.26.5 download).
+#
+# Without trust variables the client is loopback-only (development). For a real
+# deployment pass all five, printed by the server's key tooling:
+#   make wasm WASM_TRUSTED_ORIGIN=https://app.example.com \
+#     WASM_TRUSTED_TRANSPORT_KEY=... WASM_TRUSTED_TRANSPORT_KEY_ID=... \
+#     WASM_TRUSTED_RESPONSE_KEY=... WASM_TRUSTED_RESPONSE_KEY_ID=...
+WASM_APP := examples/data-pipeline
+GO126 ?= $(HOME)/sdk/go1.26.5/bin
+WASM_LDFLAGS :=
+ifneq ($(strip $(WASM_TRUSTED_ORIGIN)),)
+WASM_LDFLAGS := -X main.embeddedTrustedOrigin=$(WASM_TRUSTED_ORIGIN) -X main.embeddedTransportPublicKey=$(WASM_TRUSTED_TRANSPORT_KEY) -X main.embeddedTransportKeyID=$(WASM_TRUSTED_TRANSPORT_KEY_ID) -X main.embeddedResponseSigningPublicKey=$(WASM_TRUSTED_RESPONSE_KEY) -X main.embeddedResponseSigningKeyID=$(WASM_TRUSTED_RESPONSE_KEY_ID)
+endif
+wasm:
+	@command -v tinygo >/dev/null || { echo "tinygo is required (brew install tinygo binaryen)"; exit 1; }
+	@tmp=$$(mktemp -d) && fh="$$(go list -m -f '{{.Dir}}' github.com/oarkflow/fh)" && \
+	  cp -R "$$fh/." "$$tmp" && chmod -R u+w "$$tmp" && \
+	  (cd "$$tmp" && PATH="$(GO126):$$PATH" tinygo build -target wasm -no-debug -ldflags="$(WASM_LDFLAGS)" -o wasm/dist/securefetch.wasm ./wasm/cmd/securefetch && \
+	   cp wasm/cmd/securefetch/wasm_exec.js wasm/dist/wasm_exec.js && go run ./wasm/cmd/manifest -dir wasm/dist) && \
+	  rm -rf $(WASM_APP)/static/wasm && mkdir -p $(WASM_APP)/static/wasm && \
+	  cp "$$tmp"/wasm/dist/*.js "$$tmp"/wasm/dist/*.wasm "$$tmp"/wasm/dist/asset-manifest.json "$$tmp"/wasm/dist/SHA256SUMS $(WASM_APP)/static/wasm/ && \
+	  rm -rf "$$tmp" && echo "installed $$(wc -c < $(WASM_APP)/static/wasm/securefetch.wasm) bytes of securefetch.wasm into $(WASM_APP)/static/wasm" && cat $(WASM_APP)/static/wasm/SHA256SUMS

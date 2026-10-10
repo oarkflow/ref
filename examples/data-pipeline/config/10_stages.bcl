@@ -1,0 +1,70 @@
+# ---------------------------------------------------------------------------
+# What the stages do. The engine calls these intents with
+#   { source {id, name, owner, destination, version}, batch {id, key, attempt}, rows [...] }
+# A failure (or ok false) is a failed attempt: the engine retries with backoff,
+# and after the source's attempt limit holds the batch at its last checkpoint.
+# ---------------------------------------------------------------------------
+
+# Stage 2: enrichment. Every row gets where it came from, so a record in the
+# destination can always be traced back to its source and batch.
+intent "etl.transform" {
+  description "Add provenance to every row"
+  response "out"
+  node "rows" {
+    uses "data.augment" kind pure requires [input] provides [rows]
+    config {
+      source_fact "input.rows"
+      fields {
+        _source "input.source.id"
+        _batch  "input.batch.id"
+        _owner  "input.source.owner"
+      }
+    }
+  }
+  node "out" {
+    uses "data.transform" kind pure requires [rows] provides [out]
+    config { data { extract { rows "rows" version "'enrich-v1'" } pick ["rows", "version"] } }
+  }
+}
+
+# Stage 3: the receiving system must exist and be reachable before rows move.
+intent "etl.transfer" {
+  description "Check the receiving system will take the rows"
+  response "out"
+  node "dest" {
+    uses "database.query" resource "db" kind read requires [input] provides [dest]
+    config { statement "SELECT id, online FROM destinations WHERE id = $1" args [input.source.destination] }
+  }
+  node "out" {
+    uses "data.transform" kind pure requires [dest] provides [out]
+    config { data { extract { ok "len(dest) > 0" error "'the destination is not registered'" permanent "true" } pick ["ok", "error", "permanent"] } }
+  }
+}
+
+# Stage 4: delivery. Refuses while the destination is offline. Idempotent on the
+# batch key, so a replay never writes the same batch twice.
+intent "etl.deliver" {
+  description "Write the batch to the destination"
+  response "out"
+  node "count" { uses "data.count" kind pure requires [input] provides [n] config { source_fact "input.rows" } }
+  node "payload" { uses "data.json_encode" kind pure requires [input] provides [payload] config { source_fact "input.rows" } }
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
+  node "put" {
+    uses "database.transaction" resource "db" kind effect requires [input, n, payload, now_ms] provides [put]
+    config {
+      statements [
+        {
+          name "write"
+          sql "INSERT INTO warehouse_batches (batch_key, batch_id, source_id, destination, row_count, payload, delivered_ms) SELECT $1, $2, $3, $4, $5, $6, $7 WHERE EXISTS (SELECT 1 FROM destinations WHERE id = $4 AND online = 1) ON CONFLICT (batch_key) DO UPDATE SET batch_id = excluded.batch_id, row_count = excluded.row_count, payload = excluded.payload, delivered_ms = excluded.delivered_ms"
+          args [input.batch.key, input.batch.id, input.source.id, input.source.destination, n, payload, now_ms]
+          require_affected true
+          failure { code "DESTINATION_OFFLINE" status 503 message "the destination is offline or not accepting writes" }
+        }
+      ]
+    }
+  }
+  node "out" {
+    uses "data.transform" kind pure requires [input, put] provides [out]
+    config { data { extract { ok "true" ref "input.source.destination + '/' + input.batch.key" } pick ["ok", "ref"] } }
+  }
+}

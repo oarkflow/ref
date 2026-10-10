@@ -1,0 +1,91 @@
+# The console: SPL page shells and static assets. Pages hold nothing private;
+# their script calls /ui/me and goes to /login without a session.
+
+static "assets" {
+  prefix "/static"
+  root "static"
+  compress true
+  cache_control "no-cache"
+}
+
+intent "console.page" {
+  response "page"
+  node "page" {
+    uses "constant" kind pure provides [page]
+    config { value { app_name "Pipeline Control Room" asset_version "15" title "Control room" } }
+  }
+}
+
+# Pages carry a strict content security policy: scripts only from this origin
+# (plus WebAssembly, which the secure transport needs), connections only back to
+# this origin, no framing, no plugins.
+route "console.login" {
+  method GET
+  path "/login"
+  intent "console.page"
+  template "pages/login"
+  layout "layouts/plain"
+  allow_anonymous true
+  headers {
+    "Content-Security-Policy" "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    "X-Content-Type-Options" "nosniff"
+    "X-Frame-Options" "DENY"
+    "Referrer-Policy" "no-referrer"
+  }
+}
+route "console.app" {
+  method GET
+  path "/"
+  intent "console.page"
+  template "pages/console"
+  layout "layouts/base"
+  allow_anonymous true
+  headers {
+    "Content-Security-Policy" "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    "X-Content-Type-Options" "nosniff"
+    "X-Frame-Options" "DENY"
+    "Referrer-Policy" "no-referrer"
+  }
+}
+route "console.register" {
+  method GET
+  path "/register"
+  intent "console.page"
+  template "pages/register"
+  layout "layouts/plain"
+  allow_anonymous true
+  headers {
+    "Content-Security-Policy" "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    "X-Content-Type-Options" "nosniff"
+    "X-Frame-Options" "DENY"
+    "Referrer-Policy" "no-referrer"
+  }
+}
+route "console.forgot" {
+  method GET
+  path "/forgot"
+  intent "console.page"
+  template "pages/forgot"
+  layout "layouts/plain"
+  allow_anonymous true
+  headers {
+    "Content-Security-Policy" "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    "X-Content-Type-Options" "nosniff"
+    "X-Frame-Options" "DENY"
+    "Referrer-Policy" "no-referrer"
+  }
+}
+route "console.reset" {
+  method GET
+  path "/reset"
+  intent "console.page"
+  template "pages/reset"
+  layout "layouts/plain"
+  allow_anonymous true
+  headers {
+    "Content-Security-Policy" "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    "X-Content-Type-Options" "nosniff"
+    "X-Frame-Options" "DENY"
+    "Referrer-Policy" "no-referrer"
+  }
+}

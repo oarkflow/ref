@@ -1,0 +1,147 @@
+# ---------------------------------------------------------------------------
+# The sign-in flow around the login itself: registration, forgotten passwords,
+# resets. All of it is anonymous, rate limited, and travels through the secure
+# transport like everything else the browser sends.
+#
+#   register   a new person asks for an account. It is created "pending", with no
+#              roles and no way to sign in, until an administrator approves it
+#              (Access, Users). The answer is the same whether or not the email
+#              is already known, so the form cannot be used to find out who has
+#              an account.
+#   forgot     asks for a reset link. Same answer for every email. A link is
+#              queued to the mailbox only when there is an active person behind it.
+#   reset      sets a new password from a link. A link works once, for 30
+#              minutes; only its hash is stored.
+#
+# Passwords: at least 12 characters, a letter and a digit, entered twice.
+# ---------------------------------------------------------------------------
+
+shape "register_input" {
+  additional_properties false
+  prop "name"     { kind string required true min_length 2 max_length 80 }
+  prop "email"    { kind string required true max_length 120 pattern "^[^@ ]+@[^@ ]+[.][^@ ]+$" }
+  prop "password" { kind string required true sensitive true min_length 12 max_length 200 }
+  prop "confirm"  { kind string required true sensitive true max_length 200 }
+}
+
+shape "forgot_input" {
+  additional_properties false
+  prop "email" { kind string required true max_length 120 }
+}
+
+shape "reset_input" {
+  additional_properties false
+  prop "token"    { kind string required true min_length 20 max_length 200 }
+  prop "password" { kind string required true sensitive true min_length 12 max_length 200 }
+  prop "confirm"  { kind string required true sensitive true max_length 200 }
+}
+
+intent "auth.register" {
+  description "Ask for an account; an administrator approves it"
+  response "out"
+  input_schema "register_input"
+  node "same" { uses "validate.expression" kind pure requires [input] provides [same] config { expression "input.password == input.confirm" message "The passwords do not match." } }
+  node "policy" { uses "validate.expression" kind pure requires [input] provides [policy] config { expression "input.password matches '[A-Za-z]' and input.password matches '[0-9]'" message "The password needs at least one letter and one digit." } }
+  node "hash" { uses "auth.password_hash" kind pure requires [input, same, policy] provides [hash] config { value_fact "input.password" } }
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
+  node "insert" {
+    uses "database.exec" resource "db" kind effect requires [input, hash, now_ms] provides [inserted]
+    config {
+      statement "INSERT INTO users (id, name, email, password_hash, roles, kind, status, created_ms) SELECT LOWER($1), $2, LOWER($1), $3, '', 'human', 'pending', $4 WHERE NOT EXISTS (SELECT 1 FROM users WHERE email = LOWER($1) OR id = LOWER($1))"
+      args [input.email, input.name, hash, now_ms]
+    }
+  }
+  node "out" {
+    uses "data.transform" kind pure requires [inserted] provides [out]
+    config { data { set { received true message "Thank you. An administrator will review your request; you can sign in once it is approved." } pick ["received", "message"] } }
+  }
+}
+
+intent "auth.forgot" {
+  description "Ask for a password reset link"
+  response "out"
+  input_schema "forgot_input"
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
+  node "expires" { uses "expression" kind pure requires [now_ms] provides [expires_ms] config { expression "now_ms + 1800000" } }
+  node "base" { uses "constant" kind pure provides [base] config { value { origin env("ETL_ORIGIN", "http://127.0.0.1:8080") } } }
+  node "issued" { uses "auth.reset_token" kind pure requires [input] provides [issued] config { ttl "30m" } }
+  node "store" {
+    uses "database.exec" resource "db" kind effect requires [input, issued, now_ms, expires_ms] provides [stored]
+    config {
+      statement "INSERT INTO password_resets (token_hash, user_id, expires_ms, used, created_ms, created_by) SELECT $1, id, $3, 0, $4, 'self-service' FROM users WHERE email = LOWER($2) AND status = 'active' AND kind = 'human'"
+      args [issued.hash, input.email, expires_ms, now_ms]
+    }
+  }
+  node "mail" {
+    uses "database.exec" resource "db" kind effect requires [input, issued, base, now_ms, stored] provides [mailed]
+    config {
+      statement "INSERT INTO mail_outbox (id, to_email, subject, body, created_ms) SELECT $1, email, 'Reset your password', 'Open this link to choose a new password (it works once and expires in 30 minutes): ' || $3 || '/reset?token=' || $4 || ' If you did not ask for this, ignore it.', $5 FROM users WHERE email = LOWER($2) AND status = 'active' AND kind = 'human'"
+      args [issued.hash, input.email, base.origin, issued.token, now_ms]
+    }
+  }
+  node "out" {
+    uses "data.transform" kind pure requires [mailed] provides [out]
+    config { data { set { received true message "If that email belongs to an active account, a reset link has been sent." } pick ["received", "message"] } }
+  }
+}
+
+intent "auth.reset" {
+  description "Choose a new password from a reset link"
+  response "out"
+  input_schema "reset_input"
+  node "same" { uses "validate.expression" kind pure requires [input] provides [same] config { expression "input.password == input.confirm" message "The passwords do not match." } }
+  node "policy" { uses "validate.expression" kind pure requires [input] provides [policy] config { expression "input.password matches '[A-Za-z]' and input.password matches '[0-9]'" message "The password needs at least one letter and one digit." } }
+  node "token_hash" { uses "auth.token_hash" kind pure requires [input] provides [token_hash] config { value_fact "input.token" } }
+  node "hash" { uses "auth.password_hash" kind pure requires [input, same, policy] provides [hash] config { value_fact "input.password" } }
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
+  node "apply" {
+    uses "database.transaction" resource "db" kind effect requires [hash, token_hash, now_ms] provides [applied]
+    config {
+      statements [
+        {
+          name "set password"
+          sql "UPDATE users SET password_hash = $1 WHERE status = 'active' AND kind = 'human' AND id = (SELECT user_id FROM password_resets WHERE token_hash = $2 AND used = 0 AND expires_ms > $3)"
+          args [hash, token_hash, now_ms]
+          require_affected true
+          failure { code "INVALID_TOKEN" status 400 message "This reset link is invalid or has expired. Ask for a new one." }
+        },
+        {
+          name "use up the link"
+          sql "UPDATE password_resets SET used = 1 WHERE token_hash = $1"
+          args [token_hash]
+        }
+      ]
+    }
+  }
+  node "out" {
+    uses "data.transform" kind pure requires [applied] provides [out]
+    config { data { set { updated true message "Your password was changed. You can sign in now." } pick ["updated", "message"] } }
+  }
+}
+
+route "auth.register" {
+  method POST
+  path "/register"
+  intent "auth.register"
+  allow_anonymous true
+  status 202
+  cache_control "no-store"
+  rate_limit { limiter "limiter" limit 5 window 1m message "Too many requests. Wait a minute and try again." }
+}
+route "auth.forgot" {
+  method POST
+  path "/forgot"
+  intent "auth.forgot"
+  allow_anonymous true
+  status 202
+  cache_control "no-store"
+  rate_limit { limiter "limiter" limit 5 window 1m message "Too many requests. Wait a minute and try again." }
+}
+route "auth.reset" {
+  method POST
+  path "/reset"
+  intent "auth.reset"
+  allow_anonymous true
+  cache_control "no-store"
+  rate_limit { limiter "limiter" limit 10 window 1m message "Too many requests. Wait a minute and try again." }
+}

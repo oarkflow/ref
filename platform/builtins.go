@@ -25,6 +25,7 @@ func registerBuiltins(r *Registry) {
 	registerCacheActions(r)
 	registerSessionActions(r)
 	registerQueueActions(r)
+	registerETLActions(r)
 	registerAuthActions(r)
 	registerSignerActions(r)
 	registerIdentityActions(r)

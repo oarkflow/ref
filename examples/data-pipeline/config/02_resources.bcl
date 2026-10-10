@@ -1,0 +1,155 @@
+# ---------------------------------------------------------------------------
+# The engine and who may sign in.
+#
+# Roles and permissions live in the engine (etl_roles), not here: a user's
+# roles column holds role ids, and the Roles screen edits what each role may do
+# and on which sources. Built-in roles: admin, operate, ingest, replay, read,
+# monitor, auditor.
+# ---------------------------------------------------------------------------
+
+resource "flow" {
+  kind "etl.engine"
+  description "Sources, staged runs, checkpoints, retry, hold and replay, audit trail, lineage"
+  config {
+    database "db"
+    table_prefix "etl_"
+    # Roles and status are read from the user table on every request (cached
+    # for two seconds), not trusted from the session: disabling an account or
+    # changing its roles takes effect at once, in every open session and for
+    # every API key it holds.
+    principal_query "SELECT roles, status FROM users WHERE id = $1"
+    transform "etl.transform"
+    transfer "etl.transfer"
+    deliver "etl.deliver"
+    poll "500ms"
+    stage_timeout env("ETL_STAGE_TIMEOUT", "30s")   # one hook call; longer counts as a failed attempt
+    lease_ttl "90s"                                 # a worker that dies mid-stage is replaced after this
+    breaker_threshold 5                             # failures in a row that open a destination's circuit
+    breaker_cooldown "30s"
+    retention "720h"                                # checkpoints of finished batches are deleted after 30 days
+    stage_delay env("ETL_STAGE_DELAY", "1500ms")
+
+    # Registered at startup when missing. Operators change them afterwards
+    # (PUT /ui/etl/sources), and a change is kept across restarts.
+    sources [
+      {
+        id "orders-sftp" expect_every "1h" name "Orders (SFTP)" owner "Sales Data" format "csv" destination "billing-api"
+        description "Daily order export dropped by the storefront"
+        max_reject_rate 0.2
+        max_rows 50000
+        reject_duplicates true
+        output_rules [
+          { name "provenance kept" column "_batch" check "required" }
+          { name "amount still a number" column "amount" check "type" type "float" }
+        ]
+        retry { max_attempts 4 base "2s" cap "30s" }
+        rules [
+          { name "order id present" column "id" check "required" }
+          { name "order id unique" column "id" check "unique" }
+          { name "amount is a number" column "amount" check "type" type "float" }
+          { name "amount not negative" column "amount" check "range" min 0 }
+          { name "known currency" column "currency" check "enum" values ["NPR", "USD", "INR"] }
+          { name "email looks valid" column "email" check "regex" pattern "^[^@ ]+@[^@ ]+$" }
+        ]
+      }
+      {
+        id "crm-export" expect_every "2h" name "CRM contacts" owner "Customer Success" format "jsonl" destination "crm-sync"
+        description "Contacts changed in the last hour"
+        max_reject_rate 0.1
+        retry { max_attempts 4 base "2s" cap "30s" }
+        rules [
+          { name "contact id present" column "id" check "required" }
+          { name "email looks valid" column "email" check "regex" pattern "^[^@ ]+@[^@ ]+$" }
+          { name "tier is known" column "tier" check "enum" values ["free", "pro", "enterprise"] }
+        ]
+      }
+      {
+        id "claims-api" expect_every "24h" name "Claims intake" owner "Claims Operations" format "json" destination "claims-store"
+        description "Claims submitted through the partner API"
+        max_reject_rate 0.05
+        retry { max_attempts 5 base "3s" cap "60s" }
+        rules [
+          { name "claim id present" column "claim_id" check "required" }
+          { name "claim date is a date" column "filed_on" check "type" type "date" }
+          { name "amount within limit" column "amount" check "range" min 0 max 1000000 }
+        ]
+      }
+      {
+        id "ledger-feed" expect_every "24h" name "Ledger postings" owner "Finance" format "csv" destination "general-ledger"
+        description "Journal lines from the accounting system"
+        max_reject_rate 0
+        max_rows 20000
+        reject_duplicates true
+        retry { max_attempts 3 base "2s" cap "20s" }
+        rules [
+          { name "line id present" column "line" check "required" }
+          { name "debit and credit balance" check "expr" expr "debit == credit" message "debit and credit must be equal" }
+        ]
+      }
+    ]
+  }
+}
+
+# Slows down password guessing: ten sign-in attempts a minute per address.
+resource "limiter" {
+  kind "ratelimit.memory"
+  description "In-process rate limiter"
+}
+
+# Console sign-in: a signed session cookie.
+resource "sessions" {
+  kind "session.file"
+  description "Signed session cookies"
+  config {
+    dir env("ETL_SESSION_DIR", ".data/sessions")
+    secret env("ETL_SESSION_SECRET", "data-pipeline-dev-session-secret-change-me-0123456789")
+    cookie "etl_sid"
+    max_age 12h
+    secure false
+  }
+}
+
+resource "session_auth" {
+  kind "auth.session"
+  description "Caller identity from the session cookie"
+  config {
+    session "sessions"
+    roles_claim "roles"
+  }
+}
+
+# Every request the console makes (sign-in included) travels through fh's secure
+# transport: an encrypted, device-bound, replay-protected envelope between the
+# browser's WebAssembly client and the server, on top of TLS. Protected: all of
+# /ui/ and the writes to /login /logout /register /forgot /reset. Machines use
+# /v1 with API keys and are not affected.
+#
+# Development keys are created on first start under .data/secure so that pins
+# survive restarts. In production: supply server_key_file and signing_key_file
+# from a secret manager, set the https origin, and build the client with the
+# keys' public halves embedded (make wasm WASM_TRUSTED_*).
+resource "secure" {
+  kind "transport.secure"
+  description "Encrypted, device-bound fetch transport (fh securetransport and its WebAssembly client)"
+  config {
+    session "sessions"
+    # Exact origins. Add the one you serve from: ETL_ORIGIN=http://127.0.0.1:9000
+    origins ["http://127.0.0.1:8080", "http://localhost:8080", env("ETL_ORIGIN", "http://127.0.0.1:8080")]
+    server_key_file env("ETL_TRANSPORT_KEY_FILE", ".data/secure/transport.key")
+    signing_key_file env("ETL_SIGNING_KEY_FILE", ".data/secure/signing.key")
+    create_key_file env("ETL_DEV_KEYS", "true")
+    require_embedded_trust env("ETL_REQUIRE_EMBEDDED_TRUST", "false")
+  }
+}
+
+# Machines and scrapers use API keys. Keys belong to a user or service account
+# (the api_keys table holds only a digest), so a key can be issued and revoked
+# at run time and carries that account's roles.
+resource "key_auth" {
+  kind "auth.api_key_sql"
+  description "API keys of users and service accounts (X-API-Key or Authorization: Bearer)"
+  config {
+    database "db"
+    query "SELECT u.id, u.name, u.roles FROM api_keys k JOIN users u ON u.id = k.user_id WHERE k.key_hash = $1 AND k.revoked = 0 AND u.status = 'active'"
+  }
+}

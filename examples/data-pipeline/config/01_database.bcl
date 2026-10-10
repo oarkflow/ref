@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# Storage. The engine keeps sources, batches, checkpoints, quarantined rows,
+# lineage and the audit trail in this database (etl_* tables). SQLite by
+# default, PostgreSQL by environment. The application adds its own users and a
+# stand-in destination system (warehouse_batches, destinations).
+# ---------------------------------------------------------------------------
+
+resource "db" {
+  kind "database.sql"
+  description "Engine state, console users and the demo warehouse"
+  config {
+    driver env("ETL_DB_DRIVER", "sqlite")
+    dsn env("ETL_DSN", "file:.data/etl.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+    max_open_connections env("ETL_DB_CONNECTIONS", "1")
+    ping true
+    migrations [
+      "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL, password_hash TEXT NOT NULL, roles TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', kind TEXT NOT NULL DEFAULT 'human', created_ms BIGINT NOT NULL DEFAULT 0, last_login_ms BIGINT NOT NULL DEFAULT 0)",
+      "CREATE TABLE IF NOT EXISTS password_resets (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_ms BIGINT NOT NULL, used INTEGER NOT NULL DEFAULT 0, created_ms BIGINT NOT NULL, created_by TEXT NOT NULL DEFAULT '')",
+      "CREATE INDEX IF NOT EXISTS password_resets_user ON password_resets(user_id)",
+      "CREATE TABLE IF NOT EXISTS mail_outbox (id TEXT PRIMARY KEY, to_email TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL, created_ms BIGINT NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS api_keys (key_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, prefix TEXT NOT NULL, created_ms BIGINT NOT NULL, created_by TEXT NOT NULL DEFAULT '', revoked INTEGER NOT NULL DEFAULT 0)",
+      "CREATE INDEX IF NOT EXISTS api_keys_user ON api_keys(user_id)",
+      "CREATE INDEX IF NOT EXISTS users_email ON users(email)",
+      "CREATE TABLE IF NOT EXISTS destinations (id TEXT PRIMARY KEY, name TEXT NOT NULL, online INTEGER NOT NULL DEFAULT 1, note TEXT NOT NULL DEFAULT '', changed_by TEXT NOT NULL DEFAULT '', changed_ms BIGINT NOT NULL DEFAULT 0)",
+      "CREATE TABLE IF NOT EXISTS warehouse_batches (batch_key TEXT PRIMARY KEY, batch_id TEXT NOT NULL, source_id TEXT NOT NULL, destination TEXT NOT NULL, row_count INTEGER NOT NULL, payload TEXT NOT NULL, delivered_ms BIGINT NOT NULL)",
+      "INSERT INTO destinations (id, name, online, note) VALUES ('billing-api', 'Billing API', 1, '') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO destinations (id, name, online, note) VALUES ('crm-sync', 'CRM sync', 1, '') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO destinations (id, name, online, note) VALUES ('claims-store', 'Claims store', 1, '') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO destinations (id, name, online, note) VALUES ('general-ledger', 'General ledger', 1, '') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO users (id, name, email, password_hash, roles) VALUES ('admin', 'Ada Admin', 'admin@example.com', '$argon2id$v=19$m=65536,t=3,p=4$EL3BsQcg7gPHeAapDaQzbQ$47X5WK6H6M5jk+CCcbfpyphh1u53MV/NJP4gliuxm28', 'admin') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO users (id, name, email, password_hash, roles) VALUES ('operator', 'Omar Operator', 'operator@example.com', '$argon2id$v=19$m=65536,t=3,p=4$H+WeWH5atcHeIiq9bQyMKA$CDL4yB3WIst9mJggV4LhGLdKjwC6rBHYWcLbUBOFR0c', 'operate') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO users (id, name, email, password_hash, roles) VALUES ('feeder', 'Fay Feeder', 'feeder@example.com', '$argon2id$v=19$m=65536,t=3,p=4$ca5Gi797KaZTXKzm4CWtgg$JI+/NVBiflh1JLFcEuAD4oETa766rhpBi8pRROSlxRk', 'ingest') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO users (id, name, email, password_hash, roles) VALUES ('replayer', 'Rae Replayer', 'replayer@example.com', '$argon2id$v=19$m=65536,t=3,p=4$KhvRCwvHoMpvBkqmtQitXQ$60iYOw2tmhUvJNVJ8Gvi8pDFOswDJXROnG4qmZTt1iw', 'replay') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO users (id, name, email, password_hash, roles) VALUES ('analyst', 'Ana Analyst', 'analyst@example.com', '$argon2id$v=19$m=65536,t=3,p=4$Z1gPRzNnKnEKup0x11aqHg$DgPlXRVltV2iwL8KNZbYVswE7CBCGw09RhodZsE5I1k', 'read') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO users (id, name, email, password_hash, roles, kind) VALUES ('svc-orders-feeder', 'Orders feeder (service)', '', '!', 'ingest', 'service') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO users (id, name, email, password_hash, roles, kind) VALUES ('svc-prometheus', 'Metrics scraper (service)', '', '!', 'monitor', 'service') ON CONFLICT (id) DO NOTHING",
+      "INSERT INTO api_keys (key_hash, user_id, name, prefix, created_ms, created_by) VALUES ('667bd86df64b18b1c069118e1a89b4498147b55e412d9bec902f04e7e64bc89e', 'svc-orders-feeder', 'development key', 'dev-feeder', 0, 'seed') ON CONFLICT (key_hash) DO NOTHING",
+      "INSERT INTO api_keys (key_hash, user_id, name, prefix, created_ms, created_by) VALUES ('a76d5a2a7d406e46274b6387f9df3ce597b5f03a68a65f34e7ea4f611e04aaf9', 'svc-prometheus', 'development key', 'dev-metrics', 0, 'seed') ON CONFLICT (key_hash) DO NOTHING"
+    ]
+  }
+}

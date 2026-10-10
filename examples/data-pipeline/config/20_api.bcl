@@ -1,0 +1,137 @@
+# ---------------------------------------------------------------------------
+# Sign-in, then one intent per engine action. The engine checks the caller's
+# roles itself; the routes only decide how the caller is identified.
+# ---------------------------------------------------------------------------
+
+shape "login_input" {
+  additional_properties false
+  prop "email"    { kind string required true max_length 120 }
+  prop "password" { kind string required true sensitive true max_length 200 }
+}
+
+intent "auth.login" {
+  description "Verify an email and password and start a session"
+  response "response"
+  input_schema "login_input"
+  timeout 5s
+  node "find_user" {
+    uses "database.query" resource "db" kind read speculation pre_auth_safe requires [input] provides [users]
+    config { statement "SELECT id, email, name, password_hash, roles, status FROM users WHERE email = LOWER($1) AND email <> '' AND kind = 'human' AND status = 'active' LIMIT 1" args [input.email] }
+  }
+  node "login" {
+    uses "auth.login" resource "sessions" kind pure requires [input, users] provides [principal]
+    config { user_fact "users" password_fact "input.password" roles_field "roles" }
+  }
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
+  node "touch" {
+    uses "database.exec" resource "db" kind effect requires [principal, now_ms] provides [touched]
+    config { statement "UPDATE users SET last_login_ms = $1 WHERE id = $2" args [now_ms, principal.id] }
+  }
+  node "response" { uses "collect" requires [principal, touched] provides [response] }
+}
+route "auth.login" {
+  method POST
+  path "/login"
+  intent "auth.login"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+  rate_limit { limiter "limiter" limit 10 window 1m message "Too many sign-in attempts. Wait a minute and try again." }
+}
+
+intent "auth.logout" {
+  response "response"
+  node "who" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+  node "out" { uses "auth.logout" resource "sessions" kind effect requires [user_id] provides [logged_out] }
+  node "response" { uses "collect" requires [logged_out] provides [response] }
+}
+route "auth.logout" { method POST path "/logout" intent "auth.logout" session "sessions" auth "session_auth" cache_control "no-store" }
+
+# Who is signed in and what they may do, so the console shows only what works.
+intent "ui.me" {
+  response "me"
+  node "can" { uses "etl.me" resource "flow" kind read provides [can] }
+  node "me" {
+    uses "data.transform" kind pure requires [input, can] provides [me]
+    config { data { extract { id "principal.id" name "principal.username" roles "can.roles" permissions "can.permissions" } pick ["id", "name", "roles", "permissions"] } }
+  }
+}
+route "ui.me" { method GET path "/ui/me" intent "ui.me" session "sessions" auth "session_auth" cache_control "no-store" }
+
+# ---- engine actions ----------------------------------------------------------
+
+intent "etl.summary"   { response "r" node "r" { uses "etl.summary"      resource "flow" provides [r] } }
+intent "etl.sources"   { response "r" node "r" { uses "etl.sources"      resource "flow" provides [r] } }
+intent "etl.source_put" { response "r" node "r" { uses "etl.source_put"  resource "flow" kind effect requires [input] provides [r] } }
+intent "etl.source_pause" { response "r" node "r" { uses "etl.source_pause" resource "flow" kind effect requires [input] provides [r] } }
+intent "etl.ingest"    { response "r" node "r" { uses "etl.ingest"       resource "flow" kind effect requires [input] provides [r] } }
+intent "etl.batches"   { response "r" node "r" { uses "etl.batches"      resource "flow" provides [r] } }
+intent "etl.batch"     { response "r" node "r" { uses "etl.batch"        resource "flow" provides [r] } }
+intent "etl.replay"    { response "r" node "r" { uses "etl.replay"       resource "flow" kind effect provides [r] } }
+intent "etl.advance"   { response "r" node "r" { uses "etl.advance"      resource "flow" kind effect provides [r] } }
+intent "etl.quarantine" { response "r" node "r" { uses "etl.quarantine"  resource "flow" provides [r] } }
+intent "etl.audit"     { response "r" node "r" { uses "etl.audit"        resource "flow" provides [r] } }
+intent "etl.verify"    { response "r" node "r" { uses "etl.verify_audit" resource "flow" provides [r] } }
+
+# ---- destinations: the stand-in receiving systems, so a failure can be staged ----
+
+intent "destinations.list" {
+  response "rows"
+  node "rows" { uses "database.query" resource "db" kind read provides [rows] config { statement "SELECT d.id, d.name, d.online, d.note, d.changed_by, d.changed_ms, (SELECT COUNT(*) FROM warehouse_batches w WHERE w.destination = d.id) AS batches, (SELECT COALESCE(SUM(row_count), 0) FROM warehouse_batches w WHERE w.destination = d.id) AS rows FROM destinations d ORDER BY d.id" } }
+}
+
+intent "destinations.set" {
+  description "Take a destination offline or bring it back (to stage a failure)"
+  response "out"
+  node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "ops.manage" } }
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
+  node "flag" { uses "expression" kind pure requires [input] provides [flag] config { expression "input.online ? 1 : 0" } }
+  node "who" { uses "expression" kind pure provides [who] config { expression "principal.id" } }
+  node "set" {
+    uses "database.exec" resource "db" kind effect requires [gate, input, id, now_ms, flag, who] provides [set]
+    config {
+      statement "UPDATE destinations SET online = $1, note = $2, changed_by = $3, changed_ms = $4 WHERE id = $5"
+      args [flag, input.note, who, now_ms, id]
+      require_affected true
+      not_found_message "no such destination"
+    }
+  }
+  node "detail" { uses "expression" kind pure requires [id, input] provides [detail] config { expression "id + (input.online ? ' brought online' : ' taken offline: ' + input.note)" } }
+  node "note" { uses "etl.note" resource "flow" kind effect requires [set, detail] provides [noted] config { permission "ops.manage" action "destination.switch" detail_fact "detail" } }
+  node "out" { uses "data.transform" kind pure requires [id, set, noted] provides [out] config { data { extract { id "id" updated "true" } pick ["id", "updated"] } } }
+}
+
+intent "warehouse.list" {
+  response "rows"
+  node "rows" { uses "database.query" resource "db" kind read provides [rows] config { statement "SELECT batch_key, batch_id, source_id, destination, row_count, delivered_ms FROM warehouse_batches ORDER BY delivered_ms DESC LIMIT 50" } }
+}
+
+# ---- routes: console (session) and machines (API key) ----------------------
+
+route_group "ui_etl" {
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+
+  route "ui.summary"     { method GET  path "/ui/etl/summary"                  intent "etl.summary" }
+  route "ui.sources"     { method GET  path "/ui/etl/sources"                  intent "etl.sources" }
+  route "ui.source_put"  { method PUT  path "/ui/etl/sources"                  intent "etl.source_put" }
+  route "ui.source_pause" { method POST path "/ui/etl/sources/:source/pause"   intent "etl.source_pause" }
+  route "ui.ingest"      { method POST path "/ui/etl/sources/:source/batches"  intent "etl.ingest" status 202 }
+  route "ui.batches"     { method GET  path "/ui/etl/batches"                  intent "etl.batches" }
+  route "ui.batch"       { method GET  path "/ui/etl/batches/:id"              intent "etl.batch" }
+  route "ui.replay"      { method POST path "/ui/etl/batches/:id/replay"       intent "etl.replay" }
+  route "ui.advance"     { method POST path "/ui/etl/batches/:id/advance"      intent "etl.advance" }
+  route "ui.quarantine"  { method GET  path "/ui/etl/quarantine"               intent "etl.quarantine" }
+  route "ui.audit"       { method GET  path "/ui/etl/audit"                    intent "etl.audit" }
+  route "ui.verify"      { method GET  path "/ui/etl/audit/verify"             intent "etl.verify" }
+  route "ui.destinations" { method GET path "/ui/etl/destinations"             intent "destinations.list" }
+  route "ui.warehouse"   { method GET  path "/ui/etl/warehouse"                intent "warehouse.list" }
+}
+
+route "ui.destination_set" { method PUT path "/ui/etl/destinations/:id" intent "destinations.set" session "sessions" auth "session_auth" cache_control "no-store" }
+
+route "v1.ingest" { method POST path "/v1/sources/:source/batches" intent "etl.ingest" auth "key_auth" status 202 cache_control "no-store" }
+route "v1.summary" { method GET path "/v1/summary" intent "etl.summary" auth "key_auth" cache_control "no-store" }
+route "v1.batch"  { method GET  path "/v1/batches/:id"             intent "etl.batch"  auth "key_auth" cache_control "no-store" }

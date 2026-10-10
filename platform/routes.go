@@ -351,6 +351,16 @@ func (p *Platform) Mount(app *fh.App) error {
 		}
 		app.Static(s.spec.Prefix, s.root, cfg)
 	}
+	// Resources that wrap the routes (the secure transport) go in after the
+	// static files, so fetching an asset never starts a session, and before the
+	// routes they protect.
+	for _, r := range p.resources {
+		if in, ok := r.(appInstaller); ok {
+			if err := in.install(app); err != nil {
+				return err
+			}
+		}
+	}
 	for i := range p.routes {
 		route := p.routes[i]
 		if route.spec.Static != "" {

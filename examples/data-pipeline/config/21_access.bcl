@@ -1,0 +1,278 @@
+# ---------------------------------------------------------------------------
+# Users, service accounts, API keys and roles.
+#
+# Who may do what is the engine's to say (etl.require); every intent here starts
+# with a gate node, and everything it does is recorded in the audit trail
+# (etl.note). Roles are edited in the engine; users hold role ids.
+# ---------------------------------------------------------------------------
+
+shape "user_create" {
+  additional_properties false
+  prop "id"       { kind string required true min_length 2 max_length 40 pattern "^[a-z][a-z0-9._-]*$" }
+  prop "name"     { kind string required true max_length 80 }
+  prop "email"    { kind string required true max_length 120 }
+  prop "password" { kind string required true sensitive true min_length 12 max_length 200 }
+  prop "confirm"  { kind string required true sensitive true max_length 200 }
+  prop "roles"    { kind string required true max_length 200 }
+}
+
+shape "service_create" {
+  additional_properties false
+  prop "id"    { kind string required true min_length 2 max_length 40 pattern "^svc-[a-z0-9._-]+$" }
+  prop "name"  { kind string required true max_length 80 }
+  prop "roles" { kind string required true max_length 200 }
+}
+
+shape "user_update" {
+  additional_properties false
+  prop "name"   { kind string required true max_length 80 }
+  prop "email"  { kind string required true max_length 120 }
+  prop "roles"  { kind string required true max_length 200 }
+  prop "status" { kind string required true enum ["active", "disabled", "pending"] }
+}
+
+shape "password_reset" {
+  additional_properties false
+  prop "password" { kind string required true sensitive true min_length 12 max_length 200 }
+  prop "confirm"  { kind string required true sensitive true max_length 200 }
+}
+
+shape "password_change" {
+  additional_properties false
+  prop "current"  { kind string required true sensitive true max_length 200 }
+  prop "password" { kind string required true sensitive true min_length 12 max_length 200 }
+  prop "confirm"  { kind string required true sensitive true max_length 200 }
+}
+
+shape "key_create" {
+  additional_properties false
+  prop "name" { kind string required true max_length 80 }
+}
+
+intent "users.list" {
+  response "rows"
+  node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "users.manage" } }
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [gate] provides [rows]
+    config { statement "SELECT u.id, u.name, u.email, u.roles, u.status, u.kind, u.created_ms, u.last_login_ms, (SELECT COUNT(*) FROM api_keys k WHERE k.user_id = u.id AND k.revoked = 0) AS keys FROM users u ORDER BY u.kind, u.id" }
+  }
+}
+
+intent "users.create" {
+  description "Create a person who can sign in"
+  response "out"
+  input_schema "user_create"
+  node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "users.manage" } }
+  node "same" { uses "validate.expression" kind pure requires [input] provides [same] config { expression "input.password == input.confirm" message "The passwords do not match." } }
+  node "policy" { uses "validate.expression" kind pure requires [input] provides [policy] config { expression "input.password matches '[A-Za-z]' and input.password matches '[0-9]'" message "The password needs at least one letter and one digit." } }
+  node "hash" { uses "auth.password_hash" kind pure requires [gate, input, same, policy] provides [hash] config { value_fact "input.password" } }
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
+  node "insert" {
+    uses "database.exec" resource "db" kind effect requires [input, hash, now_ms] provides [inserted]
+    config { statement "INSERT INTO users (id, name, email, password_hash, roles, kind, created_ms) VALUES ($1, $2, LOWER($3), $4, $5, 'human', $6)" args [input.id, input.name, input.email, hash, input.roles, now_ms] }
+  }
+  node "detail" { uses "expression" kind pure requires [input] provides [detail] config { expression "input.id + ' with roles ' + input.roles" } }
+  node "note" { uses "etl.note" resource "flow" kind effect requires [inserted, detail] provides [noted] config { permission "users.manage" action "user.create" detail_fact "detail" } }
+  node "out" { uses "data.transform" kind pure requires [input, noted] provides [out] config { data { extract { id "input.id" created "true" } pick ["id", "created"] } } }
+}
+route "users.create" { method POST path "/ui/access/users" intent "users.create" session "sessions" auth "session_auth" status 201 cache_control "no-store" }
+
+intent "users.create_service" {
+  description "Create a service account; it has no password and signs in with API keys"
+  response "out"
+  input_schema "service_create"
+  node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "users.manage" } }
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
+  node "insert" {
+    uses "database.exec" resource "db" kind effect requires [gate, input, now_ms] provides [inserted]
+    config { statement "INSERT INTO users (id, name, email, password_hash, roles, kind, created_ms) VALUES ($1, $2, '', '!', $3, 'service', $4)" args [input.id, input.name, input.roles, now_ms] }
+  }
+  node "detail" { uses "expression" kind pure requires [input] provides [detail] config { expression "input.id + ' with roles ' + input.roles" } }
+  node "note" { uses "etl.note" resource "flow" kind effect requires [inserted, detail] provides [noted] config { permission "users.manage" action "service.create" detail_fact "detail" } }
+  node "out" { uses "data.transform" kind pure requires [input, noted] provides [out] config { data { extract { id "input.id" created "true" } pick ["id", "created"] } } }
+}
+route "users.create_service" { method POST path "/ui/access/services" intent "users.create_service" session "sessions" auth "session_auth" status 201 cache_control "no-store" }
+
+# You cannot disable yourself or take the administrator role from yourself.
+intent "users.update" {
+  response "out"
+  input_schema "user_update"
+  node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "users.manage" } }
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "who" { uses "expression" kind pure provides [who] config { expression "principal.id" } }
+  node "update" {
+    uses "database.exec" resource "db" kind effect requires [gate, input, id, who] provides [updated]
+    config {
+      statement "UPDATE users SET name = $1, email = CASE WHEN kind = 'service' THEN '' ELSE LOWER($2) END, roles = $3, status = $4 WHERE id = $5 AND ($5 <> $6 OR ($4 = 'active' AND ($3 LIKE '%admin%' OR roles NOT LIKE '%admin%')))"
+      args [input.name, input.email, input.roles, input.status, id, who]
+      require_affected true
+      not_found_message "no such user, or you tried to disable yourself or remove your own administrator role"
+    }
+  }
+  node "detail" { uses "expression" kind pure requires [id, input] provides [detail] config { expression "id + ': roles ' + input.roles + ', ' + input.status" } }
+  node "note" { uses "etl.note" resource "flow" kind effect requires [updated, detail] provides [noted] config { permission "users.manage" action "user.update" detail_fact "detail" } }
+  node "out" { uses "data.transform" kind pure requires [id, noted] provides [out] config { data { extract { id "id" updated "true" } pick ["id", "updated"] } } }
+}
+route "users.update" { method PUT path "/ui/access/users/:id" intent "users.update" session "sessions" auth "session_auth" cache_control "no-store" }
+
+intent "users.password" {
+  description "Set another person's password"
+  response "out"
+  input_schema "password_reset"
+  node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "users.manage" } }
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "same" { uses "validate.expression" kind pure requires [input] provides [same] config { expression "input.password == input.confirm" message "The passwords do not match." } }
+  node "policy" { uses "validate.expression" kind pure requires [input] provides [policy] config { expression "input.password matches '[A-Za-z]' and input.password matches '[0-9]'" message "The password needs at least one letter and one digit." } }
+  node "hash" { uses "auth.password_hash" kind pure requires [gate, input, same, policy] provides [hash] config { value_fact "input.password" } }
+  node "set" {
+    uses "database.exec" resource "db" kind effect requires [id, hash] provides [set]
+    config { statement "UPDATE users SET password_hash = $1 WHERE id = $2 AND kind = 'human'" args [hash, id] require_affected true not_found_message "no such person" }
+  }
+  node "note" { uses "etl.note" resource "flow" kind effect requires [set, id] provides [noted] config { permission "users.manage" action "user.password_reset" detail_fact "id" } }
+  node "out" { uses "data.transform" kind pure requires [id, noted] provides [out] config { data { extract { id "id" updated "true" } pick ["id", "updated"] } } }
+}
+route "users.password" { method PUT path "/ui/access/users/:id/password" intent "users.password" session "sessions" auth "session_auth" cache_control "no-store" }
+
+# Anyone signed in may change their own password, with the current one.
+intent "me.password" {
+  response "out"
+  input_schema "password_change"
+  node "me" { uses "expression" kind pure provides [uid] config { expression "principal.id" } }
+  node "find" { uses "database.query" resource "db" kind read requires [uid] provides [found] config { statement "SELECT password_hash FROM users WHERE id = $1 AND kind = 'human' AND status = 'active'" args [uid] require_rows true not_found_message "no such person" } }
+  node "row" { uses "data.first" requires [found] provides [row] config { source_fact "found" } }
+  node "check" { uses "auth.password_verify" kind pure requires [input, row] provides [verified] config { password_fact "input.current" hash_fact "row.password_hash" } }
+  node "same" { uses "validate.expression" kind pure requires [input] provides [same] config { expression "input.password == input.confirm" message "The new passwords do not match." } }
+  node "fresh" { uses "validate.expression" kind pure requires [input] provides [fresh] config { expression "input.password != input.current" message "The new password must be different from the current one." } }
+  node "policy" { uses "validate.expression" kind pure requires [input] provides [policy] config { expression "input.password matches '[A-Za-z]' and input.password matches '[0-9]'" message "The password needs at least one letter and one digit." } }
+  node "hash" { uses "auth.password_hash" kind pure requires [verified, input, same, fresh, policy] provides [hash] config { value_fact "input.password" } }
+  node "set" { uses "database.exec" resource "db" kind effect requires [uid, hash] provides [set] config { statement "UPDATE users SET password_hash = $1 WHERE id = $2" args [hash, uid] require_affected true } }
+  node "note" { uses "etl.note" resource "flow" kind effect requires [set, uid] provides [noted] config { action "user.password_change" detail_fact "uid" } }
+  node "out" { uses "data.transform" kind pure requires [noted] provides [out] config { data { extract { updated "true" } pick ["updated"] } } }
+}
+route "me.password" { method PUT path "/ui/me/password" intent "me.password" session "sessions" auth "session_auth" cache_control "no-store" }
+
+# ---- reset links and the development mailbox -----------------------------------
+
+shape "empty_input" { additional_properties false }
+
+intent "users.reset_link" {
+  description "Make a one-time password reset link for a person, to hand to them"
+  response "out"
+  node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "users.manage" } }
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "who" { uses "expression" kind pure provides [who] config { expression "principal.id" } }
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
+  node "base" { uses "constant" kind pure provides [base] config { value { origin env("ETL_ORIGIN", "http://127.0.0.1:8080") } } }
+  node "issued" { uses "auth.reset_token" kind pure requires [gate] provides [issued] config { ttl "30m" } }
+  node "expires" { uses "expression" kind pure requires [now_ms] provides [expires_ms] config { expression "now_ms + 1800000" } }
+  node "store" {
+    uses "database.exec" resource "db" kind effect requires [id, issued, who, now_ms, expires_ms] provides [stored]
+    config {
+      statement "INSERT INTO password_resets (token_hash, user_id, expires_ms, used, created_ms, created_by) SELECT $1, id, $3, 0, $4, $5 FROM users WHERE id = $2 AND status = 'active' AND kind = 'human'"
+      args [issued.hash, id, expires_ms, now_ms, who]
+      require_affected true
+      not_found_message "no such active person"
+    }
+  }
+  node "link" { uses "expression" kind pure requires [base, issued] provides [link] config { expression "base.origin + '/reset?token=' + issued.token" } }
+  node "note" { uses "etl.note" resource "flow" kind effect requires [stored, id] provides [noted] config { permission "users.manage" action "user.reset_link" detail_fact "id" } }
+  node "out" {
+    uses "data.transform" kind pure requires [id, link, noted] provides [out]
+    config { data { extract { user "id" link "link" } set { note "Give this link to the person. It works once and expires in 30 minutes." } pick ["user", "link", "note"] } }
+  }
+}
+route "users.reset_link" { method POST path "/ui/access/users/:id/reset-link" intent "users.reset_link" session "sessions" auth "session_auth" cache_control "no-store" }
+
+intent "mailbox.list" {
+  description "Messages the system has queued to send (a development mailbox; wire an email sender to deliver them)"
+  response "rows"
+  node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "users.manage" } }
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [gate] provides [rows]
+    config { statement "SELECT id, to_email, subject, body, created_ms FROM mail_outbox ORDER BY created_ms DESC LIMIT 30" }
+  }
+}
+route "mailbox.list" { method GET path "/ui/access/mailbox" intent "mailbox.list" session "sessions" auth "session_auth" cache_control "no-store" }
+
+# ---- API keys ----------------------------------------------------------------
+
+intent "keys.list" {
+  response "rows"
+  node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "users.manage" } }
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "rows" {
+    uses "database.query" resource "db" kind read requires [gate, id] provides [rows]
+    config { statement "SELECT key_hash AS id, name, prefix, created_ms, created_by, revoked FROM api_keys WHERE user_id = $1 ORDER BY created_ms DESC" args [id] }
+  }
+}
+route "keys.list" { method GET path "/ui/access/users/:id/keys" intent "keys.list" session "sessions" auth "session_auth" cache_control "no-store" }
+
+intent "keys.create" {
+  description "Issue an API key for a user or service account. The key is shown once."
+  response "out"
+  input_schema "key_create"
+  node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "users.manage" } }
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "who" { uses "expression" kind pure provides [who] config { expression "principal.id" } }
+  node "now" { uses "expression" kind pure provides [now_ms] config { expression "unix_millis()" } }
+  node "issued" { uses "auth.api_key_issue" kind pure requires [gate] provides [issued] config { prefix "etl" } }
+  node "store" {
+    uses "database.exec" resource "db" kind effect requires [id, input, issued, who, now_ms] provides [stored]
+    config {
+      statement "INSERT INTO api_keys (key_hash, user_id, name, prefix, created_ms, created_by) SELECT $1, id, $3, $4, $5, $6 FROM users WHERE id = $2 AND status = 'active'"
+      args [issued.hash, id, input.name, issued.prefix, now_ms, who]
+      require_affected true
+      not_found_message "no such active user"
+    }
+  }
+  node "detail" { uses "expression" kind pure requires [id, input] provides [detail] config { expression "id + ': ' + input.name" } }
+  node "note" { uses "etl.note" resource "flow" kind effect requires [stored, detail] provides [noted] config { permission "users.manage" action "key.create" detail_fact "detail" } }
+  node "out" {
+    uses "data.transform" kind pure requires [id, issued, noted] provides [out]
+    config { data { extract { user "id" api_key "issued.key" } set { note "Copy this key now: it cannot be shown again." } pick ["user", "api_key", "note"] } }
+  }
+}
+route "keys.create" { method POST path "/ui/access/users/:id/keys" intent "keys.create" session "sessions" auth "session_auth" status 201 cache_control "no-store" }
+
+intent "keys.revoke" {
+  response "out"
+  node "gate" { uses "etl.require" resource "flow" kind read provides [gate] config { permission "users.manage" } }
+  node "key" { uses "request.param" kind pure provides [key] config { name "key" } }
+  node "revoke" {
+    uses "database.exec" resource "db" kind effect requires [gate, key] provides [revoked]
+    config { statement "UPDATE api_keys SET revoked = 1 WHERE key_hash = $1 AND revoked = 0" args [key] require_affected true not_found_message "no such active key" }
+  }
+  node "note" { uses "etl.note" resource "flow" kind effect requires [revoked, key] provides [noted] config { permission "users.manage" action "key.revoke" detail_fact "key" } }
+  node "out" { uses "data.transform" kind pure requires [noted] provides [out] config { data { extract { revoked "true" } pick ["revoked"] } } }
+}
+route "keys.revoke" { method DELETE path "/ui/access/keys/:key" intent "keys.revoke" session "sessions" auth "session_auth" cache_control "no-store" }
+
+# ---- roles ---------------------------------------------------------------------
+
+intent "access.roles" { response "r" node "r" { uses "etl.roles" resource "flow" provides [r] } }
+intent "access.permissions" { response "r" node "r" { uses "etl.permissions" resource "flow" provides [r] } }
+intent "access.role_put" { response "r" node "r" { uses "etl.role_put" resource "flow" kind effect requires [input] provides [r] } }
+
+# A role that people still hold cannot be deleted.
+intent "access.role_delete" {
+  response "r"
+  node "id" { uses "request.param" kind pure provides [id] config { name "id" } }
+  node "users" {
+    uses "database.query" resource "db" kind read requires [id] provides [holders]
+    config { statement "SELECT id FROM users WHERE ',' || roles || ',' LIKE '%,' || $1 || ',%'" args [id] }
+  }
+  node "unused" { uses "validate.expression" kind pure requires [holders] provides [unused] config { expression "len(holders) == 0" message "People still hold this role. Change their roles first." } }
+  node "r" { uses "etl.role_delete" resource "flow" kind effect requires [unused] provides [r] }
+}
+
+route_group "ui_access" {
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+
+  route "access.roles"       { method GET    path "/ui/access/roles"       intent "access.roles" }
+  route "access.permissions" { method GET    path "/ui/access/permissions" intent "access.permissions" }
+  route "access.role_put"    { method PUT    path "/ui/access/roles"       intent "access.role_put" }
+  route "access.role_delete" { method DELETE path "/ui/access/roles/:id"   intent "access.role_delete" }
+  route "access.users"       { method GET    path "/ui/access/users"       intent "users.list" }
+}

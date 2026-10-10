@@ -20,7 +20,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/oarkflow/authz v0.0.6 // indirect
-	github.com/oarkflow/bcl v0.0.36 // indirect
+	github.com/oarkflow/bcl v0.0.37 // indirect
 	github.com/oarkflow/broker v0.0.0 // indirect
 	github.com/oarkflow/convert v0.0.6 // indirect
 	github.com/oarkflow/fh v0.0.26 // indirect

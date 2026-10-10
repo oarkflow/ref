@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# Monitoring and observability.
+#
+#   /ui/etl/monitor   throughput, per-source health, stage timings, queue, alerts
+#   /ui/etl/alerts    open alerts, most severe first
+#   /ui/etl/logs      recent structured logs, filterable by batch and trace
+#   /ui/etl/health    every health check (monitor.read)
+#   /ui/etl/counters  the durable counters: stored in the database, so they survive restarts
+#   /healthz          overall status, no sign-in, for load balancers (503 when down)
+#   /metrics          Prometheus text, needs an API key with monitor.read
+# ---------------------------------------------------------------------------
+
+intent "etl.monitor" { response "r" node "r" { uses "etl.monitor" resource "flow" provides [r] } }
+intent "etl.alerts"  { response "r" node "r" { uses "etl.alerts"  resource "flow" provides [r] } }
+intent "etl.logs"    { response "r" node "r" { uses "etl.logs"    resource "flow" provides [r] } }
+intent "etl.counters" { response "r" node "r" { uses "etl.counters" resource "flow" provides [r] } }
+intent "etl.health"  { response "r" node "r" { uses "etl.health"  resource "flow" provides [r] } }
+intent "etl.metrics" { response "r" node "r" { uses "etl.metrics" resource "flow" provides [r] } }
+
+route_group "ui_observe" {
+  session "sessions"
+  auth "session_auth"
+  cache_control "no-store"
+
+  route "ui.monitor" { method GET path "/ui/etl/monitor" intent "etl.monitor" }
+  route "ui.alerts"  { method GET path "/ui/etl/alerts"  intent "etl.alerts" }
+  route "ui.logs"    { method GET path "/ui/etl/logs"    intent "etl.logs" }
+  route "ui.health"  { method GET path "/ui/etl/health"  intent "etl.health" }
+  route "ui.counters" { method GET path "/ui/etl/counters" intent "etl.counters" }
+}
+
+route "healthz" { method GET path "/healthz" intent "etl.health" allow_anonymous true cache_control "no-store" }
+route "metrics" { method GET path "/metrics" intent "etl.metrics" auth "key_auth" cache_control "no-store" }
