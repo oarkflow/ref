@@ -40,6 +40,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 
+	"github.com/oarkflow/ref/contrib/aegis"
 	"github.com/oarkflow/ref/platform"
 )
 
@@ -150,6 +151,7 @@ type App struct {
 
 // Start compiles the application and starts serving, returning once it listens.
 func Start(ctx context.Context, opts Options) (*App, error) {
+	aegis.Register()
 	if err := opts.defaults(); err != nil {
 		return nil, err
 	}

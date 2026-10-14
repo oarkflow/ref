@@ -11,7 +11,18 @@
 dir  ?= $(DIR)
 addr ?=
 
-.PHONY: run build test tidy wasm wasm-docker wasm-trusted
+.PHONY: run build test tidy wasm wasm-docker wasm-trusted aegis aegis-run
+
+aegis:
+	@mkdir -p bin
+	go build -o bin/aegis ./aegis/cmd/aegis
+
+# Run any REF example inside the Aegis Secure Platform:
+#   make aegis-run dir=./examples/boilerplate
+#   make aegis-run dir=./examples/rules addr=:9000
+aegis-run: aegis
+	@test -n "$(dir)" || { echo "usage: make aegis-run dir=./examples/boilerplate [addr=:8080]"; exit 2; }
+	./bin/aegis run $(if $(addr),-addr $(addr)) "$(abspath $(dir))"
 
 run:
 	@test -n "$(dir)" || { echo "usage: make run dir=./examples/smsgateway [addr=:8080]"; exit 2; }

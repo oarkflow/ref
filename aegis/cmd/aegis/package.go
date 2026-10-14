@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -24,6 +26,7 @@ func runPackage(args []string, stdout, stderr io.Writer) error {
 
 	var (
 		moduleFlag string
+		dirFlag    string
 		keyFlag    string
 		encKeyFlag string
 		outFlag    string
@@ -34,6 +37,7 @@ func runPackage(args []string, stdout, stderr io.Writer) error {
 	)
 
 	flags.StringVar(&moduleFlag, "module", "", "Path to input Aegis IR binary module (.air)")
+	flags.StringVar(&dirFlag, "dir", "", "Path to application directory (e.g. ./examples/smsgateway)")
 	flags.StringVar(&keyFlag, "key", "", "Path to Ed25519 signing key PEM file")
 	flags.StringVar(&encKeyFlag, "enckey", "", "AES-256 package encryption key (hex, key file, or passphrase)")
 	flags.StringVar(&outFlag, "out", "", "Path to output Aegis package container (.apkg)")
@@ -46,8 +50,8 @@ func runPackage(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	if moduleFlag == "" {
-		return errors.New("aegis: package: -module is required")
+	if moduleFlag == "" && dirFlag == "" {
+		return errors.New("aegis: package: either -module (IR file) or -dir (application directory) is required")
 	}
 	if keyFlag == "" {
 		return errors.New("aegis: package: -key is required")
@@ -59,17 +63,7 @@ func runPackage(args []string, stdout, stderr io.Writer) error {
 		return errors.New("aegis: package: -out is required")
 	}
 
-	// 1. Read and decode IR module
-	modBytes, err := os.ReadFile(moduleFlag)
-	if err != nil {
-		return fmt.Errorf("aegis: package: failed to read module file %q: %w", moduleFlag, err)
-	}
-	module, err := ir.Decode(modBytes)
-	if err != nil {
-		return fmt.Errorf("aegis: package: failed to decode module %q: %w", moduleFlag, err)
-	}
-
-	// 2. Parse signing key and build key set
+	// 1. Parse signing key and build key set
 	signingKey, err := parsePrivateKey(keyFlag)
 	if err != nil {
 		return fmt.Errorf("aegis: package: failed to load signing key: %w", err)
@@ -79,19 +73,19 @@ func runPackage(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("aegis: package: failed to create key set: %w", err)
 	}
 
-	// 3. Resolve 32-byte encryption key
+	// 2. Resolve 32-byte encryption key
 	encKey, err := parseEncryptionKey(encKeyFlag)
 	if err != nil {
 		return fmt.Errorf("aegis: package: invalid encryption key: %w", err)
 	}
 
-	// 4. Create package builder
+	// 3. Create package builder
 	builder, err := pkg.NewBuilder(appIDFlag, verFlag, keySet, encKey)
 	if err != nil {
 		return fmt.Errorf("aegis: package: failed to create builder: %w", err)
 	}
 
-	// 5. Apply optional policy
+	// 4. Apply optional policy
 	if policyFlag != "" {
 		pol, err := policy.ParseFile(policyFlag)
 		if err != nil {
@@ -107,7 +101,7 @@ func runPackage(args []string, stdout, stderr io.Writer) error {
 		builder.SetPolicy(execPolicy)
 	}
 
-	// 6. Apply optional required capabilities
+	// 5. Apply optional required capabilities
 	if capFlag != "" {
 		var caps []string
 		for _, c := range strings.Split(capFlag, ",") {
@@ -119,10 +113,37 @@ func runPackage(args []string, stdout, stderr io.Writer) error {
 		builder.SetRequiredCapabilities(caps)
 	}
 
-	// 7. Build sealed package
-	sealedPkg, err := builder.Build(module)
-	if err != nil {
-		return fmt.Errorf("aegis: package: failed to build package: %w", err)
+	var sealedPkg *pkg.Package
+	if dirFlag != "" {
+		// Package an entire REF application directory into an encrypted container
+		absDir, err := filepath.Abs(dirFlag)
+		if err != nil {
+			return fmt.Errorf("aegis: package: failed to resolve directory: %w", err)
+		}
+		zipBytes, err := zipAppDir(absDir)
+		if err != nil {
+			return fmt.Errorf("aegis: package: failed to archive directory %q: %w", dirFlag, err)
+		}
+		sp, err := builder.BuildPayload(zipBytes, "", ir.Version)
+		if err != nil {
+			return fmt.Errorf("aegis: package: failed to build application package: %w", err)
+		}
+		sealedPkg = sp
+	} else {
+		// Package an Aegis IR module
+		modBytes, err := os.ReadFile(moduleFlag)
+		if err != nil {
+			return fmt.Errorf("aegis: package: failed to read module file %q: %w", moduleFlag, err)
+		}
+		module, err := ir.Decode(modBytes)
+		if err != nil {
+			return fmt.Errorf("aegis: package: failed to decode module %q: %w", moduleFlag, err)
+		}
+		sp, err := builder.Build(module)
+		if err != nil {
+			return fmt.Errorf("aegis: package: failed to build module package: %w", err)
+		}
+		sealedPkg = sp
 	}
 
 	// 8. Marshal package into binary container format
@@ -226,4 +247,55 @@ func parseEncryptionKey(input string) ([]byte, error) {
 	// 3. Otherwise treat input as a passphrase and derive a 32-byte key via SHA-256
 	hash := sha256.Sum256([]byte(trimmed))
 	return hash[:], nil
+}
+
+// zipAppDir recursively packages an application directory into a ZIP archive byte slice.
+func zipAppDir(dir string) ([]byte, error) {
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		// Skip temporary files, git repos, and local runtime databases
+		if strings.HasPrefix(rel, ".git") || strings.HasPrefix(rel, ".data") {
+			return nil
+		}
+
+		header, err := zip.FileInfoHeader(info)
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(rel)
+		header.Method = zip.Deflate
+
+		w, err := zw.CreateHeader(header)
+		if err != nil {
+			return err
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+
+		_, err = io.Copy(w, f)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

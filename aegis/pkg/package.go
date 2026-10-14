@@ -149,6 +149,101 @@ func (b *Builder) SetPackageID(id string) {
 	b.packageID = id
 }
 
+// BuildPayload encrypts and signs an arbitrary payload into a sealed Package container.
+func (b *Builder) BuildPayload(plaintext []byte, buildID string, irVersion uint32) (*Package, error) {
+	if len(plaintext) == 0 {
+		return nil, errors.New("pkg: payload cannot be empty")
+	}
+
+	// 1. SHA-256 hash the plaintext
+	plaintextHash := SHA256Hex(plaintext)
+
+	// 2. Generate random 12-byte nonce
+	nonce := make([]byte, 12)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("pkg: failed to generate nonce: %w", err)
+	}
+
+	// Package ID & Build ID
+	pkgID := b.packageID
+	if pkgID == "" {
+		id, err := newUUID()
+		if err != nil {
+			return nil, fmt.Errorf("pkg: failed to generate package ID: %w", err)
+		}
+		pkgID = id
+	}
+	if buildID == "" {
+		bid, err := newUUID()
+		if err != nil {
+			return nil, err
+		}
+		buildID = bid
+	}
+
+	// 3. AES-256-GCM encrypt with AAD = PackageID + "|" + BuildID
+	block, err := aes.NewCipher(b.encryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("pkg: failed to initialize cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("pkg: failed to initialize GCM: %w", err)
+	}
+	aad := []byte(pkgID + "|" + buildID)
+	ciphertext := gcm.Seal(nil, nonce, plaintext, aad)
+
+	// 4. Prepend nonce to ciphertext (nonce || ciphertext)
+	payload := make([]byte, len(nonce)+len(ciphertext))
+	copy(payload, nonce)
+	copy(payload[len(nonce):], ciphertext)
+
+	// 5. SHA-256 hash the encrypted payload
+	payloadHash := SHA256Hex(payload)
+
+	// 6. Build Manifest with all fields
+	policy := b.policy
+	if policy.Default == "" {
+		policy.Default = LevelStandard
+	}
+
+	manifest := Manifest{
+		PackageID:            pkgID,
+		ApplicationID:        b.applicationID,
+		BuildID:              buildID,
+		Version:              b.version,
+		CreatedAt:            time.Now().UTC().Truncate(time.Second),
+		PayloadHash:          payloadHash,
+		PlaintextHash:        plaintextHash,
+		HashAlgorithm:        AlgorithmSHA256,
+		MinRuntimeVersion:    b.runtimeVersion,
+		IRVersion:            irVersion,
+		RequiredCapabilities: b.requiredCapabilities,
+		ExecutionPolicy:      policy,
+		EncryptionAlgorithm:  AlgorithmAES256GCM,
+		KeyDerivation:        KeyDerivationHKDF,
+	}
+
+	// 7. Canonicalize the manifest JSON
+	manifestBytes, err := signing.Canonical(manifest)
+	if err != nil {
+		return nil, fmt.Errorf("pkg: failed to canonicalize manifest: %w", err)
+	}
+
+	// 8. Sign the canonical manifest using the KeySet
+	sig, err := b.keySet.Sign(manifestBytes)
+	if err != nil {
+		return nil, fmt.Errorf("pkg: failed to sign manifest: %w", err)
+	}
+
+	// 9. Return the Package
+	return &Package{
+		Manifest:  manifest,
+		Payload:   payload,
+		Signature: sig,
+	}, nil
+}
+
 // Build validates, serializes, encrypts, and signs an IR module into a sealed Package.
 func (b *Builder) Build(module *ir.Module) (*Package, error) {
 	if module == nil {
@@ -166,87 +261,7 @@ func (b *Builder) Build(module *ir.Module) (*Package, error) {
 		return nil, fmt.Errorf("pkg: failed to encode module: %w", err)
 	}
 
-	// 3. SHA-256 hash the plaintext
-	plaintextHash := SHA256Hex(plaintext)
-
-	// 4. Generate random 12-byte nonce
-	nonce := make([]byte, 12)
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, fmt.Errorf("pkg: failed to generate nonce: %w", err)
-	}
-
-	// Package ID & Build ID
-	pkgID := b.packageID
-	if pkgID == "" {
-		id, err := newUUID()
-		if err != nil {
-			return nil, fmt.Errorf("pkg: failed to generate package ID: %w", err)
-		}
-		pkgID = id
-	}
-	buildID := hex.EncodeToString(module.BuildID[:])
-
-	// 5. AES-256-GCM encrypt with AAD = PackageID + "|" + BuildID (use hex of module.BuildID)
-	block, err := aes.NewCipher(b.encryptionKey)
-	if err != nil {
-		return nil, fmt.Errorf("pkg: failed to initialize cipher: %w", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("pkg: failed to initialize GCM: %w", err)
-	}
-	aad := []byte(pkgID + "|" + buildID)
-	ciphertext := gcm.Seal(nil, nonce, plaintext, aad)
-
-	// 6. Prepend nonce to ciphertext (nonce || ciphertext)
-	payload := make([]byte, len(nonce)+len(ciphertext))
-	copy(payload, nonce)
-	copy(payload[len(nonce):], ciphertext)
-
-	// 7. SHA-256 hash the encrypted payload
-	payloadHash := SHA256Hex(payload)
-
-	// 8. Build Manifest with all fields
-	policy := b.policy
-	if policy.Default == "" {
-		policy.Default = LevelStandard
-	}
-
-	manifest := Manifest{
-		PackageID:            pkgID,
-		ApplicationID:        b.applicationID,
-		BuildID:              buildID,
-		Version:              b.version,
-		CreatedAt:            time.Now().UTC().Truncate(time.Second),
-		PayloadHash:          payloadHash,
-		PlaintextHash:        plaintextHash,
-		HashAlgorithm:        AlgorithmSHA256,
-		MinRuntimeVersion:    b.runtimeVersion,
-		IRVersion:            module.Version,
-		RequiredCapabilities: b.requiredCapabilities,
-		ExecutionPolicy:      policy,
-		EncryptionAlgorithm:  AlgorithmAES256GCM,
-		KeyDerivation:        KeyDerivationHKDF,
-	}
-
-	// 9. Canonicalize the manifest JSON (use signing.Canonical or json.Marshal with sorted keys)
-	manifestBytes, err := signing.Canonical(manifest)
-	if err != nil {
-		return nil, fmt.Errorf("pkg: failed to canonicalize manifest: %w", err)
-	}
-
-	// 10. Sign the canonical manifest using the KeySet
-	sig, err := b.keySet.Sign(manifestBytes)
-	if err != nil {
-		return nil, fmt.Errorf("pkg: failed to sign manifest: %w", err)
-	}
-
-	// 11. Return the Package
-	return &Package{
-		Manifest:  manifest,
-		Payload:   payload,
-		Signature: sig,
-	}, nil
+	return b.BuildPayload(plaintext, hex.EncodeToString(module.BuildID[:]), module.Version)
 }
 
 // Reader verifies and decrypts packages using trusted verification keys.

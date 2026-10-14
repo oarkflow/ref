@@ -66,7 +66,8 @@ Commands:
   compile  Compile Go source functions into an Aegis Intermediate Representation (.air)
            aegis compile -src <source.go> -entry <func1,func2> -out <module.air>
 
-  package  Encrypt, seal, and sign an IR module into a protected package (.apkg)
+  package  Encrypt, seal, and sign an IR module or REF application directory into a protected package (.apkg)
+           aegis package -dir <appDir> -key <signing.key> -enckey <hex/pass> -out <app.apkg>
            aegis package -module <module.air> -key <signing.key> -enckey <hex/pass> -out <release.apkg>
 
   inspect  Inspect metadata, integrity hashes, and policies inside an Aegis package
@@ -75,7 +76,9 @@ Commands:
   verify   Cryptographically verify an Aegis package signature against a trusted public key
            aegis verify -pkg <release.apkg> -pubkey <pubkey.pem|jwks>
 
-  run      Decrypt and execute an exported function from a protected package inside the VM
+  run      Run a REF application or execute an exported function in the Aegis Secure Platform
+           aegis run <appDir> [-addr :8080]
+           aegis run <app.apkg> -key <enckey-hex> [-addr :8080]
            aegis run -pkg <release.apkg> -key <enckey-hex> -func <funcName> -args <1,2,3>
 
   lab      Benchmark reverse-engineering recovery resistance and instruction metrics

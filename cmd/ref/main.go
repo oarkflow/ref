@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/oarkflow/ref/contrib/aegis"
 	"github.com/oarkflow/ref/contrib/messaging"
 	"github.com/oarkflow/ref/serve"
 )
@@ -32,6 +33,7 @@ func main() {
 		os.Exit(2)
 	}
 	messaging.Register()
+	aegis.Register()
 	if err := serve.Run(context.Background(), serve.Options{Dir: flag.Arg(0), Addr: *addr, Env: *env}); err != nil {
 		fmt.Fprintln(os.Stderr, "ref:", err)
 		os.Exit(1)
