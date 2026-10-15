@@ -73,6 +73,9 @@ func (p *PipelineCases) now() time.Time {
 // document's pipeline blocks under. It is not something an author writes.
 const pipelineDefinitionsKey = "__pipelines"
 
+// scriptIDsKey carries the declared script ids so script hooks can be checked.
+const scriptIDsKey = "__script_ids"
+
 func registerPipelineResources(r *Registry) {
 	mustResource(r, "pipeline.cases", ResourceFactoryFunc(openPipelineCases), ResourceKindInfo{
 		Family:   "workflow",
@@ -104,7 +107,7 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 	if err := rejectUnknownConfig("pipeline.cases", spec.Config,
 		"pipelines", "database", "table_prefix", "migrate", "signing_secret", "signer", "seal_secret", "org_resource", "allow_anonymous",
 		"event_max_attempts", "event_retry_base", "notify_channels", "storage", "storage_prefix", "max_upload_bytes", "confirm_ttl", "workspace_roles_claim",
-		pipelineDefinitionsKey); err != nil {
+		pipelineDefinitionsKey, scriptIDsKey); err != nil {
 		return nil, nil, err
 	}
 	defs, _ := spec.Config[pipelineDefinitionsKey].([]pipeline.Definition)
@@ -184,6 +187,12 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 		for _, w := range where {
 			if _, err := CompileExpr(compiled.Expressions()[w]); err != nil {
 				return nil, nil, fmt.Errorf("pipeline.cases %q: pipeline %q: %s: %w", spec.Name, name, w, err)
+			}
+		}
+		scriptIDs, _ := spec.Config[scriptIDsKey].(map[string]bool)
+		for _, hook := range scriptHooks(&def) {
+			if err := checkScriptHook(scriptIDs, hook); err != nil {
+				return nil, nil, fmt.Errorf("pipeline.cases %q: pipeline %q: %w", spec.Name, name, err)
 			}
 		}
 		engine := pipeline.NewEngine(compiled)

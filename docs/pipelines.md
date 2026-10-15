@@ -197,7 +197,7 @@ The token is HMAC-signed with the resource's `signing_secret` (or a per-process 
 | `assign` | `path { value "expr" }` sets data when the stage completes. |
 | `certificate` | Issues a certificate when the stage completes. |
 | `due` | The SLA (e.g. `"72h"`). Queue rows carry `due_at` and `overdue`. |
-| `on_enter`, `on_complete` | Intents run as hooks. A failing hook aborts the operation, so nothing is saved. |
+| `on_enter`, `on_complete` | Intents (or `script:<id>`, see [Scripts](#scripts)) run as hooks. A failing hook aborts the operation, so nothing is saved. |
 | `review` blocks | Human-in-the-loop review modes: `diff`, `gate`, `triage` and `sampling`. See [Review modes](#review-modes). |
 
 Stage statuses are `pending`, `active`, `returned`, `completed`, `rejected` and `skipped`. Case statuses are `draft`, `in_progress`, `returned`, `approved`, `rejected`, `withdrawn` and `completed`.
@@ -538,3 +538,45 @@ review, err := e.Preview(ctx, c, applicant, "application", "submit", in)   // co
 ```
 
 Every operation takes a case and returns a new one. The input case is never mutated, so a failed operation leaves nothing half-applied. Persist the result with a `pipeline.Store`: `MemoryStore`, or `SQLStore` for PostgreSQL, MySQL or SQLite. Its conformance suite, the outbox included, runs on SQLite, PostgreSQL 16 and MariaDB 10.11 (the `mysql` dialect; MySQL 8 itself has not been run).
+
+## Scripts
+
+Declare each script once as a top-level `script` block, then refer to it by id wherever it is needed:
+
+```bcl
+script "approval_limit" {
+  description "Fails an approval over the facility limit"
+  file "scripts/approval_limit.spl"      # or: source "..."
+  timeout "1s"                           # optional; default 2s
+  max_steps 500000                       # optional; default 1,000,000
+  max_heap_mb 32                         # optional; heap growth allowed per run, default none
+}
+
+pipeline "claims" {
+  on "case.completed" { hook "script:completion_note" }
+  stage "review" {
+    on_enter "script:stamp"
+    node "limit" { kind automated  hook "script:approval_limit" }
+  }
+}
+```
+
+```spl
+// scripts/approval_limit.spl: the last expression is the result
+{"passed": data.amount <= 10000, "reason": "over the approval limit"}
+```
+
+Where a script id can be used:
+
+| Where | How |
+|---|---|
+| Stage `on_enter` / `on_complete` | `"script:<id>"`. A failing script aborts the operation. |
+| Event hook (`on "event" { hook ... }`) | `"script:<id>"`. Delivered through the outbox like an intent hook. |
+| Automated node | `hook "script:<id>"`. The node passes unless the result has `passed: false`; the result is stored on the node. |
+| Any intent | A node with `uses "script"` and `config { script "<id>" }`; `provides` takes the result, or an object split across several names. |
+
+A script block names exactly one of `source` or `file`. `file` is an `.spl` file in the application, read from the application files (including a sealed Aegis package), never from the host disk. A duplicate id, a missing file, a syntax error, or a hook naming an undeclared script stops startup.
+
+The script runs on [github.com/oarkflow/interpreter](https://github.com/oarkflow/interpreter). A hook script sees the hook input both whole as `input` and as variables: `kase` (the case; `case` is an SPL keyword), `data`, `stage`, `node`, `event`, plus `principal` and `tenant`. An intent node's script sees the node's facts and `principal`, `tenant`, `now`.
+
+Scripts are sandboxed: they can compute over their input and nothing else. Filesystem, network, exec, environment, database and dynamic imports are all denied, and each run is capped on time and steps, with string, array and hash size caps. `max_heap_mb` limits how far the process heap may grow during one run (measured from the heap at the start of the run). The heap is shared with concurrent requests, so it guards against a runaway script rather than accounting exactly; without it there is no heap limit. The interpreter's security policy is process-wide, so scripts run one at a time; keep them short.

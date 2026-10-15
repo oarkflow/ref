@@ -46,6 +46,7 @@ func registerBuiltins(r *Registry) {
 	registerRulesAdminActions(r)
 	registerSealActions(r)
 	registerDataExtraActions(r)
+	registerScriptActions(r)
 	registerTemplateActions(r)
 	registerSecurityActions(r)
 	registerOrgActions(r)

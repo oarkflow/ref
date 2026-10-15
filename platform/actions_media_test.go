@@ -307,4 +307,3 @@ func TestMediaActionsS3PresignAndValidation(t *testing.T) {
 		t.Fatalf("expected error for disallowed file type, got nil")
 	}
 }
-

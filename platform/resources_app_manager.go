@@ -161,14 +161,14 @@ func (s *appRuntimeStats) getLogs(limit int) []AppLogEvent {
 }
 
 type appManagerResource struct {
-	name      string
-	store     GenerationStore
-	apps      map[string]AppDef
-	history   map[string][]AppDef
-	stats     map[string]*appRuntimeStats
-	mu        sync.RWMutex
-	revSeq    atomic.Int64
-	platform  *Platform
+	name     string
+	store    GenerationStore
+	apps     map[string]AppDef
+	history  map[string][]AppDef
+	stats    map[string]*appRuntimeStats
+	mu       sync.RWMutex
+	revSeq   atomic.Int64
+	platform *Platform
 }
 
 var (

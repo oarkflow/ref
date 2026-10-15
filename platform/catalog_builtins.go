@@ -19,7 +19,7 @@ func registerNodeTypes(r *Registry) {
 		{Name: "action", Family: "compute", Summary: "Generic unit of work"},
 		{Name: "transform", Family: "compute", Summary: "Reshape a payload", DefaultAction: "data.transform"},
 		{Name: "validate", Family: "compute", Summary: "Structural or rule validation", DefaultAction: "validate.schema"},
-		{Name: "script", Family: "compute", Summary: "Evaluate a configured expression", DefaultAction: "expression"},
+		{Name: "script", Family: "compute", Summary: "Run a configured SPL script", DefaultAction: "script"},
 		{Name: "template", Family: "compute", Summary: "Render a text template", DefaultAction: "data.template"},
 		{Name: "constant", Family: "compute", Summary: "Publish a fixed value", DefaultAction: "constant"},
 		{Name: "custom", Family: "compute", Summary: "Host-registered action"},

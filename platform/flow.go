@@ -276,6 +276,12 @@ func (p *Platform) CallIntent(ctx context.Context, name string, input any, paren
 	if p == nil || p.Engine == nil {
 		return nil, unavailable("the platform is not running")
 	}
+	// "script:<path>.spl" runs an SPL file as the hook, no wrapping intent
+	// needed. This is how pipeline stage hooks, event hooks and automated
+	// nodes run scripts.
+	if path, ok := strings.CutPrefix(name, scriptHookPrefix); ok {
+		return p.callScript(ctx, path, input)
+	}
 	depth := 0
 	if parent != nil {
 		depth = parent.Depth

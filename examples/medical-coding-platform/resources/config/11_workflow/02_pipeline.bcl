@@ -13,6 +13,8 @@
 # ===========================================================================
 
 pipeline "medical_coding" {
+  # Pure-computation summary when a case completes (see 05_scripts.bcl).
+  on "case.completed" { hook "script:completion_note" }
   title "Medical Coding"
   description "Encounter documentation coding with optional QA and data entry"
   number_format "ENC-{year}-{seq:6}"
@@ -348,6 +350,12 @@ pipeline "medical_coding" {
     title "Data entry and billing"
     kind processing
     roles ["data_entry"]
+    # Runs on entry; a claim with duplicate procedures cannot be posted.
+    node "claim_integrity" {
+      kind automated
+      title "Claim integrity"
+      hook "script:claim_integrity"
+    }
     view_roles ["coder", "qa", "qa_auditor", "manager"]
     claimable true
     sla {

@@ -247,7 +247,6 @@ var smsSendAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) (A
 			hints["priority"] = priority
 		}
 
-
 		msg := spi.SMSMessage{
 			From:       from,
 			To:         to,
@@ -293,12 +292,12 @@ var smsSendAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) (A
 
 		if res.Error != nil {
 			out["error"] = map[string]any{
-				"kind":        res.Error.Kind,
-				"protocol":    res.Error.Protocol,
-				"status":      res.Error.StatusCode,
-				"code":        res.Error.Code,
-				"message":     res.Error.Message,
-				"retryable":   res.Error.Retryable,
+				"kind":      res.Error.Kind,
+				"protocol":  res.Error.Protocol,
+				"status":    res.Error.StatusCode,
+				"code":      res.Error.Code,
+				"message":   res.Error.Message,
+				"retryable": res.Error.Retryable,
 			}
 		}
 

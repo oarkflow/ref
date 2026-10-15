@@ -40,10 +40,6 @@ type jsonProvider struct {
 	AvgLatencyMs    int64    `json:"avg_latency_ms"`
 }
 
-
-
-
-
 type jsonUser struct {
 	UserID            string  `json:"user_id"`
 	Name              string  `json:"name"`
@@ -154,7 +150,6 @@ func TestSMSRoutingMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to compile sms_routing_rules.bcl: %v", err)
 	}
-
 
 	// Load providers from dataset
 	provJSONData, err := os.ReadFile(filepath.Join("..", "examples", "sms_routing", "data", "providers.json"))
@@ -337,7 +332,6 @@ func TestSMSRoutingMatrix(t *testing.T) {
 		if err != nil || !res.OK || res.ProviderID != "bt_direct_smpp" {
 			t.Fatalf("expected bt_direct_smpp, got: %s", res.ProviderID)
 		}
-
 
 		// Europe General (DE) -> messagebird_eu
 		res, err = router.RouteAndSubmit(ctx, spi.SMSMessage{To: "+4915123456789", Text: "N26 Verification"}, map[string]any{

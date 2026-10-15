@@ -1,0 +1,22 @@
+# ===========================================================================
+# Scripts: named SPL blocks that nodes and pipeline hooks refer to by id.
+#
+#   hook "script:<id>"         in a stage on_enter / on_complete, an event
+#                              `on` hook or an automated node
+#   uses "script"              in an intent node, with config { script "<id>" }
+#
+# Scripts are sandboxed: they compute over the hook input (kase, data, stage,
+# node, event, principal, tenant) and cannot touch files, the network, the
+# environment or a database.
+# ===========================================================================
+
+script "claim_integrity" {
+  description "Duplicate CPT codes and unit totals; fails the data entry integrity node"
+  file "scripts/claim_integrity.spl"
+  timeout "1s"
+}
+
+script "completion_note" {
+  description "Summary built when a case completes"
+  file "scripts/completion_note.spl"
+}

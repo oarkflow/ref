@@ -117,6 +117,9 @@ type Platform struct {
 	// FS is the virtual filesystem backing this platform generation, if any.
 	FS fs.FS
 
+	// scripts are the compiled script blocks, by id.
+	scripts map[string]*Script
+
 	registry  *Registry
 	resources map[string]Resource
 	schemas   map[string]*CompiledSchema
@@ -548,6 +551,12 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 		swaggerPrefix:     opts.SwaggerPrefix,
 		disableSwagger:    opts.DisableSwagger,
 	}
+	scripts, err := compileScripts(doc.Scripts, opts.FS)
+	if err != nil {
+		return nil, fmt.Errorf("ref/platform: %w", err)
+	}
+	p.scripts = scripts
+
 	if p.replicaID == "" {
 		p.replicaID = "replica-" + newPrefixedID("")
 	}
@@ -564,7 +573,6 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 	if err := p.resolveSecrets(doc, opts); err != nil {
 		return nil, err
 	}
-	var err error
 	if p.schemas, err = compileSchemas(doc.Shapes); err != nil {
 		return nil, err
 	}
@@ -798,6 +806,11 @@ func (p *Platform) openResources(ctx context.Context, doc Document, registry *Re
 			config := make(map[string]any, len(spec.Config)+1)
 			maps.Copy(config, spec.Config)
 			config[pipelineDefinitionsKey] = doc.Pipelines
+			ids := make(map[string]bool, len(p.scripts))
+			for id := range p.scripts {
+				ids[id] = true
+			}
+			config[scriptIDsKey] = ids
 			spec.Config = config
 		}
 

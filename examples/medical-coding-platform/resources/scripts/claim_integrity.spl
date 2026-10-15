@@ -1,0 +1,28 @@
+// Claim integrity gate, run when a case enters data entry.
+//
+// Sees the case data (one entry per form) and returns the result of the check:
+// `passed: false` fails the automated node, so the claim cannot be posted until
+// a coder fixes the coding and the stage is re-entered.
+let seen = {};
+let duplicates = 0;
+let units = 0;
+let rows = data.cpt;
+for (let i = 0; i < len(rows); i = i + 1) {
+  let row = rows[i];
+  if (seen[row.cpt_code] != null) {
+    duplicates = duplicates + 1;
+  }
+  seen[row.cpt_code] = true;
+  if (row.units != null) {
+    units = units + row.units;
+  }
+}
+let reason = "ok";
+if (duplicates > 0) {
+  reason = "the same CPT code is listed more than once; combine the units";
+} else {
+  if (units > 99) {
+    reason = "total units exceed 99";
+  }
+}
+{"passed": duplicates == 0 && units <= 99, "duplicate_procedures": duplicates, "total_units": units, "reason": reason}

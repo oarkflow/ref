@@ -590,7 +590,6 @@ func (r *SMSRouter) selectAndRankCandidates(ctx context.Context, msg spi.SMSMess
 		return ranked[i].score > ranked[j].score // higher score comes first
 	})
 
-
 	out := make([]*routerProvider, len(ranked))
 	for i, rc := range ranked {
 		out[i] = rc.provider

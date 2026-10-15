@@ -195,6 +195,23 @@ save(cid2, "coding", {**GOOD_CODING, "routing": {"request_qa": False}}, coder)
 st, r, _ = act(cid2, "coding", "submit", coder)
 check("without a QA request the case goes straight to data entry", st == 200 and r["case"]["stage"] == "data_entry", (st, r.get("case")))
 
+print("\n-- script hooks (sealed SPL scripts run by the pipeline) --")
+node = {n["name"]: n for n in view(cid2, entry)[1].get("nodes", [])}.get("claim_integrity", {})
+check("entering data entry ran the claim_integrity script node", node.get("status") == "passed" and node.get("result", {}).get("total_units") == 1, node)
+cid3, _ = start(coder)
+dup = {**GOOD_CODING, "cpt": [{"cpt_code": "99285", "units": 1}, {"cpt_code": "99285", "units": 2}], "routing": {"request_qa": False}}
+save(cid3, "coding", dup, coder)
+st, r, _ = act(cid3, "coding", "submit", coder)
+node = {n["name"]: n for n in view(cid3, entry)[1].get("nodes", [])}.get("claim_integrity", {})
+check("duplicate CPT codes fail the script node with its reason", node.get("status") == "failed" and node.get("result", {}).get("duplicate_procedures") == 1
+      and "more than once" in node.get("result", {}).get("reason", ""), node)
+call("POST", f"/workflow/api/cases/{cid3}/work/claim", {}, entry)
+save(cid3, "data_entry", {"billing": {"payer": "Acme Health", "charge_total": 10, "claim_status": "Ready"}}, entry)
+st, r, _ = act(cid3, "data_entry", "complete", entry)
+if st != 200 or r.get("case", {}).get("status") != "completed":
+    st, r, _ = call("POST", f"/workflow/api/cases/{cid3}/stages/data_entry/actions/complete", {"confirm": True}, entry)
+check("a failed script node blocks posting the claim", not (st == 200 and r.get("case", {}).get("status") == "completed"), (st, r))
+
 print("\n-- workspace settings, scope and inheritance --")
 admin_email = f"ws_admin.{RUN}@wf.test"
 st, made, _ = call("POST", "/users/store", {"email": admin_email, "name": "WF Admin", "password": PASSWORD, "role": "coder"}, root)

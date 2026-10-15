@@ -54,6 +54,9 @@ type Document struct {
 	// review → approval → certificate), run by a pipeline.cases resource.
 	Pipelines []pipeline.Definition `bcl:"pipeline,block"`
 
+	// Scripts are named SPL scripts that nodes and pipeline hooks refer to by id.
+	Scripts []ScriptSpec `bcl:"script,block"`
+
 	// Entities are declarative data resources: a migrated table plus a
 	// validated REST API with filters, search, export, aggregates, access
 	// rules and hooks (see entity.go).

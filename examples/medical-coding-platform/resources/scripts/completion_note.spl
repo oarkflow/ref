@@ -1,0 +1,3 @@
+// Event hook for case.completed: builds the completion summary a downstream
+// system would receive. Pure computation; the result is logged by the platform.
+{"case": kase.number, "pipeline": kase.pipeline, "completed_stage": stage, "by": event.actor}
