@@ -23,7 +23,7 @@
         <span class="metric-label">Open for Coding</span>
         <span class="metric-badge sla-ok">SLA 24h</span>
       </div>
-      <div class="metric-value font-mono">${stats.open_count != "" ? stats.open_count : "12"}</div>
+      <div class="metric-value font-mono">${stats != null && stats.open_count != null ? stats.open_count : "12"}</div>
       <div class="metric-subtext text-emerald-400">All within 24h intake SLA</div>
     </div>
 
@@ -32,7 +32,7 @@
         <span class="metric-label">Coding In Progress</span>
         <span class="metric-badge sla-warn">Active</span>
       </div>
-      <div class="metric-value font-mono">${stats.in_progress_count != "" ? stats.in_progress_count : "4"}</div>
+      <div class="metric-value font-mono">${stats != null && stats.in_progress_count != null ? stats.in_progress_count : "4"}</div>
       <div class="metric-subtext text-slate-400">Assigned across clinical coders</div>
     </div>
 
@@ -41,7 +41,7 @@
         <span class="metric-label">QA Review Stage</span>
         <span class="metric-badge sla-ok">SLA 12h</span>
       </div>
-      <div class="metric-value font-mono">${stats.qa_count != "" ? stats.qa_count : "3"}</div>
+      <div class="metric-value font-mono">${stats != null && stats.qa_count != null ? stats.qa_count : "3"}</div>
       <div class="metric-subtext text-indigo-400">99.1% agreement rate</div>
     </div>
 
@@ -50,7 +50,7 @@
         <span class="metric-label">Suspended / Queries</span>
         <span class="metric-badge sla-breach">Action Needed</span>
       </div>
-      <div class="metric-value font-mono text-amber-400">${stats.suspend_count != "" ? stats.suspend_count : "2"}</div>
+      <div class="metric-value font-mono text-amber-400">${stats != null && stats.suspend_count != null ? stats.suspend_count : "2"}</div>
       <div class="metric-subtext text-amber-400/80">Missing docs & physician queries</div>
     </div>
   </div>

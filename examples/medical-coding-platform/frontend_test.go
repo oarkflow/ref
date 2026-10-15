@@ -3,9 +3,12 @@ package main_test
 import (
 	"bytes"
 	"context"
-	"net/http/httptest"
+	"io"
+	"net"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/oarkflow/fh"
 	"github.com/oarkflow/ref/config"
@@ -351,18 +354,99 @@ func TestBCLEndToEndWebRoutes(t *testing.T) {
 		}
 	}
 
-	// Test GET /login renders HTML
-	req := httptest.NewRequest("GET", "/login", nil)
-	resp, err := app.Test(req)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("GET /login request failed: %v", err)
+		t.Fatalf("net.Listen failed: %v", err)
 	}
+	served := make(chan error, 1)
+	go func() { served <- app.Serve(ln) }()
+	t.Cleanup(func() {
+		_ = app.Shutdown()
+		_ = ln.Close()
+	})
+	baseURL := "http://" + ln.Addr().String()
+
+	doReq := func(method, path string) (*http.Response, string) {
+		req, err := http.NewRequest(method, baseURL+path, nil)
+		if err != nil {
+			t.Fatalf("NewRequest failed: %v", err)
+		}
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s failed: %v", method, path, err)
+		}
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return resp, string(bodyBytes)
+	}
+
+	// 1. Test GET /
+	resp, body := doReq("GET", "/")
+	t.Logf("GET / status=%d", resp.StatusCode)
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200 for GET /, got %d (body=%s)", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "Operational Dashboard") {
+		t.Errorf("expected dashboard title in GET / response")
+	}
+
+	// 2. Test GET /dashboard
+	resp, body = doReq("GET", "/dashboard")
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200 for GET /dashboard, got %d", resp.StatusCode)
+	}
+
+	// 3. Test GET /login
+	resp, body = doReq("GET", "/login")
 	if resp.StatusCode != 200 {
 		t.Errorf("expected status 200 for GET /login, got %d", resp.StatusCode)
 	}
+	if !strings.Contains(body, "Sign In") {
+		t.Errorf("expected Sign In in /login response")
+	}
 
-	contentType := resp.Header.Get("Content-Type")
-	if !strings.Contains(contentType, "text/html") {
-		t.Errorf("expected text/html content-type for /login, got %s", contentType)
+	// 4. Test GET /coding/queue
+	resp, body = doReq("GET", "/coding/queue")
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200 for GET /coding/queue, got %d (body=%s)", resp.StatusCode, body)
+	}
+
+	// 5. Test GET /coding/wi_memorial_er/enc_1001 (workspace)
+	resp, body = doReq("GET", "/coding/wi_memorial_er/enc_1001")
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200 for workspace, got %d (body=%s)", resp.StatusCode, body)
+	}
+
+	// 6. Test GET /qa
+	resp, body = doReq("GET", "/qa")
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200 for /qa, got %d", resp.StatusCode)
+	}
+
+	// 7. Test GET /suspends
+	resp, body = doReq("GET", "/suspends")
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200 for /suspends, got %d", resp.StatusCode)
+	}
+
+	// 8. Test GET /dataentry
+	resp, body = doReq("GET", "/dataentry")
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200 for /dataentry, got %d", resp.StatusCode)
+	}
+
+	// 9. Test GET /static/css/app.css
+	resp, body = doReq("GET", "/static/css/app.css")
+	t.Logf("GET /static/css/app.css status=%d content-type=%s len=%d", resp.StatusCode, resp.Header.Get("Content-Type"), len(body))
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200 for GET /static/css/app.css, got %d", resp.StatusCode)
+	}
+
+	// 10. Test GET /static/js/coding-workspace.js
+	resp, body = doReq("GET", "/static/js/coding-workspace.js")
+	t.Logf("GET /static/js/coding-workspace.js status=%d content-type=%s len=%d", resp.StatusCode, resp.Header.Get("Content-Type"), len(body))
+	if resp.StatusCode != 200 {
+		t.Errorf("expected status 200 for GET /static/js/coding-workspace.js, got %d", resp.StatusCode)
 	}
 }

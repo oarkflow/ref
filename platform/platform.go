@@ -1759,9 +1759,12 @@ func (p *Platform) compileStatic(doc Document, baseDir string) error {
 		if !filepath.IsAbs(root) {
 			candidates := []string{
 				root,
+				filepath.Join(".", root),
+				filepath.Join(".", "resources", root),
 				filepath.Join(baseDir, root),
 				filepath.Join(baseDir, "..", root),
-				filepath.Join(".", root),
+				filepath.Join(baseDir, "../..", root),
+				filepath.Join(baseDir, "../../..", root),
 			}
 			found := false
 			for _, c := range candidates {

@@ -3,32 +3,32 @@
     <div class="col-span-4">
       <label class="form-label" for="em_mdm_level">MDM Complexity Level</label>
       <select id="em_mdm_level" name="em_mdm_level" class="form-control">
-        <option value="Straightforward" ${em.mdm_level == "Straightforward" ? "selected" : ""}>Straightforward (Level 1)</option>
-        <option value="Low" ${em.mdm_level == "Low" ? "selected" : ""}>Low Complexity (Level 2)</option>
-        <option value="Moderate" ${em.mdm_level == "Moderate" ? "selected" : ""}>Moderate Complexity (Level 3/4)</option>
-        <option value="High" ${em.mdm_level == "High" ? "selected" : ""}>High Complexity (Level 5)</option>
+        <option value="Straightforward" ${em != null && em.mdm_level == "Straightforward" ? "selected" : ""}>Straightforward (Level 1)</option>
+        <option value="Low" ${em != null && em.mdm_level == "Low" ? "selected" : ""}>Low Complexity (Level 2)</option>
+        <option value="Moderate" ${em != null && em.mdm_level == "Moderate" ? "selected" : ""}>Moderate Complexity (Level 3/4)</option>
+        <option value="High" ${em != null && em.mdm_level == "High" ? "selected" : ""}>High Complexity (Level 5)</option>
       </select>
     </div>
 
     <div class="col-span-3">
       <label class="form-label" for="em_code">Assigned E&M Code</label>
       <select id="em_code" name="em_code" class="form-control font-mono">
-        <option value="99281" ${em.em_code == "99281" ? "selected" : ""}>99281 - ED Level 1</option>
-        <option value="99282" ${em.em_code == "99282" ? "selected" : ""}>99282 - ED Level 2</option>
-        <option value="99283" ${em.em_code == "99283" ? "selected" : ""}>99283 - ED Level 3</option>
-        <option value="99284" ${em.em_code == "99284" ? "selected" : ""}>99284 - ED Level 4</option>
-        <option value="99285" ${em.em_code == "99285" ? "selected" : ""}>99285 - ED Level 5</option>
+        <option value="99281" ${em != null && em.em_code == "99281" ? "selected" : ""}>99281 - ED Level 1</option>
+        <option value="99282" ${em != null && em.em_code == "99282" ? "selected" : ""}>99282 - ED Level 2</option>
+        <option value="99283" ${em != null && em.em_code == "99283" ? "selected" : ""}>99283 - ED Level 3</option>
+        <option value="99284" ${em != null && em.em_code == "99284" ? "selected" : ""}>99284 - ED Level 4</option>
+        <option value="99285" ${em != null && em.em_code == "99285" ? "selected" : ""}>99285 - ED Level 5</option>
       </select>
     </div>
 
     <div class="col-span-2">
       <label class="form-label" for="em_modifier">Modifier</label>
-      <input type="text" id="em_modifier" name="em_modifier" class="form-control font-mono uppercase" maxlength="2" value="${em.modifier}" placeholder="25">
+      <input type="text" id="em_modifier" name="em_modifier" class="form-control font-mono uppercase" maxlength="2" value="${em != null && em.modifier != '' ? em.modifier : ''}" placeholder="25">
     </div>
 
     <div class="col-span-3">
       <label class="form-label" for="downcode_reason">Downcode / Upcode Reason</label>
-      <input type="text" id="downcode_reason" name="downcode_reason" class="form-control text-sm" value="${em.downcode_reason}" placeholder="e.g. Insufficient MDM data">
+      <input type="text" id="downcode_reason" name="downcode_reason" class="form-control text-sm" value="${em != null && em.downcode_reason != '' ? em.downcode_reason : ''}" placeholder="e.g. Insufficient MDM data">
     </div>
   </div>
 </div>

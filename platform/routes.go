@@ -353,7 +353,17 @@ func (p *Platform) Mount(app *fh.App) error {
 		}
 		if p.FS != nil {
 			cleanRoot := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(s.root)), "/")
-			if sub, err := fs.Sub(p.FS, cleanRoot); err == nil {
+			candidates := []string{cleanRoot, strings.TrimPrefix(cleanRoot, "resources/"), "static"}
+			var sub fs.FS
+			for _, cand := range candidates {
+				if s, err := fs.Sub(p.FS, cand); err == nil {
+					if _, err := fs.Stat(s, "."); err == nil {
+						sub = s
+						break
+					}
+				}
+			}
+			if sub != nil {
 				app.StaticFS(s.spec.Prefix, sub, cfg)
 				continue
 			}
@@ -898,14 +908,28 @@ func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute,
 		p.audit(ctx, route, principal, tenant, body, nil, nil)
 		c.Status(route.status)
 		c.Set("Content-Type", "text/html; charset=utf-8")
+		renderData := map[string]any{
+			"principal": principal,
+			"tenant":    tenant,
+			"path":      c.Path(),
+			"error":     c.Query("error"),
+			"success":   c.Query("success"),
+		}
+		if vm, ok := value.(map[string]any); ok {
+			for k, v := range vm {
+				renderData[k] = v
+			}
+		} else if value != nil {
+			renderData["data"] = value
+		}
 		var renderErr error
 		if route.spec.Layout != "" {
-			renderErr = c.Render(route.spec.Template, value, route.spec.Layout)
+			renderErr = c.Render(route.spec.Template, renderData, route.spec.Layout)
 			if renderErr != nil {
-				renderErr = c.Render(route.spec.Template, value)
+				renderErr = c.Render(route.spec.Template, renderData)
 			}
 		} else {
-			renderErr = c.Render(route.spec.Template, value)
+			renderErr = c.Render(route.spec.Template, renderData)
 		}
 		if renderErr != nil {
 			log.Printf("[TEMPLATE ERROR] route %s (%s): %v", route.spec.Name, route.spec.Template, renderErr)

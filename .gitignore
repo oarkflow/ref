@@ -7,3 +7,4 @@ node_modules
 bin/
 examples/medical-coding-platform/migrator
 examples/medical-coding-platform/server
+*.apkg

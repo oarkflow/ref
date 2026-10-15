@@ -148,7 +148,25 @@ func (o *Options) defaults() error {
 		}
 	}
 	if o.TemplatesDir == "" {
-		o.TemplatesDir = "templates"
+		if o.FS != nil {
+			for _, name := range []string{"templates", "resources/templates"} {
+				if fi, err := fs.Stat(o.FS, name); err == nil && fi.IsDir() {
+					o.TemplatesDir = name
+					break
+				}
+			}
+		} else {
+			for _, name := range []string{"templates", "resources/templates"} {
+				path := filepath.Join(o.Dir, name)
+				if fi, err := os.Stat(path); err == nil && fi.IsDir() {
+					o.TemplatesDir = path
+					break
+				}
+			}
+		}
+		if o.TemplatesDir == "" {
+			o.TemplatesDir = "templates"
+		}
 	}
 	if o.Env == "" {
 		o.Env = envOr("APP_ENV", "development")

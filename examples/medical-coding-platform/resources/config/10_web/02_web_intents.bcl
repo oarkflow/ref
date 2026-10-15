@@ -21,31 +21,35 @@ intent "web.dashboard" {
     kind read
     provides [summary_rows]
     config {
-      statement "SELECT f.facility_id, f.facility_name, wi.work_item_id, wi.name AS work_item_name, wi.work_item_type, SUM(CASE WHEN ed.encounter_status = 'OPEN' THEN 1 ELSE 0 END) AS open_count, SUM(CASE WHEN ed.encounter_status = 'IN_PROGRESS' THEN 1 ELSE 0 END) AS in_progress_count, SUM(CASE WHEN ed.encounter_status = 'IN_QA' OR ed.encounter_status = 'QA_IN_PROGRESS' THEN 1 ELSE 0 END) AS qa_count, SUM(CASE WHEN ed.encounter_status = 'DE_OPEN' OR ed.encounter_status = 'DE_IN_PROGRESS' THEN 1 ELSE 0 END) AS de_count, SUM(CASE WHEN ed.encounter_status = 'SUSPEND' THEN 1 ELSE 0 END) AS suspend_count, SUM(CASE WHEN ed.encounter_status = 'COMPLETE' THEN 1 ELSE 0 END) AS complete_count FROM facilities f JOIN work_items wi ON f.facility_id = wi.facility_id LEFT JOIN encounter_details ed ON wi.work_item_id = ed.work_item_id WHERE f.status = 'active' AND wi.status = 'active' GROUP BY f.facility_id, f.facility_name, wi.work_item_id, wi.name, wi.work_item_type ORDER BY f.facility_name, wi.name"
+      statement "SELECT f.facility_id, f.facility_name, wi.work_item_id, wi.name AS work_item_name, wi.work_item_type, COALESCE(SUM(CASE WHEN ed.encounter_status = 'OPEN' THEN 1 ELSE 0 END), 0) AS open_count, COALESCE(SUM(CASE WHEN ed.encounter_status = 'IN_PROGRESS' THEN 1 ELSE 0 END), 0) AS in_progress_count, COALESCE(SUM(CASE WHEN ed.encounter_status = 'IN_QA' OR ed.encounter_status = 'QA_IN_PROGRESS' THEN 1 ELSE 0 END), 0) AS qa_count, COALESCE(SUM(CASE WHEN ed.encounter_status = 'DE_OPEN' OR ed.encounter_status = 'DE_IN_PROGRESS' THEN 1 ELSE 0 END), 0) AS de_count, COALESCE(SUM(CASE WHEN ed.encounter_status = 'SUSPEND' THEN 1 ELSE 0 END), 0) AS suspend_count, COALESCE(SUM(CASE WHEN ed.encounter_status = 'COMPLETE' THEN 1 ELSE 0 END), 0) AS complete_count FROM facilities f JOIN work_items wi ON f.facility_id = wi.facility_id LEFT JOIN encounter_details ed ON wi.work_item_id = ed.work_item_id WHERE f.status = 'active' AND wi.status = 'active' GROUP BY f.facility_id, f.facility_name, wi.work_item_id, wi.name, wi.work_item_type ORDER BY f.facility_name, wi.name"
     }
   }
 
-  node "stats" {
+  node "stats_query" {
     uses "database.query"
     resource "database"
     kind read
     provides [stats_rows]
     config {
-      statement "SELECT SUM(CASE WHEN encounter_status = 'OPEN' THEN 1 ELSE 0 END) AS open_count, SUM(CASE WHEN encounter_status = 'IN_PROGRESS' THEN 1 ELSE 0 END) AS in_progress_count, SUM(CASE WHEN encounter_status IN ('IN_QA', 'QA_IN_PROGRESS') THEN 1 ELSE 0 END) AS qa_count, SUM(CASE WHEN encounter_status = 'SUSPEND' THEN 1 ELSE 0 END) AS suspend_count FROM encounter_details"
+      statement "SELECT COALESCE(SUM(CASE WHEN encounter_status = 'OPEN' THEN 1 ELSE 0 END), 0) AS open_count, COALESCE(SUM(CASE WHEN encounter_status = 'IN_PROGRESS' THEN 1 ELSE 0 END), 0) AS in_progress_count, COALESCE(SUM(CASE WHEN encounter_status IN ('IN_QA', 'QA_IN_PROGRESS') THEN 1 ELSE 0 END), 0) AS qa_count, COALESCE(SUM(CASE WHEN encounter_status = 'SUSPEND' THEN 1 ELSE 0 END), 0) AS suspend_count FROM encounter_details"
       require_rows true
       not_found_message "metrics error"
     }
   }
 
+  node "stats" {
+    uses "data.first"
+    requires [stats_rows]
+    provides [stats]
+    config {
+      source_fact "stats_rows"
+    }
+  }
+
   node "response" {
     uses "collect"
-    requires [summary_rows, stats_rows]
+    requires [summary_rows, stats]
     provides [response]
-    config {
-      title "Dashboard"
-      summary_rows "summary_rows"
-      stats "stats_rows"
-    }
   }
 }
 
@@ -131,14 +135,6 @@ intent "web.coding_queue" {
     uses "collect"
     requires [wid, encounters, inprogress_encounters, q, status]
     provides [response]
-    config {
-      title "Clinical Coding Queue"
-      wid "wid"
-      encounters "encounters"
-      inprogress_encounters "inprogress_encounters"
-      q "q"
-      status "status"
-    }
   }
 }
 
@@ -162,7 +158,7 @@ intent "web.coding_workspace" {
     }
   }
 
-  node "patient" {
+  node "patient_query" {
     uses "database.query"
     resource "database"
     kind read
@@ -173,6 +169,15 @@ intent "web.coding_workspace" {
       args [eid, wid]
       require_rows true
       not_found_message "encounter not found in work item"
+    }
+  }
+
+  node "patient" {
+    uses "data.first"
+    requires [patient_rows]
+    provides [patient]
+    config {
+      source_fact "patient_rows"
     }
   }
 
@@ -200,7 +205,7 @@ intent "web.coding_workspace" {
     }
   }
 
-  node "em" {
+  node "em_query" {
     uses "database.query"
     resource "database"
     kind read
@@ -212,19 +217,20 @@ intent "web.coding_workspace" {
     }
   }
 
+  node "em" {
+    uses "data.first"
+    requires [em_rows]
+    provides [em]
+    config {
+      source_fact "em_rows"
+      optional true
+    }
+  }
+
   node "response" {
     uses "collect"
-    requires [wid, eid, patient_rows, cpt_rows, dx_rows, em_rows]
+    requires [wid, eid, patient, cpt_rows, dx_rows, em]
     provides [response]
-    config {
-      title "Coding Workspace"
-      wid "wid"
-      eid "eid"
-      patient "patient_rows"
-      cpt_rows "cpt_rows"
-      dx_rows "dx_rows"
-      em "em_rows"
-    }
   }
 }
 
@@ -232,11 +238,11 @@ intent "web.qa_list" {
   description "Fetch encounters flagged for QA review audit"
   response "response"
 
-  node "qa_encounters" {
+  node "qa_query" {
     uses "database.query"
     resource "database"
     kind read
-    provides [qa_rows]
+    provides [qa_encounters]
     config {
       statement "SELECT e.encounter_id, e.patient_name, e.patient_sex, e.patient_dob, e.patient_mrn, e.patient_fin, e.encounter_dos, ed.work_item_id, ed.encounter_status, ed.code_assigned, ed.code_complete_ts FROM encounters e JOIN encounter_details ed ON e.encounter_id = ed.encounter_id WHERE ed.encounter_status IN ('IN_QA', 'QA_IN_PROGRESS') OR ed.qa_flag = 1 ORDER BY ed.code_complete_ts ASC LIMIT 50"
     }
@@ -244,12 +250,8 @@ intent "web.qa_list" {
 
   node "response" {
     uses "collect"
-    requires [qa_rows]
+    requires [qa_encounters]
     provides [response]
-    config {
-      title "QA Review Queue"
-      qa_encounters "qa_rows"
-    }
   }
 }
 
@@ -257,11 +259,11 @@ intent "web.suspends_list" {
   description "Fetch blocked and suspended charts with reason"
   response "response"
 
-  node "suspended_encounters" {
+  node "suspend_query" {
     uses "database.query"
     resource "database"
     kind read
-    provides [suspend_rows]
+    provides [suspended_encounters]
     config {
       statement "SELECT se.id AS suspend_event_id, se.encounter_id, se.work_item_id, se.suspend_reason, se.suspend_note, se.event_dos, se.created_by, se.created_at, e.patient_name, e.patient_mrn, e.patient_fin, e.encounter_dos FROM suspend_events se JOIN encounters e ON se.encounter_id = e.encounter_id WHERE se.resolved_at IS NULL ORDER BY se.created_at DESC LIMIT 50"
     }
@@ -269,12 +271,8 @@ intent "web.suspends_list" {
 
   node "response" {
     uses "collect"
-    requires [suspend_rows]
+    requires [suspended_encounters]
     provides [response]
-    config {
-      title "Suspends & Queries"
-      suspended_encounters "suspend_rows"
-    }
   }
 }
 
@@ -282,11 +280,11 @@ intent "web.dataentry_list" {
   description "Fetch encounters ready for data entry and billing EDI transmission"
   response "response"
 
-  node "de_encounters" {
+  node "de_query" {
     uses "database.query"
     resource "database"
     kind read
-    provides [de_rows]
+    provides [de_encounters]
     config {
       statement "SELECT e.encounter_id, e.patient_name, e.patient_mrn, e.patient_fin, e.encounter_dos, ed.work_item_id, ed.encounter_status FROM encounters e JOIN encounter_details ed ON e.encounter_id = ed.encounter_id WHERE ed.encounter_status IN ('DE_OPEN', 'DE_IN_PROGRESS') ORDER BY e.encounter_dos ASC LIMIT 50"
     }
@@ -294,36 +292,49 @@ intent "web.dataentry_list" {
 
   node "response" {
     uses "collect"
-    requires [de_rows]
+    requires [de_encounters]
     provides [response]
-    config {
-      title "Data Entry Queue"
-      de_encounters "de_rows"
-    }
   }
 }
 
 intent "web.facilities_list" {
-  description "List facilities and active work items"
+  description "List facilities and active work items with dashboard stats"
   response "response"
 
   node "facilities" {
     uses "database.query"
     resource "database"
     kind read
-    provides [facility_rows]
+    provides [summary_rows]
     config {
-      statement "SELECT f.facility_id, f.facility_name, f.status, wi.work_item_id, wi.name AS work_item_name, wi.work_item_type FROM facilities f JOIN work_items wi ON f.facility_id = wi.facility_id WHERE f.status = 'active' ORDER BY f.facility_name, wi.name"
+      statement "SELECT f.facility_id, f.facility_name, f.status, wi.work_item_id, wi.name AS work_item_name, wi.work_item_type, COALESCE(SUM(CASE WHEN ed.encounter_status = 'OPEN' THEN 1 ELSE 0 END), 0) AS open_count, COALESCE(SUM(CASE WHEN ed.encounter_status = 'IN_PROGRESS' THEN 1 ELSE 0 END), 0) AS in_progress_count, COALESCE(SUM(CASE WHEN ed.encounter_status = 'IN_QA' OR ed.encounter_status = 'QA_IN_PROGRESS' THEN 1 ELSE 0 END), 0) AS qa_count, COALESCE(SUM(CASE WHEN ed.encounter_status = 'DE_OPEN' OR ed.encounter_status = 'DE_IN_PROGRESS' THEN 1 ELSE 0 END), 0) AS de_count, COALESCE(SUM(CASE WHEN ed.encounter_status = 'SUSPEND' THEN 1 ELSE 0 END), 0) AS suspend_count, COALESCE(SUM(CASE WHEN ed.encounter_status = 'COMPLETE' THEN 1 ELSE 0 END), 0) AS complete_count FROM facilities f JOIN work_items wi ON f.facility_id = wi.facility_id LEFT JOIN encounter_details ed ON wi.work_item_id = ed.work_item_id WHERE f.status = 'active' AND wi.status = 'active' GROUP BY f.facility_id, f.facility_name, f.status, wi.work_item_id, wi.name, wi.work_item_type ORDER BY f.facility_name, wi.name"
+    }
+  }
+
+  node "stats_query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [stats_rows]
+    config {
+      statement "SELECT COALESCE(SUM(CASE WHEN encounter_status = 'OPEN' THEN 1 ELSE 0 END), 0) AS open_count, COALESCE(SUM(CASE WHEN encounter_status = 'IN_PROGRESS' THEN 1 ELSE 0 END), 0) AS in_progress_count, COALESCE(SUM(CASE WHEN encounter_status IN ('IN_QA', 'QA_IN_PROGRESS') THEN 1 ELSE 0 END), 0) AS qa_count, COALESCE(SUM(CASE WHEN encounter_status = 'SUSPEND' THEN 1 ELSE 0 END), 0) AS suspend_count FROM encounter_details"
+      require_rows true
+      not_found_message "metrics error"
+    }
+  }
+
+  node "stats" {
+    uses "data.first"
+    requires [stats_rows]
+    provides [stats]
+    config {
+      source_fact "stats_rows"
     }
   }
 
   node "response" {
     uses "collect"
-    requires [facility_rows]
+    requires [summary_rows, stats]
     provides [response]
-    config {
-      title "Facilities & Work Items"
-      summary_rows "facility_rows"
-    }
   }
 }
