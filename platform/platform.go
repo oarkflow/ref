@@ -90,6 +90,10 @@ type LoadOptions struct {
 	// drops workers) without touching the BCL source. A non-nil error aborts
 	// Compile.
 	Mutate func(*Document) error
+	// FS, when set, is the in-memory virtual filesystem holding the application.
+	// When non-nil, BCL compilation, static mounts, and resource scanning
+	// read from this filesystem without touching the host operating system.
+	FS fs.FS
 }
 
 // DefaultLoadOptions returns production-oriented defaults for trusted application
@@ -109,6 +113,9 @@ func DefaultLoadOptions() LoadOptions {
 type Platform struct {
 	Document Document
 	Engine   *runtime.Engine
+
+	// FS is the virtual filesystem backing this platform generation, if any.
+	FS fs.FS
 
 	registry  *Registry
 	resources map[string]Resource
@@ -253,6 +260,202 @@ func LoadDirRecursive(ctx context.Context, dir string, opts LoadOptions) (*Platf
 	return LoadFiles(ctx, files, opts)
 }
 
+// LoadFS parses, validates and compiles all .bcl files in a virtual filesystem
+// (e.g. from an in-memory decrypted package) without touching disk.
+func LoadFS(ctx context.Context, fsys fs.FS, configDir string, opts LoadOptions) (*Platform, error) {
+	if fsys == nil {
+		return nil, fmt.Errorf("ref/platform: nil virtual filesystem")
+	}
+	opts.FS = fsys
+
+	cleanConfig := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(configDir)), "/")
+	var files []string
+	if strings.HasSuffix(cleanConfig, ".bcl") {
+		if _, err := fs.Stat(fsys, cleanConfig); err != nil {
+			return nil, fmt.Errorf("ref/platform: BCL file %q not found in VFS: %w", cleanConfig, err)
+		}
+		files = append(files, cleanConfig)
+	} else {
+		err := fs.WalkDir(fsys, cleanConfig, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !d.IsDir() && strings.HasSuffix(d.Name(), ".bcl") {
+				files = append(files, path)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("ref/platform: walk BCL dir %q in VFS: %w", cleanConfig, err)
+		}
+		if len(files) == 0 {
+			return nil, fmt.Errorf("ref/platform: no .bcl files found in %q in VFS", cleanConfig)
+		}
+		sort.Slice(files, func(i, j int) bool {
+			relI, _ := filepath.Rel(cleanConfig, files[i])
+			relJ, _ := filepath.Rel(cleanConfig, files[j])
+			return relI < relJ
+		})
+	}
+
+	bundleFiles := make([]BundleFile, 0, len(files))
+	for _, p := range files {
+		data, err := fs.ReadFile(fsys, p)
+		if err != nil {
+			return nil, fmt.Errorf("ref/platform: read BCL file %q from VFS: %w", p, err)
+		}
+		bundleFiles = append(bundleFiles, BundleFile{Path: p, Content: string(data)})
+	}
+
+	userMutate := opts.Mutate
+	opts.Mutate = func(doc *Document) error {
+		if err := virtualizeResources(fsys, doc); err != nil {
+			return err
+		}
+		if userMutate != nil {
+			return userMutate(doc)
+		}
+		return nil
+	}
+
+	p, err := Compile(ctx, JoinBundle(bundleFiles), "", opts)
+	if err != nil {
+		return nil, remapCompileError(bundleFiles, err)
+	}
+	return p, nil
+}
+
+func virtualizeResources(fsys fs.FS, doc *Document) error {
+	for i := range doc.Resources {
+		r := &doc.Resources[i]
+		if r.Kind == "rules.engine" {
+			if dir, ok := r.Config["dir"].(string); ok && dir != "" {
+				cleanDir := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(dir)), "/")
+				candidates := []string{
+					cleanDir,
+					strings.TrimPrefix(cleanDir, "resources/"),
+					filepath.Base(cleanDir),
+				}
+				var foundDir string
+				for _, c := range candidates {
+					c = strings.TrimPrefix(filepath.ToSlash(c), "/")
+					if fi, err := fs.Stat(fsys, c); err == nil && fi.IsDir() {
+						foundDir = c
+						break
+					}
+				}
+				if foundDir == "" {
+					foundDir = cleanDir
+				}
+
+				var ruleFiles []string
+				_ = fs.WalkDir(fsys, foundDir, func(path string, d fs.DirEntry, err error) error {
+					if err != nil || d.IsDir() {
+						return nil
+					}
+					base := filepath.Base(path)
+					if strings.HasSuffix(path, ".bcl") && !strings.HasPrefix(base, "_") {
+						ruleFiles = append(ruleFiles, path)
+					}
+					return nil
+				})
+				if len(ruleFiles) > 0 {
+					sort.Strings(ruleFiles)
+					defs := configBlocks(r.Config, "definition")
+					for _, rf := range ruleFiles {
+						content, err := fs.ReadFile(fsys, rf)
+						if err != nil {
+							return fmt.Errorf("rules.engine: read virtual rule %q: %w", rf, err)
+						}
+						inlined, err := inlineVFSImports(fsys, filepath.Dir(rf), string(content))
+						if err != nil {
+							return fmt.Errorf("rules.engine: inline imports in %q: %w", rf, err)
+						}
+						rel, _ := filepath.Rel(foundDir, rf)
+						name := strings.TrimSuffix(filepath.ToSlash(rel), ".bcl")
+						name = strings.ReplaceAll(name, "/", ".")
+
+						defs = append(defs, map[string]any{
+							"id":        name,
+							"name":      name,
+							"source":    inlined,
+							"version":   "1",
+							"run_tests": false,
+						})
+					}
+					r.Config["definition"] = defs
+					delete(r.Config, "dir")
+				}
+			}
+		}
+		if r.Kind == "security.tcpguard" {
+			if path, ok := r.Config["path"].(string); ok && path != "" {
+				cleanDir := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(path)), "/")
+				candidates := []string{
+					cleanDir,
+					strings.TrimPrefix(cleanDir, "resources/"),
+					filepath.Base(cleanDir),
+				}
+				var foundDir string
+				for _, c := range candidates {
+					c = strings.TrimPrefix(filepath.ToSlash(c), "/")
+					if fi, err := fs.Stat(fsys, c); err == nil && fi.IsDir() {
+						foundDir = c
+						break
+					}
+				}
+				if foundDir != "" {
+					var src strings.Builder
+					_ = fs.WalkDir(fsys, foundDir, func(p string, d fs.DirEntry, err error) error {
+						if err == nil && !d.IsDir() && strings.HasSuffix(d.Name(), ".bcl") {
+							data, err := fs.ReadFile(fsys, p)
+							if err == nil {
+								src.WriteString(string(data))
+								src.WriteString("\n")
+							}
+						}
+						return nil
+					})
+					if src.Len() > 0 {
+						delete(r.Config, "path")
+						r.Config["source"] = src.String()
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func inlineVFSImports(fsys fs.FS, dir string, content string) (string, error) {
+	lines := strings.Split(content, "\n")
+	var out []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "import ") {
+			quoteStart := strings.IndexAny(trimmed, `"'`)
+			quoteEnd := strings.LastIndexAny(trimmed, `"'`)
+			if quoteStart >= 0 && quoteEnd > quoteStart {
+				relPath := trimmed[quoteStart+1 : quoteEnd]
+				resolvedPath := filepath.Clean(filepath.Join(dir, relPath))
+				resolvedPath = strings.TrimPrefix(filepath.ToSlash(resolvedPath), "/")
+				importedBytes, err := fs.ReadFile(fsys, resolvedPath)
+				if err != nil {
+					return "", fmt.Errorf("resolve import %q (%s): %w", relPath, resolvedPath, err)
+				}
+				inlined, err := inlineVFSImports(fsys, filepath.Dir(resolvedPath), string(importedBytes))
+				if err != nil {
+					return "", err
+				}
+				out = append(out, inlined)
+				continue
+			}
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n"), nil
+}
+
 // LoadFiles parses, validates and compiles multiple BCL application files into a single generation.
 func LoadFiles(ctx context.Context, paths []string, opts LoadOptions) (*Platform, error) {
 	if len(paths) == 0 {
@@ -296,6 +499,21 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 	}); err != nil {
 		return nil, fmt.Errorf("ref/platform: compile BCL: %w", err)
 	}
+	if doc.Name == "" && len(doc.Apps) > 0 {
+		doc.Name = doc.Apps[0].Name
+		if doc.Version == "" {
+			doc.Version = doc.Apps[0].Version
+		}
+	}
+	if doc.Name == "" && baseDir != "" && baseDir != "." && baseDir != "/" {
+		dirName := filepath.Base(filepath.Clean(baseDir))
+		if dirName == "config" || dirName == "bcl" || dirName == "resources" {
+			dirName = filepath.Base(filepath.Dir(filepath.Clean(baseDir)))
+		}
+		if dirName != "" && dirName != "." && dirName != "/" {
+			doc.Name = dirName
+		}
+	}
 	if opts.Mutate != nil {
 		if err := opts.Mutate(&doc); err != nil {
 			return nil, fmt.Errorf("ref/platform: %w", err)
@@ -315,6 +533,7 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 	p := &Platform{
 		Engine:            runtime.NewEngine(engineOpts...),
 		registry:          opts.Registry,
+		FS:                opts.FS,
 		resources:         make(map[string]Resource, len(doc.Resources)),
 		schemas:           map[string]*CompiledSchema{},
 		secrets:           map[string]string{},
@@ -500,7 +719,14 @@ func (p *Platform) resolveSecrets(doc Document, opts LoadOptions) error {
 			}
 		}
 		if value == "" && spec.File != "" {
-			data, err := os.ReadFile(spec.File)
+			var data []byte
+			var err error
+			if opts.FS != nil {
+				cleanFile := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(spec.File)), "/")
+				data, err = fs.ReadFile(opts.FS, cleanFile)
+			} else {
+				data, err = os.ReadFile(spec.File)
+			}
 			if err != nil {
 				if spec.Required {
 					return fmt.Errorf("ref/platform: secret %q: %w", spec.Name, err)
@@ -585,6 +811,7 @@ func (p *Platform) openResources(ctx context.Context, doc Document, registry *Re
 			spec.Config = config
 		}
 
+		spec.FS = p.FS
 		resource, closer, err := factory.Open(ctx, spec)
 		if err != nil {
 			return fmt.Errorf("ref/platform: open resource %q (%s): %w", spec.Name, spec.Kind, err)
@@ -1261,6 +1488,17 @@ func applyFamilyDefaults(doc Document, registry *Registry) Document {
 				nodes[j].Uses = info.DefaultAction
 			}
 		}
+		if item.Response == "" {
+			for k := len(nodes) - 1; k >= 0; k-- {
+				if len(nodes[k].Provides) > 0 {
+					item.Response = nodes[k].Provides[0]
+					break
+				}
+			}
+			if item.Response == "" {
+				item.Response = "response"
+			}
+		}
 		item.Nodes = nodes
 		intents[i] = item
 	}
@@ -1505,6 +1743,19 @@ func (p *Platform) compileStatic(doc Document, baseDir string) error {
 	for _, spec := range doc.Static {
 		what := "static " + spec.Name
 		root := spec.Root
+		if p.FS != nil {
+			clean := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(root)), "/")
+			maxAge, err := durationField(what, "max_age", spec.MaxAge, 0)
+			if err != nil {
+				return err
+			}
+			p.static = append(p.static, compiledStatic{
+				spec:   spec,
+				root:   clean,
+				maxAge: maxAge,
+			})
+			continue
+		}
 		if !filepath.IsAbs(root) {
 			candidates := []string{
 				root,

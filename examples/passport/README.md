@@ -30,6 +30,11 @@ The example also exercises the work-management features (see [`docs/pipelines.md
 ## Run
 
 ```sh
+# Inside this directory:
+make                                  # Runs directly with Aegis (http://localhost:8080)
+make secure                           # Packages & runs in pure in-memory VFS (zero disk residue)
+
+# Or manual bootstrap:
 export PASSPORT_JWT_SECRET=$(openssl rand -hex 24)
 export PASSPORT_SIGNING_SECRET=$(openssl rand -hex 24)
 go run ./examples/passport &          # UI at http://localhost:8096/

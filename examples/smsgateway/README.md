@@ -13,10 +13,13 @@ What it does:
 
 ## Run it and try the console
 
-From the repository root, with no variables and no second process:
-
 ```sh
-make run dir=./examples/smsgateway          # listens on :8080; add addr=127.0.0.1:9000 to change it
+# Inside this directory:
+make                                         # Runs directly with Aegis (http://127.0.0.1:8080)
+make secure                                  # Packages & runs in pure in-memory VFS (zero disk residue)
+
+# Or from the repository root:
+make aegis-run dir=./examples/smsgateway
 ```
 
 (`make run --dir=…` cannot work: GNU make reads `--dir` as its own `--directory` option. Use `dir=`.) `make run` runs `cmd/ref`, the generic runner, which has its own `go.mod` and carries every driver in the repository. `make build` writes `bin/ref`; then `bin/ref ./examples/smsgateway` does the same.

@@ -768,3 +768,51 @@ To connect to an enterprise PostgreSQL cluster:
    _ "github.com/jackc/pgx/v5/stdlib"
    ```
 3. Run `./migrator migrate` to provision PostgreSQL tables.
+
+---
+
+## 13. Running with Aegis Secure Platform (Zero Disk Residuals)
+
+The CLEAR Medical Coding Platform can be packaged and run completely protected using the **Aegis Secure Runtime**. When running under Aegis:
+- **Zero Plaintext on Disk**: BCL configs, clinical decision tables (`coding.policy`), schema definitions, and secrets are decrypted and served exclusively from an in-memory Virtual Filesystem (`io/fs.FS`).
+- **No Temporary Extraction**: No files touch `/tmp`, ephemeral storage, or host disks.
+- **RAM Zeroization**: On process shutdown, all decrypted memory is cryptographically zeroized (`0x00`).
+
+### Quick Start with Makefile
+
+From inside this folder:
+```bash
+# 1. Run directly with Aegis
+make
+
+# 2. Package into encrypted container (.apkg) and run with in-memory VFS protection
+make secure
+```
+
+### Direct CLI Commands
+```bash
+# Build binary
+go build -o ../../bin/aegis ../../aegis/cmd/aegis
+
+# Package into encrypted .apkg
+../../bin/aegis package \
+  -dir ./resources \
+  -key ../../.data/aegis/master.key \
+  -enckey ../../.data/aegis/master.enc \
+  -appid "com.clear.medical" \
+  -ver "2.0.0" \
+  -out ./medical.apkg
+
+# Run encrypted container in memory
+SESSION_SECRET="super-secure-argon2id-medical-coding-session-secret-32-bytes" \
+JWT_SECRET="super-secure-argon2id-medical-coding-jwt-secret-32-bytes" \
+DB_DSN="file:clear?mode=memory&cache=shared&_pragma=busy_timeout(5000)" \
+../../bin/aegis run \
+  -key ../../.data/aegis/master.enc \
+  -pubkey ../../.data/aegis/master.pub \
+  ./medical.apkg \
+  -addr :3000
+```
+
+Once running, all 215 endpoints and Swagger UI (`http://localhost:3000/docs`) are immediately available.
+

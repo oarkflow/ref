@@ -197,6 +197,18 @@ where they are.
 
 ## Running it
 
+### Quick Start (Single Command)
+
+```sh
+# Run using the Makefile
+make
+
+# Run tests
+make test
+```
+
+### Manual Run
+
 **You need:** PostgreSQL. Nothing else.
 
 ```sh
@@ -206,6 +218,7 @@ export JWT_SECRET="$(openssl rand -hex 32)"
 
 go run ./examples/ref-app
 ```
+
 
 It listens on `:8090`, creates its schema, and seeds two tenants (`acme` and a
 suspended one), three products and their stock.

@@ -186,16 +186,12 @@ func NewRegistry() *Registry {
 	driverMu.RLock()
 	defer driverMu.RUnlock()
 	for kind, factory := range driverResources {
-		if _, exists := r.resources[kind]; !exists {
-			r.resources[kind] = factory
-			r.kinds[kind] = driverKinds[kind]
-		}
+		r.resources[kind] = factory
+		r.kinds[kind] = driverKinds[kind]
 	}
 	for name, factory := range driverActions {
-		if _, exists := r.actions[name]; !exists {
-			r.actions[name] = factory
-			r.actionDoc[name] = driverActionDoc[name]
-		}
+		r.actions[name] = factory
+		r.actionDoc[name] = driverActionDoc[name]
 	}
 	return r
 }

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -150,7 +151,7 @@ func openSecureTransport(_ context.Context, spec ResourceSpec) (Resource, io.Clo
 	// X25519 transport key.
 	keyText := configString(spec.Config, "server_key", "")
 	if file := configString(spec.Config, "server_key_file", ""); keyText == "" && file != "" {
-		if keyText, err = readOrCreateSecret(file, create, func() (string, error) {
+		if keyText, err = readOrCreateSecret(spec.FS, file, create, func() (string, error) {
 			k, err := securetransport.GenerateServerPrivateKey()
 			if err != nil {
 				return "", err
@@ -172,7 +173,7 @@ func openSecureTransport(_ context.Context, spec ResourceSpec) (Resource, io.Clo
 	if s.signEnabled {
 		text := ""
 		if file := configString(spec.Config, "signing_key_file", ""); file != "" {
-			if text, err = readOrCreateSecret(file, create, func() (string, error) {
+			if text, err = readOrCreateSecret(spec.FS, file, create, func() (string, error) {
 				_, priv, err := responseprotocol.GenerateKey()
 				if err != nil {
 					return "", err
@@ -199,7 +200,14 @@ func openSecureTransport(_ context.Context, spec ResourceSpec) (Resource, io.Clo
 	}
 
 	// The client's integrity pins come from the manifest `make wasm` wrote.
-	raw, err := os.ReadFile(filepath.Join(configString(spec.Config, "wasm_dir", "static/wasm"), "asset-manifest.json"))
+	manifestPath := filepath.ToSlash(filepath.Clean(filepath.Join(configString(spec.Config, "wasm_dir", "static/wasm"), "asset-manifest.json")))
+	manifestPath = strings.TrimPrefix(manifestPath, "/")
+	var raw []byte
+	if spec.FS != nil {
+		raw, err = fs.ReadFile(spec.FS, manifestPath)
+	} else {
+		raw, err = os.ReadFile(manifestPath)
+	}
 	if err != nil {
 		return fail("the client has not been built (%v): run make wasm", err)
 	}
@@ -246,7 +254,13 @@ func openSecureTransport(_ context.Context, spec ResourceSpec) (Resource, io.Clo
 
 // readOrCreateSecret reads a one-line secret file, creating it (mode 0600)
 // when create is set and it does not exist.
-func readOrCreateSecret(path string, create bool, generate func() (string, error)) (string, error) {
+func readOrCreateSecret(fsys fs.FS, path string, create bool, generate func() (string, error)) (string, error) {
+	if fsys != nil {
+		clean := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(path)), "/")
+		if b, err := fs.ReadFile(fsys, clean); err == nil {
+			return strings.TrimSpace(string(b)), nil
+		}
+	}
 	if b, err := os.ReadFile(path); err == nil {
 		return strings.TrimSpace(string(b)), nil
 	} else if !errors.Is(err, os.ErrNotExist) || !create {

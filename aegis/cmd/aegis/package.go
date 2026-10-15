@@ -265,8 +265,8 @@ func zipAppDir(dir string) ([]byte, error) {
 		if err != nil {
 			return err
 		}
-		// Skip temporary files, git repos, and local runtime databases
-		if strings.HasPrefix(rel, ".git") || strings.HasPrefix(rel, ".data") {
+		// Skip temporary files, git repos, local runtime databases, and existing .apkg archives
+		if strings.HasPrefix(rel, ".git") || strings.HasPrefix(rel, ".data") || strings.HasSuffix(rel, ".apkg") {
 			return nil
 		}
 

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/oarkflow/fh"
@@ -168,7 +170,22 @@ func openTCPGuard(_ context.Context, spec ResourceSpec) (Resource, io.Closer, er
 	var bundle tcpguard.Bundle
 	var err error
 	if path != "" {
-		bundle, err = tcpguard.LoadTCPGuardBundleDir(ctx, path)
+		actualPath := path
+		if _, statErr := os.Stat(actualPath); statErr != nil {
+			candidates := []string{
+				strings.TrimPrefix(actualPath, "./resources/"),
+				strings.TrimPrefix(actualPath, "resources/"),
+				filepath.Join("resources", actualPath),
+				filepath.Base(actualPath),
+			}
+			for _, c := range candidates {
+				if fi, err2 := os.Stat(c); err2 == nil && fi.IsDir() {
+					actualPath = c
+					break
+				}
+			}
+		}
+		bundle, err = tcpguard.LoadTCPGuardBundleDir(ctx, actualPath)
 	} else {
 		bundle, err = tcpguard.ParseTCPGuardBundle([]byte(source))
 	}

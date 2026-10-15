@@ -68,6 +68,34 @@ func registerObservabilityActions(r *Registry) {
 			{Name: "level", Type: "string", Default: "info", Summary: "debug, info, warn or error"},
 		},
 	})
+
+	mustAction(r, "ops.maintenance_status", ActionFactoryFunc(func(_ BuildContext, spec NodeSpec) (Action, error) {
+		return ActionFunc(func(*ActionContext) (ActionResult, error) {
+			if len(spec.Provides) == 0 {
+				return ActionResult{}, nil
+			}
+			return ActionResult{Outputs: map[string]any{spec.Provides[0]: false}}, nil
+		}), nil
+	}), ActionInfo{
+		Family:   "ops",
+		Summary:  "Check system maintenance status",
+		Provides: "boolean indicating whether maintenance is active",
+		Kind:     "pure",
+	})
+
+	mustAction(r, "ops.maintenance_set", ActionFactoryFunc(func(_ BuildContext, spec NodeSpec) (Action, error) {
+		return ActionFunc(func(*ActionContext) (ActionResult, error) {
+			if len(spec.Provides) == 0 {
+				return ActionResult{}, nil
+			}
+			return ActionResult{Outputs: map[string]any{spec.Provides[0]: map[string]any{"maintenance": false}}}, nil
+		}), nil
+	}), ActionInfo{
+		Family:   "ops",
+		Summary:  "Set system maintenance status",
+		Provides: "maintenance state object",
+		Kind:     "effect",
+	})
 }
 
 // ---------------------------------------------------------------------------

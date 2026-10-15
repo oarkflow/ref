@@ -174,10 +174,28 @@ func openRulesEngine(ctx context.Context, spec ResourceSpec) (Resource, io.Close
 	// definition, named after its own path so two files never collide
 	// unless the author names them identically.
 	if dir := configString(spec.Config, "dir", ""); dir != "" {
-		info, err := os.Stat(dir)
+		actualDir := dir
+		info, err := os.Stat(actualDir)
+		if err != nil {
+			candidates := []string{
+				strings.TrimPrefix(actualDir, "./resources/"),
+				strings.TrimPrefix(actualDir, "resources/"),
+				filepath.Join("resources", actualDir),
+				filepath.Base(actualDir),
+			}
+			for _, c := range candidates {
+				if fi, err2 := os.Stat(c); err2 == nil && fi.IsDir() {
+					actualDir = c
+					info = fi
+					err = nil
+					break
+				}
+			}
+		}
 		if err != nil {
 			return nil, nil, fmt.Errorf("resource %q: dir %q: %w", spec.Name, dir, err)
 		}
+		dir = actualDir
 		if !info.IsDir() {
 			return nil, nil, fmt.Errorf("resource %q: dir %q is not a directory", spec.Name, dir)
 		}

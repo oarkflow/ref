@@ -286,6 +286,13 @@ route "web_client.files.upload" {
   cache_control "no-store"
 }
 
+route "files.serve" {
+  method GET
+  path "/files/*"
+  intent "files.serve"
+  allow_anonymous true
+}
+
 route "metadata.rules" {
   method GET
   path "/metadata/rules"

@@ -2,6 +2,7 @@ package config
 
 import (
 	"bufio"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,8 +22,32 @@ func LoadDotenv(path string) error {
 		return err
 	}
 	defer f.Close()
+	return LoadDotenvFromReader(f)
+}
 
-	scanner := bufio.NewScanner(f)
+// LoadDotenvFS loads a dotenv file from an fs.FS filesystem into os environment variables.
+func LoadDotenvFS(fsys any, path string) error {
+	type opener interface {
+		Open(name string) (any, error)
+	}
+	if op, ok := fsys.(opener); ok {
+		f, err := op.Open(path)
+		if err != nil {
+			return err
+		}
+		if closer, ok := f.(io.Closer); ok {
+			defer closer.Close()
+		}
+		if r, ok := f.(io.Reader); ok {
+			return LoadDotenvFromReader(r)
+		}
+	}
+	return nil
+}
+
+// LoadDotenvFromReader parses key-value pairs from an io.Reader and sets unset env vars.
+func LoadDotenvFromReader(r io.Reader) error {
+	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -54,7 +79,13 @@ func unquote(value string) string {
 	}
 	first, last := value[0], value[len(value)-1]
 	if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-		return value[1 : len(value)-1]
+		v := value[1 : len(value)-1]
+		if first == '"' {
+			v = strings.ReplaceAll(v, `\n`, "\n")
+			v = strings.ReplaceAll(v, `\r`, "\r")
+			v = strings.ReplaceAll(v, `\t`, "\t")
+		}
+		return v
 	}
 	return value
 }

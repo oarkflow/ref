@@ -1,6 +1,10 @@
 package platform
 
-import "github.com/oarkflow/ref/pipeline"
+import (
+	"io/fs"
+
+	"github.com/oarkflow/ref/pipeline"
+)
 
 // Document is the whole BCL application model: one file (or one directory of
 // imported files) describes an entire deployable system.
@@ -15,6 +19,9 @@ type Document struct {
 	// Version is stamped onto every process run so a long-lived run can be
 	// migrated or rejected deliberately after a deploy.
 	Version string `bcl:"version"`
+
+	// App block allows declaring application name/version via `app "name" { version "1.0.0" }`.
+	Apps []AppBlock `bcl:"app,block"`
 
 	Secrets   []SecretSpec   `bcl:"secret,block"`
 	Resources []ResourceSpec `bcl:"resource,block"`
@@ -105,6 +112,9 @@ type ResourceSpec struct {
 	// dependency order and is not a BCL field — a provider reads it through
 	// requireSQLDependency and friends rather than reaching into the platform.
 	resolved map[string]Resource
+
+	// FS is the virtual filesystem, if any, backing the platform generation.
+	FS fs.FS
 }
 
 // Dependency returns the already-open resource named by the given config key.
@@ -285,4 +295,11 @@ type StaticSpec struct {
 	MaxAge       Duration `bcl:"max_age"`
 	CacheControl string   `bcl:"cache_control"`
 	Index        string   `bcl:"index"`
+}
+
+// AppBlock carries top-level application metadata declared with `app "name" { ... }`.
+type AppBlock struct {
+	Name        string `bcl:",id"`
+	Version     string `bcl:"version"`
+	Description string `bcl:"description"`
 }

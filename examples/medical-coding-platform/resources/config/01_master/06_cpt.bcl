@@ -111,16 +111,35 @@ intent "cpt.all" {
 }
 
 intent "files.upload" {
-  description "Handle file upload and return stored file descriptor"
-  response "response"
+  description "Handle file upload, persist to storage, and return accessible URL descriptor"
+  response "upload"
 
-  node "response" {
-    uses "collect"
+  node "upload" {
+    resource "storage"
+    uses "media.upload"
     requires [input]
-    provides [response]
+    provides [upload]
     config {
-      status "uploaded"
-      message "File processed successfully"
+      path "documents/"
+      url_prefix "/files/"
+      allowed_types ["image/*", "application/pdf", "text/*", "application/json"]
     }
   }
 }
+
+intent "files.serve" {
+  description "Serve uploaded file or document with proper content type and caching"
+  response "file"
+
+  node "file" {
+    resource "storage"
+    uses "media.serve"
+    requires [params]
+    provides [file]
+    config {
+      key "{{ params['*'] }}"
+      disposition "inline"
+    }
+  }
+}
+

@@ -15,6 +15,18 @@ This example handles medical coding and billing for patient encounters. An encou
 
 To run it:
 
+### Quick Start (Single-Command Execution)
+
+```sh
+# Run directly with Aegis Platform Runtime
+make
+
+# Run securely inside an encrypted container via pure in-memory VFS (zero disk residue)
+make secure
+```
+
+### Manual Run
+
 ```sh
 export CODING_JWT_SECRET=$(openssl rand -hex 24)
 go run ./examples/medical-coding &
@@ -33,4 +45,13 @@ curl -H "Authorization: Bearer $CODER" -H 'Content-Type: application/json' local
 | `GET /api/encounters` | The tenant's encounters |
 | `GET /api/encounters/:id/lines` | Stored claim lines, by date |
 
+### Aegis Zero-Disk In-Memory VFS Execution
+
+When running with `make secure`:
+1. Aegis packages the application directory into an AES-256-GCM encrypted, Ed25519-signed `.apkg` container.
+2. At runtime, the container is validated against the developer's public key, decrypted strictly into memory, and loaded into an isolated in-memory Virtual Filesystem (`vfs.MemFS`).
+3. No decrypted files touch the host disk or `/tmp` at any point during startup or request execution.
+4. Upon process termination, memory buffers are cryptographically wiped (`0x00`).
+
 The tests are in `platform/dos_e2e_test.go`, and the building blocks are described in [`docs/app-patterns.md`](../../docs/app-patterns.md).
+

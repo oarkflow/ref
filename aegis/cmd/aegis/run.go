@@ -1,7 +1,6 @@
 package main
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/aes"
@@ -11,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +18,7 @@ import (
 	"github.com/oarkflow/ref/aegis/ir"
 	"github.com/oarkflow/ref/aegis/pkg"
 	"github.com/oarkflow/ref/aegis/runtime"
+	"github.com/oarkflow/ref/aegis/vfs"
 	"github.com/oarkflow/ref/aegis/vm"
 	"github.com/oarkflow/ref/serve"
 )
@@ -53,13 +52,28 @@ func runRun(args []string, stdout, stderr io.Writer) error {
 	flags.Int64Var(&fuelFlag, "fuel", 1000000, "Maximum execution fuel instruction limit")
 	flags.StringVar(&pubkeyFlag, "pubkey", "", "Optional trusted public key PEM or JWKS to verify package signature")
 
-	if err := flags.Parse(args); err != nil {
+	var flagArgs []string
+	var nonFlags []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "-") {
+			flagArgs = append(flagArgs, a)
+			if !strings.Contains(a, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				flagArgs = append(flagArgs, args[i+1])
+				i++
+			}
+		} else {
+			nonFlags = append(nonFlags, a)
+		}
+	}
+
+	if err := flags.Parse(flagArgs); err != nil {
 		return err
 	}
 
 	target := ""
-	if flags.NArg() > 0 {
-		target = flags.Arg(0)
+	if len(nonFlags) > 0 {
+		target = nonFlags[0]
 	}
 	if target == "" && appFlag != "" {
 		target = appFlag
@@ -302,57 +316,20 @@ func runEncryptedApp(plaintext []byte, pkgID, addr, env string, stdout, stderr i
 	if !passed {
 		return fmt.Errorf("aegis: security integrity violation: %s", report)
 	}
-	fmt.Fprintf(stdout, "  [Isolation] Memory Boundary: ENFORCED | Storage: EPHEMERAL SECURED\n")
+	fmt.Fprintf(stdout, "  [Isolation] Memory Boundary: ENFORCED | Filesystem: VIRTUAL IN-MEMORY (ZERO DISK RESIDUE)\n")
 
-	tmpDir, err := os.MkdirTemp("", "aegis-app-*")
+	// Load decrypted payload into in-memory virtual filesystem with zero disk writes
+	memFS, err := vfs.FromZip(plaintext)
 	if err != nil {
-		return fmt.Errorf("aegis: failed to create secure execution workspace: %w", err)
+		return fmt.Errorf("aegis: failed to load in-memory virtual filesystem: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer memFS.Wipe()
 
-	if err := unzipApp(plaintext, tmpDir); err != nil {
-		return fmt.Errorf("aegis: failed to unpack protected application: %w", err)
-	}
-
+	fmt.Fprintf(stdout, "==> Loaded %d virtual files into in-memory VFS\n", len(memFS.ListAll()))
 	fmt.Fprintf(stdout, "==> Starting protected REF application on %s...\n", addr)
 	return serve.Run(context.Background(), serve.Options{
-		Dir:  tmpDir,
+		FS:   memFS,
 		Addr: addr,
 		Env:  env,
 	})
-}
-
-func unzipApp(zipData []byte, destDir string) error {
-	zr, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
-	if err != nil {
-		return err
-	}
-	cleanDest := filepath.Clean(destDir) + string(os.PathSeparator)
-	for _, f := range zr.File {
-		targetPath := filepath.Join(destDir, filepath.FromSlash(f.Name))
-		if !strings.HasPrefix(targetPath, cleanDest) && targetPath != filepath.Clean(destDir) {
-			return fmt.Errorf("illegal file path in package: %s", f.Name)
-		}
-		if f.FileInfo().IsDir() {
-			os.MkdirAll(targetPath, 0700)
-			continue
-		}
-		os.MkdirAll(filepath.Dir(targetPath), 0700)
-		dstFile, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
-		if err != nil {
-			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			dstFile.Close()
-			return err
-		}
-		_, err = io.Copy(dstFile, rc)
-		rc.Close()
-		dstFile.Close()
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }

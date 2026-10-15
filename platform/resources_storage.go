@@ -53,6 +53,8 @@ func registerStorageResources(r *Registry) {
 			{Name: "max_object_bytes", Type: "int", Default: "8388608", Summary: "Smaller than the filesystem default: large blobs belong outside a row"},
 		},
 	})
+
+	registerS3StorageResource(r)
 }
 
 // ---------------------------------------------------------------------------

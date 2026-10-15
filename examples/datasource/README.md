@@ -28,12 +28,22 @@ The `source.Coalescer` deduplicates identical active requests. If 100 requests a
 
 ## Running the Example
 
-Run the showcase to see the metrics and bottleneck resolutions in action:
+### Quick Start (Single Command)
 
 ```bash
-cd ref/examples/datasource
-go run main.go
+# Run the showcase scenarios
+make
+
+# Run the test suite
+make test
 ```
+
+### Manual Run
+
+```bash
+go run ./examples/datasource
+```
+
 
 ### Expected Output
 

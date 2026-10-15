@@ -13,9 +13,12 @@ What it does:
 ## Run
 
 ```sh
-make wasm                                        # once: build the secure-transport client (see below)
-make run dir=./examples/data-pipeline            # http://127.0.0.1:8080, SQLite in .data/
-ETL_DB_DRIVER=pgx ETL_DSN='postgres://user:pass@host/db?sslmode=disable' ETL_DB_CONNECTIONS=5 make run dir=./examples/data-pipeline
+# Inside this directory:
+make                                         # Runs directly with Aegis (http://127.0.0.1:8080)
+make secure                                  # Packages & runs in pure in-memory VFS (zero disk residue)
+
+# Or from the repository root:
+make aegis-run dir=./examples/data-pipeline
 ```
 
 Development accounts. Roles are edited on the Access tab; these are the built-in ones:

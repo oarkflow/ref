@@ -14,6 +14,18 @@ The host also runs an optional in-process kernel demonstration before serving. T
 
 ## Run
 
+### Quick Start (Single-Command Execution)
+
+```sh
+# Run directly with Aegis Platform Runtime
+make
+
+# Run securely inside an encrypted container via pure in-memory VFS (zero disk residue)
+make secure
+```
+
+### Manual Run
+
 From the repository root:
 
 ```sh
@@ -27,6 +39,15 @@ go run ./examples/ref-complete -addr 127.0.0.1:8092
 go run ./examples/ref-complete -kernel-demo=false
 go run ./examples/ref-complete -config examples/ref-complete/app.bcl
 ```
+
+### Aegis Zero-Disk In-Memory VFS Execution
+
+When executing via `make secure`:
+1. Aegis packages the application directory into an AES-256-GCM encrypted, Ed25519-signed `.apkg` container.
+2. At boot time, the container signature is cryptographically verified against the developer's public key, decrypted strictly into memory, and loaded into an isolated in-memory Virtual Filesystem (`vfs.MemFS`).
+3. No decrypted files touch the host disk or `/tmp` at any point during startup or request processing.
+4. On process shutdown, all in-memory keys and decrypted buffers are cryptographically zeroized (`0x00`).
+
 
 The default database is `.data/ref-complete/ref-complete.db` and the default queue directory is `.data/ref-complete/queue`. Override them without editing the BCL file:
 

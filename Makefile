@@ -24,6 +24,20 @@ aegis-run: aegis
 	@test -n "$(dir)" || { echo "usage: make aegis-run dir=./examples/boilerplate [addr=:8080]"; exit 2; }
 	./bin/aegis run $(if $(addr),-addr $(addr)) "$(abspath $(dir))"
 
+# Package any REF application into an encrypted, signed Aegis container:
+#   make aegis-package dir=./examples/medical-coding-platform/resources out=medical.apkg
+aegis-package: aegis
+	@test -n "$(dir)" || { echo "usage: make aegis-package dir=<app-dir> [out=app.apkg]"; exit 2; }
+	@mkdir -p .data/aegis
+	@test -f .data/aegis/master.key || ./bin/aegis keygen -out .data/aegis/master
+	./bin/aegis package -dir "$(dir)" -key .data/aegis/master.key -enckey .data/aegis/master.enc -out $(if $(out),$(out),app.apkg)
+
+# Run an encrypted Aegis container completely in memory via VFS (zero disk residuals):
+#   make aegis-run-pkg pkg=medical.apkg [addr=:3000]
+aegis-run-pkg: aegis
+	@test -n "$(pkg)" || { echo "usage: make aegis-run-pkg pkg=app.apkg [addr=:8080]"; exit 2; }
+	./bin/aegis run -key .data/aegis/master.enc -pubkey .data/aegis/master.pub "$(pkg)" $(if $(addr),-addr $(addr))
+
 run:
 	@test -n "$(dir)" || { echo "usage: make run dir=./examples/smsgateway [addr=:8080]"; exit 2; }
 	cd cmd/ref && go run . $(if $(addr),-addr $(addr)) "$(abspath $(dir))"

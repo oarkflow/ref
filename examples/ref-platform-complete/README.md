@@ -65,6 +65,18 @@ row remains queued here.
 
 ## Run locally
 
+### Quick Start (Single-Command Execution)
+
+```sh
+# Run directly with Aegis Platform Runtime
+make
+
+# Run securely inside an encrypted container via pure in-memory VFS (zero disk residue)
+make secure
+```
+
+### Manual Run
+
 Requirements: Go 1.26.5+, PostgreSQL, and a writable working directory. Run
 from the repository root because the default config path is relative.
 
@@ -79,6 +91,15 @@ go run ./examples/ref-platform-complete
 
 The server listens on http://localhost:8090. Replace the illustrative webhook
 URL/host with a reachable endpoint. The URL host must match the allowlist.
+
+### Aegis Zero-Disk In-Memory VFS Execution
+
+When executing via `make secure`:
+1. Aegis packages the application directory into an AES-256-GCM encrypted, Ed25519-signed `.apkg` container.
+2. At boot time, the container signature is cryptographically verified against the developer's public key, decrypted strictly into memory, and loaded into an isolated in-memory Virtual Filesystem (`vfs.MemFS`).
+3. No decrypted files touch the host disk or `/tmp` at any point during startup or request processing.
+4. On process shutdown, all in-memory keys and decrypted buffers are cryptographically zeroized (`0x00`).
+
 
 | Variable | Required | Default | Purpose |
 |---|---:|---|---|

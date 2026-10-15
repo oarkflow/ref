@@ -6,8 +6,13 @@ nothing is sent: the whole decision is the rules in `rules/`, and `config/` only
 the facts they read. It is the routing of [`../smsgateway`](../smsgateway) on its own,
 small enough to read in one sitting.
 
-```
-make run dir=./examples/rules          # http://localhost:8080
+```bash
+# 1. Inside this directory:
+make              # Runs example locally via Aegis (http://localhost:8080)
+make secure       # Packages & runs in pure in-memory VFS (zero disk residue)
+
+# 2. Or from the repository root:
+make aegis-run dir=./examples/rules
 ```
 
 ```

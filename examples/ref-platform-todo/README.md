@@ -104,6 +104,18 @@ already exists.
 
 ## Run it
 
+### Quick Start (Single-Command Execution)
+
+```sh
+# Run directly with Aegis Platform Runtime
+make
+
+# Run securely inside an encrypted container via pure in-memory VFS (zero disk residue)
+make secure
+```
+
+### Manual Run
+
 ```sh
 createdb todo
 export DATABASE_URL="postgres://localhost/todo?sslmode=disable"
@@ -114,6 +126,15 @@ go run ./examples/ref-platform-todo     # from the repository root
 
 It listens on `:8089`. The document's path is relative, so run it from the
 repository root (or edit the path in `main.go`).
+
+### Aegis Zero-Disk In-Memory VFS Execution
+
+When executing via `make secure`:
+1. Aegis packages the application directory into an AES-256-GCM encrypted, Ed25519-signed `.apkg` container.
+2. At boot time, the container signature is cryptographically verified against the developer's public key, decrypted strictly into memory, and loaded into an isolated in-memory Virtual Filesystem (`vfs.MemFS`).
+3. No decrypted files touch the host disk or `/tmp` at any point during startup or request processing.
+4. On process shutdown, all in-memory keys and decrypted buffers are cryptographically zeroized (`0x00`).
+
 
 ---
 

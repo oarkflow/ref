@@ -99,8 +99,18 @@ It ships with:
 
 ## Quick start
 
-Either export the required variables directly:
+### Single Command Execution (Makefile)
 
+Inside this directory:
+```sh
+# Run directly with Aegis
+make
+
+# Or package into an encrypted container (.apkg) and run in pure in-memory VFS (zero disk residue):
+make secure
+```
+
+Or export the required variables directly:
 ```sh
 export SESSION_SECRET="$(openssl rand -hex 32)"
 export WEBHOOK_SECRET="$(openssl rand -hex 32)"

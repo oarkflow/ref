@@ -1,4 +1,12 @@
 intent "notification.send_otp" {
+  response "sent"
+  node "get-message" {
+    uses "data.get"
+    kind pure
+    requires [input]
+    provides [message]
+    config { path "input" }
+  }
   node "dispatch-otp" {
     uses "sms.send"
     resource "gateway"
@@ -21,6 +29,14 @@ intent "notification.send_otp" {
 }
 
 intent "sms.dispatch_routed" {
+  response "sent"
+  node "get-message" {
+    uses "data.get"
+    kind pure
+    requires [input]
+    provides [message]
+    config { path "input" }
+  }
   node "route-and-send" {
     uses "sms.send"
     resource "gateway"
@@ -44,6 +60,14 @@ intent "sms.dispatch_routed" {
 }
 
 intent "sms.process_dlr" {
+  response "recorded"
+  node "get-dlr" {
+    uses "data.get"
+    kind pure
+    requires [input]
+    provides [dlr]
+    config { path "input" }
+  }
   node "record-dlr" {
     uses "sms.record_dlr"
     resource "gateway"

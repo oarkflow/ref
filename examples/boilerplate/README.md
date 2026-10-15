@@ -321,20 +321,29 @@ To illustrate how everything connects in practice, here is the lifecycle of a us
 
 ## ⚡ Quick Start
 
-### 1. Run the Server
+### 1. Run with a Single Command (Makefile)
 
-From the repository root:
+Inside the `examples/boilerplate` directory:
 
 ```bash
-# Start server on default port 8080 (or specify PORT)
-PORT=8080 go run ./examples/boilerplate/cmd/server
+# Run directly with Aegis on port 9000
+make
 
-# Or keep all state out of the repository:
-DATABASE_URL="file:/tmp/bp/app.db?_pragma=busy_timeout(5000)" SESSION_DIR=/tmp/bp/sessions \
-UPLOAD_DIR=/tmp/bp/uploads go run ./examples/boilerplate/cmd/server
+# Or package into an encrypted container (.apkg) and run in pure in-memory VFS (zero disk residue):
+make secure
 ```
 
-Open your browser and visit: `http://localhost:8080`
+From the repository root:
+```bash
+# Run via root Makefile
+make aegis-run dir=./examples/boilerplate addr=:9000
+
+# Or package and run encrypted container
+make aegis-package dir=./examples/boilerplate out=boilerplate.apkg
+make aegis-run-pkg pkg=boilerplate.apkg addr=:9000
+```
+
+Open your browser and visit: `http://localhost:9000` (or `http://localhost:8080`)
 
 ### 2. Pre-Seeded Demo Test Accounts
 

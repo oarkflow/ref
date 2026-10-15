@@ -1502,6 +1502,8 @@ func (rt *entityRuntime) fire(ctx *ActionContext, event string, record, previous
 type RawResponse struct {
 	ContentType string
 	Filename    string
+	Inline      bool
+	Headers     map[string]string
 	Body        []byte
 }
 

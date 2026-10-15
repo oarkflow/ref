@@ -37,6 +37,7 @@ func registerBuiltins(r *Registry) {
 	registerWorkflowActions(r)
 	registerStreamActions(r)
 	registerStorageActions(r)
+	registerMediaActions(r)
 	registerObservabilityActions(r)
 	registerFlowActions(r)
 	registerProcessActions(r)
@@ -59,6 +60,7 @@ func registerBuiltins(r *Registry) {
 	registerSMSActions(r)
 	registerDynamicWorkflowActions(r)
 	registerAppActions(r)
+	registerMessagingStubs(r)
 }
 
 // registerCoreActions installs the handful of primitives every application uses

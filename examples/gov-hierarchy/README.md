@@ -11,8 +11,20 @@ This example runs government services across a hierarchy: **country â†’ state â†
 
 To run it:
 
+### Quick Start (Single-Command Execution)
+
 ```sh
-export GOV_JWT_SECRET=$(openssl rand -hex 24)
+# Run directly with Aegis Platform Runtime
+make
+
+# Run securely inside an encrypted container via pure in-memory VFS (zero disk residue)
+make secure
+```
+
+### Manual Run
+
+```sh
+export GOV_JWT_SECRET="super-secure-argon2id-gov-hierarchy-jwt-secret-32-bytes"
 go run ./examples/gov-hierarchy &
 
 CLERK=$(go run ./examples/gov-hierarchy -token '{"sub":"clerk","org_units":"ktm-metro","department":"revenue"}')
@@ -35,4 +47,13 @@ curl -H "Authorization: Bearer $ADMIN" localhost:8095/api/org/tree
 | `POST /api/lookups` | Override reference data at a unit the caller administers |
 | `POST /api/applications` / `GET /api/applications` | Hierarchy-scoped records |
 
+### Aegis Zero-Disk In-Memory VFS Execution
+
+When executing via `make secure`:
+1. Aegis packages the application directory into an AES-256-GCM encrypted, Ed25519-signed `.apkg` container.
+2. At boot time, the container signature is cryptographically verified against the developer's public key, decrypted in memory, and mounted into an isolated in-memory Virtual Filesystem (`vfs.MemFS`).
+3. No decrypted files touch the host disk or `/tmp` at any time.
+4. On process shutdown, all in-memory keys and decrypted buffers are cryptographically zeroized (`0x00`).
+
 The tests are in `platform/org_e2e_test.go`, and the building blocks are described in [`docs/app-patterns.md`](../../docs/app-patterns.md).
+

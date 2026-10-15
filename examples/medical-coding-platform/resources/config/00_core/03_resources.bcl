@@ -87,3 +87,13 @@ resource "policy_engine" {
     dir "./resources/rules"
   }
 }
+
+resource "storage" {
+  kind "storage.fs"
+  description "Object storage for uploaded medical charts, records, and clinical media"
+  config {
+    dir env("STORAGE_DIR", ".data/uploads")
+    max_object_bytes env("STORAGE_MAX_BYTES", "52428800")
+  }
+}
+

@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"log/slog"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -349,6 +351,13 @@ func (p *Platform) Mount(app *fh.App) error {
 		if s.maxAge > 0 {
 			cfg.MaxAge = int(s.maxAge.Seconds())
 		}
+		if p.FS != nil {
+			cleanRoot := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(s.root)), "/")
+			if sub, err := fs.Sub(p.FS, cleanRoot); err == nil {
+				app.StaticFS(s.spec.Prefix, sub, cfg)
+				continue
+			}
+		}
 		app.Static(s.spec.Prefix, s.root, cfg)
 	}
 	// Resources that wrap the routes (the secure transport) go in after the
@@ -361,15 +370,31 @@ func (p *Platform) Mount(app *fh.App) error {
 			}
 		}
 	}
+	hasRootRoute := false
 	for i := range p.routes {
 		route := p.routes[i]
+		if route.spec.Path == "/" {
+			hasRootRoute = true
+		}
 		if route.spec.Static != "" {
+			if p.FS != nil {
+				cleanRoot := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(route.spec.Static)), "/")
+				if sub, err := fs.Sub(p.FS, cleanRoot); err == nil {
+					app.StaticFS(route.spec.Path, sub)
+					continue
+				}
+			}
 			app.Static(route.spec.Path, route.spec.Static)
 			continue
 		}
 		app.Add(route.spec.Method, route.spec.Path, func(c fh.Ctx) error {
 			return p.serve(c, route)
 		}).Name(route.spec.Name)
+	}
+	for _, s := range p.static {
+		if s.spec.Prefix == "/" {
+			hasRootRoute = true
+		}
 	}
 	if err := p.mountTriggers(app); err != nil {
 		return err
@@ -380,6 +405,33 @@ func (p *Platform) Mount(app *fh.App) error {
 			prefix = "/docs"
 		}
 		_ = p.MountSwagger(app, prefix, "/swagger")
+		if !hasRootRoute {
+			app.Get("/", func(c fh.Ctx) error {
+				accept := c.Get("Accept")
+				if strings.Contains(accept, "application/json") && !strings.Contains(accept, "text/html") {
+					return c.JSON(map[string]any{
+						"name":    p.Document.Name,
+						"version": p.Document.Version,
+						"status":  "running",
+						"docs":    prefix,
+						"openapi": "/openapi.json",
+						"swagger": "/swagger",
+					})
+				}
+				return c.Redirect(prefix, 302)
+			})
+			app.Get("/index.html", func(c fh.Ctx) error {
+				return c.Redirect(prefix, 302)
+			})
+		}
+	} else if !hasRootRoute {
+		app.Get("/", func(c fh.Ctx) error {
+			return c.JSON(map[string]any{
+				"name":    p.Document.Name,
+				"version": p.Document.Version,
+				"status":  "running",
+			})
+		})
 	}
 	return nil
 }
@@ -898,7 +950,16 @@ func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute,
 		// browser second-guessing it into HTML or script.
 		c.Set("X-Content-Type-Options", "nosniff")
 		if raw.Filename != "" {
-			c.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", raw.Filename))
+			disposition := "attachment"
+			if raw.Inline {
+				disposition = "inline"
+			}
+			c.Set("Content-Disposition", fmt.Sprintf("%s; filename=%q", disposition, raw.Filename))
+		} else if raw.Inline {
+			c.Set("Content-Disposition", "inline")
+		}
+		for k, v := range raw.Headers {
+			c.Set(k, v)
 		}
 		if err := p.completeIdempotency(ctx, route, idemLease, route.status, raw.Body); err != nil {
 			return projectFailure(c, unavailable("the response could not be committed for idempotent replay"))

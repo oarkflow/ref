@@ -137,6 +137,41 @@ route "users.show" {
 		}
 	})
 
+	t.Run("root route browser redirect", func(t *testing.T) {
+		appRoot := fh.NewFast()
+		if err := p.Mount(appRoot); err != nil {
+			t.Fatalf("mount error: %v", err)
+		}
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml")
+		resp, err := appRoot.Test(req)
+		if err != nil {
+			t.Fatalf("GET / failed: %v", err)
+		}
+		if resp.StatusCode != 302 {
+			t.Fatalf("GET / returned status %d, want 302", resp.StatusCode)
+		}
+		if loc := resp.Header.Get("Location"); loc != "/docs" {
+			t.Fatalf("GET / Location = %q, want /docs", loc)
+		}
+	})
+
+	t.Run("root route json summary", func(t *testing.T) {
+		appRoot := fh.NewFast()
+		if err := p.Mount(appRoot); err != nil {
+			t.Fatalf("mount error: %v", err)
+		}
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("Accept", "application/json")
+		resp, err := appRoot.Test(req)
+		if err != nil {
+			t.Fatalf("GET / failed: %v", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("GET / returned status %d, want 200", resp.StatusCode)
+		}
+	})
+
 	t.Run("openapi json spec", func(t *testing.T) {
 		appSpec := fh.NewFast()
 		if err := p.Mount(appSpec); err != nil {
