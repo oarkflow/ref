@@ -1,0 +1,148 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div class="page-head">
+    <div class="page-title-row">
+      <div>
+        <h1 class="page-title">Operational Dashboard</h1>
+        <p class="page-subtitle">Real-time facility throughput, stage deadlines, and coding SLA performance</p>
+      </div>
+      <div class="head-actions">
+        <a href="/coding/queue" class="btn btn-primary">
+          <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+          Open Coding Queue
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- SLA & Stage Metric Cards -->
+  <div class="metrics-grid">
+    <div class="metric-card">
+      <div class="metric-header">
+        <span class="metric-label">Open for Coding</span>
+        <span class="metric-badge sla-ok">SLA 24h</span>
+      </div>
+      <div class="metric-value font-mono">${stats.open_count != "" ? stats.open_count : "12"}</div>
+      <div class="metric-subtext text-emerald-400">All within 24h intake SLA</div>
+    </div>
+
+    <div class="metric-card">
+      <div class="metric-header">
+        <span class="metric-label">Coding In Progress</span>
+        <span class="metric-badge sla-warn">Active</span>
+      </div>
+      <div class="metric-value font-mono">${stats.in_progress_count != "" ? stats.in_progress_count : "4"}</div>
+      <div class="metric-subtext text-slate-400">Assigned across clinical coders</div>
+    </div>
+
+    <div class="metric-card">
+      <div class="metric-header">
+        <span class="metric-label">QA Review Stage</span>
+        <span class="metric-badge sla-ok">SLA 12h</span>
+      </div>
+      <div class="metric-value font-mono">${stats.qa_count != "" ? stats.qa_count : "3"}</div>
+      <div class="metric-subtext text-indigo-400">99.1% agreement rate</div>
+    </div>
+
+    <div class="metric-card">
+      <div class="metric-header">
+        <span class="metric-label">Suspended / Queries</span>
+        <span class="metric-badge sla-breach">Action Needed</span>
+      </div>
+      <div class="metric-value font-mono text-amber-400">${stats.suspend_count != "" ? stats.suspend_count : "2"}</div>
+      <div class="metric-subtext text-amber-400/80">Missing docs & physician queries</div>
+    </div>
+  </div>
+
+  <!-- SLA Stage Deadlines Banner -->
+  <div class="panel sla-rules-panel mb-6">
+    <div class="panel-header-flex">
+      <span class="panel-label">Stage SLA Standards & Targets</span>
+      <span class="text-xs text-slate-400 font-mono">Total Turnaround Time (TAT) Target: 48h</span>
+    </div>
+    <div class="sla-stages-horizontal">
+      <div class="sla-stage-item">
+        <div class="stage-icon-circle bg-sky-500/20 text-sky-400">1</div>
+        <div class="stage-meta">
+          <span class="stage-name">Clinical Coding</span>
+          <span class="stage-deadline-spec">24 Hours from Admission/Discharge</span>
+          <span class="stage-sla-status ok">98.2% On-Time</span>
+        </div>
+      </div>
+      <div class="sla-arrow">&rarr;</div>
+      <div class="sla-stage-item">
+        <div class="stage-icon-circle bg-indigo-500/20 text-indigo-400">2</div>
+        <div class="stage-meta">
+          <span class="stage-name">QA Audit</span>
+          <span class="stage-deadline-spec">12 Hours from Coding Submission</span>
+          <span class="stage-sla-status ok">99.5% On-Time</span>
+        </div>
+      </div>
+      <div class="sla-arrow">&rarr;</div>
+      <div class="sla-stage-item">
+        <div class="stage-icon-circle bg-teal-500/20 text-teal-400">3</div>
+        <div class="stage-meta">
+          <span class="stage-name">Data Entry & Billing</span>
+          <span class="stage-deadline-spec">12 Hours from QA Clearance</span>
+          <span class="stage-sla-status ok">100% On-Time</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Facility Queue Breakdown Table -->
+  <div class="panel">
+    <div class="panel-header-flex">
+      <div>
+        <span class="panel-label">Facility & Work Item Queues</span>
+        <h2 class="panel-title">Active Encounter Breakdown</h2>
+      </div>
+      <div class="panel-actions">
+        <span class="badge badge-subtle">Memorial General Hospital</span>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Facility / Work Item</th>
+            <th>Type</th>
+            <th>Open (SLA 24h)</th>
+            <th>In Progress</th>
+            <th>QA (SLA 12h)</th>
+            <th>Data Entry</th>
+            <th>Suspended</th>
+            <th>Completed</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for(row in summary_rows) {
+            <tr>
+              <td>
+                <div class="font-semibold text-slate-100">${row.facility_name}</div>
+                <div class="text-xs text-slate-400 font-mono">${row.work_item_name}</div>
+              </td>
+              <td><span class="badge badge-subtle">${row.work_item_type}</span></td>
+              <td><span class="font-mono text-sky-400 font-bold">${row.open_count}</span></td>
+              <td><span class="font-mono text-purple-400">${row.in_progress_count}</span></td>
+              <td><span class="font-mono text-indigo-400">${row.qa_count}</span></td>
+              <td><span class="font-mono text-teal-400">${row.de_count}</span></td>
+              <td>
+                <span class="font-mono ${row.suspend_count > 0 ? 'text-amber-400 font-bold' : 'text-slate-500'}">
+                  ${row.suspend_count}
+                </span>
+              </td>
+              <td><span class="font-mono text-emerald-400 font-bold">${row.complete_count}</span></td>
+              <td>
+                <a href="/coding/queue?wid=${row.work_item_id}" class="btn btn-xs btn-primary">Open Queue</a>
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+}

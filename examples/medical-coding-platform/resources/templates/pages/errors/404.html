@@ -1,0 +1,15 @@
+@extends("layouts/error.html")
+
+@define("content") {
+  <div class="error-card text-center p-8 bg-slate-900 border border-slate-800 rounded-2xl max-w-md mx-auto my-20">
+    <div class="text-indigo-400 font-mono text-6xl font-black mb-4">404</div>
+    <h1 class="text-2xl font-bold text-slate-100 mb-2">Record Not Found</h1>
+    <p class="text-slate-400 text-sm mb-6">
+      The requested encounter, patient chart, or queue resource does not exist in the platform registry.
+    </p>
+    <div class="flex justify-center gap-3">
+      <a href="/dashboard" class="btn btn-primary">Return to Dashboard</a>
+      <a href="/coding/queue" class="btn btn-secondary">Coding Queue</a>
+    </div>
+  </div>
+}

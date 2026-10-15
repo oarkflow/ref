@@ -1,0 +1,87 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div class="page-head">
+    <div class="page-title-row">
+      <div>
+        <h1 class="page-title">Quality Assurance (QA) Review</h1>
+        <p class="page-subtitle">Stage 2 Audit: Verify code accuracy, compliance guidelines, and agreement score within 12h SLA</p>
+      </div>
+      <div class="head-actions">
+        <span class="badge badge-accent">QA SLA: 12 Hours</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- QA Audit Queue Table -->
+  <div class="panel">
+    <div class="panel-header-flex">
+      <div>
+        <span class="panel-label">Audit Queue</span>
+        <h2 class="panel-title">Encounters Awaiting Clinical Audit</h2>
+      </div>
+      <div class="panel-actions">
+        <span class="badge badge-subtle">Audit Target: 100% of Flagged Charts</span>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Encounter</th>
+            <th>Patient Demographics</th>
+            <th>DOS</th>
+            <th>Assigned Coder</th>
+            <th>Stage SLA Deadline</th>
+            <th>Audit Decision</th>
+          </tr>
+        </thead>
+        <tbody>
+          @if(qa_encounters) {
+            @for(enc in qa_encounters) {
+              <tr>
+                <td>
+                  <span class="font-mono text-sm font-bold text-slate-100">${enc.encounter_id}</span>
+                  <div class="text-xs text-slate-400 font-mono">FIN: ${enc.patient_fin}</div>
+                </td>
+                <td>
+                  <div class="font-bold text-slate-200">${enc.patient_name}</div>
+                  <div class="text-xs text-slate-400">${enc.patient_sex} • MRN: ${enc.patient_mrn}</div>
+                </td>
+                <td class="font-mono">${enc.encounter_dos}</td>
+                <td>
+                  <span class="badge badge-subtle text-indigo-300">${enc.code_assigned != '' ? enc.code_assigned : 'Gita Coder'}</span>
+                </td>
+                <td>
+                  <span class="sla-badge sla-warn" data-sla-deadline="${enc.encounter_dos}T12:00:00Z">
+                    QA SLA • 6h left
+                  </span>
+                </td>
+                <td>
+                  <form method="POST" action="/web/qa/${enc.work_item_id}/${enc.encounter_id}/complete?redirect=/qa" class="flex gap-2">
+                    <input type="hidden" name="agreement_status" value="Agree">
+                    <button type="submit" class="btn btn-xs btn-primary bg-emerald-600 hover:bg-emerald-500 border-none">
+                      &check; Agree & Approve
+                    </button>
+                    <a href="/coding/${enc.work_item_id}/${enc.encounter_id}" class="btn btn-xs btn-secondary">
+                      Review Codes
+                    </a>
+                  </form>
+                </td>
+              </tr>
+            }
+          } @else {
+            <tr>
+              <td colspan="6" class="text-center py-8 text-slate-400">
+                <svg class="w-12 h-12 text-slate-600 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <div class="font-semibold text-slate-300">All QA Reviews Complete</div>
+                <div class="text-xs text-slate-500 mt-1">No pending charts awaiting auditor sign-off.</div>
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+}

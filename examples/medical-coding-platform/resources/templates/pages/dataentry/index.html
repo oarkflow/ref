@@ -1,0 +1,78 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div class="page-head">
+    <div class="page-title-row">
+      <div>
+        <h1 class="page-title">Data Entry & Billing Queue</h1>
+        <p class="page-subtitle">Stage 3: Charge posting, professional/technical split, and claim EDI 837 generation</p>
+      </div>
+      <div class="head-actions">
+        <span class="badge badge-accent bg-teal-500/20 text-teal-300 border border-teal-500/30">
+          Billing SLA: 12h
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header-flex">
+      <div>
+        <span class="panel-label text-teal-400">Claims Ready for Posting</span>
+        <h2 class="panel-title">Post-Coding Clearance Queue</h2>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Encounter ID</th>
+            <th>Patient</th>
+            <th>DOS</th>
+            <th>Primary Dx</th>
+            <th>Total RVU</th>
+            <th>SLA Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          @if(de_encounters) {
+            @for(item in de_encounters) {
+              <tr>
+                <td class="font-mono text-sm font-bold text-slate-100">${item.encounter_id}</td>
+                <td>
+                  <div class="font-bold text-slate-200">${item.patient_name}</div>
+                  <div class="text-xs text-slate-400 font-mono">FIN: ${item.patient_fin}</div>
+                </td>
+                <td class="font-mono">${item.encounter_dos}</td>
+                <td><span class="badge badge-subtle font-mono text-amber-300">R07.9</span></td>
+                <td class="font-mono text-emerald-400 font-bold">4.85</td>
+                <td>
+                  <span class="sla-badge sla-ok" data-sla-deadline="${item.encounter_dos}T12:00:00Z">
+                    SLA • 10h left
+                  </span>
+                </td>
+                <td>
+                  <form method="POST" action="/web/dataentry/${item.work_item_id}/${item.encounter_id}/complete?redirect=/dataentry">
+                    <button type="submit" class="btn btn-xs btn-primary bg-teal-600 hover:bg-teal-500 border-none">
+                      Post & Transmit Claim &rarr;
+                    </button>
+                  </form>
+                </td>
+              </tr>
+            }
+          } @else {
+            <tr>
+              <td colspan="7" class="text-center py-8 text-slate-400">
+                <svg class="w-12 h-12 text-slate-600 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <div class="font-semibold text-slate-300">All Charges Posted</div>
+                <div class="text-xs text-slate-500 mt-1">No pending encounters awaiting EDI billing transmission.</div>
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+}

@@ -1,0 +1,81 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div class="page-head">
+    <div class="page-title-row">
+      <div>
+        <h1 class="page-title">Suspends & Clinical Queries</h1>
+        <p class="page-subtitle">Track and resolve documentation bottlenecks, missing records, and physician clarification queries</p>
+      </div>
+      <div class="head-actions">
+        <span class="badge badge-accent bg-amber-500/20 text-amber-300 border border-amber-500/30">
+          Resolution TAT Target: 48h
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Suspended Encounters Table -->
+  <div class="panel">
+    <div class="panel-header-flex">
+      <div>
+        <span class="panel-label text-amber-400">Blocked Charts</span>
+        <h2 class="panel-title">Active Suspended Encounters</h2>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Encounter ID</th>
+            <th>Patient</th>
+            <th>DOS</th>
+            <th>Suspend Reason</th>
+            <th>Clarification Notes</th>
+            <th>Suspended By</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          @if(suspended_encounters) {
+            @for(item in suspended_encounters) {
+              <tr>
+                <td class="font-mono text-sm font-bold text-slate-100">${item.encounter_id}</td>
+                <td>
+                  <div class="font-bold text-slate-200">${item.patient_name}</div>
+                  <div class="text-xs text-slate-400 font-mono">MRN: ${item.patient_mrn}</div>
+                </td>
+                <td class="font-mono">${item.encounter_dos}</td>
+                <td>
+                  <span class="badge badge-subtle text-amber-400 border border-amber-500/20">
+                    ${item.suspend_reason}
+                  </span>
+                </td>
+                <td class="text-xs text-slate-300 max-w-sm">
+                  ${item.suspend_note != '' ? item.suspend_note : 'Awaiting clinical clarification from attending physician.'}
+                </td>
+                <td class="text-xs text-slate-400 font-mono">${item.created_by != '' ? item.created_by : 'Gita Coder'}</td>
+                <td>
+                  <form method="POST" action="/web/suspends/${item.work_item_id}/${item.encounter_id}/release?redirect=/suspends">
+                    <button type="submit" class="btn btn-xs btn-primary bg-amber-600 hover:bg-amber-500 border-none">
+                      &check; Resolve & Release
+                    </button>
+                  </form>
+                </td>
+              </tr>
+            }
+          } @else {
+            <tr>
+              <td colspan="7" class="text-center py-8 text-slate-400">
+                <svg class="w-12 h-12 text-slate-600 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <div class="font-semibold text-slate-300">Zero Suspended Encounters</div>
+                <div class="text-xs text-slate-500 mt-1">No documentation blocks or physician queries currently pending.</div>
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+}

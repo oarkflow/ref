@@ -1,0 +1,197 @@
+# ===========================================================================
+# Web SSR Page Routes and Browser Form Actions
+# ===========================================================================
+
+# --- SSR Pages -------------------------------------------------------------
+
+route "web.root" {
+  method GET
+  path "/"
+  intent "web.dashboard"
+  template "pages/dashboard/index"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web.dashboard" {
+  method GET
+  path "/dashboard"
+  intent "web.dashboard"
+  template "pages/dashboard/index"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web.login_page" {
+  method GET
+  path "/login"
+  template "pages/auth/login"
+  layout "layouts/auth"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web.coding_queue" {
+  method GET
+  path "/coding/queue"
+  intent "web.coding_queue"
+  template "pages/coding/queue"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web.coding_workspace" {
+  method GET
+  path "/coding/:wid/:eid"
+  intent "web.coding_workspace"
+  template "pages/coding/workspace"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous true
+  cache_control "no-store"
+  parameter "wid" {
+    in path
+    kind string
+    required true
+    description "Work item ID"
+  }
+  parameter "eid" {
+    in path
+    kind string
+    required true
+    description "Encounter ID"
+  }
+}
+
+route "web.qa_page" {
+  method GET
+  path "/qa"
+  intent "web.qa_list"
+  template "pages/qa/index"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web.suspends_page" {
+  method GET
+  path "/suspends"
+  intent "web.suspends_list"
+  template "pages/suspends/index"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web.dataentry_page" {
+  method GET
+  path "/dataentry"
+  intent "web.dataentry_list"
+  template "pages/dataentry/index"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web.facilities_page" {
+  method GET
+  path "/web/facilities"
+  intent "web.facilities_list"
+  template "pages/dashboard/index"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+# --- Browser Form Actions (web.* prefix triggers 303 Redirect) -------------
+
+route "web.start_coding_action" {
+  method POST
+  path "/web/coding/:wid/:eid/start-coding"
+  intent "encounters.start_coding"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web.save_patient_details_action" {
+  method POST
+  path "/web/coding/:wid/:eid/save-patient-details"
+  intent "encounters.save_patient_details"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web.save_coding_action" {
+  method POST
+  path "/web/coding/:wid/:eid/save-coding-documentation"
+  intent "coding.save_documentation"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web.abandon_action" {
+  method POST
+  path "/web/coding/:wid/:eid/abandon"
+  intent "encounters.abandon"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web.suspend_action" {
+  method POST
+  path "/web/suspends/:wid/:eid/suspend"
+  intent "suspends.suspend_chart"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web.release_suspend_action" {
+  method POST
+  path "/web/suspends/:wid/:eid/release"
+  intent "suspends.release_chart"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web.qa_complete_action" {
+  method POST
+  path "/web/qa/:wid/:eid/complete"
+  intent "qa.save_documentation"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "web.dataentry_complete_action" {
+  method POST
+  path "/web/dataentry/:wid/:eid/complete"
+  intent "de.complete"
+  session "sessions"
+  allow_anonymous true
+  cache_control "no-store"
+}

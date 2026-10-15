@@ -34,13 +34,16 @@ require (
 	github.com/oarkflow/convert v0.0.6 // indirect
 	github.com/oarkflow/date v0.0.4 // indirect
 	github.com/oarkflow/expr v0.0.11 // indirect
+	github.com/oarkflow/interpreter v0.0.13 // indirect
 	github.com/oarkflow/ip v0.0.11 // indirect
 	github.com/oarkflow/jet v0.0.4 // indirect
 	github.com/oarkflow/json v0.0.28 // indirect
 	github.com/oarkflow/migrate v0.0.30 // indirect
 	github.com/oarkflow/rules v0.0.5 // indirect
+	github.com/oarkflow/spl v0.0.10 // indirect
 	github.com/oarkflow/squealx v0.0.79 // indirect
 	github.com/oarkflow/tcpguard v0.0.16 // indirect
+	github.com/oarkflow/template v0.0.4 // indirect
 	github.com/oarkflow/wuid v0.0.1 // indirect
 	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.71.0 // indirect

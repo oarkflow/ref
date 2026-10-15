@@ -1,0 +1,41 @@
+<header class="top-header">
+  <div class="header-left">
+    <button type="button" class="sidebar-toggle-btn" id="sidebar-toggle" aria-label="Toggle navigation">
+      <svg class="w-6 h-6 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <div class="header-breadcrumb">
+      <span class="facility-pill">
+        <svg class="w-3.5 h-3.5 text-indigo-400 inline mr-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h8a2 2 0 012 2v12a1 1 0 110 2h-3a1 1 0 01-1-1v-2a1 1 0 00-1-1H9a1 1 0 00-1 1v2a1 1 0 01-1 1H4a1 1 0 110-2V4zm3 1h2v2H7V5zm4 0h2v2h-2V5dM7 8h2v2H7V8zm4 0h2v2h-2V8z" clip-rule="evenodd"/></svg>
+        Memorial General Hospital
+      </span>
+      <span class="breadcrumb-separator">/</span>
+      <span class="active-crumb">${title}</span>
+    </div>
+  </div>
+
+  <div class="header-right">
+    <div class="sla-monitor-indicator">
+      <span class="sla-dot ok"></span>
+      <span class="sla-label">SLA Compliance: 98.4%</span>
+    </div>
+
+    @if(user.id != null) {
+      <div class="user-profile-menu">
+        <div class="user-avatar-badge">${user.name != "" ? user.name : "Coder"}</div>
+        <div class="user-meta">
+          <span class="user-name">${user.name != "" ? user.name : "Gita Coder"}</span>
+          <span class="user-role">${user.role != "" ? user.role : "coder"}</span>
+        </div>
+        <form method="POST" action="/logout?redirect=/login" class="inline">
+          <button type="submit" class="logout-btn" title="Sign Out">
+            <svg class="w-4 h-4 text-slate-400 hover:text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+          </button>
+        </form>
+      </div>
+    } @else {
+      <div class="user-profile-menu">
+        <a href="/login" class="btn btn-sm btn-primary">Sign In</a>
+      </div>
+    }
+  </div>
+</header>

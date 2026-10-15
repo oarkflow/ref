@@ -1,0 +1,59 @@
+@extends("layouts/auth.html")
+
+@define("content") {
+  <div class="auth-card">
+    <div class="auth-header">
+      <div class="brand-icon-large">
+        <svg class="w-8 h-8 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+        </svg>
+      </div>
+      <h1 class="auth-title">CLEAR Medical Coding</h1>
+      <p class="auth-subtitle">Clinical Documentation & Coding Intelligence Portal</p>
+    </div>
+
+    <form method="POST" action="/login?redirect=/dashboard" class="auth-form">
+      <div class="form-field">
+        <label class="form-label" for="email">Staff Email</label>
+        <input type="email" id="email" name="email" class="form-control" value="${email != '' ? email : 'coder@clear.io'}" required placeholder="coder@clear.io">
+      </div>
+
+      <div class="form-field">
+        <label class="form-label" for="password">Password</label>
+        <input type="password" id="password" name="password" class="form-control" value="Password123!" required>
+      </div>
+
+      <button type="submit" class="btn btn-primary btn-block">Sign In to Workspace</button>
+    </form>
+
+    <div class="demo-logins-section">
+      <span class="demo-section-label">Quick Role Demo Access</span>
+      <div class="demo-buttons-grid">
+        <button type="button" class="btn btn-sm btn-secondary demo-login-btn" data-email="coder@clear.io" data-role="coder">
+          <span class="role-dot bg-indigo-400"></span> Gita Coder
+        </button>
+        <button type="button" class="btn btn-sm btn-secondary demo-login-btn" data-email="auditor@clear.io" data-role="qa">
+          <span class="role-dot bg-violet-400"></span> Quinn QA
+        </button>
+        <button type="button" class="btn btn-sm btn-secondary demo-login-btn" data-email="de@clear.io" data-role="data_entry">
+          <span class="role-dot bg-teal-400"></span> Dave Data Entry
+        </button>
+        <button type="button" class="btn btn-sm btn-secondary demo-login-btn" data-email="doctor@clear.io" data-role="admin">
+          <span class="role-dot bg-emerald-400"></span> Alice Admin
+        </button>
+      </div>
+    </div>
+  </div>
+}
+
+@define("scripts") {
+  <script>
+    document.querySelectorAll('.demo-login-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const email = btn.getAttribute('data-email');
+        document.getElementById('email').value = email;
+        document.getElementById('password').value = 'Password123!';
+      });
+    });
+  </script>
+}

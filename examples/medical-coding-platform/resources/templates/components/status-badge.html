@@ -1,0 +1,30 @@
+@if(status == "OPEN") {
+  <span class="status-pill status-open">
+    <span class="status-dot"></span> Open
+  </span>
+}
+@if(status == "IN_PROGRESS") {
+  <span class="status-pill status-inprogress">
+    <span class="status-dot"></span> In Progress
+  </span>
+}
+@if(status == "IN_QA" || status == "QA_IN_PROGRESS") {
+  <span class="status-pill status-qa">
+    <span class="status-dot"></span> QA Review
+  </span>
+}
+@if(status == "DE_OPEN" || status == "DE_IN_PROGRESS") {
+  <span class="status-pill status-de">
+    <span class="status-dot"></span> Data Entry
+  </span>
+}
+@if(status == "SUSPEND") {
+  <span class="status-pill status-suspended">
+    <span class="status-dot"></span> Suspended
+  </span>
+}
+@if(status == "COMPLETE") {
+  <span class="status-pill status-complete">
+    <span class="status-dot"></span> Complete
+  </span>
+}

@@ -1,0 +1,329 @@
+# ===========================================================================
+# Web Presentation Intents
+# Data providers for Server-Side Rendered (SSR) web templates.
+# ===========================================================================
+
+intent "web.dashboard" {
+  description "Aggregate operational and SLA dashboard metrics"
+  response "response"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+    }
+  }
+
+  node "counts" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [summary_rows]
+    config {
+      statement "SELECT f.facility_id, f.facility_name, wi.work_item_id, wi.name AS work_item_name, wi.work_item_type, SUM(CASE WHEN ed.encounter_status = 'OPEN' THEN 1 ELSE 0 END) AS open_count, SUM(CASE WHEN ed.encounter_status = 'IN_PROGRESS' THEN 1 ELSE 0 END) AS in_progress_count, SUM(CASE WHEN ed.encounter_status = 'IN_QA' OR ed.encounter_status = 'QA_IN_PROGRESS' THEN 1 ELSE 0 END) AS qa_count, SUM(CASE WHEN ed.encounter_status = 'DE_OPEN' OR ed.encounter_status = 'DE_IN_PROGRESS' THEN 1 ELSE 0 END) AS de_count, SUM(CASE WHEN ed.encounter_status = 'SUSPEND' THEN 1 ELSE 0 END) AS suspend_count, SUM(CASE WHEN ed.encounter_status = 'COMPLETE' THEN 1 ELSE 0 END) AS complete_count FROM facilities f JOIN work_items wi ON f.facility_id = wi.facility_id LEFT JOIN encounter_details ed ON wi.work_item_id = ed.work_item_id WHERE f.status = 'active' AND wi.status = 'active' GROUP BY f.facility_id, f.facility_name, wi.work_item_id, wi.name, wi.work_item_type ORDER BY f.facility_name, wi.name"
+    }
+  }
+
+  node "stats" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [stats_rows]
+    config {
+      statement "SELECT SUM(CASE WHEN encounter_status = 'OPEN' THEN 1 ELSE 0 END) AS open_count, SUM(CASE WHEN encounter_status = 'IN_PROGRESS' THEN 1 ELSE 0 END) AS in_progress_count, SUM(CASE WHEN encounter_status IN ('IN_QA', 'QA_IN_PROGRESS') THEN 1 ELSE 0 END) AS qa_count, SUM(CASE WHEN encounter_status = 'SUSPEND' THEN 1 ELSE 0 END) AS suspend_count FROM encounter_details"
+      require_rows true
+      not_found_message "metrics error"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [summary_rows, stats_rows]
+    provides [response]
+    config {
+      title "Dashboard"
+      summary_rows "summary_rows"
+      stats "stats_rows"
+    }
+  }
+}
+
+intent "web.coding_queue" {
+  description "Fetch open and coder in-progress encounters with stage SLA indicators"
+  response "response"
+
+  node "user" {
+    uses "expression"
+    provides [user_id]
+    config {
+      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+    }
+  }
+
+  node "wid" {
+    uses "request.param"
+    provides [wid_param]
+    config {
+      name "wid"
+      from "query"
+      required false
+      default "wi_memorial_er"
+    }
+  }
+
+  node "resolved_wid" {
+    uses "expression"
+    requires [wid_param]
+    provides [wid]
+    config {
+      expression "wid_param != '' ? wid_param : 'wi_memorial_er'"
+    }
+  }
+
+  node "open_list" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [wid]
+    provides [encounters]
+    config {
+      statement "SELECT e.encounter_id, e.patient_name, e.patient_sex, e.patient_dob, e.patient_mrn, e.patient_fin, e.encounter_dos, e.encounter_location, e.encounter_reason_for_visit, e.encounter_chief_complaint, e.encounter_type, ed.work_item_id, ed.encounter_status FROM encounters e JOIN encounter_details ed ON e.encounter_id = ed.encounter_id WHERE ed.work_item_id = $1 AND ed.encounter_status = 'OPEN' ORDER BY e.encounter_dos ASC, e.encounter_id ASC LIMIT 50"
+      args [wid]
+    }
+  }
+
+  node "inprogress_list" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [wid, user_id]
+    provides [inprogress_encounters]
+    config {
+      statement "SELECT e.encounter_id, e.patient_name, e.patient_sex, e.patient_dob, e.patient_mrn, e.patient_fin, e.encounter_dos, e.encounter_location, e.encounter_reason_for_visit, e.encounter_chief_complaint, ed.work_item_id, ed.encounter_status, ed.coding_start_time FROM encounters e JOIN encounter_details ed ON e.encounter_id = ed.encounter_id WHERE ed.work_item_id = $1 AND ed.encounter_status = 'IN_PROGRESS' ORDER BY ed.coding_start_time DESC LIMIT 20"
+      args [wid]
+    }
+  }
+
+  node "q" {
+    uses "request.param"
+    provides [q]
+    config {
+      name "q"
+      from "query"
+      required false
+      default ""
+    }
+  }
+
+  node "status" {
+    uses "request.param"
+    provides [status]
+    config {
+      name "status"
+      from "query"
+      required false
+      default ""
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [wid, encounters, inprogress_encounters, q, status]
+    provides [response]
+    config {
+      title "Clinical Coding Queue"
+      wid "wid"
+      encounters "encounters"
+      inprogress_encounters "inprogress_encounters"
+      q "q"
+      status "status"
+    }
+  }
+}
+
+intent "web.coding_workspace" {
+  description "Fetch complete encounter workspace data for clinical coder"
+  response "response"
+
+  node "wid" {
+    uses "request.param"
+    provides [wid]
+    config {
+      name "wid"
+    }
+  }
+
+  node "eid" {
+    uses "request.param"
+    provides [eid]
+    config {
+      name "eid"
+    }
+  }
+
+  node "patient" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [wid, eid]
+    provides [patient_rows]
+    config {
+      statement "SELECT e.*, ed.work_item_id, ed.encounter_status, ed.code_assigned, ed.code_complete, ed.qa_flag, ed.qa_assigned, ed.qa_complete, ed.dataentry_assigned, ed.dataentry_complete FROM encounters e JOIN encounter_details ed ON e.encounter_id = ed.encounter_id WHERE e.encounter_id = $1 AND ed.work_item_id = $2"
+      args [eid, wid]
+      require_rows true
+      not_found_message "encounter not found in work item"
+    }
+  }
+
+  node "cpt" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [eid]
+    provides [cpt_rows]
+    config {
+      statement "SELECT * FROM event_cpt_pro WHERE encounter_id = $1 ORDER BY event_dos, cpt_code"
+      args [eid]
+    }
+  }
+
+  node "dx" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [eid]
+    provides [dx_rows]
+    config {
+      statement "SELECT * FROM event_dx_pro WHERE encounter_id = $1 ORDER BY priority ASC"
+      args [eid]
+    }
+  }
+
+  node "em" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [eid]
+    provides [em_rows]
+    config {
+      statement "SELECT * FROM event_em_pro WHERE encounter_id = $1 LIMIT 1"
+      args [eid]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [wid, eid, patient_rows, cpt_rows, dx_rows, em_rows]
+    provides [response]
+    config {
+      title "Coding Workspace"
+      wid "wid"
+      eid "eid"
+      patient "patient_rows"
+      cpt_rows "cpt_rows"
+      dx_rows "dx_rows"
+      em "em_rows"
+    }
+  }
+}
+
+intent "web.qa_list" {
+  description "Fetch encounters flagged for QA review audit"
+  response "response"
+
+  node "qa_encounters" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [qa_rows]
+    config {
+      statement "SELECT e.encounter_id, e.patient_name, e.patient_sex, e.patient_dob, e.patient_mrn, e.patient_fin, e.encounter_dos, ed.work_item_id, ed.encounter_status, ed.code_assigned, ed.code_complete_ts FROM encounters e JOIN encounter_details ed ON e.encounter_id = ed.encounter_id WHERE ed.encounter_status IN ('IN_QA', 'QA_IN_PROGRESS') OR ed.qa_flag = 1 ORDER BY ed.code_complete_ts ASC LIMIT 50"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [qa_rows]
+    provides [response]
+    config {
+      title "QA Review Queue"
+      qa_encounters "qa_rows"
+    }
+  }
+}
+
+intent "web.suspends_list" {
+  description "Fetch blocked and suspended charts with reason"
+  response "response"
+
+  node "suspended_encounters" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [suspend_rows]
+    config {
+      statement "SELECT se.id AS suspend_event_id, se.encounter_id, se.work_item_id, se.suspend_reason, se.suspend_note, se.event_dos, se.created_by, se.created_at, e.patient_name, e.patient_mrn, e.patient_fin, e.encounter_dos FROM suspend_events se JOIN encounters e ON se.encounter_id = e.encounter_id WHERE se.resolved_at IS NULL ORDER BY se.created_at DESC LIMIT 50"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [suspend_rows]
+    provides [response]
+    config {
+      title "Suspends & Queries"
+      suspended_encounters "suspend_rows"
+    }
+  }
+}
+
+intent "web.dataentry_list" {
+  description "Fetch encounters ready for data entry and billing EDI transmission"
+  response "response"
+
+  node "de_encounters" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [de_rows]
+    config {
+      statement "SELECT e.encounter_id, e.patient_name, e.patient_mrn, e.patient_fin, e.encounter_dos, ed.work_item_id, ed.encounter_status FROM encounters e JOIN encounter_details ed ON e.encounter_id = ed.encounter_id WHERE ed.encounter_status IN ('DE_OPEN', 'DE_IN_PROGRESS') ORDER BY e.encounter_dos ASC LIMIT 50"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [de_rows]
+    provides [response]
+    config {
+      title "Data Entry Queue"
+      de_encounters "de_rows"
+    }
+  }
+}
+
+intent "web.facilities_list" {
+  description "List facilities and active work items"
+  response "response"
+
+  node "facilities" {
+    uses "database.query"
+    resource "database"
+    kind read
+    provides [facility_rows]
+    config {
+      statement "SELECT f.facility_id, f.facility_name, f.status, wi.work_item_id, wi.name AS work_item_name, wi.work_item_type FROM facilities f JOIN work_items wi ON f.facility_id = wi.facility_id WHERE f.status = 'active' ORDER BY f.facility_name, wi.name"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [facility_rows]
+    provides [response]
+    config {
+      title "Facilities & Work Items"
+      summary_rows "facility_rows"
+    }
+  }
+}

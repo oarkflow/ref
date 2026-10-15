@@ -17,6 +17,7 @@ import (
 	promobserver "github.com/oarkflow/ref/observer/prometheus"
 	slogobserver "github.com/oarkflow/ref/observer/slog"
 	"github.com/oarkflow/ref/platform"
+	"github.com/oarkflow/ref/serve"
 	"github.com/oarkflow/zlog"
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -46,9 +47,28 @@ func main() {
 	logger.Info("starting CLEAR medical coding platform", zlog.String("env", envName), zlog.String("port", port))
 
 	bclDir := config.ResolveDir("examples/medical-coding-platform/resources/config", "./resources/config", "resources/config")
+	templatesDir := config.ResolveDir("examples/medical-coding-platform/resources/templates", "./resources/templates", "resources/templates")
+
+	renderer := serve.NewRenderer(serve.RendererConfig{
+		TemplatesDir: templatesDir,
+		Reload:       envName != "production",
+		Env:          envName,
+		Globals: map[string]any{
+			"appName":     "CLEAR Medical Coding",
+			"appVersion":  "2.0.0",
+			"title":       "Medical Coding Platform",
+			"environment": envName,
+			"q":           "",
+			"status":      "",
+			"wid":         "wi_memorial_er",
+			"error":       "",
+			"success":     "",
+		},
+	})
 
 	opts := platform.DefaultLoadOptions()
 	opts.Profile = envName
+	opts.Templates = renderer
 
 	slogLogger := slog.New(zlog.NewSlogHandler(logger))
 	promRegistry := prometheus.NewRegistry()
@@ -71,7 +91,7 @@ func main() {
 	}
 	defer p.Close()
 
-	app := fh.NewFast(fh.WithErrorHandler(defaultErrorHandler(logger)))
+	app := fh.NewFast(fh.WithTemplateEngine(renderer), fh.WithErrorHandler(defaultErrorHandler(logger)))
 
 	// Basic CORS for frontend compatibility
 	app.Use(func(c fh.Ctx) error {

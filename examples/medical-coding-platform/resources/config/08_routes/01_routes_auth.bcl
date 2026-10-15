@@ -1,4 +1,4 @@
-route "auth.login" {
+route "web.login_action" {
   method POST
   path "/login"
   intent "auth.login"
@@ -18,7 +18,7 @@ route "web_client.login" {
 
 route "auth.login_info" {
   method GET
-  path "/login"
+  path "/login/info"
   intent "auth.login_info"
   allow_anonymous true
   cache_control "no-store"
@@ -32,7 +32,7 @@ route "web_client.login_info" {
   cache_control "no-store"
 }
 
-route "auth.logout" {
+route "web.logout_action" {
   method POST
   path "/logout"
   intent "auth.logout"

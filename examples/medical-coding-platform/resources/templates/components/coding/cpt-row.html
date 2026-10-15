@@ -1,0 +1,27 @@
+<div class="cpt-row dynamic-row grid grid-cols-12 gap-3 items-center p-3 mb-2 bg-slate-900/60 rounded-lg border border-slate-800">
+  <div class="col-span-3">
+    <label class="text-xs text-slate-400 block mb-1">CPT Code *</label>
+    <input type="text" name="cpt_code[]" class="form-control text-sm font-mono uppercase" value="${cpt.cpt_code}" placeholder="e.g. 99284" required>
+  </div>
+  <div class="col-span-2">
+    <label class="text-xs text-slate-400 block mb-1">Mod 1</label>
+    <input type="text" name="cpt_mod1[]" maxlength="2" class="form-control text-sm font-mono uppercase" value="${cpt.modifier1}" placeholder="25">
+  </div>
+  <div class="col-span-2">
+    <label class="text-xs text-slate-400 block mb-1">Mod 2</label>
+    <input type="text" name="cpt_mod2[]" maxlength="2" class="form-control text-sm font-mono uppercase" value="${cpt.modifier2}" placeholder="59">
+  </div>
+  <div class="col-span-2">
+    <label class="text-xs text-slate-400 block mb-1">Units</label>
+    <input type="number" name="cpt_units[]" min="1" max="99" value="${cpt.units != 0 ? cpt.units : 1}" class="form-control text-sm font-mono">
+  </div>
+  <div class="col-span-2">
+    <label class="text-xs text-slate-400 block mb-1">Fee / RVU</label>
+    <span class="text-sm text-slate-300 font-mono block pt-1 rvu-value">${cpt.nfrvu != "" ? cpt.nfrvu : "--"}</span>
+  </div>
+  <div class="col-span-1 text-right pt-4">
+    <button type="button" class="btn-icon text-rose-400 hover:text-rose-300 remove-cpt-btn" title="Remove Code">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+    </button>
+  </div>
+</div>

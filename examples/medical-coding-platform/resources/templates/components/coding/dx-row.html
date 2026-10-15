@@ -1,0 +1,26 @@
+<div class="dx-row dynamic-row grid grid-cols-12 gap-3 items-center p-3 mb-2 bg-slate-900/60 rounded-lg border border-slate-800">
+  <div class="col-span-1 text-center">
+    <label class="text-xs text-slate-400 block mb-1">Seq</label>
+    <span class="dx-priority-badge font-mono text-sm px-2 py-1 rounded bg-slate-800 text-indigo-400 font-bold">${dx.priority != 0 ? dx.priority : 1}</span>
+    <input type="hidden" name="dx_priority[]" value="${dx.priority != 0 ? dx.priority : 1}">
+  </div>
+  <div class="col-span-4">
+    <label class="text-xs text-slate-400 block mb-1">ICD-10 Code *</label>
+    <input type="text" name="dx_code[]" class="form-control text-sm font-mono uppercase" value="${dx.icd_code}" placeholder="e.g. R07.9" required>
+  </div>
+  <div class="col-span-5">
+    <label class="text-xs text-slate-400 block mb-1">POA (Present on Admission)</label>
+    <select name="dx_poa[]" class="form-control text-sm">
+      <option value="Y" ${dx.poa == "Y" ? "selected" : ""}>Y - Yes (Present at admission)</option>
+      <option value="N" ${dx.poa == "N" ? "selected" : ""}>N - No (Not present at admission)</option>
+      <option value="U" ${dx.poa == "U" ? "selected" : ""}>U - Unknown / Insufficient documentation</option>
+      <option value="W" ${dx.poa == "W" ? "selected" : ""}>W - Clinically Undetermined</option>
+      <option value="1" ${dx.poa == "1" ? "selected" : ""}>1 - Exempt from POA reporting</option>
+    </select>
+  </div>
+  <div class="col-span-2 text-right pt-4">
+    <button type="button" class="btn-icon text-rose-400 hover:text-rose-300 remove-dx-btn" title="Remove Diagnosis">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+    </button>
+  </div>
+</div>

@@ -131,13 +131,21 @@ intent "files.serve" {
   description "Serve uploaded file or document with proper content type and caching"
   response "file"
 
+  node "key" {
+    uses "request.param"
+    provides [key]
+    config {
+      name "*"
+    }
+  }
+
   node "file" {
     resource "storage"
     uses "media.serve"
-    requires [params]
+    requires [key]
     provides [file]
     config {
-      key "{{ params['*'] }}"
+      key "{{ key }}"
       disposition "inline"
     }
   }

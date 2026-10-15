@@ -1,0 +1,37 @@
+<div class="patient-banner">
+  <div class="patient-main">
+    <div class="patient-avatar-box">
+      <span class="avatar-initials">${patient.patient_sex == "F" ? "F" : "M"}</span>
+    </div>
+    <div class="patient-details">
+      <div class="patient-headline">
+        <h2 class="patient-name">${patient.patient_name}</h2>
+        <span class="patient-mrn font-mono">MRN: ${patient.patient_mrn}</span>
+        <span class="patient-fin font-mono">FIN: ${patient.patient_fin}</span>
+        @include("components/status-badge.html", { status: patient.encounter_status })
+      </div>
+      <div class="patient-subdata">
+        <span><strong>DOB:</strong> ${patient.patient_dob}</span>
+        <span class="separator">&bull;</span>
+        <span><strong>Sex:</strong> ${patient.patient_sex}</span>
+        <span class="separator">&bull;</span>
+        <span><strong>Type:</strong> ${patient.encounter_type}</span>
+        <span class="separator">&bull;</span>
+        <span><strong>Location:</strong> ${patient.encounter_location}</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="patient-clinical-quick">
+    <div class="quick-stat">
+      <span class="stat-label">Date of Service</span>
+      <span class="stat-value font-mono">${patient.encounter_dos}</span>
+    </div>
+    <div class="quick-stat">
+      <span class="stat-label">Stage Deadline</span>
+      <span class="stat-value text-amber-400 font-semibold" data-sla-deadline="${patient.encounter_dos}T23:59:59Z">
+        ${patient.deadline != "" ? patient.deadline : "24h SLA"}
+      </span>
+    </div>
+  </div>
+</div>

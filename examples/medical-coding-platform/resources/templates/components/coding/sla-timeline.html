@@ -1,0 +1,45 @@
+<div class="sla-pipeline-tracker">
+  <div class="stage-step ${encounter.encounter_status == 'OPEN' ? 'active' : 'completed'}">
+    <div class="step-marker">1</div>
+    <div class="step-info">
+      <span class="step-name">Open Queue</span>
+      <span class="step-sla">SLA: Intake</span>
+    </div>
+  </div>
+  <div class="step-connector ${encounter.encounter_status != 'OPEN' ? 'filled' : ''}"></div>
+
+  <div class="stage-step ${encounter.encounter_status == 'IN_PROGRESS' ? 'active' : (encounter.code_complete == 1 ? 'completed' : '')}">
+    <div class="step-marker">2</div>
+    <div class="step-info">
+      <span class="step-name">Clinical Coding</span>
+      <span class="step-sla">SLA: 24h</span>
+    </div>
+  </div>
+  <div class="step-connector ${encounter.qa_flag == 1 || encounter.dataentry_assigned != '' || encounter.encounter_status == 'COMPLETE' ? 'filled' : ''}"></div>
+
+  <div class="stage-step ${encounter.encounter_status == 'IN_QA' || encounter.encounter_status == 'QA_IN_PROGRESS' ? 'active' : (encounter.qa_complete == 1 ? 'completed' : '')}">
+    <div class="step-marker">3</div>
+    <div class="step-info">
+      <span class="step-name">QA Audit</span>
+      <span class="step-sla">SLA: 12h</span>
+    </div>
+  </div>
+  <div class="step-connector ${encounter.dataentry_complete == 1 || encounter.encounter_status == 'COMPLETE' ? 'filled' : ''}"></div>
+
+  <div class="stage-step ${encounter.encounter_status == 'DE_OPEN' || encounter.encounter_status == 'DE_IN_PROGRESS' ? 'active' : (encounter.dataentry_complete == 1 ? 'completed' : '')}">
+    <div class="step-marker">4</div>
+    <div class="step-info">
+      <span class="step-name">Data Entry</span>
+      <span class="step-sla">SLA: 12h</span>
+    </div>
+  </div>
+  <div class="step-connector ${encounter.encounter_status == 'COMPLETE' ? 'filled' : ''}"></div>
+
+  <div class="stage-step ${encounter.encounter_status == 'COMPLETE' ? 'active completed' : ''}">
+    <div class="step-marker">&check;</div>
+    <div class="step-info">
+      <span class="step-name">Complete</span>
+      <span class="step-sla">Billed</span>
+    </div>
+  </div>
+</div>

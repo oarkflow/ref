@@ -1,0 +1,15 @@
+@extends("layouts/error.html")
+
+@define("content") {
+  <div class="error-card text-center p-8 bg-slate-900 border border-slate-800 rounded-2xl max-w-md mx-auto my-20">
+    <div class="text-rose-500 font-mono text-6xl font-black mb-4">403</div>
+    <h1 class="text-2xl font-bold text-slate-100 mb-2">Access Restricted</h1>
+    <p class="text-slate-400 text-sm mb-6">
+      Your healthcare role credentials do not possess permission to access this clinical stage or workspace.
+    </p>
+    <div class="flex justify-center gap-3">
+      <a href="/dashboard" class="btn btn-primary">Return to Dashboard</a>
+      <a href="/login" class="btn btn-secondary">Switch Role</a>
+    </div>
+  </div>
+}

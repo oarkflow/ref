@@ -1,0 +1,6 @@
+static "assets" {
+  prefix "/static"
+  root env("STATIC_DIR", "resources/static")
+  compress true
+  cache_control env("STATIC_CACHE_CONTROL", "no-cache")
+}

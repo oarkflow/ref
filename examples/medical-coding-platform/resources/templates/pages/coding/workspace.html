@@ -1,0 +1,282 @@
+@extends("layouts/base.html")
+
+@define("head") {
+  <style>
+    .workspace-grid {
+      display: grid;
+      grid-template-columns: 420px 1fr;
+      gap: 1.5rem;
+      align-items: start;
+    }
+    @media (max-width: 1024px) {
+      .workspace-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+}
+
+@define("content") {
+  <!-- Patient Header Card Snippet -->
+  @include("components/coding/patient-card.html")
+
+  <!-- SLA Timeline Stage Progress Tracker -->
+  @include("components/coding/sla-timeline.html", { encounter: patient })
+
+  <!-- Main Workstation Grid -->
+  <div class="workspace-grid mt-6">
+    <!-- Left Column: Patient Chart & Clinical Notes -->
+    <div class="chart-column">
+      <div class="panel mb-6">
+        <span class="panel-label">Patient Clinical Context</span>
+        <div class="clinical-note-box bg-slate-950 p-4 rounded-lg border border-slate-800 text-sm leading-relaxed mb-4 font-mono text-slate-300">
+          <p class="text-indigo-400 font-bold mb-2">CHIEF COMPLAINT:</p>
+          <p class="mb-3">${patient.encounter_chief_complaint != '' ? patient.encounter_chief_complaint : "Acute chest pain with radiation to left shoulder"}</p>
+
+          <p class="text-indigo-400 font-bold mb-2">REASON FOR VISIT / CLINICAL SUMMARY:</p>
+          <p class="mb-3">${patient.encounter_reason_for_visit != '' ? patient.encounter_reason_for_visit : "Patient presented to ED with persistent tightness in chest starting 2 hours prior. History of hypertension. Denies fever or shortness of breath. EKG performed, cardiac enzymes drawn. Normal sinus rhythm with non-specific ST changes. Monitored for 4 hours and discharged in stable condition with cardiology follow-up."}</p>
+
+          <p class="text-indigo-400 font-bold mb-2">VITALS AT TRIAGE:</p>
+          <p class="text-xs text-slate-400">BP: 138/86 • HR: 78 • Temp: 98.4°F • SpO2: 98% room air • Resp: 16</p>
+        </div>
+
+        <form method="POST" action="/web/coding/${wid}/${eid}/save-patient-details?redirect=/coding/${wid}/${eid}">
+          <span class="panel-label">Patient Clinical Demographics</span>
+          <div class="form-field mb-3">
+            <label class="form-label" for="patient_name">Full Patient Name</label>
+            <input type="text" id="patient_name" name="patient_name" class="form-control text-sm" value="${patient.patient_name}">
+          </div>
+          <div class="grid grid-cols-2 gap-3 mb-3">
+            <div class="form-field">
+              <label class="form-label" for="patient_sex">Sex</label>
+              <select id="patient_sex" name="patient_sex" class="form-control text-sm">
+                <option value="M" ${patient.patient_sex == 'M' ? 'selected' : ''}>Male</option>
+                <option value="F" ${patient.patient_sex == 'F' ? 'selected' : ''}>Female</option>
+              </select>
+            </div>
+            <div class="form-field">
+              <label class="form-label" for="patient_dob">Date of Birth</label>
+              <input type="date" id="patient_dob" name="patient_dob" class="form-control text-sm" value="${patient.patient_dob}">
+            </div>
+          </div>
+          <button type="submit" class="btn btn-sm btn-secondary w-full">Update Demographics</button>
+        </form>
+      </div>
+
+      <!-- Quick Codes Reference Reference -->
+      <div class="panel">
+        <span class="panel-label">Common ED Master Codes</span>
+        <div class="space-y-2 text-xs font-mono">
+          <div class="flex justify-between items-center p-2 rounded bg-slate-900/40">
+            <span class="text-sky-300 font-bold">99284</span>
+            <span class="text-slate-400">ED Visit Moderate/High Severity</span>
+            <span class="text-emerald-400">3.42 RVU</span>
+          </div>
+          <div class="flex justify-between items-center p-2 rounded bg-slate-900/40">
+            <span class="text-sky-300 font-bold">99285</span>
+            <span class="text-slate-400">ED Visit High Complexity / Threat</span>
+            <span class="text-emerald-400">4.85 RVU</span>
+          </div>
+          <div class="flex justify-between items-center p-2 rounded bg-slate-900/40">
+            <span class="text-sky-300 font-bold">93005</span>
+            <span class="text-slate-400">Electrocardiogram (EKG) Tracing</span>
+            <span class="text-emerald-400">0.52 RVU</span>
+          </div>
+          <div class="flex justify-between items-center p-2 rounded bg-slate-900/40">
+            <span class="text-amber-300 font-bold">R07.9</span>
+            <span class="text-slate-400">Chest pain, unspecified</span>
+            <span class="badge badge-subtle">Dx</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Column: Medical Coding Form & Dynamic Rows -->
+    <div class="coding-column">
+      <form id="coding-documentation-form" method="POST" action="/web/coding/${wid}/${eid}/save-coding-documentation?redirect=/coding/queue">
+        <input type="hidden" name="dos" value="${patient.encounter_dos}">
+
+        <!-- Group 1: Evaluation & Management (E&M) Level -->
+        <div class="panel mb-6">
+          <div class="panel-header-flex">
+            <div>
+              <span class="panel-label">Clinical Form Group 1</span>
+              <h3 class="panel-title">Evaluation & Management (E&M) Level</h3>
+            </div>
+            <span class="text-xs text-indigo-400 font-mono">AMA CPT 2026 Guidelines</span>
+          </div>
+          @include("components/coding/em-group.html")
+        </div>
+
+        <!-- Group 2: Dynamic CPT Procedure Codes -->
+        <div class="panel mb-6">
+          <div class="panel-header-flex">
+            <div>
+              <span class="panel-label">Clinical Form Group 2</span>
+              <h3 class="panel-title">CPT Procedure & Service Codes</h3>
+            </div>
+            <button type="button" class="btn btn-sm btn-secondary" id="add-cpt-btn">
+              <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+              Add CPT Row
+            </button>
+          </div>
+
+          <div id="cpt-rows-container">
+            @if(cpt_rows) {
+              @for(cpt in cpt_rows) {
+                @include("components/coding/cpt-row.html")
+              }
+            } @else {
+              <!-- Default initial CPT row -->
+              <div class="cpt-row dynamic-row grid grid-cols-12 gap-3 items-center p-3 mb-2 bg-slate-900/60 rounded-lg border border-slate-800">
+                <div class="col-span-3">
+                  <label class="text-xs text-slate-400 block mb-1">CPT Code *</label>
+                  <input type="text" name="cpt_code[]" class="form-control text-sm font-mono uppercase" value="99285" placeholder="e.g. 99285" required>
+                </div>
+                <div class="col-span-2">
+                  <label class="text-xs text-slate-400 block mb-1">Mod 1</label>
+                  <input type="text" name="cpt_mod1[]" maxlength="2" class="form-control text-sm font-mono uppercase" value="25" placeholder="25">
+                </div>
+                <div class="col-span-2">
+                  <label class="text-xs text-slate-400 block mb-1">Mod 2</label>
+                  <input type="text" name="cpt_mod2[]" maxlength="2" class="form-control text-sm font-mono uppercase" placeholder="59">
+                </div>
+                <div class="col-span-2">
+                  <label class="text-xs text-slate-400 block mb-1">Units</label>
+                  <input type="number" name="cpt_units[]" min="1" max="99" value="1" class="form-control text-sm font-mono">
+                </div>
+                <div class="col-span-2">
+                  <label class="text-xs text-slate-400 block mb-1">Fee / RVU</label>
+                  <span class="text-sm text-slate-300 font-mono block pt-1 rvu-value">4.85</span>
+                </div>
+                <div class="col-span-1 text-right pt-4">
+                  <button type="button" class="btn-icon text-rose-400 hover:text-rose-300 remove-cpt-btn" title="Remove Code">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                  </button>
+                </div>
+              </div>
+            }
+          </div>
+        </div>
+
+        <!-- Group 3: Dynamic ICD-10 Diagnosis Codes -->
+        <div class="panel mb-6">
+          <div class="panel-header-flex">
+            <div>
+              <span class="panel-label">Clinical Form Group 3</span>
+              <h3 class="panel-title">ICD-10-CM Diagnosis Codes</h3>
+            </div>
+            <button type="button" class="btn btn-sm btn-secondary" id="add-dx-btn">
+              <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+              Add Diagnosis Row
+            </button>
+          </div>
+
+          <div id="dx-rows-container">
+            @if(dx_rows) {
+              @for(dx in dx_rows) {
+                @include("components/coding/dx-row.html")
+              }
+            } @else {
+              <!-- Default initial Dx row -->
+              <div class="dx-row dynamic-row grid grid-cols-12 gap-3 items-center p-3 mb-2 bg-slate-900/60 rounded-lg border border-slate-800">
+                <div class="col-span-1 text-center">
+                  <label class="text-xs text-slate-400 block mb-1">Seq</label>
+                  <span class="dx-priority-badge font-mono text-sm px-2 py-1 rounded bg-slate-800 text-indigo-400 font-bold">1</span>
+                  <input type="hidden" name="dx_priority[]" value="1">
+                </div>
+                <div class="col-span-4">
+                  <label class="text-xs text-slate-400 block mb-1">ICD-10 Code *</label>
+                  <input type="text" name="dx_code[]" class="form-control text-sm font-mono uppercase" value="R07.9" placeholder="e.g. R07.9" required>
+                </div>
+                <div class="col-span-5">
+                  <label class="text-xs text-slate-400 block mb-1">POA (Present on Admission)</label>
+                  <select name="dx_poa[]" class="form-control text-sm">
+                    <option value="Y" selected>Y - Yes (Present at admission)</option>
+                    <option value="N">N - No (Not present at admission)</option>
+                    <option value="U">U - Unknown / Insufficient documentation</option>
+                    <option value="W">W - Clinically Undetermined</option>
+                    <option value="1">1 - Exempt from POA reporting</option>
+                  </select>
+                </div>
+                <div class="col-span-2 text-right pt-4">
+                  <button type="button" class="btn-icon text-rose-400 hover:text-rose-300 remove-dx-btn" title="Remove Diagnosis">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                  </button>
+                </div>
+              </div>
+            }
+          </div>
+        </div>
+
+        <!-- Group 4: Quality Assurance Escalation -->
+        <div class="panel mb-6">
+          <span class="panel-label">Stage Routing & Escalation</span>
+          <div class="flex items-center gap-3 mb-4">
+            <input type="checkbox" id="request_qa" name="request_qa" value="true" class="rounded border-slate-700 text-indigo-600 focus:ring-indigo-500 w-4 h-4">
+            <label for="request_qa" class="text-sm font-semibold text-slate-200">
+              Route to QA Audit Stage (12h QA SLA)
+            </label>
+          </div>
+          <div class="form-field">
+            <label class="form-label" for="qa_notes">Clinical / Coding Notes for QA Auditor</label>
+            <textarea id="qa_notes" name="qa_notes" class="form-control text-sm" rows="2" placeholder="Optional notes regarding complex clinical nuances, downcode rationale, or modifier usage..."></textarea>
+          </div>
+        </div>
+
+        <!-- Action Control Bar -->
+        <div class="panel action-bar flex justify-between items-center">
+          <div class="flex gap-2">
+            <button type="button" id="open-suspend-modal" class="btn btn-secondary text-amber-400 border-amber-500/30">
+              <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+              Suspend Chart
+            </button>
+            <button type="submit" formaction="/web/coding/${wid}/${eid}/abandon?redirect=/coding/queue" class="btn btn-secondary text-rose-400">
+              Abandon Claim
+            </button>
+          </div>
+
+          <div class="flex gap-3">
+            <button type="submit" class="btn btn-primary px-6">
+              Complete & Advance Stage &rarr;
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Suspend Modal -->
+  <div id="suspend-modal" class="modal-backdrop hidden fixed inset-0 bg-black/75 z-50 items-center justify-center p-4">
+    <div class="modal-card bg-slate-900 border border-slate-800 rounded-xl p-6 max-w-lg w-full">
+      <div class="modal-header flex justify-between items-center mb-4 pb-3 border-b border-slate-800">
+        <h3 class="text-lg font-bold text-amber-400">Suspend Encounter / Clinical Query</h3>
+        <button type="button" id="close-suspend-modal" class="text-slate-400 hover:text-white">&times;</button>
+      </div>
+
+      <form method="POST" action="/web/suspends/${wid}/${eid}/suspend?redirect=/coding/queue">
+        <input type="hidden" name="event_dos" value="${patient.encounter_dos}">
+        <div class="form-field mb-4">
+          <label class="form-label" for="suspend_reason">Suspend Reason</label>
+          <select id="suspend_reason" name="suspend_reason" class="form-control" required>
+            <option value="MISSING_DOC">MISSING_DOC - Missing Medical Record / Chart Notes</option>
+            <option value="QUERY_PENDING">QUERY_PENDING - Provider Query Pending Clinical Clarification</option>
+            <option value="UNSPECIFIED_DIAGNOSIS">UNSPECIFIED_DIAGNOSIS - Clinical ambiguity requiring physician sign-off</option>
+          </select>
+        </div>
+
+        <div class="form-field mb-4">
+          <label class="form-label" for="suspend_note">Clarification Notes</label>
+          <textarea id="suspend_note" name="suspend_note" class="form-control" rows="3" required placeholder="Specify what documentation or clarification is needed from provider..."></textarea>
+        </div>
+
+        <div class="flex justify-end gap-3">
+          <button type="button" id="cancel-suspend-modal" class="btn btn-secondary">Cancel</button>
+          <button type="submit" class="btn btn-primary bg-amber-600 hover:bg-amber-500 border-none">Confirm Suspend</button>
+        </div>
+      </form>
+    </div>
+  </div>
+}
+
+@define("scripts") {
+  <script src="/static/js/coding-workspace.js"></script>
+}
