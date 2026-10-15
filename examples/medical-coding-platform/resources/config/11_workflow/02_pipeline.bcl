@@ -1,0 +1,379 @@
+# ===========================================================================
+# The medical coding pipeline: coding -> QA (optional) -> data entry.
+#
+# Everything a workspace needs to tune is declared here once:
+#   forms and form groups     what each stage shows and collects
+#   stage configuration       SLA, calendar, claiming, who may act or look
+#   permissions               view_roles / edit_roles on stages, groups,
+#                             forms and single fields
+#   rules                     visible_if, disabled_if, required_if, skip_if
+#   dependent fields          em_code is narrowed by the MDM level
+#   workspace lookups         modifiers, E&M codes, suspend reasons
+# Workspaces then override SLAs and fields on top (pipeline.workspace_set).
+# ===========================================================================
+
+pipeline "medical_coding" {
+  title "Medical Coding"
+  description "Encounter documentation coding with optional QA and data entry"
+  number_format "ENC-{year}-{seq:6}"
+  # Patient identifiers show unmasked to these roles in every stage.
+  reveal_roles ["admin", "super_admin", "manager"]
+  subject ["patient.mrn", "patient.patient_name"]
+
+  calendar "clinic_hours" {
+    timezone "UTC"
+    hours "mon-fri 08:00-18:00"
+  }
+
+  notes {
+    applicant_may_write false
+  }
+
+  # -------------------------------------------------------------------------
+  # Forms (reusable snippets the stages compose into groups)
+  # -------------------------------------------------------------------------
+  form "patient" {
+    title "Patient and encounter"
+    # Demographics are the coder's and manager's to correct; others only look.
+    edit_roles ["coder", "manager"]
+    input "patient_name" {
+      label "Patient name"
+      kind text
+      required true
+      pii true
+      max_length 160
+    }
+    input "mrn" {
+      label "MRN"
+      kind text
+      required true
+      pii true
+      sensitive true
+      pattern "^[A-Za-z0-9-]{4,20}$"
+      span 1
+    }
+    input "fin" {
+      label "FIN"
+      kind text
+      pattern "^[A-Za-z0-9-]{4,20}$"
+      span 1
+    }
+    input "sex" {
+      label "Sex"
+      kind select
+      options ["M", "F", "O"]
+      span 1
+    }
+    input "dob" {
+      label "Date of birth"
+      kind date
+      pii true
+      sensitive true
+      span 1
+    }
+    input "dos" {
+      label "Date of service"
+      kind date
+      required true
+      span 1
+    }
+    input "location" {
+      label "Location"
+      kind text
+      span 1
+    }
+    input "chief_complaint" {
+      label "Chief complaint"
+      kind text
+      max_length 300
+    }
+    input "reason_for_visit" {
+      label "Reason for visit / clinical summary"
+      kind textarea
+      max_length 4000
+    }
+  }
+
+  form "em" {
+    title "Evaluation and management"
+    input "mdm_level" {
+      label "MDM complexity level"
+      kind select
+      options ["Straightforward", "Low", "Moderate", "High"]
+      required true
+    }
+    # Dependent field: only the E&M codes allowed for the chosen level.
+    input "em_code" {
+      label "Assigned E&M code"
+      kind select
+      lookup "em_codes"
+      depends_on ["mdm_level"]
+      required true
+    }
+    input "modifier" {
+      label "Modifier"
+      kind select
+      lookup "modifiers"
+    }
+    input "downcode_reason" {
+      label "Downcode / upcode reason"
+      kind text
+      max_length 300
+      visible_if "em.em_code != ''"
+      required_if "em.mdm_level == 'Moderate' && em.em_code == '99283'"
+    }
+  }
+
+  form "cpt" {
+    title "CPT procedure and service codes"
+    repeatable true
+    min_items 1
+    max_items 25
+    input "cpt_code" {
+      label "CPT / HCPCS code"
+      kind text
+      required true
+      pattern "^([0-9]{4}[0-9FTU]|[A-V][0-9]{4})$"
+      placeholder "e.g. 99285"
+    }
+    input "modifier1" {
+      label "Mod 1"
+      kind select
+      lookup "modifiers"
+    }
+    input "modifier2" {
+      label "Mod 2"
+      kind select
+      lookup "modifiers"
+    }
+    input "units" {
+      label "Units"
+      kind integer
+      min "1"
+      max "99"
+      default "1"
+    }
+  }
+
+  form "dx" {
+    title "ICD-10-CM diagnosis codes"
+    repeatable true
+    min_items 1
+    max_items 12
+    input "icd_code" {
+      label "ICD-10 code"
+      kind text
+      required true
+      pattern "^[A-TV-Z][0-9][0-9A-Z]([.][0-9A-Z]{1,4})?$"
+      placeholder "e.g. R07.9"
+    }
+    input "poa" {
+      label "Present on admission"
+      kind select
+      options ["Y", "N", "U", "W", "1"]
+      default "Y"
+    }
+  }
+
+  form "routing" {
+    title "Stage routing"
+    input "request_qa" {
+      label "Route to QA audit"
+      kind boolean
+    }
+    input "qa_notes" {
+      label "Notes for the QA auditor"
+      kind textarea
+      max_length 2000
+      visible_if "routing.request_qa == true"
+      required_if "routing.request_qa == true"
+    }
+  }
+
+  form "qa_review" {
+    title "QA audit"
+    # Only auditors and managers write the audit; coders do not even see it
+    # until QA has finished.
+    edit_roles ["qa", "qa_auditor", "manager"]
+    input "agreement" {
+      label "Agreement with the coding"
+      kind select
+      options ["Agree", "Partial", "Disagree"]
+      required true
+    }
+    input "findings" {
+      label "Findings"
+      kind textarea
+      max_length 4000
+      required_if "qa_review.agreement == 'Disagree' || qa_review.agreement == 'Partial'"
+    }
+  }
+
+  form "billing" {
+    title "Charge posting"
+    edit_roles ["data_entry"]
+    input "payer" {
+      label "Payer"
+      kind text
+      required true
+    }
+    input "charge_total" {
+      label "Total charge"
+      kind number
+      min "0"
+      required true
+    }
+    input "claim_status" {
+      label "Claim status"
+      kind select
+      options ["Ready", "Hold"]
+      default "Ready"
+      required true
+    }
+    input "hold_reason" {
+      label "Reason for holding the claim"
+      kind textarea
+      visible_if "billing.claim_status == 'Hold'"
+      required_if "billing.claim_status == 'Hold'"
+    }
+  }
+
+  # -------------------------------------------------------------------------
+  # Stage 1: coding
+  # -------------------------------------------------------------------------
+  stage "coding" {
+    title "Clinical coding"
+    kind processing
+    roles ["coder", "manager"]
+    view_roles ["qa", "qa_auditor", "data_entry"]
+    assign_roles ["manager"]
+    suspend_roles ["coder"]
+    # Worked by one coder at a time: claim, then edit, then submit.
+    claimable true
+    sla {
+      duration "24h"
+      warn_before "4h"
+      calendar "clinic_hours"
+      on_breach "notify"
+      escalate "supervisor" {
+        after "12h"
+        assign_roles ["manager"]
+        notify ["coding-managers"]
+      }
+    }
+    page {
+      title "Code the encounter"
+      layout stacked
+      submit_label "Complete and advance"
+      info "guidance" {
+        title "AMA CPT guidelines"
+        text "Choose the MDM level first. The E and M codes offered follow from it."
+      }
+      group "chart" {
+        title "Patient and encounter"
+        forms ["patient"]
+      }
+      group "em" {
+        title "Evaluation and management"
+        forms ["em"]
+      }
+      group "procedures" {
+        title "Procedures and services"
+        forms ["cpt"]
+      }
+      group "diagnoses" {
+        title "Diagnoses"
+        forms ["dx"]
+      }
+      group "routing" {
+        title "Routing"
+        forms ["routing"]
+      }
+    }
+    action "submit" {
+      label "Complete and advance"
+      outcome advance
+    }
+  }
+
+  # -------------------------------------------------------------------------
+  # Stage 2: QA audit, only when the coder asked for it
+  # -------------------------------------------------------------------------
+  stage "qa" {
+    title "QA audit"
+    kind review
+    roles ["qa", "qa_auditor", "manager"]
+    view_roles ["coder", "data_entry"]
+    assign_roles ["manager"]
+    skip_if "routing.request_qa != true"
+    claimable true
+    sla {
+      duration "12h"
+      warn_before "2h"
+      calendar "clinic_hours"
+      on_breach "notify"
+    }
+    page {
+      title "Audit the coding"
+      layout stacked
+      submit_label "Finish audit"
+      group "coded" {
+        title "Submitted coding"
+        mode readonly
+        layout accordion
+        collapsed true
+        forms ["patient", "em", "cpt", "dx", "routing"]
+      }
+      group "audit" {
+        title "Audit"
+        forms ["qa_review"]
+      }
+    }
+    action "approve" {
+      label "Agree and approve"
+      outcome advance
+    }
+    action "return" {
+      label "Return to coder"
+      outcome return
+      return_to "coding"
+      comment_required true
+    }
+  }
+
+  # -------------------------------------------------------------------------
+  # Stage 3: data entry and billing
+  # -------------------------------------------------------------------------
+  stage "data_entry" {
+    title "Data entry and billing"
+    kind processing
+    roles ["data_entry"]
+    view_roles ["coder", "qa", "qa_auditor", "manager"]
+    claimable true
+    sla {
+      duration "12h"
+      warn_before "2h"
+      calendar "clinic_hours"
+      on_breach "notify"
+    }
+    page {
+      title "Post the claim"
+      layout stacked
+      submit_label "Post and transmit"
+      group "coded" {
+        title "Coding summary"
+        mode summary
+        forms ["patient", "em", "cpt", "dx"]
+      }
+      group "billing" {
+        title "Charge posting"
+        forms ["billing"]
+      }
+    }
+    action "complete" {
+      label "Post and transmit claim"
+      outcome advance
+      confirm "Post this claim for transmission?"
+    }
+  }
+}

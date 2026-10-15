@@ -11,7 +11,7 @@ intent "auth.login" {
     requires [input]
     provides [user_rows]
     config {
-      statement "SELECT id, email, name, password_hash, roles, status FROM users WHERE email = LOWER($1) AND status = 'active' LIMIT 1"
+      statement "SELECT u.id, u.email, u.name, u.password_hash, u.roles, u.status, (SELECT group_concat(DISTINCT CASE WHEN m.work_item_id <> '*' THEN m.work_item_id WHEN m.facility_id <> '*' THEN m.facility_id ELSE m.company_id END) FROM v_membership_scope m WHERE m.user_id = u.id) AS org_units, (SELECT group_concat(DISTINCT CASE WHEN m.work_item_id <> '*' THEN m.work_item_id WHEN m.facility_id <> '*' THEN m.facility_id ELSE m.company_id END) FROM v_membership_scope m WHERE m.user_id = u.id AND m.role = 'admin') AS admin_units, (SELECT group_concat(DISTINCT CASE WHEN m.work_item_id <> '*' THEN m.work_item_id WHEN m.facility_id <> '*' THEN m.facility_id ELSE m.company_id END || ':' || m.role) FROM v_membership_scope m WHERE m.user_id = u.id) AS workspace_roles FROM users u WHERE u.email = LOWER($1) AND u.status = 'active' LIMIT 1"
       args ["input.email"]
       require_rows true
       not_found_message "invalid email or password"
@@ -32,6 +32,8 @@ intent "auth.login" {
       username_field "email"
       email_field "email"
       roles_field "roles"
+      # Where the user works and administers, for workspace scoping.
+      session_fields ["org_units", "admin_units", "workspace_roles"]
     }
   }
 
@@ -54,7 +56,7 @@ intent "auth.me" {
     uses "expression"
     provides [user_id]
     config {
-      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+      expression "principal.id"
     }
   }
 
@@ -90,7 +92,7 @@ intent "auth.user_roles" {
     uses "expression"
     provides [user_id]
     config {
-      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+      expression "principal.id"
     }
   }
 
@@ -152,7 +154,7 @@ intent "auth.user_info" {
     uses "expression"
     provides [user_id]
     config {
-      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+      expression "principal.id"
     }
   }
 

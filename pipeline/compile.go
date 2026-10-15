@@ -217,7 +217,57 @@ func Compile(def *Definition) (*Compiled, error) {
 			return nil, fmt.Errorf("%s: subject path %q names no input", where, path)
 		}
 	}
+	if err := c.checkDependencies(); err != nil {
+		return nil, fmt.Errorf("%s: %w", where, err)
+	}
 	return c, nil
+}
+
+// checkDependencies verifies every depends_on names an existing input other
+// than itself, and that the dependencies form no cycle.
+func (c *Compiled) checkDependencies() error {
+	edges := map[string][]string{}
+	for form, cf := range c.forms {
+		for _, in := range cf.inputs {
+			self := form + "." + in.Name
+			for _, d := range in.DependsOn {
+				path := depPath(form, d)
+				target, name, _ := strings.Cut(path, ".")
+				tf := c.forms[target]
+				if tf == nil || !slices.ContainsFunc(tf.inputs, func(x Input) bool { return x.Name == name }) {
+					return fmt.Errorf("input %s depends_on %q, which names no input", self, d)
+				}
+				if path == self {
+					return fmt.Errorf("input %s depends on itself", self)
+				}
+				edges[self] = append(edges[self], path)
+			}
+		}
+	}
+	state := map[string]int{} // 1 visiting, 2 done
+	var visit func(string) error
+	visit = func(n string) error {
+		switch state[n] {
+		case 1:
+			return fmt.Errorf("depends_on forms a cycle through %s", n)
+		case 2:
+			return nil
+		}
+		state[n] = 1
+		for _, next := range edges[n] {
+			if err := visit(next); err != nil {
+				return err
+			}
+		}
+		state[n] = 2
+		return nil
+	}
+	for n := range edges {
+		if err := visit(n); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func checkRule(r Rule) error {
@@ -499,6 +549,14 @@ func checkInput(in Input) error {
 	if in.Kind == KindFile && (in.Sealed || in.Compute != "") {
 		return fmt.Errorf("a file input cannot be sealed or computed")
 	}
+	if len(in.DependsOn) > 0 && in.Lookup == "" {
+		return fmt.Errorf("depends_on needs a lookup")
+	}
+	for _, d := range in.DependsOn {
+		if strings.TrimSpace(d) == "" {
+			return fmt.Errorf("depends_on names an empty input")
+		}
+	}
 	return nil
 }
 
@@ -531,7 +589,10 @@ func (c *Compiled) Expressions() map[string]string {
 		for _, in := range cf.inputs {
 			add("form "+name+" input "+in.Name+" required_if", in.RequiredIf)
 			add("form "+name+" input "+in.Name+" visible_if", in.VisibleIf)
+			add("form "+name+" input "+in.Name+" disabled_if", in.DisabledIf)
 		}
+		add("form "+name+" visible_if", cf.VisibleIf)
+		add("form "+name+" disabled_if", cf.DisabledIf)
 	}
 	for _, st := range c.Def.Stages {
 		where := "stage " + st.Name
@@ -542,6 +603,7 @@ func (c *Compiled) Expressions() map[string]string {
 		if st.Page != nil {
 			for _, g := range st.Page.Groups {
 				add(where+" group "+g.Name+" visible_if", g.VisibleIf)
+				add(where+" group "+g.Name+" disabled_if", g.DisabledIf)
 			}
 			for _, b := range st.Page.Info {
 				add(where+" info "+b.Name+" visible_if", b.VisibleIf)

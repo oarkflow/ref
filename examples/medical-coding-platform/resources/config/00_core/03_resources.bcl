@@ -57,6 +57,9 @@ resource "session_auth" {
   config {
     session "sessions"
     roles_claim "roles"
+    # Workspaces the user works in, administers, and the roles they hold there
+    # (written to the session at sign-in).
+    claims ["org_units", "admin_units", "workspace_roles"]
   }
 }
 

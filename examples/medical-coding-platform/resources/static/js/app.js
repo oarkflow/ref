@@ -33,10 +33,13 @@ function updateSLATimers() {
   const now = new Date().getTime();
   document.querySelectorAll('[data-sla-deadline]').forEach(el => {
     const deadlineStr = el.getAttribute('data-sla-deadline');
-    if (!deadlineStr) return;
+    if (!deadlineStr || isNaN(new Date(deadlineStr).getTime())) return;
 
     const deadline = new Date(deadlineStr).getTime();
     const diff = deadline - now;
+
+    // Write into the inner .sla-text span when present so badge icons survive.
+    const target = el.querySelector('.sla-text') || el;
 
     const hours = Math.floor(Math.abs(diff) / (1000 * 60 * 60));
     const minutes = Math.floor((Math.abs(diff) % (1000 * 60 * 60)) / (1000 * 60));
@@ -44,15 +47,15 @@ function updateSLATimers() {
     if (diff < 0) {
       el.classList.remove('sla-ok', 'sla-warn');
       el.classList.add('sla-breach');
-      el.textContent = `Breached by ${hours}h ${minutes}m`;
+      target.textContent = `Breached by ${hours}h ${minutes}m`;
     } else if (diff < 4 * 60 * 60 * 1000) { // less than 4 hours
       el.classList.remove('sla-ok', 'sla-breach');
       el.classList.add('sla-warn');
-      el.textContent = `${hours}h ${minutes}m left`;
+      target.textContent = `${hours}h ${minutes}m left`;
     } else {
       el.classList.remove('sla-warn', 'sla-breach');
       el.classList.add('sla-ok');
-      el.textContent = `${hours}h ${minutes}m left`;
+      target.textContent = `${hours}h ${minutes}m left`;
     }
   });
 }

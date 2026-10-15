@@ -20,7 +20,7 @@
 
       <div class="form-field">
         <label class="form-label" for="password">Password</label>
-        <input type="password" id="password" name="password" class="form-control" value="Password123!" required>
+        <input type="password" id="password" name="password" class="form-control" value="DoctorSecret123!" required>
       </div>
 
       <button type="submit" class="btn btn-primary btn-block">Sign In to Workspace</button>
@@ -52,7 +52,7 @@
       btn.addEventListener('click', () => {
         const email = btn.getAttribute('data-email');
         document.getElementById('email').value = email;
-        document.getElementById('password').value = 'Password123!';
+        document.getElementById('password').value = 'DoctorSecret123!';
       });
     });
   </script>

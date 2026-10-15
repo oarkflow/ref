@@ -2,7 +2,9 @@ route "chargemaster.save" {
   method POST
   path "/charge-code/save"
   intent "chargemaster.save"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -10,7 +12,9 @@ route "web_client.chargemaster.save" {
   method POST
   path "/web/client/charge-code/save"
   intent "chargemaster.save"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -18,7 +22,9 @@ route "chargemaster.list_all" {
   method GET
   path "/charge-code"
   intent "chargemaster.list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -26,7 +32,9 @@ route "web_client.chargemaster.list_all" {
   method GET
   path "/web/client/charge-code"
   intent "chargemaster.list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -34,7 +42,9 @@ route "chargemaster.review_list" {
   method POST
   path "/charge-code/:wid/review-charge-code-list"
   intent "chargemaster.list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -42,7 +52,9 @@ route "web_client.chargemaster.review_list" {
   method POST
   path "/web/client/charge-code/:wid/review-charge-code-list"
   intent "chargemaster.list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -50,7 +62,9 @@ route "chargemaster.effective_dates" {
   method GET
   path "/charge-code/:wid/get-effective-date"
   intent "chargemaster.effective_dates"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -58,7 +72,9 @@ route "web_client.chargemaster.effective_dates" {
   method GET
   path "/web/client/charge-code/:wid/get-effective-date"
   intent "chargemaster.effective_dates"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -66,7 +82,9 @@ route "chargemaster.review" {
   method POST
   path "/charge-code/review"
   intent "chargemaster.review"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -74,7 +92,9 @@ route "web_client.chargemaster.review" {
   method POST
   path "/web/client/charge-code/review"
   intent "chargemaster.review"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -82,7 +102,9 @@ route "chargemaster.bulk_delete" {
   method POST
   path "/charge-code/bulk-delete"
   intent "chargemaster.bulk_delete"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -90,7 +112,9 @@ route "web_client.chargemaster.bulk_delete" {
   method POST
   path "/web/client/charge-code/bulk-delete"
   intent "chargemaster.bulk_delete"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -98,7 +122,9 @@ route "chargemaster.update" {
   method POST
   path "/charge-code/:cid/update"
   intent "chargemaster.update"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -106,7 +132,9 @@ route "web_client.chargemaster.update" {
   method POST
   path "/web/client/charge-code/:cid/update"
   intent "chargemaster.update"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -114,7 +142,9 @@ route "providers.list" {
   method GET
   path "/provider"
   intent "providers.list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -122,7 +152,9 @@ route "web_client.providers.list" {
   method GET
   path "/web/client/provider"
   intent "providers.list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -130,7 +162,9 @@ route "providers.types" {
   method GET
   path "/provider/types"
   intent "providers.types"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -138,7 +172,9 @@ route "web_client.providers.types" {
   method GET
   path "/web/client/provider/types"
   intent "providers.types"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -146,7 +182,9 @@ route "providers.save" {
   method POST
   path "/provider/save"
   intent "providers.save"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -154,7 +192,9 @@ route "web_client.providers.save" {
   method POST
   path "/web/client/provider/save"
   intent "providers.save"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -162,7 +202,9 @@ route "providers.review" {
   method POST
   path "/provider/review"
   intent "providers.review"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -170,7 +212,9 @@ route "web_client.providers.review" {
   method POST
   path "/web/client/provider/review"
   intent "providers.review"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -178,7 +222,9 @@ route "providers.details" {
   method GET
   path "/provider/:pid/info"
   intent "providers.details"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -186,7 +232,9 @@ route "web_client.providers.details" {
   method GET
   path "/web/client/provider/:pid/info"
   intent "providers.details"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -194,7 +242,9 @@ route "providers.by_workitem" {
   method GET
   path "/facility/:wid/providers"
   intent "providers.by_workitem"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -202,7 +252,9 @@ route "web_client.providers.by_workitem" {
   method GET
   path "/web/client/facility/:wid/providers"
   intent "providers.by_workitem"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -210,7 +262,9 @@ route "cpt.list" {
   method GET
   path "/cpt-code"
   intent "cpt.list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -218,7 +272,9 @@ route "web_client.cpt.list" {
   method GET
   path "/web/client/cpt-code"
   intent "cpt.list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -226,7 +282,10 @@ route "cpt.create" {
   method POST
   path "/cpt-code/create"
   intent "cpt.create"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  authz { roles ["admin", "super_admin"] authorizer "authorization" }
   cache_control "no-store"
 }
 
@@ -234,7 +293,10 @@ route "web_client.cpt.create" {
   method POST
   path "/web/client/cpt-code/create"
   intent "cpt.create"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  authz { roles ["admin", "super_admin"] authorizer "authorization" }
   cache_control "no-store"
 }
 
@@ -242,7 +304,9 @@ route "cpt.detail" {
   method GET
   path "/cpt-code/:id"
   intent "cpt.detail"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -250,7 +314,9 @@ route "web_client.cpt.detail" {
   method GET
   path "/web/client/cpt-code/:id"
   intent "cpt.detail"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -258,7 +324,9 @@ route "cpt.all" {
   method GET
   path "/cpts"
   intent "cpt.all"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -266,7 +334,9 @@ route "web_client.cpt.all" {
   method GET
   path "/web/client/cpts"
   intent "cpt.all"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -274,7 +344,9 @@ route "files.upload" {
   method POST
   path "/files/upload"
   intent "files.upload"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -282,7 +354,9 @@ route "web_client.files.upload" {
   method POST
   path "/web/client/files/upload"
   intent "files.upload"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -290,14 +364,19 @@ route "files.serve" {
   method GET
   path "/files/*"
   intent "files.serve"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
 }
 
 route "metadata.rules" {
   method GET
   path "/metadata/rules"
   intent "admin.rules"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  authz { roles ["admin", "super_admin"] authorizer "authorization" }
   cache_control "no-store"
 }
 
@@ -305,7 +384,10 @@ route "web_client.metadata.rules" {
   method GET
   path "/web/client/metadata/rules"
   intent "admin.rules"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  authz { roles ["admin", "super_admin"] authorizer "authorization" }
   cache_control "no-store"
 }
 
@@ -313,7 +395,10 @@ route "background.service" {
   method GET
   path "/background/service"
   intent "admin.background_service"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  authz { roles ["admin", "super_admin"] authorizer "authorization" }
   cache_control "no-store"
 }
 
@@ -321,6 +406,9 @@ route "web_client.background.service" {
   method GET
   path "/web/client/background/service"
   intent "admin.background_service"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  authz { roles ["admin", "super_admin"] authorizer "authorization" }
   cache_control "no-store"
 }

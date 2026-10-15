@@ -39,9 +39,12 @@ type RouteSpec struct {
 	Status       int               `bcl:"status"`
 	Headers      map[string]string `bcl:"headers"`
 	CacheControl string            `bcl:"cache_control"`
-	Template     string            `bcl:"template"`
-	Layout       string            `bcl:"layout"`
-	Static       string            `bcl:"static"`
+	// Title is the page title handed to the template as "title" when the
+	// intent's response does not publish one.
+	Title    string `bcl:"title"`
+	Template string `bcl:"template"`
+	Layout   string `bcl:"layout"`
+	Static   string `bcl:"static"`
 
 	Description string              `bcl:"description"`
 	Tags        []string            `bcl:"tags"`

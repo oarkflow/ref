@@ -38,7 +38,7 @@
           </tr>
         </thead>
         <tbody>
-          @if(qa_encounters) {
+          @if(length(qa_encounters) > 0) {
             @for(enc in qa_encounters) {
               <tr>
                 <td>

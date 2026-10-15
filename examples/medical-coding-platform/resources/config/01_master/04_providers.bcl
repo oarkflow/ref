@@ -50,12 +50,61 @@ intent "providers.save" {
   description "Create or update provider record"
   response "response"
   input_schema "provider_input"
+  node "caller" {
+    uses "expression"
+    provides [caller_id]
+    config {
+      expression "principal.id"
+    }
+  }
+
+  node "global_flag" {
+    uses "expression"
+    provides [is_global]
+    config {
+      expression "principal.roles has_any ['admin', 'super_admin'] ? 1 : 0"
+    }
+  }
+
+  node "gate_query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [caller_id, is_global, input]
+    provides [gate_rows]
+    config {
+      statement "SELECT CASE WHEN $1 = 1 THEN 1 WHEN $3 = '' THEN (CASE WHEN EXISTS (SELECT 1 FROM v_membership_scope WHERE user_id = $2 AND role = 'admin') THEN 1 ELSE 0 END) WHEN (SELECT f.client_id FROM work_items wi JOIN facilities f ON f.facility_id = wi.facility_id WHERE wi.work_item_id = $3) IS NULL THEN 0 WHEN EXISTS (SELECT 1 FROM v_membership_scope a WHERE a.user_id = $2 AND a.role = 'admin' AND a.company_id = (SELECT f.client_id FROM work_items wi JOIN facilities f ON f.facility_id = wi.facility_id WHERE wi.work_item_id = $3) AND a.facility_id IN ('*', (SELECT facility_id FROM work_items WHERE work_item_id = $3)) AND a.work_item_id IN ('*', $3)) THEN 1 ELSE 0 END AS ok"
+      args [is_global, caller_id, input.work_item_id]
+    }
+  }
+
+  node "gate_row" {
+    uses "data.first"
+    requires [gate_rows]
+    provides [gate]
+    config {
+      source_fact "gate_rows"
+    }
+  }
+
+  node "authorize" {
+    uses "validate.expression"
+    kind pure
+    requires [gate]
+    provides [authorized]
+    config {
+      expression "gate.ok == 1"
+      code "FORBIDDEN"
+      category "permission"
+      message "you do not administer this workspace"
+    }
+  }
 
   node "id" {
     uses "expression"
     provides [provider_id]
     config {
-      expression "'prv_' + timestamp()"
+      expression "'prv_' + uuid()"
     }
   }
 
@@ -63,7 +112,7 @@ intent "providers.save" {
     uses "database.exec"
     resource "database"
     kind effect
-    requires [provider_id, input]
+    requires [provider_id, input, authorized]
     provides [saved]
     config {
       statement "INSERT INTO providers (provider_id, first_name, last_name, npi, provider_type, email, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, 'active', CURRENT_TIMESTAMP)"
@@ -71,9 +120,21 @@ intent "providers.save" {
     }
   }
 
+  node "link" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [provider_id, saved, input]
+    provides [linked]
+    config {
+      statement "INSERT INTO provider_wi (provider_id, work_item_id, client_ref) SELECT $1, $2, $3 WHERE $2 <> ''"
+      args [provider_id, input.work_item_id, input.client_ref]
+    }
+  }
+
   node "response" {
     uses "collect"
-    requires [provider_id, saved]
+    requires [provider_id, saved, linked]
     provides [response]
     config {
       provider_id "provider_id"

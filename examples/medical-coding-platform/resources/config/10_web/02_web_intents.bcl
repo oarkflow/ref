@@ -11,7 +11,7 @@ intent "web.dashboard" {
     uses "expression"
     provides [user_id]
     config {
-      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+      expression "principal.id"
     }
   }
 
@@ -61,7 +61,7 @@ intent "web.coding_queue" {
     uses "expression"
     provides [user_id]
     config {
-      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+      expression "principal.id"
     }
   }
 

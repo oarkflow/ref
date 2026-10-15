@@ -1,9 +1,30 @@
 #!/usr/bin/env python3
 import json
+import os
 import urllib.request
 import urllib.error
 
-BASE_URL = "http://127.0.0.1:3000"
+BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:3000")
+EMAIL = os.environ.get("VERIFY_EMAIL", "doctor@clear.io")
+PASSWORD = os.environ.get("VERIFY_PASSWORD", "DoctorSecret123!")
+
+
+def login():
+    """Sign in once; every API route except login requires a session."""
+    req = urllib.request.Request(
+        f"{BASE_URL}/web/client/login",
+        data=json.dumps({"email": EMAIL, "password": PASSWORD}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        cookies = [c.split(";", 1)[0] for c in resp.headers.get_all("Set-Cookie") or []]
+    if not cookies:
+        raise SystemExit("login did not return a session cookie")
+    return "; ".join(cookies)
+
+
+SESSION_COOKIE = login()
 
 endpoints = [
     # Auth
@@ -133,7 +154,7 @@ for item in endpoints:
     body = item[2] if len(item) > 2 else None
     
     url = f"{BASE_URL}{path}"
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "Cookie": SESSION_COOKIE}
     data = json.dumps(body).encode("utf-8") if body else None
     
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
@@ -154,8 +175,23 @@ for item in endpoints:
         print(f"[FAIL] {method:4s} {path:55s} -> {str(e)}")
         failed += 1
 
+# Security: the same API must refuse callers without a session.
+for path in ("/users", "/facilities", "/coding/wi_memorial_er/open-list", "/web/client/users"):
+    req = urllib.request.Request(f"{BASE_URL}{path}", method="GET")
+    try:
+        urllib.request.urlopen(req, timeout=5)
+        print(f"[FAIL] anonymous GET {path:45s} was NOT refused")
+        failed += 1
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            print(f"[PASS] anonymous GET {path:45s} -> HTTP 401")
+            passed += 1
+        else:
+            print(f"[FAIL] anonymous GET {path:45s} -> HTTP {e.code} (want 401)")
+            failed += 1
+
 print("\n" + "="*70)
-print(f"VERIFICATION SUMMARY: {passed} PASSED, {failed} FAILED (TOTAL: {len(endpoints)})")
+print(f"VERIFICATION SUMMARY: {passed} PASSED, {failed} FAILED (TOTAL: {passed + failed})")
 print("="*70)
 if failed > 0:
     exit(1)

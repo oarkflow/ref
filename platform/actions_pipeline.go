@@ -56,6 +56,30 @@ func registerPipelineActions(r *Registry) {
 		Provides: "The view",
 		Config:   with(caseParam, stageParam),
 	})
+	mustAction(r, "pipeline.choices", pipelineAction("choices"), ActionInfo{
+		Family: "workflow", Kind: "read",
+		Summary:  "List the choices of a lookup-backed input for given values of the inputs it depends on (cascading selects)",
+		Provides: "{ choices: [{value, label}] }",
+		Config: with(caseParam,
+			ConfigField{Name: "form", Type: "string", Summary: "Form of the input; defaults to the request's form parameter"},
+			ConfigField{Name: "input_name", Type: "string", Summary: "Input name; defaults to the request's input_name parameter"},
+			ConfigField{Name: "deps_fact", Type: "fact", Default: "input.deps", Summary: "Values of the inputs it depends on, keyed by the names depends_on uses"}),
+	})
+	mustAction(r, "pipeline.workspace_get", pipelineAction("workspace_get"), ActionInfo{
+		Family: "workflow", Kind: "read",
+		Summary:  "Read the workspace settings a unit holds for a pipeline, and those in force there after inheritance",
+		Provides: "{ unit, own, effective }",
+		Config: with(ConfigField{Name: "unit", Type: "string", Summary: "Org unit id; defaults to the request's unit parameter"},
+			ConfigField{Name: "scope_claim", Type: "string", Summary: "Principal claim listing the units the caller administers; default: the org resource's assignment claim"}),
+	})
+	mustAction(r, "pipeline.workspace_set", pipelineAction("workspace_set"), ActionInfo{
+		Family: "workflow", Kind: "effect",
+		Summary:  "Replace a unit's workspace settings for a pipeline (stage SLAs, required/hidden/disabled/relabelled fields); validated against the pipeline and limited to the caller's org scope",
+		Provides: "{ unit, own }",
+		Config: with(ConfigField{Name: "unit", Type: "string", Summary: "Org unit id; defaults to the request's unit parameter"},
+			ConfigField{Name: "scope_claim", Type: "string", Summary: "Principal claim listing the units the caller administers; default: the org resource's assignment claim"},
+			ConfigField{Name: "data_fact", Type: "fact", Default: "input.overrides", Summary: "The overrides document"}),
+	})
 	mustAction(r, "pipeline.save", pipelineAction("save"), ActionInfo{
 		Family: "workflow", Kind: "effect",
 		Summary:  "Save form data into an open stage (only inputs editable for the caller are accepted)",
@@ -211,6 +235,7 @@ var pipelineConfigKeys = []string{
 	"access_key_fact", "op", "op_fact", "roles", "max_items", "token", "token_fact",
 	"number", "number_fact", "verify_url", "event_id", "event_id_fact",
 	"path", "path_fact", "file_fact", "file_id", "file_id_fact",
+	"form", "form_fact", "input_name", "input_name_fact", "deps_fact", "unit", "unit_fact", "scope_claim",
 }
 
 func pipelineAction(op string) ActionFactory {
@@ -311,7 +336,7 @@ func (h *pipelineHandler) actorFor(ctx *ActionContext, c *pipeline.Case) pipelin
 	if ctx.Principal.ID == "" && accessKeyMatches(c, h.accessKey(ctx)) {
 		return pipeline.Actor{ID: c.CreatedBy}
 	}
-	return actorOf(ctx.Principal)
+	return h.res.actorAt(ctx.Principal, ctx.TenantID, c.OrgUnit)
 }
 
 func (h *pipelineHandler) engine(name string) (*pipeline.Engine, error) {
@@ -382,6 +407,8 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 		return h.bulk(ctx, hookCtx)
 	case "notify_prefs", "notify_prefs_set":
 		return h.notifyPrefs(ctx)
+	case "workspace_get", "workspace_set":
+		return h.workspace(ctx)
 	case "describe":
 		e, err := h.engine("")
 		if err != nil {
@@ -406,6 +433,17 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 			return ActionResult{}, pipelineFailure(err)
 		}
 		return h.out(v)
+	}
+	if h.op == "choices" {
+		deps, _ := h.body(ctx, "deps_fact", "input.deps").(map[string]any)
+		options, err := e.Choices(c, actor, h.param(ctx, "form"), h.param(ctx, "input_name"), deps)
+		if err != nil {
+			return ActionResult{}, pipelineFailure(err)
+		}
+		if options == nil {
+			options = []pipeline.Option{}
+		}
+		return h.out(map[string]any{"choices": options})
 	}
 	if h.op == "get" {
 		return h.get(c, e, actor)
@@ -613,6 +651,18 @@ func (h *pipelineHandler) start(ctx *ActionContext, hookCtx context.Context) (Ac
 	if orgUnit != "" && h.res.org != nil && !h.res.org.Snapshot(ctx.TenantID).Tree.Has(orgUnit) {
 		return ActionResult{}, notFound("organisational unit", orgUnit)
 	}
+	if orgUnit != "" && h.res.org != nil && !e.C.Def.Stages[0].Public {
+		// Staff start work only inside their jurisdiction: a unit outside it is
+		// not theirs to open a case in. (A public first stage is open to the
+		// applicant wherever they apply.)
+		snap := h.res.org.Snapshot(ctx.TenantID)
+		if !h.res.org.ScopeFor(ctx.Principal, snap.Tree).Covers(snap.Tree, orgUnit) {
+			return ActionResult{}, outOfScope(orgUnit)
+		}
+	}
+	if actor.ID == ctx.Principal.ID && orgUnit != "" {
+		actor = h.res.actorAt(ctx.Principal, ctx.TenantID, orgUnit)
+	}
 	data, _ := h.body(ctx, "data_fact", "input.data").(map[string]any)
 	seq, err := h.res.store.NextSeq(ctx.Context, e.C.Def.Name)
 	if err != nil {
@@ -697,15 +747,18 @@ func (h *pipelineHandler) list(ctx *ActionContext) (ActionResult, error) {
 		q.Statuses = []string{pipeline.CaseDraft, pipeline.CaseInProgress, pipeline.CaseReturned}
 	case "queue", "all":
 		// A work queue holds the stages the caller acts on; "all" adds the
-		// stages they may only view.
+		// stages they may only view. Candidate stages come from every role the
+		// caller holds at any workspace; each case below is judged with the
+		// roles held at its own unit.
+		wide := h.res.actorAnywhere(ctx.Principal)
 		for _, st := range e.C.Def.Stages {
 			stage := st
-			can := actor.HasAnyRole(stage.Roles) || actor.HasAnyRole(stage.AssignRoles)
+			can := wide.HasAnyRole(stage.Roles) || wide.HasAnyRole(stage.AssignRoles)
 			for _, n := range stage.Nodes {
-				can = can || actor.HasAnyRole(n.Roles)
+				can = can || wide.HasAnyRole(n.Roles)
 			}
 			if scope == "all" {
-				can = can || e.CanView(&pipeline.Case{}, &stage, actor)
+				can = can || e.CanView(&pipeline.Case{}, &stage, wide)
 			}
 			if can {
 				q.Stages = append(q.Stages, stage.Name)
@@ -746,6 +799,14 @@ func (h *pipelineHandler) list(ctx *ActionContext) (ActionResult, error) {
 	}
 	out := make([]any, 0, len(cases))
 	for _, c := range cases {
+		if (scope == "queue" || scope == "all") && h.res.org != nil {
+			if st, ok := e.C.Stage(c.Stage); ok {
+				at := h.res.actorAt(ctx.Principal, ctx.TenantID, c.OrgUnit)
+				if !e.CanAct(c, st, at) && !(scope == "all" && e.CanView(c, st, at)) {
+					continue
+				}
+			}
+		}
 		row := map[string]any{
 			"id": c.ID, "number": c.Number, "pipeline": c.Pipeline, "status": c.Status, "stage": c.Stage,
 			"org_unit": c.OrgUnit, "created_by": c.CreatedBy, "revision": c.Revision,

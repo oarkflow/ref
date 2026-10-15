@@ -31,7 +31,7 @@ intent "suspends.suspend_chart" {
     uses "expression"
     provides [user_id]
     config {
-      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+      expression "principal.id"
     }
   }
 

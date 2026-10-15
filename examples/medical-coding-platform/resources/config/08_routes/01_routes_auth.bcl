@@ -73,7 +73,8 @@ route "user.info" {
   path "/user/info"
   intent "auth.user_info"
   session "sessions"
-  allow_anonymous true
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -82,7 +83,8 @@ route "web_client.user_info" {
   path "/web/client/user/info"
   intent "auth.user_info"
   session "sessions"
-  allow_anonymous true
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -91,7 +93,8 @@ route "user.roles" {
   path "/user/roles"
   intent "auth.user_roles"
   session "sessions"
-  allow_anonymous true
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -100,7 +103,8 @@ route "web_client.user_roles" {
   path "/web/client/user/roles"
   intent "auth.user_roles"
   session "sessions"
-  allow_anonymous true
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -109,7 +113,8 @@ route "user.roles_by_id" {
   path "/user/roles/:user_id"
   intent "auth.user_roles_by_id"
   session "sessions"
-  allow_anonymous true
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -118,6 +123,7 @@ route "web_client.user_roles_by_id" {
   path "/web/client/user/roles/:user_id"
   intent "auth.user_roles_by_id"
   session "sessions"
-  allow_anonymous true
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }

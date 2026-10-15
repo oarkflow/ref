@@ -84,7 +84,7 @@ pipeline "permit" {
     page {
       info "privacy" {
         title "Your data"
-        body "We keep your documents for five years."
+        text "We keep your documents for five years."
         style warning
         before "docs"
       }
@@ -452,6 +452,9 @@ func TestPipelineAcknowledgementAndConfirmSubmit(t *testing.T) {
 	// The page carries the info block and the acknowledgement with the hash
 	// of its wording; the submit action is two-step.
 	text := "I declare that the information I have given is true."
+	if dig(body, "page", "info", 0, "body") != "We keep your documents for five years." {
+		t.Fatalf("info text lost: %v", dig(body, "page", "info"))
+	}
 	if dig(body, "page", "info", 0, "name") != "privacy" || dig(body, "page", "info", 0, "style") != "warning" || dig(body, "page", "info", 0, "before") != "docs" {
 		t.Fatalf("info = %v", dig(body, "page", "info"))
 	}

@@ -1,0 +1,14 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div class="page-head">
+    <a href="/workflow" class="wf-back">&larr; Work queue</a>
+  </div>
+  <div id="wf-case">
+    <p class="wf-muted">Loading the case...</p>
+  </div>
+}
+
+@define("scripts") {
+  <script src="/static/js/workflow.js"></script>
+}

@@ -38,7 +38,7 @@
           </tr>
         </thead>
         <tbody>
-          @if(suspended_encounters) {
+          @if(length(suspended_encounters) > 0) {
             @for(item in suspended_encounters) {
               <tr>
                 <td class="font-mono text-sm font-bold text-slate-100">${item.encounter_id}</td>

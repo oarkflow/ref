@@ -1,0 +1,90 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div class="page-head">
+    <div class="page-title-row">
+      <div>
+        <h1 class="page-title">Coding workflow</h1>
+        <p class="page-subtitle">Cases move through coding, QA and data entry. Stages, forms, fields and deadlines follow the pipeline and your workspace settings.</p>
+      </div>
+      <div class="head-actions">
+        <a href="/workflow/settings" class="btn btn-secondary">Workspace settings</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel mb-6" id="wf-start">
+    <span class="panel-label">Start a case</span>
+    <div class="wf-notice" hidden role="status"></div>
+    <div class="wf-grid">
+      <div class="form-field">
+        <label class="form-label" for="wf-unit">Workspace</label>
+        <select id="wf-unit" class="form-control" data-role="unit"></select>
+      </div>
+      <div class="form-field">
+        <label class="form-label" for="wf-name">Patient name</label>
+        <input id="wf-name" class="form-control" type="text" data-role="name" placeholder="Last, First">
+      </div>
+      <div class="form-field">
+        <label class="form-label" for="wf-mrn">MRN</label>
+        <input id="wf-mrn" class="form-control" type="text" data-role="mrn" placeholder="MRN-1001">
+      </div>
+      <div class="form-field">
+        <label class="form-label" for="wf-dos">Date of service</label>
+        <input id="wf-dos" class="form-control" type="date" data-role="dos">
+      </div>
+    </div>
+    <div class="mt-4">
+      <button type="button" class="btn btn-primary">Start case</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header-flex">
+      <div>
+        <span class="panel-label">Your work</span>
+        <h2 class="panel-title">Work queue</h2>
+      </div>
+      <div class="panel-actions">
+        <a href="/workflow" class="btn btn-xs btn-secondary">Queue</a>
+        <a href="/workflow?scope=all" class="btn btn-xs btn-secondary">Everything I can see</a>
+        <a href="/workflow?scope=assigned" class="btn btn-xs btn-secondary">Assigned to me</a>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Case</th>
+            <th>Stage</th>
+            <th>Status</th>
+            <th>Workspace</th>
+            <th>Due</th>
+            <th>SLA</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for(c in cases) {
+            <tr>
+              <td class="font-mono">${c.number}</td>
+              <td>${c.stage_title}</td>
+              <td><span class="badge badge-subtle">${c.status}</span></td>
+              <td class="font-mono text-xs">${c.org_unit}</td>
+              <td class="font-mono text-xs">${c.due_at}</td>
+              <td><span class="badge badge-subtle">${c.sla_status}</span></td>
+              <td><a href="/workflow/cases/${c.id}" class="btn btn-xs btn-primary">Open</a></td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+    @if(length(cases) == 0) {
+      <p class="wf-muted mt-4">Nothing is waiting for you right now.</p>
+    }
+  </div>
+}
+
+@define("scripts") {
+  <script src="/static/js/workflow.js"></script>
+}

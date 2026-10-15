@@ -239,14 +239,26 @@ type Input struct {
 	Required    bool   `bcl:"required" json:"required,omitempty"`
 	// RequiredIf / VisibleIf are expressions over the case (data, actor, …).
 	// A hidden input is neither validated nor accepted on save.
-	RequiredIf string   `bcl:"required_if" json:"required_if,omitempty"`
-	VisibleIf  string   `bcl:"visible_if" json:"visible_if,omitempty"`
-	Pattern    string   `bcl:"pattern" json:"pattern,omitempty"`
-	MinLength  int      `bcl:"min_length" json:"min_length,omitempty"`
-	MaxLength  int      `bcl:"max_length" json:"max_length,omitempty"`
-	Min        string   `bcl:"min" json:"min,omitempty"` // number, or a date for date kinds
-	Max        string   `bcl:"max" json:"max,omitempty"`
-	Options    []string `bcl:"options" json:"options,omitempty"`
+	RequiredIf string `bcl:"required_if" json:"required_if,omitempty"`
+	VisibleIf  string `bcl:"visible_if" json:"visible_if,omitempty"`
+	// DisabledIf shows the input but makes it read-only while the expression
+	// holds; a disabled input is not accepted on save.
+	DisabledIf string `bcl:"disabled_if" json:"disabled_if,omitempty"`
+	// ViewRoles, when set, limits who sees the input at all; EditRoles who may
+	// change it (on top of the stage, group and form rules). Neither is
+	// relaxed for anyone: not for the applicant of a public stage either.
+	ViewRoles []string `bcl:"view_roles" json:"view_roles,omitempty"`
+	EditRoles []string `bcl:"edit_roles" json:"edit_roles,omitempty"`
+	// DependsOn names the inputs (a bare name in the same form, or form.input)
+	// whose values narrow this input's lookup; the host resolves the set with
+	// them (Engine.LookupFor).
+	DependsOn []string `bcl:"depends_on" json:"depends_on,omitempty"`
+	Pattern   string   `bcl:"pattern" json:"pattern,omitempty"`
+	MinLength int      `bcl:"min_length" json:"min_length,omitempty"`
+	MaxLength int      `bcl:"max_length" json:"max_length,omitempty"`
+	Min       string   `bcl:"min" json:"min,omitempty"` // number, or a date for date kinds
+	Max       string   `bcl:"max" json:"max,omitempty"`
+	Options   []string `bcl:"options" json:"options,omitempty"`
 	// Lookup names a reference-data set the host resolves into options.
 	Lookup  string `bcl:"lookup" json:"lookup,omitempty"`
 	Default string `bcl:"default" json:"default,omitempty"`
@@ -279,7 +291,14 @@ type Form struct {
 	Title       string   `bcl:"title" json:"title,omitempty"`
 	Description string   `bcl:"description" json:"description,omitempty"`
 	Fields      []string `bcl:"fields" json:"fields,omitempty"` // catalog inputs, in order
-	Inputs      []Input  `bcl:"input,block" json:"inputs,omitempty"`
+	// VisibleIf hides the whole form (its inputs are neither shown, validated
+	// nor accepted) while false; DisabledIf makes it read-only; ViewRoles and
+	// EditRoles limit who sees and who may change it.
+	VisibleIf  string   `bcl:"visible_if" json:"visible_if,omitempty"`
+	DisabledIf string   `bcl:"disabled_if" json:"disabled_if,omitempty"`
+	ViewRoles  []string `bcl:"view_roles" json:"view_roles,omitempty"`
+	EditRoles  []string `bcl:"edit_roles" json:"edit_roles,omitempty"`
+	Inputs     []Input  `bcl:"input,block" json:"inputs,omitempty"`
 	// Repeatable forms hold a list of entries (previous passports, children).
 	Repeatable bool `bcl:"repeatable" json:"repeatable,omitempty"`
 	MinItems   int  `bcl:"min_items" json:"min_items,omitempty"`
@@ -332,7 +351,10 @@ const (
 type InfoBlock struct {
 	Name  string `bcl:",id" json:"name"`
 	Title string `bcl:"title" json:"title,omitempty"`
-	Body  string `bcl:"body" json:"body"`
+	// Text is the content. Write it as text: BCL reserves the name body for a
+	// block's own contents, so a body attribute never reaches this field.
+	Text string `bcl:"text" json:"-"`
+	Body string `bcl:"body" json:"body"`
 	// Style is info (default), warning, success or danger.
 	Style string `bcl:"style,ident" json:"style,omitempty"`
 	// Before names the group the block is shown above (default: the top of
@@ -365,9 +387,13 @@ type Group struct {
 	Forms       []string `bcl:"forms" json:"forms"`
 	Columns     int      `bcl:"columns" json:"columns,omitempty"`
 	VisibleIf   string   `bcl:"visible_if" json:"visible_if,omitempty"`
-	// Roles, when set, restricts who sees the group at all.
-	Roles     []string `bcl:"roles" json:"roles,omitempty"`
-	Collapsed bool     `bcl:"collapsed" json:"collapsed,omitempty"`
+	// Roles, when set, restricts who sees the group at all. EditRoles
+	// restricts who may change what it holds (others see it read-only), and
+	// DisabledIf makes it read-only while the expression holds.
+	Roles      []string `bcl:"roles" json:"roles,omitempty"`
+	EditRoles  []string `bcl:"edit_roles" json:"edit_roles,omitempty"`
+	DisabledIf string   `bcl:"disabled_if" json:"disabled_if,omitempty"`
+	Collapsed  bool     `bcl:"collapsed" json:"collapsed,omitempty"`
 }
 
 // Stage is one step of the pipeline.

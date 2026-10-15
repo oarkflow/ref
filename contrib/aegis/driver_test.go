@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -117,4 +118,106 @@ func CalculateSMSCost(segments int32, tier int32, baseRate int32) int32 {
 		t.Fatalf("expected result 800, got %v", outFact["result"])
 	}
 	t.Logf("Success! Aegis executed in REF Action, result: %v, fuel used: %v", outFact["result"], outFact["fuel_used"])
+}
+
+func buildTestPackage(t *testing.T) (pkgPath, keyHex string, signer *signing.Key) {
+	t.Helper()
+	res, err := compiler.New(compiler.Config{}).CompileSource(`
+package main
+
+func Neg(a int32) int32 { return 0 - a }
+`, []string{"Neg"})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	signer, err = signing.GenerateEd25519("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ks, err := signing.NewKeySet(signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encKey := make([]byte, 32)
+	if _, err := rand.Read(encKey); err != nil {
+		t.Fatal(err)
+	}
+	b, err := pkg.NewBuilder("pkg-neg", "1.0.0", ks, encKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := b.Build(res.Module)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := pkg.Marshal(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkgPath = filepath.Join(t.TempDir(), "neg.apkg")
+	if err := os.WriteFile(pkgPath, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return pkgPath, hex.EncodeToString(encKey), signer
+}
+
+func writeJWKS(t *testing.T, k *signing.Key) string {
+	t.Helper()
+	ks, err := signing.NewKeySet(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(ks.JWKS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "trusted.json")
+	if err := os.WriteFile(p, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func runNeg(t *testing.T, cfg map[string]any) (any, error) {
+	t.Helper()
+	cfg["function"] = "Neg"
+	cfg["args"] = []any{"a"}
+	act, err := contribaegis.BuildAegisExec(platform.BuildContext{}, platform.NodeSpec{Name: "neg", Config: cfg})
+	if err != nil {
+		return nil, err
+	}
+	out, err := act.Run(&platform.ActionContext{Context: context.Background(), Inputs: map[string]any{"a": 5}})
+	if err != nil {
+		return nil, err
+	}
+	return out.Outputs["neg"].(map[string]any)["result"], nil
+}
+
+func TestAegisKeyFileSignedAndResultType(t *testing.T) {
+	path, keyHex, signer := buildTestPackage(t)
+	keyFile := filepath.Join(t.TempDir(), "key.hex")
+	if err := os.WriteFile(keyFile, []byte(keyHex+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := runNeg(t, map[string]any{"package": path, "key_file": keyFile, "result_type": "int32", "trusted_keys": writeJWKS(t, signer)})
+	if err != nil {
+		t.Fatalf("signed run failed: %v", err)
+	}
+	if got != int64(-5) {
+		t.Fatalf("expected -5, got %v", got)
+	}
+
+	other, err := signing.GenerateEd25519("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runNeg(t, map[string]any{"package": path, "key_file": keyFile, "trusted_keys": writeJWKS(t, other)}); err == nil {
+		t.Fatal("expected untrusted signer to be rejected")
+	}
+
+	wrong := make([]byte, 32)
+	if _, err := runNeg(t, map[string]any{"package": path, "key": hex.EncodeToString(wrong)}); err == nil {
+		t.Fatal("expected wrong key to fail")
+	}
 }

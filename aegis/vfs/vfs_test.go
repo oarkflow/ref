@@ -144,3 +144,19 @@ func TestMemFS_TraversalProtection(t *testing.T) {
 		t.Fatal("expected traversal attack to be rejected, but it succeeded")
 	}
 }
+
+func TestSubIsViewAndWipeReachesIt(t *testing.T) {
+	m := vfs.New()
+	m.WriteFile("a/b.txt", []byte("secret"), 0o644)
+	sub, err := m.Sub("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, err := fs.ReadFile(sub, "b.txt"); err != nil || string(b) != "secret" {
+		t.Fatalf("read via sub: %q %v", b, err)
+	}
+	m.Wipe()
+	if _, err := fs.ReadFile(sub, "b.txt"); err == nil {
+		t.Fatal("sub view still readable after Wipe")
+	}
+}

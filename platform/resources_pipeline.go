@@ -41,11 +41,14 @@ type PipelineCases struct {
 	nudge  chan struct{}
 	// maxAttempts and retryBase tune hook retries (default 10 attempts,
 	// backoff 2s doubling to at most 10 minutes).
-	maxAttempts    int
-	retryBase      time.Duration
-	engines        map[string]*pipeline.Engine
-	order          []string
-	org            *OrgHierarchy
+	maxAttempts int
+	retryBase   time.Duration
+	engines     map[string]*pipeline.Engine
+	order       []string
+	org         *OrgHierarchy
+	// rolesClaim names the principal claim listing workspace roles as
+	// "unit:role" entries; a role counts for every case at or below its unit.
+	rolesClaim     string
 	allowAnonymous bool
 	// notify stores notification preferences and planned notifications when
 	// any pipeline declares notify rules; channels maps each notification
@@ -91,6 +94,7 @@ func registerPipelineResources(r *Registry) {
 			{Name: "storage", Type: "resource", Summary: "storage.* resource that holds uploads of file inputs; with it, file inputs take uploads only (pipeline.upload) and are served checksum-verified (pipeline.file)"},
 			{Name: "storage_prefix", Type: "string", Default: "pipeline/", Summary: "Prefix of every upload's object key"},
 			{Name: "max_upload_bytes", Type: "int", Default: "10485760", Summary: "Largest upload for a file input without its own max_bytes"},
+			{Name: "workspace_roles_claim", Type: "string", Default: "workspace_roles", Summary: "Principal claim listing roles held at a workspace as \"unit:role\" entries (string, comma list or array); a role applies to every case at or below its unit, on top of the principal's own roles"},
 			{Name: "confirm_ttl", Type: "duration", Default: "30m", Summary: "How long a confirm_submit review token stays valid"},
 		},
 	})
@@ -99,7 +103,7 @@ func registerPipelineResources(r *Registry) {
 func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("pipeline.cases", spec.Config,
 		"pipelines", "database", "table_prefix", "migrate", "signing_secret", "signer", "seal_secret", "org_resource", "allow_anonymous",
-		"event_max_attempts", "event_retry_base", "notify_channels", "storage", "storage_prefix", "max_upload_bytes", "confirm_ttl",
+		"event_max_attempts", "event_retry_base", "notify_channels", "storage", "storage_prefix", "max_upload_bytes", "confirm_ttl", "workspace_roles_claim",
 		pipelineDefinitionsKey); err != nil {
 		return nil, nil, err
 	}
@@ -131,6 +135,7 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 		name:           spec.Name,
 		engines:        make(map[string]*pipeline.Engine, len(names)),
 		allowAnonymous: configBool(spec.Config, "allow_anonymous", false),
+		rolesClaim:     configString(spec.Config, "workspace_roles_claim", "workspace_roles"),
 	}
 	if orgName := configString(spec.Config, "org_resource", ""); orgName != "" {
 		org, ok := spec.resolved[orgName].(*OrgHierarchy)
@@ -201,6 +206,9 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 		}
 		if p.org != nil {
 			engine.Lookup = p.lookup
+			engine.LookupFor = p.lookupFor
+			name := name
+			engine.Overrides = func(c *pipeline.Case) *pipeline.Overrides { return p.workspaceOverrides(name, c) }
 			engine.OrgCovers = p.orgCovers
 		}
 		if hasSealed(&def) && len(sealKey) == 0 {
@@ -408,6 +416,94 @@ func (p *PipelineCases) lookup(set string, c *pipeline.Case) []pipeline.Option {
 		out[i] = pipeline.Option{Value: it.Code, Label: orDefaultString(it.Label, it.Code)}
 	}
 	return out
+}
+
+// actorAt is the caller as a case at orgUnit sees it: the principal's own
+// roles plus those it holds at a workspace covering that unit. A coder at one
+// work item is not a coder at its sibling, and an admin of a company is an
+// admin of every facility and work item under it.
+func (p *PipelineCases) actorAt(principal Principal, tenant, orgUnit string) pipeline.Actor {
+	a := actorOf(principal)
+	if p.org == nil || orgUnit == "" || principal.Claims == nil {
+		return a
+	}
+	entries := stringList(principal.Claims[p.rolesClaim])
+	if len(entries) == 0 {
+		return a
+	}
+	tree := p.org.Snapshot(tenant).Tree
+	var extra []string
+	for _, entry := range entries {
+		unit, role, ok := strings.Cut(entry, ":")
+		if !ok || role == "" || !tree.Has(unit) {
+			continue
+		}
+		if tree.IsAncestorOrSelf(unit, orgUnit) && !slices.Contains(a.Roles, role) && !slices.Contains(extra, role) {
+			extra = append(extra, role)
+		}
+	}
+	if len(extra) > 0 {
+		a.Roles = append(slices.Clone(a.Roles), extra...)
+	}
+	return a
+}
+
+// actorAnywhere is the caller holding every role it has at any workspace, for
+// choosing which stages could be its work; each case is then judged with
+// actorAt.
+func (p *PipelineCases) actorAnywhere(principal Principal) pipeline.Actor {
+	a := actorOf(principal)
+	if p.org == nil || principal.Claims == nil {
+		return a
+	}
+	for _, entry := range stringList(principal.Claims[p.rolesClaim]) {
+		if _, role, ok := strings.Cut(entry, ":"); ok && role != "" && !slices.Contains(a.Roles, role) {
+			a.Roles = append(slices.Clone(a.Roles), role)
+		}
+	}
+	return a
+}
+
+// lookupFor resolves a lookup for an input that depends on others. The set is
+// resolved for the case's unit as usual, then narrowed to the entries whose
+// attribute named after each dependency equals that dependency's value (an
+// attribute may also list several accepted values). An entry without the
+// attribute is excluded: a dependent choice must say what it depends on.
+func (p *PipelineCases) lookupFor(set string, c *pipeline.Case, deps map[string]any) []pipeline.Option {
+	snap := p.org.Snapshot(c.TenantID)
+	items := snap.Lookups.Resolve(snap.Tree, hierarchy.LookupQuery{Set: set, NodeID: c.OrgUnit})
+	out := make([]pipeline.Option, 0, len(items))
+	for _, it := range items {
+		if lookupMatchesDeps(it.Attrs, deps) {
+			out = append(out, pipeline.Option{Value: it.Code, Label: orDefaultString(it.Label, it.Code)})
+		}
+	}
+	return out
+}
+
+func lookupMatchesDeps(attrs map[string]any, deps map[string]any) bool {
+	for dep, want := range deps {
+		have, ok := attrs[dep]
+		if !ok || want == nil {
+			return false
+		}
+		wantText := Stringify(want)
+		switch v := have.(type) {
+		case []any:
+			if !slices.ContainsFunc(v, func(x any) bool { return Stringify(x) == wantText }) {
+				return false
+			}
+		case []string:
+			if !slices.Contains(v, wantText) {
+				return false
+			}
+		default:
+			if Stringify(have) != wantText {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // repeatableFileInput names a file input of a repeatable form, if any.

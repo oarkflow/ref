@@ -4,18 +4,23 @@ import sqlite3
 import urllib.request
 import urllib.error
 
-BASE_URL = "http://127.0.0.1:3000"
+BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:3000")
 
 # Ensure test encounter is in 'OPEN' status for idempotent test runs
-db_path = os.path.join(os.path.dirname(__file__), "..", ".data", "clear", "app.db")
+db_path = os.environ.get("DB_FILE") or os.path.join(os.path.dirname(__file__), "..", "..", "..", ".data", "clear", "app.db")
 if os.path.exists(db_path):
     with sqlite3.connect(db_path) as conn:
         conn.execute("UPDATE encounter_details SET encounter_status='OPEN', code_assigned=NULL WHERE encounter_id='enc_1002'")
         conn.execute("UPDATE encounters SET status='OPEN' WHERE encounter_id='enc_1002'")
         conn.commit()
 
+# Session of the signed-in admin (set in step 1); every API route but login needs it.
+SESSION = {"cookie": None}
+
+
 def post(url, data, cookie=None):
     headers = {"Content-Type": "application/json"}
+    cookie = cookie or (SESSION["cookie"] if not url.endswith("/login") else None)
     if cookie:
         headers["Cookie"] = cookie
     req = urllib.request.Request(f"{BASE_URL}{url}", data=json.dumps(data).encode("utf-8"), headers=headers, method="POST")
@@ -28,6 +33,7 @@ def post(url, data, cookie=None):
 
 def get(url, cookie=None):
     headers = {}
+    cookie = cookie or SESSION["cookie"]
     if cookie:
         headers["Cookie"] = cookie
     req = urllib.request.Request(f"{BASE_URL}{url}", headers=headers, method="GET")
@@ -42,6 +48,7 @@ status, res, cookie = post("/login", {"email": "doctor@clear.io", "password": "D
 assert status == 200, f"Expected 200, got {status}: {res}"
 assert res.get("principal", {}).get("email") == "doctor@clear.io"
 assert cookie is not None
+SESSION["cookie"] = cookie.split(";", 1)[0]
 print("   [PASS] Logged in successfully, session cookie received.")
 
 print("\n2. Testing Bcrypt Legacy Fallback Login (legacy_user@clear.io):")
@@ -102,8 +109,15 @@ status, res, _ = post("/coding/wi_memorial_er/enc_1002/save-coding-documentation
     "documentation": "Patient examined and discharged in stable condition.",
     "request_qa": False
 })
-assert status == 200 and res.get("header_updated") == 1 and res.get("next_status") == "COMPLETE"
-print("   [PASS] Encounter enc_1002 saved and completed.")
+assert status == 200 and res.get("header_updated") == 1 and res.get("next_status") == "DE_OPEN"
+print("   [PASS] Encounter enc_1002 saved and handed to data entry.")
+
+print("\n7b. Testing Data Entry hand-off and completion:")
+status, res = get("/coding/wi_memorial_er/de-list")
+print(f"   (data entry list -> HTTP {status})")
+status, res, _ = post("/coding/wi_memorial_er/enc_1002/complete-dataentry", {})
+assert status == 200 and res.get("completed") == 1, (status, res)
+print("   [PASS] Encounter enc_1002 completed by data entry.")
 
 print("\n8. Testing Queue Dashboard Metrics:")
 status, res = get("/coding/facilities/info")

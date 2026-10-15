@@ -28,6 +28,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -278,14 +279,52 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	}
 
 	srv := fh.NewFast(fh.WithTemplateEngine(renderer))
+	// Cross-origin access is off unless CORS_ALLOW_ORIGINS names origins
+	// (comma separated). Each allowed origin is echoed back on its own; "*" is an
+	// explicit opt-in, never the default, because these apps carry session cookies
+	// and often patient data.
+	allowedOrigins := map[string]bool{}
+	for _, o := range strings.Split(os.Getenv("CORS_ALLOW_ORIGINS"), ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			allowedOrigins[o] = true
+		}
+	}
 	srv.Use(func(c fh.Ctx) error {
-		c.Set("Access-Control-Allow-Origin", "*")
-		c.Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
-		c.Set("Access-Control-Allow-Headers", "Content-Type,Authorization,X-Requested-With,X-Tenant-Id,Idempotency-Key")
-		if c.Method() == "OPTIONS" {
-			return c.SendStatus(204)
+		origin := c.Get("Origin")
+		if origin != "" && (allowedOrigins["*"] || allowedOrigins[origin]) {
+			if allowedOrigins["*"] {
+				c.Set("Access-Control-Allow-Origin", "*")
+			} else {
+				c.Set("Access-Control-Allow-Origin", origin)
+				c.Set("Vary", "Origin")
+			}
+			c.Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
+			c.Set("Access-Control-Allow-Headers", "Content-Type,Authorization,X-Requested-With,X-Tenant-Id,Idempotency-Key")
+			if c.Method() == "OPTIONS" {
+				return c.SendStatus(204)
+			}
 		}
 		return c.Next()
+	})
+	// Browser page loads get a redirect to the sign-in page or an HTML error
+	// page; API clients (anything not asking for text/html) keep the JSON body.
+	platform.RegisterFailureRenderer(func(c fh.Ctx, status int, _ map[string]any) bool {
+		if c.Method() != "GET" || !strings.Contains(c.Get("Accept"), "text/html") {
+			return false
+		}
+		switch status {
+		case 401:
+			return c.Redirect("/login?redirect="+url.QueryEscape(c.Path()), 303) == nil
+		case 403, 404:
+			title := "Access Restricted"
+			if status == 404 {
+				title = "Not Found"
+			}
+			c.Status(status)
+			c.Set("Content-Type", "text/html; charset=utf-8")
+			return c.Render(fmt.Sprintf("pages/errors/%d", status), map[string]any{"title": title}) == nil
+		}
+		return false
 	})
 	if err := p.Mount(srv); err != nil {
 		_ = p.Close()

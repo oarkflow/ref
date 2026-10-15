@@ -7,7 +7,7 @@ intent "qa.save_documentation" {
     uses "expression"
     provides [user_id]
     config {
-      expression "principal.id != '' ? principal.id : 'usr_qa_01'"
+      expression "principal.id"
     }
   }
 
@@ -32,7 +32,7 @@ intent "qa.save_documentation" {
     requires [input]
     provides [next_status]
     config {
-      expression "input.return_to_coder ? 'IN_PROGRESS' : 'COMPLETE'"
+      expression "input.return_to_coder ? 'IN_PROGRESS' : 'DE_OPEN'"
     }
   }
 
@@ -40,10 +40,10 @@ intent "qa.save_documentation" {
     uses "database.exec"
     resource "database"
     kind effect
-    requires [eid, wid, user_id, input]
+    requires [eid, wid, user_id, input, details_updated]
     provides [event_saved]
     config {
-      statement "INSERT INTO qa_events (encounter_id, work_item_id, qa_user_id, agreement_status, notes, created_at) VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)"
+      statement "INSERT INTO qa_events (encounter_id, work_item_id, qa_user_id, coder_user_id, agreement_status, notes, created_at) VALUES ($1, $2, $3, COALESCE((SELECT code_assigned FROM encounter_details WHERE encounter_id = $1 AND work_item_id = $2), 'unassigned'), $4, $5, CURRENT_TIMESTAMP)"
       args [eid, wid, user_id, input.agreement_status, input.notes]
     }
   }
@@ -52,13 +52,13 @@ intent "qa.save_documentation" {
     uses "database.exec"
     resource "database"
     kind effect
-    requires [eid, wid, next_status]
+    requires [eid, wid, next_status, user_id]
     provides [details_updated]
     config {
-      statement "UPDATE encounter_details SET encounter_status = $1, qa_complete = CASE WHEN $1 = 'COMPLETE' THEN 1 ELSE 0 END, updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $2 AND work_item_id = $3 AND encounter_status = 'QA_IN_PROGRESS'"
-      args [next_status, eid, wid]
+      statement "UPDATE encounter_details SET encounter_status = $1, qa_complete = CASE WHEN $1 = 'IN_PROGRESS' THEN 0 ELSE 1 END, qa_assigned = COALESCE(qa_assigned, $4), updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $2 AND work_item_id = $3 AND encounter_status IN ('IN_QA', 'QA_IN_PROGRESS')"
+      args [next_status, eid, wid, user_id]
       require_affected true
-      not_found_message "encounter not in QA in progress status"
+      not_found_message "encounter is not awaiting QA review"
     }
   }
 

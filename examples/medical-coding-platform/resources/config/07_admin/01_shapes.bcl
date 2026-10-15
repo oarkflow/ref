@@ -11,3 +11,20 @@ shape "user_create_input" {
   prop "password" { kind string required true sensitive true min_length 8 }
   prop "role"     { kind string required true default "coder" }
 }
+
+shape "role_assign_input" {
+  kind object
+  prop "user_id"      { kind string required true }
+  prop "company_id"   { kind string required true }
+  prop "facility_id"  { kind string default "*" }
+  prop "work_item_id" { kind string default "*" }
+  prop "role"         { kind string required true }
+}
+
+shape "role_revoke_input" {
+  kind object
+  prop "user_id"      { kind string required true }
+  prop "role"         { kind string required true }
+  prop "company_id"   { kind string default "" }
+  prop "work_item_id" { kind string default "" }
+}

@@ -78,6 +78,55 @@ An input is editable only if all of these hold:
 
 The **view** (`pipeline.view`) resolves all of this for the caller. It returns groups with their effective modes, inputs with `editable`, `value` (masked where needed), `choices`, `flag` and `verdict`, plus nodes with their allowed operations and the caller's actions. A UI renders it generically; [`examples/passport/static/index.html`](../examples/passport/static/index.html) is such a renderer.
 
+### Access, conditions and dependent inputs
+
+Who may see and change what is declared on the stage, group, form and input, and the engine enforces it on every view and save.
+
+| Setting | On | Effect |
+|---|---|---|
+| `view_roles` | input, form | Only these roles see it. Others get no input, no value in the view, and a write to it is ignored. |
+| `edit_roles` | input, form, group | Only these roles may change it; everyone else sees it read-only. |
+| `visible_if` | input, form, group | Hidden while false: not shown, not validated, not accepted on save. |
+| `disabled_if` | input, form, group | Shown read-only while true (`disabled: true` in the view); a write to it is ignored. |
+| `required_if` | input | Required while true. |
+
+Role limits are strict: the applicant of a public stage is not exempt. Only an outside party holding a signed link is, because the link itself names what they may fill. Stage `roles` still decide who may act at all; these settings narrow what an actor who may act can touch.
+
+```bcl
+form "billing" {
+  edit_roles ["data_entry"]
+  input "claim_status" { kind select  options ["Ready", "Hold"] }
+  input "hold_reason"  { kind textarea  visible_if "billing.claim_status == 'Hold'"  required_if "billing.claim_status == 'Hold'" }
+}
+```
+
+**Dependent inputs.** `depends_on` lists inputs (a bare name in the same form, or `form.input`) whose values narrow a lookup input's choices:
+
+```bcl
+input "mdm_level" { kind select  options ["Low", "High"] }
+input "em_code"   { kind select  lookup "em_codes"  depends_on ["mdm_level"] }
+```
+
+The host resolves the set with the dependencies' values (`Engine.LookupFor`). With an `org.hierarchy`, a lookup entry belongs to a value when its attribute named after the dependency holds it (a list may hold several): `{ set "em_codes" code "99283" attrs { mdm_level ["Low", "Moderate"] } }`. An entry without the attribute is not offered. A value outside the narrowed choices is refused on save, using the values submitted in the same request. `pipeline.choices` returns the choices for given dependency values before anything is saved, so a form can refresh a dependent select; the compiler rejects an unknown, self-referential or cyclic `depends_on`.
+
+### Workspaces: settings, lookups and roles
+
+With an `org.hierarchy` (for example company > facility > work item) a case belongs to a unit, and three things follow the tree:
+
+- **Lookups** resolve for the case's unit: inline or stored entries at a node override those above it, and `disabled true` switches an inherited entry off for that subtree.
+- **Settings** tune a pipeline per workspace without changing its definition. A unit's attrs hold an `Overrides` document under `pipeline:<name>`; a case reads them from its unit up to the root, the nearest unit winning per stage and per field.
+
+  ```json
+  { "stages": { "coding": { "due": "12h", "sla_duration": "6h", "sla_warn_before": "1h", "sla_calendar": "clinic_hours" } },
+    "fields": { "patient.fin": { "required": true, "label": "Financial number" },
+                "billing": { "disabled": true } } }
+  ```
+
+  Settings can tune and narrow; they never grant access. Roles, permissions and conditions are not overridable, and an input the pipeline requires cannot be hidden. `pipeline.workspace_get` and `pipeline.workspace_set` read and replace a unit's settings; `set` validates against the pipeline (`Compiled.CheckOverrides`) and limits the caller to units in its scope. Name the claim holding the units a caller *administers* with `scope_claim`; without it the org's assignment claim applies. A unit's own assignee may edit that unit, never the ones above.
+- **Roles** held at a workspace count for cases at and below it. A principal claim (`workspace_roles_claim`, default `workspace_roles`) lists `"unit:role"` entries; a company-level `qa` is a QA role on every facility and work item under the company, a work item-level `coder` only there. They add to the principal's own roles. Work queues pick the stages a user could work from every role held anywhere, then judge each case with the roles held at its own unit.
+
+Staff may start a case only in a unit inside their org scope (a public first stage is open to applicants anywhere).
+
 ### File uploads
 
 ```bcl
@@ -105,11 +154,13 @@ Without `storage`, a file input holds a plain reference (a string, or an object 
 
 ```bcl
 page {
-  info "privacy" { title "Your data"  body "We keep your documents for five years."  style warning  before "docs" }
+  info "privacy" { title "Your data"  text "We keep your documents for five years."  style warning  before "docs" }
   acknowledge "truthful" { title "Declaration"  text "I declare that the information I have given is true." }
   group "docs" { forms ["documents"] }
 }
 ```
+
+An info block's content is its `text`. BCL reserves `body` for a block's own contents, so a `body` attribute on a typed block such as `info` is never read (`body` is still accepted in old documents but stays empty); use `text`.
 
 - **`info`** is content to show: `title`, `body`, `style` (`info`, `warning`, `success` or `danger`), and optionally `before` (the group it is shown above; default the top of the page), `visible_if` and `roles`. The view lists it under `page.info`.
 - **`acknowledge`** is a statement the person submitting the stage must accept. It has `text`, and optionally `title`, `before` and `visible_if`. The view lists it under `page.acknowledgements` with the `sha256` of the exact wording and the latest acceptance of that wording.

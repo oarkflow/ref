@@ -2,7 +2,9 @@ route "admin.users" {
   method GET
   path "/users"
   intent "admin.users_list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -10,7 +12,9 @@ route "web_client.admin.users" {
   method GET
   path "/web/client/users"
   intent "admin.users_list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -18,7 +22,9 @@ route "admin.users_store" {
   method POST
   path "/users/store"
   intent "admin.user_create"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -26,7 +32,9 @@ route "web_client.admin.users_store" {
   method POST
   path "/web/client/users/store"
   intent "admin.user_create"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -34,7 +42,9 @@ route "admin.user_get" {
   method GET
   path "/users/:id"
   intent "admin.user_get"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -42,7 +52,9 @@ route "web_client.admin.user_get" {
   method GET
   path "/web/client/users/:id"
   intent "admin.user_get"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -50,7 +62,9 @@ route "admin.user_update" {
   method PUT
   path "/users/:id"
   intent "admin.user_update"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -58,7 +72,9 @@ route "web_client.admin.user_update" {
   method PUT
   path "/web/client/users/:id"
   intent "admin.user_update"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -66,7 +82,9 @@ route "admin.change_password" {
   method POST
   path "/users/change-password"
   intent "admin.change_password"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -74,7 +92,9 @@ route "web_client.admin.change_password" {
   method POST
   path "/web/client/users/change-password"
   intent "admin.change_password"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -82,7 +102,9 @@ route "admin.assign_roles" {
   method POST
   path "/users/roles/assign"
   intent "admin.assign_roles"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -90,7 +112,9 @@ route "web_client.admin.assign_roles" {
   method POST
   path "/web/client/users/roles/assign"
   intent "admin.assign_roles"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -98,7 +122,9 @@ route "admin.revoke_roles" {
   method POST
   path "/users/roles/revoke"
   intent "admin.revoke_roles"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -106,7 +132,9 @@ route "web_client.admin.revoke_roles" {
   method POST
   path "/web/client/users/roles/revoke"
   intent "admin.revoke_roles"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -114,7 +142,10 @@ route "admin.update_roles" {
   method PUT
   path "/users/roles/update"
   intent "admin.update_roles"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  authz { roles ["admin", "super_admin"] authorizer "authorization" }
   cache_control "no-store"
 }
 
@@ -122,7 +153,10 @@ route "web_client.admin.update_roles" {
   method PUT
   path "/web/client/users/roles/update"
   intent "admin.update_roles"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  authz { roles ["admin", "super_admin"] authorizer "authorization" }
   cache_control "no-store"
 }
 
@@ -130,7 +164,9 @@ route "admin.user_permissions" {
   method GET
   path "/users/:id/permissions"
   intent "admin.user_permissions"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -138,7 +174,9 @@ route "web_client.admin.user_permissions" {
   method GET
   path "/web/client/users/:id/permissions"
   intent "admin.user_permissions"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -146,7 +184,9 @@ route "admin.roles" {
   method GET
   path "/roles"
   intent "admin.roles_list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -154,7 +194,9 @@ route "web_client.admin.roles" {
   method GET
   path "/web/client/roles"
   intent "admin.roles_list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -162,7 +204,10 @@ route "admin.role_create" {
   method POST
   path "/roles"
   intent "admin.role_create"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  authz { roles ["admin", "super_admin"] authorizer "authorization" }
   cache_control "no-store"
 }
 
@@ -170,7 +215,10 @@ route "web_client.admin.role_create" {
   method POST
   path "/web/client/roles"
   intent "admin.role_create"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  authz { roles ["admin", "super_admin"] authorizer "authorization" }
   cache_control "no-store"
 }
 
@@ -178,7 +226,9 @@ route "admin.companies" {
   method GET
   path "/companies"
   intent "admin.companies_list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -186,7 +236,9 @@ route "web_client.admin.companies" {
   method GET
   path "/web/client/companies"
   intent "admin.companies_list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -194,7 +246,10 @@ route "admin.company_create" {
   method POST
   path "/companies"
   intent "admin.company_create"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  authz { roles ["admin", "super_admin"] authorizer "authorization" }
   cache_control "no-store"
 }
 
@@ -202,7 +257,10 @@ route "web_client.admin.company_create" {
   method POST
   path "/web/client/companies"
   intent "admin.company_create"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  authz { roles ["admin", "super_admin"] authorizer "authorization" }
   cache_control "no-store"
 }
 
@@ -210,7 +268,9 @@ route "admin.company_get" {
   method GET
   path "/companies/:id"
   intent "admin.company_get"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -218,7 +278,9 @@ route "web_client.admin.company_get" {
   method GET
   path "/web/client/companies/:id"
   intent "admin.company_get"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -226,7 +288,9 @@ route "admin.coders" {
   method GET
   path "/coders"
   intent "admin.coders_list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -234,6 +298,8 @@ route "web_client.admin.coders" {
   method GET
   path "/web/client/coders"
   intent "admin.coders_list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }

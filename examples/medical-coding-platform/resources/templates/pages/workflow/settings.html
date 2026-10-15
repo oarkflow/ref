@@ -1,0 +1,38 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div class="page-head">
+    <a href="/workflow" class="wf-back">&larr; Work queue</a>
+    <h1 class="page-title">Workspace settings</h1>
+    <p class="page-subtitle">Tune stage deadlines and field rules for a company, facility or work item. A facility inherits its company, and a work item inherits its facility. Settings can tighten and tune, but never grant access or hide a required field.</p>
+  </div>
+
+  <div id="wf-settings">
+    <div class="wf-notice" hidden role="status"></div>
+    <div class="panel mb-6">
+      <div class="form-field">
+        <label class="form-label" for="wf-ws-unit">Workspace</label>
+        <select id="wf-ws-unit" class="form-control" data-role="unit"></select>
+      </div>
+    </div>
+
+    <div class="wf-two">
+      <div class="panel">
+        <span class="panel-label">Settings of this workspace</span>
+        <textarea class="form-control wf-code" rows="16" spellcheck="false" data-role="editor" aria-label="Workspace settings as JSON"></textarea>
+        <div class="mt-4">
+          <button type="button" class="btn btn-primary" data-role="save">Save settings</button>
+        </div>
+        <p class="wf-help mt-4">Stages: due, sla_duration, sla_warn_before, sla_calendar. Fields (form.input, or a form name): required, hidden, disabled, label.</p>
+      </div>
+      <div class="panel">
+        <span class="panel-label">In force here (after inheritance)</span>
+        <pre class="wf-code wf-effective" data-role="effective"></pre>
+      </div>
+    </div>
+  </div>
+}
+
+@define("scripts") {
+  <script src="/static/js/workflow.js"></script>
+}

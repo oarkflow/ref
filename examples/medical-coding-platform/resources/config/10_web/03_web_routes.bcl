@@ -8,11 +8,12 @@ route "web.root" {
   method GET
   path "/"
   intent "web.dashboard"
+  title "Dashboard"
   template "pages/dashboard/index"
   layout "layouts/base"
   session "sessions"
   auth "session_auth"
-  allow_anonymous true
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -20,17 +21,19 @@ route "web.dashboard" {
   method GET
   path "/dashboard"
   intent "web.dashboard"
+  title "Dashboard"
   template "pages/dashboard/index"
   layout "layouts/base"
   session "sessions"
   auth "session_auth"
-  allow_anonymous true
+  allow_anonymous false
   cache_control "no-store"
 }
 
 route "web.login_page" {
   method GET
   path "/login"
+  title "Sign In"
   template "pages/auth/login"
   layout "layouts/auth"
   session "sessions"
@@ -42,11 +45,12 @@ route "web.coding_queue" {
   method GET
   path "/coding/queue"
   intent "web.coding_queue"
+  title "Coding Queue"
   template "pages/coding/queue"
   layout "layouts/base"
   session "sessions"
   auth "session_auth"
-  allow_anonymous true
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -54,11 +58,12 @@ route "web.coding_workspace" {
   method GET
   path "/coding/:wid/:eid"
   intent "web.coding_workspace"
+  title "Coding Workspace"
   template "pages/coding/workspace"
   layout "layouts/base"
   session "sessions"
   auth "session_auth"
-  allow_anonymous true
+  allow_anonymous false
   cache_control "no-store"
   parameter "wid" {
     in path
@@ -78,11 +83,12 @@ route "web.qa_page" {
   method GET
   path "/qa"
   intent "web.qa_list"
+  title "QA Review"
   template "pages/qa/index"
   layout "layouts/base"
   session "sessions"
   auth "session_auth"
-  allow_anonymous true
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -90,11 +96,12 @@ route "web.suspends_page" {
   method GET
   path "/suspends"
   intent "web.suspends_list"
+  title "Suspends & Query"
   template "pages/suspends/index"
   layout "layouts/base"
   session "sessions"
   auth "session_auth"
-  allow_anonymous true
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -102,11 +109,12 @@ route "web.dataentry_page" {
   method GET
   path "/dataentry"
   intent "web.dataentry_list"
+  title "Data Entry"
   template "pages/dataentry/index"
   layout "layouts/base"
   session "sessions"
   auth "session_auth"
-  allow_anonymous true
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -114,11 +122,12 @@ route "web.facilities_page" {
   method GET
   path "/web/facilities"
   intent "web.facilities_list"
+  title "Facilities & Items"
   template "pages/dashboard/index"
   layout "layouts/base"
   session "sessions"
   auth "session_auth"
-  allow_anonymous true
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -129,7 +138,8 @@ route "web.start_coding_action" {
   path "/web/coding/:wid/:eid/start-coding"
   intent "encounters.start_coding"
   session "sessions"
-  allow_anonymous true
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -138,7 +148,8 @@ route "web.save_patient_details_action" {
   path "/web/coding/:wid/:eid/save-patient-details"
   intent "encounters.save_patient_details"
   session "sessions"
-  allow_anonymous true
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -147,7 +158,8 @@ route "web.save_coding_action" {
   path "/web/coding/:wid/:eid/save-coding-documentation"
   intent "coding.save_documentation"
   session "sessions"
-  allow_anonymous true
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -156,7 +168,8 @@ route "web.abandon_action" {
   path "/web/coding/:wid/:eid/abandon"
   intent "encounters.abandon"
   session "sessions"
-  allow_anonymous true
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -165,7 +178,8 @@ route "web.suspend_action" {
   path "/web/suspends/:wid/:eid/suspend"
   intent "suspends.suspend_chart"
   session "sessions"
-  allow_anonymous true
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -174,7 +188,8 @@ route "web.release_suspend_action" {
   path "/web/suspends/:wid/:eid/release"
   intent "suspends.release_chart"
   session "sessions"
-  allow_anonymous true
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -183,7 +198,8 @@ route "web.qa_complete_action" {
   path "/web/qa/:wid/:eid/complete"
   intent "qa.save_documentation"
   session "sessions"
-  allow_anonymous true
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -192,6 +208,7 @@ route "web.dataentry_complete_action" {
   path "/web/dataentry/:wid/:eid/complete"
   intent "de.complete"
   session "sessions"
-  allow_anonymous true
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }

@@ -250,3 +250,39 @@ Seed "seed_encounter_detail_2" {
   Field "encounter_status" { value = "OPEN" }
   Field "code_assigned" { value = "" }
 }
+
+Seed "seed_member_coder" {
+  rows = 1
+  table = "memberships"
+  Field "user_id" { value = "usr_coder_01" }
+  Field "company_id" { value = "comp_clear_01" }
+  Field "work_item_id" { value = "wi_memorial_er" }
+  Field "role" { value = "coder" }
+}
+
+Seed "seed_member_legacy" {
+  rows = 1
+  table = "memberships"
+  Field "user_id" { value = "usr_legacy_01" }
+  Field "company_id" { value = "comp_clear_01" }
+  Field "work_item_id" { value = "wi_memorial_er" }
+  Field "role" { value = "coder" }
+}
+
+Seed "seed_member_qa" {
+  rows = 1
+  table = "memberships"
+  Field "user_id" { value = "usr_qa_01" }
+  Field "company_id" { value = "comp_clear_01" }
+  Field "work_item_id" { value = "wi_memorial_er" }
+  Field "role" { value = "qa" }
+}
+
+Seed "seed_member_de" {
+  rows = 1
+  table = "memberships"
+  Field "user_id" { value = "usr_de_01" }
+  Field "company_id" { value = "comp_clear_01" }
+  Field "work_item_id" { value = "wi_memorial_er" }
+  Field "role" { value = "data_entry" }
+}

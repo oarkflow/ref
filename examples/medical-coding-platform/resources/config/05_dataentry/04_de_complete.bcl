@@ -7,7 +7,7 @@ intent "de.complete" {
     uses "expression"
     provides [user_id]
     config {
-      expression "principal.id != '' ? principal.id : 'usr_de_01'"
+      expression "principal.id"
     }
   }
 
@@ -31,13 +31,13 @@ intent "de.complete" {
     uses "database.exec"
     resource "database"
     kind effect
-    requires [wid, eid]
+    requires [wid, eid, user_id]
     provides [completed]
     config {
-      statement "UPDATE encounter_details SET encounter_status = 'DE_COMPLETE', dataentry_complete = 1, updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $1 AND work_item_id = $2 AND encounter_status = 'DE_IN_PROGRESS'"
-      args [eid, wid]
+      statement "UPDATE encounter_details SET encounter_status = 'COMPLETE', dataentry_complete = 1, dataentry_assigned = COALESCE(dataentry_assigned, $3), updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $1 AND work_item_id = $2 AND encounter_status IN ('DE_OPEN', 'DE_IN_PROGRESS')"
+      args [eid, wid, user_id]
       require_affected true
-      not_found_message "encounter not in DE in progress status"
+      not_found_message "encounter is not awaiting data entry"
     }
   }
 
@@ -48,7 +48,7 @@ intent "de.complete" {
     requires [completed, eid]
     provides [header_updated]
     config {
-      statement "UPDATE encounters SET status = 'DE_COMPLETE', updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $1"
+      statement "UPDATE encounters SET status = 'COMPLETE', updated_at = CURRENT_TIMESTAMP WHERE encounter_id = $1"
       args [eid]
     }
   }

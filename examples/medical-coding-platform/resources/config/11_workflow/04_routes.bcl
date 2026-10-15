@@ -1,0 +1,167 @@
+# ===========================================================================
+# Workflow routes. The API serves the case page's script; the page routes
+# render shells around it. Every route needs a signed-in user.
+# ===========================================================================
+
+# --- pages ------------------------------------------------------------------
+
+route "workflow.queue_page" {
+  method GET
+  path "/workflow"
+  intent "workflow.queue_page"
+  title "Workflow"
+  template "pages/workflow/queue"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  cache_control "no-store"
+}
+
+route "workflow.case_page" {
+  method GET
+  path "/workflow/cases/:id"
+  title "Workflow case"
+  template "pages/workflow/case"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  cache_control "no-store"
+}
+
+route "workflow.settings_page" {
+  method GET
+  path "/workflow/settings"
+  title "Workspace settings"
+  template "pages/workflow/settings"
+  layout "layouts/base"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  cache_control "no-store"
+}
+
+# --- API --------------------------------------------------------------------
+
+route "workflow.api.units" {
+  method GET
+  path "/workflow/api/units"
+  intent "workflow.units"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  cache_control "no-store"
+}
+
+route "workflow.api.list" {
+  method GET
+  path "/workflow/api/cases"
+  intent "workflow.list"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  cache_control "no-store"
+}
+
+route "workflow.api.start" {
+  method POST
+  path "/workflow/api/cases"
+  intent "workflow.start"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  status 201
+  cache_control "no-store"
+}
+
+route "workflow.api.view" {
+  method GET
+  path "/workflow/api/cases/:id"
+  intent "workflow.view"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  cache_control "no-store"
+}
+
+route "workflow.api.history" {
+  method GET
+  path "/workflow/api/cases/:id/history"
+  intent "workflow.get"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  cache_control "no-store"
+}
+
+route "workflow.api.save" {
+  method PUT
+  path "/workflow/api/cases/:id/stages/:stage"
+  intent "workflow.save"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  cache_control "no-store"
+}
+
+route "workflow.api.act" {
+  method POST
+  path "/workflow/api/cases/:id/stages/:stage/actions/:action"
+  intent "workflow.act"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  cache_control "no-store"
+}
+
+route "workflow.api.work" {
+  method POST
+  path "/workflow/api/cases/:id/work/:op"
+  intent "workflow.work"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  cache_control "no-store"
+}
+
+route "workflow.api.choices" {
+  method POST
+  path "/workflow/api/cases/:id/choices/:form/:input_name"
+  intent "workflow.choices"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  cache_control "no-store"
+}
+
+route "workflow.api.settings_get" {
+  method GET
+  path "/workflow/api/workspaces/:unit/settings"
+  intent "workflow.settings_get"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  cache_control "no-store"
+}
+
+route "workflow.api.settings_set" {
+  method PUT
+  path "/workflow/api/workspaces/:unit/settings"
+  intent "workflow.settings_set"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  cache_control "no-store"
+}
+
+route "workflow.api.sync_org" {
+  method POST
+  path "/workflow/api/sync-org"
+  intent "workflow.sync_org"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  authz { roles ["admin", "super_admin"] authorizer "authorization" }
+  cache_control "no-store"
+}

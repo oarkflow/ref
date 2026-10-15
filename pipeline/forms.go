@@ -439,6 +439,9 @@ func (e *Engine) canSeeInput(c *Case, actor Actor, form string, in Input) bool {
 	if in.Sensitive && !applicant && !actor.HasAnyRole(e.C.Def.RevealRoles) {
 		return false
 	}
+	if cf := e.C.forms[form]; cf != nil && (!roleAllows(actor, cf.ViewRoles) || !roleAllows(actor, in.ViewRoles)) {
+		return false
+	}
 	for i := range e.C.Def.Stages {
 		st := &e.C.Def.Stages[i]
 		viewer := e.CanView(c, st, actor)

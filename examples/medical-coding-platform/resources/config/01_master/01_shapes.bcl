@@ -29,6 +29,8 @@ shape "provider_input" {
   prop "npi"           { kind string required true pattern "^[0-9]{10}$" }
   prop "provider_type" { kind string required true }
   prop "email"         { kind string }
+  prop "work_item_id"  { kind string default "" }
+  prop "client_ref"    { kind string default "" }
 }
 
 shape "provider_review_input" {

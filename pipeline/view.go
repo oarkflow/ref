@@ -159,32 +159,36 @@ type FormView struct {
 
 // InputView is a rendered input.
 type InputView struct {
-	Name        string   `json:"name"`
-	Path        string   `json:"path"`
-	Label       string   `json:"label"`
-	Kind        string   `json:"kind"`
-	Help        string   `json:"help,omitempty"`
-	Placeholder string   `json:"placeholder,omitempty"`
-	Required    bool     `json:"required,omitempty"`
-	Editable    bool     `json:"editable"`
-	Options     []string `json:"options,omitempty"`
-	Lookup      string   `json:"lookup,omitempty"`
-	Choices     []Option `json:"choices,omitempty"`
-	Pattern     string   `json:"pattern,omitempty"`
-	MinLength   int      `json:"min_length,omitempty"`
-	MaxLength   int      `json:"max_length,omitempty"`
-	Min         string   `json:"min,omitempty"`
-	Max         string   `json:"max,omitempty"`
-	Accept      []string `json:"accept,omitempty"`
-	MaxBytes    int64    `json:"max_bytes,omitempty"`
-	MaxFiles    int      `json:"max_files,omitempty"`
-	Span        int      `json:"span,omitempty"`
-	Value       any      `json:"value,omitempty"`
-	Masked      bool     `json:"masked,omitempty"`
-	Sealed      bool     `json:"sealed,omitempty"`
-	Computed    bool     `json:"computed,omitempty"`
-	Flag        *Flag    `json:"flag,omitempty"`
-	Verdict     *Verdict `json:"verdict,omitempty"`
+	Name        string `json:"name"`
+	Path        string `json:"path"`
+	Label       string `json:"label"`
+	Kind        string `json:"kind"`
+	Help        string `json:"help,omitempty"`
+	Placeholder string `json:"placeholder,omitempty"`
+	Required    bool   `json:"required,omitempty"`
+	Editable    bool   `json:"editable"`
+	// Disabled marks an input held read-only by a disabled_if condition (as
+	// opposed to one the actor simply may not edit).
+	Disabled  bool     `json:"disabled,omitempty"`
+	DependsOn []string `json:"depends_on,omitempty"`
+	Options   []string `json:"options,omitempty"`
+	Lookup    string   `json:"lookup,omitempty"`
+	Choices   []Option `json:"choices,omitempty"`
+	Pattern   string   `json:"pattern,omitempty"`
+	MinLength int      `json:"min_length,omitempty"`
+	MaxLength int      `json:"max_length,omitempty"`
+	Min       string   `json:"min,omitempty"`
+	Max       string   `json:"max,omitempty"`
+	Accept    []string `json:"accept,omitempty"`
+	MaxBytes  int64    `json:"max_bytes,omitempty"`
+	MaxFiles  int      `json:"max_files,omitempty"`
+	Span      int      `json:"span,omitempty"`
+	Value     any      `json:"value,omitempty"`
+	Masked    bool     `json:"masked,omitempty"`
+	Sealed    bool     `json:"sealed,omitempty"`
+	Computed  bool     `json:"computed,omitempty"`
+	Flag      *Flag    `json:"flag,omitempty"`
+	Verdict   *Verdict `json:"verdict,omitempty"`
 }
 
 // NodeView is a node with its status and the operations the actor may use.
@@ -299,24 +303,32 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 				if actor.Link != nil && !linkShowsForm(actor.Link, form) {
 					continue
 				}
+				if actor.Link == nil && !e.formVisibleTo(cf, env, actor) {
+					continue
+				}
 				fv := FormView{Name: form, Title: cf.Title, Description: cf.Description, Repeatable: cf.Repeatable, MinItems: cf.MinItems, MaxItems: cf.MaxItems, Columns: cf.Columns}
 				for _, in := range cf.inputs {
-					if ok, err := e.cond(in.VisibleIf, env); err != nil || !ok {
+					if !e.visibleTo(cf, in, env, actor) {
 						continue
 					}
 					path := form + "." + in.Name
 					_, canEdit := editable[form][in.Name]
 					canEdit = canEdit && mode == ModeEditable
+					disabled := open && actor.Link == nil && mode == ModeEditable && in.Compute == "" && e.disabledBy(&g, cf, in, env)
 					anyEditable = anyEditable || canEdit
-					iv := InputView{Name: in.Name, Path: path, Label: orDefault(in.Label, in.Name), Kind: orDefault(in.Kind, KindText),
-						Help: in.Help, Placeholder: in.Placeholder, Required: e.required(in, env), Editable: canEdit,
+					label := orDefault(in.Label, in.Name)
+					if fo, ok := fieldOverride(env, path); ok && fo.Label != "" {
+						label = fo.Label
+					}
+					iv := InputView{Name: in.Name, Path: path, Label: label, Kind: orDefault(in.Kind, KindText),
+						Help: in.Help, Placeholder: in.Placeholder, Required: e.required(form, in, env), Editable: canEdit, Disabled: disabled, DependsOn: in.DependsOn,
 						Options: in.Options, Lookup: in.Lookup, Pattern: in.Pattern, MinLength: in.MinLength, MaxLength: in.MaxLength,
 						Min: in.Min, Max: in.Max, Accept: in.Accept, Span: in.Span}
 					if in.Kind == KindFile {
 						iv.MaxBytes, iv.MaxFiles = e.maxUpload(in), max(1, in.MaxFiles)
 					}
-					if in.Lookup != "" && e.Lookup != nil {
-						iv.Choices = e.Lookup(in.Lookup, c)
+					if in.Lookup != "" && (e.Lookup != nil || e.LookupFor != nil) {
+						iv.Choices = e.lookupOptions(c, form, in)
 					} else {
 						for _, o := range in.Options {
 							iv.Choices = append(iv.Choices, Option{Value: o, Label: o})
@@ -586,7 +598,7 @@ func (e *Engine) pageBlocks(c *Case, st *Stage, actor Actor, env map[string]any,
 		if ok, err := e.cond(b.VisibleIf, env); err != nil || !ok {
 			continue
 		}
-		page.Info = append(page.Info, InfoView{Name: b.Name, Title: b.Title, Body: b.Body, Style: orDefault(b.Style, StyleInfo), Before: b.Before})
+		page.Info = append(page.Info, InfoView{Name: b.Name, Title: b.Title, Body: orDefault(b.Text, b.Body), Style: orDefault(b.Style, StyleInfo), Before: b.Before})
 	}
 	for _, a := range e.requiredAcks(c, st, actor) {
 		av := AckView{Name: a.Name, Title: a.Title, Text: a.Text, SHA256: AckHash(a.Text), Before: a.Before}

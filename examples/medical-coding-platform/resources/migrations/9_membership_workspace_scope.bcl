@@ -1,0 +1,31 @@
+Migration "9_membership_workspace_scope" {
+  Version = "1.0.0"
+  Description = "Scope role memberships to a company, facility or work item; '*' means every one below the level above it"
+  Connection = "default"
+  Up {
+    # A membership names a company and a work item. company-wide is work_item_id '*'.
+    # A facility-wide membership is work_item_id '*' plus a row here naming the facility.
+    CreateTable "membership_scopes" {
+      Field "membership_id" {
+        type = "integer"
+        primary_key = true
+      }
+      Field "facility_id" {
+        type = "string"
+        size = 255
+        index = true
+      }
+    }
+    # One row per membership with its facility resolved. A work item belongs to
+    # exactly one facility, so a work item membership takes it from there; others
+    # use their scope row, or '*' (every facility of the company).
+    CreateView "v_membership_scope" {
+      or_replace = true
+      definition = "SELECT m.id, m.user_id, m.role, m.company_id, CASE WHEN m.work_item_id <> '*' THEN COALESCE((SELECT w.facility_id FROM work_items w WHERE w.work_item_id = m.work_item_id), '') ELSE COALESCE((SELECT s.facility_id FROM membership_scopes s WHERE s.membership_id = m.id), '*') END AS facility_id, m.work_item_id FROM memberships m"
+    }
+  }
+  Down {
+    DropView "v_membership_scope" {}
+    DropTable "membership_scopes" {}
+  }
+}

@@ -858,11 +858,29 @@ func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute,
 				// literal ":id"-style placeholder, which would redirect the
 				// browser to a URL that can never resolve. c.Path() is this
 				// request's actual, already-substituted path.
+				//
+				// Only form submissions bounce back with a flash message. A failed
+				// page load must not redirect to itself (the same failure repeats
+				// forever), and the message shown is the projected one, so internal
+				// errors such as SQL text never reach the URL.
+				if c.Method() == "GET" || c.Method() == "HEAD" {
+					return projectFailure(c, err)
+				}
+				status, view := failureView(err)
+				if status >= 500 {
+					slog.Error("request failed", "method", c.Method(), "path", c.Path(), "status", status, "error", err)
+				}
+				message, _ := view["message"].(string)
 				target := c.Path()
 				if back := c.Query("redirect"); back != "" {
 					target = back
 				}
-				return c.Redirect(target+"?error="+url.QueryEscape(err.Error()), 303)
+				if status == 401 {
+					// A failed sign-in, or a form posted without a session, goes
+					// back to the sign-in page rather than a page that needs one.
+					target = "/login"
+				}
+				return c.Redirect(target+"?error="+url.QueryEscape(message), 303)
 			}
 			return projectFailure(c, err)
 		}
@@ -879,6 +897,9 @@ func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute,
 			title = "Forgot Password"
 		case strings.Contains(route.spec.Path, "reset"):
 			title = "Reset Password"
+		}
+		if route.spec.Title != "" {
+			title = route.spec.Title
 		}
 		value = map[string]any{
 			"title":     title,
@@ -921,6 +942,12 @@ func (p *Platform) serveSync(ctx context.Context, c fh.Ctx, route compiledRoute,
 			}
 		} else if value != nil {
 			renderData["data"] = value
+		}
+		if _, set := renderData["title"]; !set && route.spec.Title != "" {
+			renderData["title"] = route.spec.Title
+		}
+		if _, set := renderData["user"]; !set && principal.ID != "" {
+			renderData["user"] = templateUser(principal)
 		}
 		var renderErr error
 		if route.spec.Layout != "" {
@@ -1582,4 +1609,26 @@ func failureView(err error) (int, map[string]any) {
 		}
 	}
 	return status, body
+}
+
+// templateUser is the signed-in user as templates see it: just what a header
+// needs, never credentials or raw claims.
+func templateUser(p Principal) map[string]any {
+	name, _ := p.Claims["name"].(string)
+	if name == "" {
+		name = p.Username
+	}
+	if name == "" {
+		name = p.Email
+	}
+	role := ""
+	if len(p.Roles) > 0 {
+		role = p.Roles[0]
+	}
+	initials := ""
+	for _, r := range name {
+		initials = strings.ToUpper(string(r))
+		break
+	}
+	return map[string]any{"id": p.ID, "name": name, "email": p.Email, "role": role, "initials": initials}
 }

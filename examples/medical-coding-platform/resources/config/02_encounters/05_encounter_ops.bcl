@@ -135,7 +135,7 @@ intent "encounters.add_new" {
     uses "expression"
     provides [new_eid]
     config {
-      expression "'enc_' + timestamp()"
+      expression "'enc_' + uuid()"
     }
   }
 
@@ -183,7 +183,7 @@ intent "encounters.new_with_start_coding" {
     uses "expression"
     provides [user_id]
     config {
-      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+      expression "principal.id"
     }
   }
 
@@ -199,7 +199,7 @@ intent "encounters.new_with_start_coding" {
     uses "expression"
     provides [new_eid]
     config {
-      expression "'enc_' + timestamp()"
+      expression "'enc_' + uuid()"
     }
   }
 
@@ -255,7 +255,7 @@ intent "encounters.create" {
     uses "expression"
     provides [new_eid]
     config {
-      expression "'enc_' + timestamp()"
+      expression "'enc_' + uuid()"
     }
   }
 

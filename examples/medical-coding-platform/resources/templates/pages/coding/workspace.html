@@ -4,7 +4,7 @@
   <style>
     .workspace-grid {
       display: grid;
-      grid-template-columns: 420px 1fr;
+      grid-template-columns: 420px minmax(0, 1fr);
       gap: 1.5rem;
       align-items: start;
     }
@@ -120,7 +120,7 @@
           </div>
 
           <div id="cpt-rows-container">
-            @if(cpt_rows) {
+            @if(length(cpt_rows) > 0) {
               @for(cpt in cpt_rows) {
                 @include("components/coding/cpt-row.html")
               }
@@ -171,7 +171,7 @@
           </div>
 
           <div id="dx-rows-container">
-            @if(dx_rows) {
+            @if(length(dx_rows) > 0) {
               @for(dx in dx_rows) {
                 @include("components/coding/dx-row.html")
               }
@@ -229,7 +229,7 @@
               <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
               Suspend Chart
             </button>
-            <button type="submit" formaction="/web/coding/${wid}/${eid}/abandon?redirect=/coding/queue" class="btn btn-secondary text-rose-400">
+            <button type="submit" formnovalidate formaction="/web/coding/${wid}/${eid}/abandon?redirect=/coding/queue" class="btn btn-secondary text-rose-400" onclick="return confirm('Abandon this claim and return it to the queue?')">
               Abandon Claim
             </button>
           </div>

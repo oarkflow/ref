@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/oarkflow/ref/aegis/harden"
 	"github.com/oarkflow/ref/aegis/integrity"
 	"github.com/oarkflow/ref/aegis/ir"
 	"github.com/oarkflow/ref/aegis/pkg"
@@ -58,7 +59,7 @@ func runRun(args []string, stdout, stderr io.Writer) error {
 		a := args[i]
 		if strings.HasPrefix(a, "-") {
 			flagArgs = append(flagArgs, a)
-			if !strings.Contains(a, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+			if !strings.Contains(a, "=") && i+1 < len(args) && (args[i+1] == "-" || !strings.HasPrefix(args[i+1], "-")) {
 				flagArgs = append(flagArgs, args[i+1])
 				i++
 			}
@@ -102,6 +103,28 @@ func runRun(args []string, stdout, stderr io.Writer) error {
 	if keyFlag == "" {
 		return errors.New("aegis: run: encryption key (-key or AEGIS_KEY env) is required to open package")
 	}
+
+	// Close the OS paths that copy process memory to disk (core dumps, swap,
+	// debugger reads) before any plaintext exists.
+	hardenReport := harden.Apply(harden.FromEnv())
+	for _, a := range hardenReport.Applied {
+		fmt.Fprintf(stdout, "  [Memory] %s\n", a)
+	}
+	for _, s := range hardenReport.Skipped {
+		fmt.Fprintf(stderr, "  [Memory] not applied - %s\n", s)
+	}
+	if keyFlag == "-" {
+		// Read the key from stdin so it never appears in argv or a file.
+		raw, err := io.ReadAll(io.LimitReader(os.Stdin, 4096))
+		if err != nil {
+			return fmt.Errorf("aegis: run: read key from stdin: %w", err)
+		}
+		keyFlag = strings.TrimSpace(string(raw))
+		harden.Wipe(raw)
+	}
+	// The key is parsed once below; remove it from the environment so
+	// /proc/<pid>/environ and child processes cannot read it.
+	harden.ScrubEnv("AEGIS_KEY")
 
 	// 1. Read package
 	pkgData, err := os.ReadFile(pkgFlag)
@@ -166,6 +189,9 @@ func runRun(args []string, stdout, stderr io.Writer) error {
 
 	// Case 2A: Plaintext is a packaged REF application bundle (ZIP)
 	if bytes.HasPrefix(plaintext, []byte("PK\x03\x04")) {
+		// The key and the sealed bytes are no longer needed once decrypted.
+		harden.Wipe(encKey)
+		harden.Wipe(pkgData)
 		return runEncryptedApp(plaintext, sealedPkg.Manifest.PackageID, addrFlag, envFlag, stdout, stderr)
 	}
 
@@ -324,6 +350,8 @@ func runEncryptedApp(plaintext []byte, pkgID, addr, env string, stdout, stderr i
 		return fmt.Errorf("aegis: failed to load in-memory virtual filesystem: %w", err)
 	}
 	defer memFS.Wipe()
+	// MemFS holds its own copy; zero the decrypted archive buffer.
+	harden.Wipe(plaintext)
 
 	fmt.Fprintf(stdout, "==> Loaded %d virtual files into in-memory VFS\n", len(memFS.ListAll()))
 	fmt.Fprintf(stdout, "==> Starting protected REF application on %s...\n", addr)

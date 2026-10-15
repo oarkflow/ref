@@ -318,19 +318,9 @@ func (m *MemFS) Sub(dir string) (fs.FS, error) {
 		return nil, &fs.PathError{Op: "sub", Path: dir, Err: fs.ErrNotExist}
 	}
 
-	sub := New()
-	prefix := clean + "/"
-	for k, f := range m.files {
-		if strings.HasPrefix(k, prefix) {
-			rel := strings.TrimPrefix(k, prefix)
-			if f.isDir {
-				sub.MkdirAll(rel, f.mode)
-			} else {
-				sub.WriteFile(rel, f.data, f.mode)
-			}
-		}
-	}
-	return sub, nil
+	// A view over the parent, not a copy: a copy would hold decrypted bytes
+	// that Wipe on the parent never reaches.
+	return &subView{m: m, prefix: clean}, nil
 }
 
 // ListAll returns all file paths stored in the VFS.
@@ -406,9 +396,9 @@ type memDirEntry struct {
 	modTime time.Time
 }
 
-func (de *memDirEntry) Name() string               { return de.name }
-func (de *memDirEntry) IsDir() bool                { return de.isDir }
-func (de *memDirEntry) Type() fs.FileMode          { return de.mode.Type() }
+func (de *memDirEntry) Name() string      { return de.name }
+func (de *memDirEntry) IsDir() bool       { return de.isDir }
+func (de *memDirEntry) Type() fs.FileMode { return de.mode.Type() }
 func (de *memDirEntry) Info() (fs.FileInfo, error) {
 	return &memFileInfo{
 		name:    de.name,
@@ -460,3 +450,23 @@ func (h *memDirHandle) ReadDir(n int) ([]fs.DirEntry, error) {
 	h.offset = end
 	return res, nil
 }
+
+// subView exposes the subtree of a MemFS without duplicating its contents.
+type subView struct {
+	m      *MemFS
+	prefix string
+}
+
+func (v *subView) full(name string) string {
+	c := cleanVFSPath(name)
+	if c == "." {
+		return v.prefix
+	}
+	return v.prefix + "/" + c
+}
+
+func (v *subView) Open(name string) (fs.File, error)          { return v.m.Open(v.full(name)) }
+func (v *subView) ReadFile(name string) ([]byte, error)       { return v.m.ReadFile(v.full(name)) }
+func (v *subView) ReadDir(name string) ([]fs.DirEntry, error) { return v.m.ReadDir(v.full(name)) }
+func (v *subView) Stat(name string) (fs.FileInfo, error)      { return v.m.Stat(v.full(name)) }
+func (v *subView) Sub(dir string) (fs.FS, error)              { return v.m.Sub(v.full(dir)) }

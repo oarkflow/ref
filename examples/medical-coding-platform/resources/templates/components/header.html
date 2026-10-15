@@ -21,7 +21,7 @@
 
     @if(user.id != null) {
       <div class="user-profile-menu">
-        <div class="user-avatar-badge">${user.name != "" ? user.name : "Coder"}</div>
+        <div class="user-avatar-badge">${user.initials != "" ? user.initials : "U"}</div>
         <div class="user-meta">
           <span class="user-name">${user.name != "" ? user.name : "Gita Coder"}</span>
           <span class="user-role">${user.role != "" ? user.role : "coder"}</span>

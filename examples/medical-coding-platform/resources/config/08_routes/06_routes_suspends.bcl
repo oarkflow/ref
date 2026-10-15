@@ -2,7 +2,9 @@ route "suspends.reasons_list_get" {
   method GET
   path "/coding/suspend-reasons"
   intent "suspends.reasons_list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -10,7 +12,9 @@ route "web_client.suspends.reasons_list_get" {
   method GET
   path "/web/client/coding/suspend-reasons"
   intent "suspends.reasons_list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -18,7 +22,9 @@ route "suspends.reasons_list" {
   method POST
   path "/coding/suspend-reasons"
   intent "suspends.reasons_list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -26,7 +32,9 @@ route "web_client.suspends.reasons_list" {
   method POST
   path "/web/client/coding/suspend-reasons"
   intent "suspends.reasons_list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -34,7 +42,9 @@ route "suspends.reasons_list_underscore" {
   method POST
   path "/coding/suspend_reasons"
   intent "suspends.reasons_list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -42,7 +52,9 @@ route "web_client.suspends.reasons_list_underscore" {
   method POST
   path "/web/client/coding/suspend_reasons"
   intent "suspends.reasons_list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -50,7 +62,9 @@ route "suspends.suspended_list" {
   method GET
   path "/coding/:wid/suspended-list"
   intent "suspends.suspended_list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -58,7 +72,9 @@ route "web_client.suspends.suspended_list" {
   method GET
   path "/web/client/coding/:wid/suspended-list"
   intent "suspends.suspended_list"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -66,7 +82,9 @@ route "suspends.encounter_suspends" {
   method GET
   path "/coding/:wid/:eid/suspends"
   intent "suspends.encounter_suspends"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -74,7 +92,9 @@ route "web_client.suspends.encounter_suspends" {
   method GET
   path "/web/client/coding/:wid/:eid/suspends"
   intent "suspends.encounter_suspends"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -82,7 +102,9 @@ route "suspends.suspend_chart" {
   method POST
   path "/coding/:wid/:eid/suspend"
   intent "suspends.suspend_chart"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -90,7 +112,9 @@ route "web_client.suspends.suspend_chart" {
   method POST
   path "/web/client/coding/:wid/:eid/suspend"
   intent "suspends.suspend_chart"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -98,7 +122,9 @@ route "suspends.release_chart" {
   method POST
   path "/coding/:wid/:eid/release-suspends"
   intent "suspends.release_chart"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -106,7 +132,9 @@ route "web_client.suspends.release_chart" {
   method POST
   path "/web/client/coding/:wid/:eid/release-suspends"
   intent "suspends.release_chart"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -114,7 +142,9 @@ route "suspends.release_batch" {
   method POST
   path "/coding/:wid/release-suspends"
   intent "suspends.release_batch"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -122,7 +152,9 @@ route "web_client.suspends.release_batch" {
   method POST
   path "/web/client/coding/:wid/release-suspends"
   intent "suspends.release_batch"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -130,7 +162,9 @@ route "suspends.update_note" {
   method PUT
   path "/coding/:wid/suspend-note"
   intent "suspends.update_note"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }
 
@@ -138,6 +172,8 @@ route "web_client.suspends.update_note" {
   method PUT
   path "/web/client/coding/:wid/suspend-note"
   intent "suspends.update_note"
-  allow_anonymous true
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
   cache_control "no-store"
 }

@@ -1,14 +1,66 @@
 intent "admin.users_list" {
-  description "Get complete staff directory"
+  description "List staff the caller administers (everyone for a global admin)"
   response "response"
+
+  node "caller" {
+    uses "expression"
+    provides [caller_id]
+    config {
+      expression "principal.id"
+    }
+  }
+
+  node "global_flag" {
+    uses "expression"
+    provides [is_global]
+    config {
+      expression "principal.roles has_any ['admin', 'super_admin'] ? 1 : 0"
+    }
+  }
+
+  node "gate_query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [caller_id, is_global]
+    provides [gate_rows]
+    config {
+      statement "SELECT CASE WHEN $1 = 1 OR EXISTS (SELECT 1 FROM v_membership_scope WHERE user_id = $2 AND role = 'admin') THEN 1 ELSE 0 END AS ok"
+      args [is_global, caller_id]
+    }
+  }
+
+  node "gate_row" {
+    uses "data.first"
+    requires [gate_rows]
+    provides [gate]
+    config {
+      source_fact "gate_rows"
+    }
+  }
+
+  node "authorize" {
+    uses "validate.expression"
+    kind pure
+    requires [gate]
+    provides [authorized]
+    config {
+      expression "gate.ok == 1"
+      code "FORBIDDEN"
+      category "permission"
+      message "you do not administer this workspace"
+    }
+  }
 
   node "query" {
     uses "database.query"
     resource "database"
     kind read
+    requires [is_global, caller_id, authorized]
     provides [users]
     config {
-      statement "SELECT id, email, name, roles, status, created_at FROM users ORDER BY name ASC"
+      statement "SELECT u.id, u.email, u.name, u.roles, u.status, u.created_at FROM users u WHERE $1 = 1 OR EXISTS (SELECT 1 FROM v_membership_scope t JOIN v_membership_scope a ON a.user_id = $2 AND a.role = 'admin' AND a.company_id = t.company_id AND a.facility_id IN ('*', t.facility_id) AND a.work_item_id IN ('*', t.work_item_id) WHERE t.user_id = u.id) ORDER BY u.name ASC"
+      args [is_global, caller_id]
     }
   }
 
@@ -23,15 +75,65 @@ intent "admin.users_list" {
 }
 
 intent "admin.user_create" {
-  description "Provision a new system user with Argon2id hashed password"
+  description "Provision a user; a workspace admin creates them with the base role and grants workspace roles separately"
   response "response"
   input_schema "user_create_input"
+
+  node "caller" {
+    uses "expression"
+    provides [caller_id]
+    config {
+      expression "principal.id"
+    }
+  }
+
+  node "global_flag" {
+    uses "expression"
+    provides [is_global]
+    config {
+      expression "principal.roles has_any ['admin', 'super_admin'] ? 1 : 0"
+    }
+  }
+
+  node "gate_query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [caller_id, is_global]
+    provides [gate_rows]
+    config {
+      statement "SELECT CASE WHEN $1 = 1 OR EXISTS (SELECT 1 FROM v_membership_scope WHERE user_id = $2 AND role = 'admin') THEN 1 ELSE 0 END AS ok"
+      args [is_global, caller_id]
+    }
+  }
+
+  node "gate_row" {
+    uses "data.first"
+    requires [gate_rows]
+    provides [gate]
+    config {
+      source_fact "gate_rows"
+    }
+  }
+
+  node "authorize" {
+    uses "validate.expression"
+    kind pure
+    requires [gate]
+    provides [authorized]
+    config {
+      expression "gate.ok == 1"
+      code "FORBIDDEN"
+      category "permission"
+      message "you do not administer this workspace"
+    }
+  }
 
   node "id" {
     uses "expression"
     provides [user_id]
     config {
-      expression "'usr_' + timestamp()"
+      expression "'usr_' + uuid()"
     }
   }
 
@@ -53,11 +155,11 @@ intent "admin.user_create" {
     uses "database.exec"
     resource "database"
     kind effect
-    requires [user_id, pwd_hash, input]
+    requires [user_id, pwd_hash, input, is_global, authorized]
     provides [saved]
     config {
-      statement "INSERT INTO users (id, email, name, password_hash, roles, status, created_at, updated_at) VALUES ($1, LOWER($2), $3, $4, $5, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
-      args [user_id, input.email, input.name, pwd_hash, input.role]
+      statement "INSERT INTO users (id, email, name, password_hash, roles, status, created_at, updated_at) VALUES ($1, LOWER($2), $3, $4, CASE WHEN $6 = 1 THEN $5 ELSE 'user' END, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+      args [user_id, input.email, input.name, pwd_hash, input.role, is_global]
     }
   }
 
@@ -94,16 +196,68 @@ intent "admin.rules" {
 }
 
 intent "admin.coders_list" {
-  description "Get list of medical coders"
+  description "List medical coders the caller administers"
   response "response"
+
+  node "caller" {
+    uses "expression"
+    provides [caller_id]
+    config {
+      expression "principal.id"
+    }
+  }
+
+  node "global_flag" {
+    uses "expression"
+    provides [is_global]
+    config {
+      expression "principal.roles has_any ['admin', 'super_admin'] ? 1 : 0"
+    }
+  }
+
+  node "gate_query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [caller_id, is_global]
+    provides [gate_rows]
+    config {
+      statement "SELECT CASE WHEN $1 = 1 OR EXISTS (SELECT 1 FROM v_membership_scope WHERE user_id = $2 AND role = 'admin') THEN 1 ELSE 0 END AS ok"
+      args [is_global, caller_id]
+    }
+  }
+
+  node "gate_row" {
+    uses "data.first"
+    requires [gate_rows]
+    provides [gate]
+    config {
+      source_fact "gate_rows"
+    }
+  }
+
+  node "authorize" {
+    uses "validate.expression"
+    kind pure
+    requires [gate]
+    provides [authorized]
+    config {
+      expression "gate.ok == 1"
+      code "FORBIDDEN"
+      category "permission"
+      message "you do not administer this workspace"
+    }
+  }
 
   node "query" {
     uses "database.query"
     resource "database"
     kind read
+    requires [is_global, caller_id, authorized]
     provides [coders]
     config {
-      statement "SELECT id, email, name, status FROM users WHERE roles LIKE '%coder%' ORDER BY name ASC"
+      statement "SELECT u.id, u.email, u.name, u.status FROM users u WHERE u.roles LIKE '%coder%' AND ($1 = 1 OR EXISTS (SELECT 1 FROM v_membership_scope t JOIN v_membership_scope a ON a.user_id = $2 AND a.role = 'admin' AND a.company_id = t.company_id AND a.facility_id IN ('*', t.facility_id) AND a.work_item_id IN ('*', t.work_item_id) WHERE t.user_id = u.id)) ORDER BY u.name ASC"
+      args [is_global, caller_id]
     }
   }
 
@@ -139,7 +293,7 @@ intent "admin.background_service" {
 
 
 intent "admin.user_get" {
-  description "Get user by ID"
+  description "Get a user the caller administers"
   response "response"
 
   node "id" {
@@ -150,11 +304,61 @@ intent "admin.user_get" {
     }
   }
 
+  node "caller" {
+    uses "expression"
+    provides [caller_id]
+    config {
+      expression "principal.id"
+    }
+  }
+
+  node "global_flag" {
+    uses "expression"
+    provides [is_global]
+    config {
+      expression "principal.roles has_any ['admin', 'super_admin'] ? 1 : 0"
+    }
+  }
+
+  node "gate_query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [caller_id, is_global, user_id]
+    provides [gate_rows]
+    config {
+      statement "SELECT CASE WHEN $1 = 1 OR (EXISTS (SELECT 1 FROM v_membership_scope t JOIN v_membership_scope a ON a.user_id = $2 AND a.role = 'admin' AND a.company_id = t.company_id AND a.facility_id IN ('*', t.facility_id) AND a.work_item_id IN ('*', t.work_item_id) WHERE t.user_id = $3)) THEN 1 ELSE 0 END AS ok"
+      args [is_global, caller_id, user_id]
+    }
+  }
+
+  node "gate_row" {
+    uses "data.first"
+    requires [gate_rows]
+    provides [gate]
+    config {
+      source_fact "gate_rows"
+    }
+  }
+
+  node "authorize" {
+    uses "validate.expression"
+    kind pure
+    requires [gate]
+    provides [authorized]
+    config {
+      expression "gate.ok == 1"
+      code "FORBIDDEN"
+      category "permission"
+      message "you do not administer this workspace"
+    }
+  }
+
   node "query" {
     uses "database.query"
     resource "database"
     kind read
-    requires [user_id]
+    requires [user_id, authorized]
     provides [user_rows]
     config {
       statement "SELECT id, email, name, roles, status, created_at FROM users WHERE id = $1"
@@ -175,7 +379,7 @@ intent "admin.user_get" {
 }
 
 intent "admin.user_update" {
-  description "Update user profile and status"
+  description "Update a user profile and status; workspace admins cannot change global administrators"
   response "response"
 
   node "id" {
@@ -186,11 +390,61 @@ intent "admin.user_update" {
     }
   }
 
+  node "caller" {
+    uses "expression"
+    provides [caller_id]
+    config {
+      expression "principal.id"
+    }
+  }
+
+  node "global_flag" {
+    uses "expression"
+    provides [is_global]
+    config {
+      expression "principal.roles has_any ['admin', 'super_admin'] ? 1 : 0"
+    }
+  }
+
+  node "gate_query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [caller_id, is_global, user_id]
+    provides [gate_rows]
+    config {
+      statement "SELECT CASE WHEN $1 = 1 OR (EXISTS (SELECT 1 FROM v_membership_scope t JOIN v_membership_scope a ON a.user_id = $2 AND a.role = 'admin' AND a.company_id = t.company_id AND a.facility_id IN ('*', t.facility_id) AND a.work_item_id IN ('*', t.work_item_id) WHERE t.user_id = $3) AND NOT EXISTS (SELECT 1 FROM users g WHERE g.id = $3 AND g.roles LIKE '%admin%')) THEN 1 ELSE 0 END AS ok"
+      args [is_global, caller_id, user_id]
+    }
+  }
+
+  node "gate_row" {
+    uses "data.first"
+    requires [gate_rows]
+    provides [gate]
+    config {
+      source_fact "gate_rows"
+    }
+  }
+
+  node "authorize" {
+    uses "validate.expression"
+    kind pure
+    requires [gate]
+    provides [authorized]
+    config {
+      expression "gate.ok == 1"
+      code "FORBIDDEN"
+      category "permission"
+      message "you do not administer this workspace"
+    }
+  }
+
   node "update" {
     uses "database.exec"
     resource "database"
     kind effect
-    requires [user_id, input]
+    requires [user_id, input, authorized]
     provides [updated]
     config {
       statement "UPDATE users SET name = COALESCE($1, name), status = COALESCE($2, status), updated_at = CURRENT_TIMESTAMP WHERE id = $3"
@@ -218,7 +472,7 @@ intent "admin.change_password" {
     uses "expression"
     provides [user_id]
     config {
-      expression "principal.id != '' ? principal.id : 'usr_admin_01'"
+      expression "principal.id"
     }
   }
 
@@ -259,14 +513,65 @@ intent "admin.change_password" {
 }
 
 intent "admin.assign_roles" {
-  description "Assign role to user for company/workitem"
+  description "Grant a role on a company, facility or work item the caller administers"
   response "response"
+  input_schema "role_assign_input"
+
+  node "caller" {
+    uses "expression"
+    provides [caller_id]
+    config {
+      expression "principal.id"
+    }
+  }
+
+  node "global_flag" {
+    uses "expression"
+    provides [is_global]
+    config {
+      expression "principal.roles has_any ['admin', 'super_admin'] ? 1 : 0"
+    }
+  }
+
+  node "gate_query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [caller_id, is_global, input]
+    provides [gate_rows]
+    config {
+      statement "SELECT CASE WHEN $1 = 1 THEN 1 WHEN $6 = 'super_admin' THEN 0 WHEN NOT ((CASE WHEN $5 <> '*' THEN COALESCE((SELECT facility_id FROM work_items WHERE work_item_id = $5), '') ELSE $4 END) = '*' OR (SELECT client_id FROM facilities WHERE facility_id = (CASE WHEN $5 <> '*' THEN COALESCE((SELECT facility_id FROM work_items WHERE work_item_id = $5), '') ELSE $4 END)) = $3) THEN 0 WHEN EXISTS (SELECT 1 FROM v_membership_scope a WHERE a.user_id = $2 AND a.role = 'admin' AND a.company_id = $3 AND a.facility_id IN ('*', (CASE WHEN $5 <> '*' THEN COALESCE((SELECT facility_id FROM work_items WHERE work_item_id = $5), '') ELSE $4 END)) AND a.work_item_id IN ('*', $5)) THEN 1 ELSE 0 END AS ok"
+      args [is_global, caller_id, input.company_id, input.facility_id, input.work_item_id, input.role]
+    }
+  }
+
+  node "gate_row" {
+    uses "data.first"
+    requires [gate_rows]
+    provides [gate]
+    config {
+      source_fact "gate_rows"
+    }
+  }
+
+  node "authorize" {
+    uses "validate.expression"
+    kind pure
+    requires [gate]
+    provides [authorized]
+    config {
+      expression "gate.ok == 1"
+      code "FORBIDDEN"
+      category "permission"
+      message "you do not administer this workspace"
+    }
+  }
 
   node "insert" {
     uses "database.exec"
     resource "database"
     kind effect
-    requires [input]
+    requires [input, authorized]
     provides [saved]
     config {
       statement "INSERT INTO memberships (user_id, company_id, work_item_id, role, created_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)"
@@ -274,9 +579,21 @@ intent "admin.assign_roles" {
     }
   }
 
+  node "facility_scope" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [saved, input]
+    provides [scoped]
+    config {
+      statement "INSERT INTO membership_scopes (membership_id, facility_id) SELECT MAX(id), $4 FROM memberships WHERE user_id = $1 AND company_id = $2 AND work_item_id = '*' AND role = $3 HAVING $5 = '*' AND $4 <> '*'"
+      args [input.user_id, input.company_id, input.role, input.facility_id, input.work_item_id]
+    }
+  }
+
   node "response" {
     uses "collect"
-    requires [saved]
+    requires [saved, scoped]
     provides [response]
     config {
       status "role_assigned"
@@ -285,24 +602,86 @@ intent "admin.assign_roles" {
 }
 
 intent "admin.revoke_roles" {
-  description "Revoke role from user"
+  description "Revoke a role, only within workspaces the caller administers"
   response "response"
+  input_schema "role_revoke_input"
+
+  node "caller" {
+    uses "expression"
+    provides [caller_id]
+    config {
+      expression "principal.id"
+    }
+  }
+
+  node "global_flag" {
+    uses "expression"
+    provides [is_global]
+    config {
+      expression "principal.roles has_any ['admin', 'super_admin'] ? 1 : 0"
+    }
+  }
+
+  node "gate_query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [caller_id, is_global]
+    provides [gate_rows]
+    config {
+      statement "SELECT CASE WHEN $1 = 1 OR EXISTS (SELECT 1 FROM v_membership_scope WHERE user_id = $2 AND role = 'admin') THEN 1 ELSE 0 END AS ok"
+      args [is_global, caller_id]
+    }
+  }
+
+  node "gate_row" {
+    uses "data.first"
+    requires [gate_rows]
+    provides [gate]
+    config {
+      source_fact "gate_rows"
+    }
+  }
+
+  node "authorize" {
+    uses "validate.expression"
+    kind pure
+    requires [gate]
+    provides [authorized]
+    config {
+      expression "gate.ok == 1"
+      code "FORBIDDEN"
+      category "permission"
+      message "you do not administer this workspace"
+    }
+  }
 
   node "delete" {
     uses "database.exec"
     resource "database"
     kind effect
-    requires [input]
+    requires [input, is_global, caller_id, authorized]
     provides [deleted]
     config {
-      statement "DELETE FROM memberships WHERE user_id = $1 AND role = $2"
-      args [input.user_id, input.role]
+      statement "DELETE FROM memberships WHERE user_id = $1 AND role = $2 AND ($3 = 1 OR id IN (SELECT t.id FROM v_membership_scope t JOIN v_membership_scope a ON a.user_id = $4 AND a.role = 'admin' AND a.company_id = t.company_id AND a.facility_id IN ('*', t.facility_id) AND a.work_item_id IN ('*', t.work_item_id) WHERE t.user_id = $1 AND t.role = $2)) AND ($5 = '' OR company_id = $5) AND ($6 = '' OR work_item_id = $6)"
+      args [input.user_id, input.role, is_global, caller_id, input.company_id, input.work_item_id]
+    }
+  }
+
+  node "cleanup" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [deleted]
+    provides [cleaned]
+    config {
+      statement "DELETE FROM membership_scopes WHERE membership_id NOT IN (SELECT id FROM memberships)"
     }
   }
 
   node "response" {
     uses "collect"
-    requires [deleted]
+    requires [deleted, cleaned]
     provides [response]
     config {
       status "role_revoked"
@@ -325,7 +704,7 @@ intent "admin.update_roles" {
 }
 
 intent "admin.user_permissions" {
-  description "Get granted permissions for user"
+  description "Get granted permissions for a user the caller administers"
   response "response"
 
   node "id" {
@@ -336,11 +715,61 @@ intent "admin.user_permissions" {
     }
   }
 
+  node "caller" {
+    uses "expression"
+    provides [caller_id]
+    config {
+      expression "principal.id"
+    }
+  }
+
+  node "global_flag" {
+    uses "expression"
+    provides [is_global]
+    config {
+      expression "principal.roles has_any ['admin', 'super_admin'] ? 1 : 0"
+    }
+  }
+
+  node "gate_query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [caller_id, is_global, user_id]
+    provides [gate_rows]
+    config {
+      statement "SELECT CASE WHEN $1 = 1 OR (EXISTS (SELECT 1 FROM v_membership_scope t JOIN v_membership_scope a ON a.user_id = $2 AND a.role = 'admin' AND a.company_id = t.company_id AND a.facility_id IN ('*', t.facility_id) AND a.work_item_id IN ('*', t.work_item_id) WHERE t.user_id = $3)) THEN 1 ELSE 0 END AS ok"
+      args [is_global, caller_id, user_id]
+    }
+  }
+
+  node "gate_row" {
+    uses "data.first"
+    requires [gate_rows]
+    provides [gate]
+    config {
+      source_fact "gate_rows"
+    }
+  }
+
+  node "authorize" {
+    uses "validate.expression"
+    kind pure
+    requires [gate]
+    provides [authorized]
+    config {
+      expression "gate.ok == 1"
+      code "FORBIDDEN"
+      category "permission"
+      message "you do not administer this workspace"
+    }
+  }
+
   node "query" {
     uses "database.query"
     resource "database"
     kind read
-    requires [user_id]
+    requires [user_id, authorized]
     provides [user]
     config {
       statement "SELECT id, email, name, roles, status FROM users WHERE id = $1"
@@ -361,10 +790,61 @@ intent "admin.roles_list" {
   description "Get available system roles"
   response "response"
 
+  node "caller" {
+    uses "expression"
+    provides [caller_id]
+    config {
+      expression "principal.id"
+    }
+  }
+
+  node "global_flag" {
+    uses "expression"
+    provides [is_global]
+    config {
+      expression "principal.roles has_any ['admin', 'super_admin'] ? 1 : 0"
+    }
+  }
+
+  node "gate_query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [caller_id, is_global]
+    provides [gate_rows]
+    config {
+      statement "SELECT CASE WHEN $1 = 1 OR EXISTS (SELECT 1 FROM v_membership_scope WHERE user_id = $2 AND role = 'admin') THEN 1 ELSE 0 END AS ok"
+      args [is_global, caller_id]
+    }
+  }
+
+  node "gate_row" {
+    uses "data.first"
+    requires [gate_rows]
+    provides [gate]
+    config {
+      source_fact "gate_rows"
+    }
+  }
+
+  node "authorize" {
+    uses "validate.expression"
+    kind pure
+    requires [gate]
+    provides [authorized]
+    config {
+      expression "gate.ok == 1"
+      code "FORBIDDEN"
+      category "permission"
+      message "you do not administer this workspace"
+    }
+  }
+
   node "query" {
     uses "database.query"
     resource "database"
     kind read
+    requires [authorized]
     provides [roles]
     config {
       statement "SELECT 'super_admin' AS slug, 'Super Administrator' AS name, 1 AS id, 'Unrestricted root administrator' AS description UNION ALL SELECT 'admin', 'Healthcare System Administrator', 2, 'Healthcare system administrator' UNION ALL SELECT 'manager', 'Coding Supervisor & Queue Manager', 3, 'Clinical coding supervisor and queue manager' UNION ALL SELECT 'coder', 'Medical Coder', 4, 'Medical coder assigned to encounter documentation' UNION ALL SELECT 'qa', 'Quality Assurance Auditor', 5, 'Quality assurance specialist' UNION ALL SELECT 'data_entry', 'Data Entry Specialist', 6, 'Data entry specialist for technical and professional charges' UNION ALL SELECT 'suspend_manager', 'Chart Block Release Manager', 7, 'Manager responsible for releasing chart blocks and query resolution' UNION ALL SELECT 'user', 'Authenticated Staff Member', 8, 'Standard authenticated healthcare staff' ORDER BY id"
@@ -393,16 +873,68 @@ intent "admin.role_create" {
 }
 
 intent "admin.companies_list" {
-  description "List registered healthcare organizations and clients"
+  description "List the companies the caller administers (all for a global admin)"
   response "response"
+
+  node "caller" {
+    uses "expression"
+    provides [caller_id]
+    config {
+      expression "principal.id"
+    }
+  }
+
+  node "global_flag" {
+    uses "expression"
+    provides [is_global]
+    config {
+      expression "principal.roles has_any ['admin', 'super_admin'] ? 1 : 0"
+    }
+  }
+
+  node "gate_query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [caller_id, is_global]
+    provides [gate_rows]
+    config {
+      statement "SELECT CASE WHEN $1 = 1 OR EXISTS (SELECT 1 FROM v_membership_scope WHERE user_id = $2 AND role = 'admin') THEN 1 ELSE 0 END AS ok"
+      args [is_global, caller_id]
+    }
+  }
+
+  node "gate_row" {
+    uses "data.first"
+    requires [gate_rows]
+    provides [gate]
+    config {
+      source_fact "gate_rows"
+    }
+  }
+
+  node "authorize" {
+    uses "validate.expression"
+    kind pure
+    requires [gate]
+    provides [authorized]
+    config {
+      expression "gate.ok == 1"
+      code "FORBIDDEN"
+      category "permission"
+      message "you do not administer this workspace"
+    }
+  }
 
   node "query" {
     uses "database.query"
     resource "database"
     kind read
+    requires [is_global, caller_id, authorized]
     provides [companies]
     config {
-      statement "SELECT id, name, slug, status, created_at FROM companies WHERE status = 'active' ORDER BY name ASC"
+      statement "SELECT id, name, slug, status, created_at FROM companies WHERE status = 'active' AND ($1 = 1 OR id IN (SELECT company_id FROM v_membership_scope WHERE user_id = $2 AND role = 'admin')) ORDER BY name ASC"
+      args [is_global, caller_id]
     }
   }
 
@@ -424,7 +956,7 @@ intent "admin.company_create" {
     uses "expression"
     provides [company_id]
     config {
-      expression "'cmp_' + timestamp()"
+      expression "'cmp_' + uuid()"
     }
   }
 
@@ -452,7 +984,7 @@ intent "admin.company_create" {
 }
 
 intent "admin.company_get" {
-  description "Get company by ID"
+  description "Get a company the caller administers"
   response "response"
 
   node "id" {
@@ -463,11 +995,61 @@ intent "admin.company_get" {
     }
   }
 
+  node "caller" {
+    uses "expression"
+    provides [caller_id]
+    config {
+      expression "principal.id"
+    }
+  }
+
+  node "global_flag" {
+    uses "expression"
+    provides [is_global]
+    config {
+      expression "principal.roles has_any ['admin', 'super_admin'] ? 1 : 0"
+    }
+  }
+
+  node "gate_query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [caller_id, is_global, company_id]
+    provides [gate_rows]
+    config {
+      statement "SELECT CASE WHEN $1 = 1 OR EXISTS (SELECT 1 FROM v_membership_scope WHERE user_id = $2 AND role = 'admin' AND company_id = $3) THEN 1 ELSE 0 END AS ok"
+      args [is_global, caller_id, company_id]
+    }
+  }
+
+  node "gate_row" {
+    uses "data.first"
+    requires [gate_rows]
+    provides [gate]
+    config {
+      source_fact "gate_rows"
+    }
+  }
+
+  node "authorize" {
+    uses "validate.expression"
+    kind pure
+    requires [gate]
+    provides [authorized]
+    config {
+      expression "gate.ok == 1"
+      code "FORBIDDEN"
+      category "permission"
+      message "you do not administer this workspace"
+    }
+  }
+
   node "query" {
     uses "database.query"
     resource "database"
     kind read
-    requires [company_id]
+    requires [company_id, authorized]
     provides [company_rows]
     config {
       statement "SELECT id, name, slug, status, created_at FROM companies WHERE id = $1"

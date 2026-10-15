@@ -1,0 +1,67 @@
+# ===========================================================================
+# Workflow engine resources.
+#
+# The workspace hierarchy company > facility > work item is an org.hierarchy.
+# Inline units and lookups below are the base definition; rows in the
+# database (org_units, org_lookups) override them, so a workspace admin can
+# add or switch off lookup entries for their own company, facility or work
+# item without a deploy. Units for new companies, facilities and work items
+# are copied in by the workflow.sync_org intent.
+# ===========================================================================
+
+resource "org" {
+  kind "org.hierarchy"
+  description "Company > facility > work item workspaces, with inherited lookups"
+  config {
+    levels ["company", "facility", "workitem"]
+    strict_levels true
+    database "database"
+    refresh_interval 5s
+    # Units a user works in (every membership) and administers (admin
+    # memberships) come from the session, filled in at sign-in.
+    assignment_claim "org_units"
+    global_roles ["admin", "super_admin"]
+
+    nodes [
+      { id "comp_clear_01" level "company" name "Edelberg Care Associates" },
+      { id "fac_memorial" parent "comp_clear_01" level "facility" name "Memorial General Hospital" },
+      { id "wi_memorial_er" parent "fac_memorial" level "workitem" name "Emergency Department" }
+    ]
+
+    lookups [
+      # Modifiers: the base list, then per-workspace changes.
+      { set "modifiers" code "25" label "25 - Significant, separately identifiable E/M" sort 1 },
+      { set "modifiers" code "59" label "59 - Distinct procedural service" sort 2 },
+      { set "modifiers" code "76" label "76 - Repeat procedure, same physician" sort 3 },
+      { set "modifiers" code "91" label "91 - Repeat clinical diagnostic test" sort 4 },
+      { set "modifiers" code "GT" node "wi_memorial_er" label "GT - Telehealth via audio-video" sort 5 },
+      { set "modifiers" code "91" node "wi_memorial_er" disabled true },
+
+      # E&M codes depend on the medical decision making level: an entry lists
+      # the levels it may be chosen for.
+      { set "em_codes" code "99281" label "99281 - ED level 1" sort 1 attrs { mdm_level ["Straightforward"] } },
+      { set "em_codes" code "99282" label "99282 - ED level 2" sort 2 attrs { mdm_level ["Straightforward", "Low"] } },
+      { set "em_codes" code "99283" label "99283 - ED level 3" sort 3 attrs { mdm_level ["Low", "Moderate"] } },
+      { set "em_codes" code "99284" label "99284 - ED level 4" sort 4 attrs { mdm_level ["Moderate", "High"] } },
+      { set "em_codes" code "99285" label "99285 - ED level 5" sort 5 attrs { mdm_level ["High"] } },
+
+      { set "suspend_reasons" code "MISSING_DOC" label "Missing medical record or chart notes" sort 1 },
+      { set "suspend_reasons" code "QUERY_PENDING" label "Provider query pending clarification" sort 2 },
+      { set "suspend_reasons" code "UNSPECIFIED_DIAGNOSIS" label "Unspecified diagnosis needs physician sign-off" sort 3 }
+    ]
+  }
+}
+
+resource "coding_cases" {
+  kind "pipeline.cases"
+  description "Medical coding cases: one per encounter, moving through coding, QA and data entry"
+  config {
+    pipelines ["medical_coding"]
+    database "database"
+    table_prefix "wf_"
+    org_resource "org"
+    # Roles a user holds at a workspace, as "unit:role" entries in the session.
+    workspace_roles_claim "workspace_roles"
+    signing_secret env("WORKFLOW_SIGNING_SECRET", "medical-coding-workflow-signing-secret-change-me-32b")
+  }
+}

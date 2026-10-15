@@ -37,7 +37,7 @@
           </tr>
         </thead>
         <tbody>
-          @if(de_encounters) {
+          @if(length(de_encounters) > 0) {
             @for(item in de_encounters) {
               <tr>
                 <td class="font-mono text-sm font-bold text-slate-100">${item.encounter_id}</td>

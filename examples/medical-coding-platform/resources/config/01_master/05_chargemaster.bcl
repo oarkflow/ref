@@ -2,15 +2,64 @@ intent "chargemaster.save" {
   description "Add or update chargemaster code entry"
   response "response"
   input_schema "charge_code_input"
+  node "caller" {
+    uses "expression"
+    provides [caller_id]
+    config {
+      expression "principal.id"
+    }
+  }
+
+  node "global_flag" {
+    uses "expression"
+    provides [is_global]
+    config {
+      expression "principal.roles has_any ['admin', 'super_admin'] ? 1 : 0"
+    }
+  }
+
+  node "gate_query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [caller_id, is_global, input]
+    provides [gate_rows]
+    config {
+      statement "SELECT CASE WHEN $1 = 1 THEN 1 WHEN (SELECT f.client_id FROM work_items wi JOIN facilities f ON f.facility_id = wi.facility_id WHERE wi.work_item_id = $3) IS NULL THEN 0 WHEN EXISTS (SELECT 1 FROM v_membership_scope a WHERE a.user_id = $2 AND a.role = 'admin' AND a.company_id = (SELECT f.client_id FROM work_items wi JOIN facilities f ON f.facility_id = wi.facility_id WHERE wi.work_item_id = $3) AND a.facility_id IN ('*', (SELECT facility_id FROM work_items WHERE work_item_id = $3)) AND a.work_item_id IN ('*', $3)) THEN 1 ELSE 0 END AS ok"
+      args [is_global, caller_id, input.work_item_id]
+    }
+  }
+
+  node "gate_row" {
+    uses "data.first"
+    requires [gate_rows]
+    provides [gate]
+    config {
+      source_fact "gate_rows"
+    }
+  }
+
+  node "authorize" {
+    uses "validate.expression"
+    kind pure
+    requires [gate]
+    provides [authorized]
+    config {
+      expression "gate.ok == 1"
+      code "FORBIDDEN"
+      category "permission"
+      message "you do not administer this workspace"
+    }
+  }
 
   node "insert" {
     uses "database.exec"
     resource "database"
     kind effect
-    requires [input]
+    requires [input, authorized]
     provides [saved]
     config {
-      statement "INSERT INTO charge_master (work_item_id, cpt_hcpcs_code, description, charge_type, charge_amount, effective_date, profee_type, facility_type, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+      statement "INSERT INTO charge_master (work_item_id, cpt_hcpcs_code, description, charge_type, charge_amount, effective_date, profee_type, facility_type, status, created_at, updated_at) VALUES ($1, $2, $3, COALESCE($4, 'PB'), COALESCE($5, 0), COALESCE($6, date('now')), $7, $8, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
       args [input.work_item_id, input.cpt_hcpcs_code, input.description, input.charge_type, input.charge_amount, input.effective_date, input.profee_type, input.facility_type]
     }
   }
@@ -113,6 +162,55 @@ intent "chargemaster.review" {
 intent "chargemaster.update" {
   description "Update an existing chargemaster code entry"
   response "response"
+  node "caller" {
+    uses "expression"
+    provides [caller_id]
+    config {
+      expression "principal.id"
+    }
+  }
+
+  node "global_flag" {
+    uses "expression"
+    provides [is_global]
+    config {
+      expression "principal.roles has_any ['admin', 'super_admin'] ? 1 : 0"
+    }
+  }
+
+  node "gate_query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [caller_id, is_global, cid]
+    provides [gate_rows]
+    config {
+      statement "SELECT CASE WHEN $1 = 1 THEN 1 WHEN (SELECT f.client_id FROM work_items wi JOIN facilities f ON f.facility_id = wi.facility_id WHERE wi.work_item_id = (SELECT work_item_id FROM charge_master WHERE id = $3)) IS NULL THEN 0 WHEN EXISTS (SELECT 1 FROM v_membership_scope a WHERE a.user_id = $2 AND a.role = 'admin' AND a.company_id = (SELECT f.client_id FROM work_items wi JOIN facilities f ON f.facility_id = wi.facility_id WHERE wi.work_item_id = (SELECT work_item_id FROM charge_master WHERE id = $3)) AND a.facility_id IN ('*', (SELECT facility_id FROM work_items WHERE work_item_id = (SELECT work_item_id FROM charge_master WHERE id = $3))) AND a.work_item_id IN ('*', (SELECT work_item_id FROM charge_master WHERE id = $3))) THEN 1 ELSE 0 END AS ok"
+      args [is_global, caller_id, cid]
+    }
+  }
+
+  node "gate_row" {
+    uses "data.first"
+    requires [gate_rows]
+    provides [gate]
+    config {
+      source_fact "gate_rows"
+    }
+  }
+
+  node "authorize" {
+    uses "validate.expression"
+    kind pure
+    requires [gate]
+    provides [authorized]
+    config {
+      expression "gate.ok == 1"
+      code "FORBIDDEN"
+      category "permission"
+      message "you do not administer this workspace"
+    }
+  }
 
   node "cid" {
     uses "request.param"
@@ -126,10 +224,10 @@ intent "chargemaster.update" {
     uses "database.exec"
     resource "database"
     kind effect
-    requires [cid, input]
+    requires [cid, input, authorized]
     provides [updated]
     config {
-      statement "UPDATE charge_master SET description = $1, charge_amount = $2, effective_date = $3, profee_type = $4, facility_type = $5, updated_at = CURRENT_TIMESTAMP WHERE id = $6"
+      statement "UPDATE charge_master SET description = COALESCE($1, description), charge_amount = COALESCE($2, charge_amount), effective_date = COALESCE($3, effective_date), profee_type = COALESCE($4, profee_type), facility_type = COALESCE($5, facility_type), updated_at = CURRENT_TIMESTAMP WHERE id = $6"
       args [input.description, input.charge_amount, input.effective_date, input.profee_type, input.facility_type, cid]
       require_affected true
       not_found_message "charge code not found"
@@ -151,9 +249,79 @@ intent "chargemaster.bulk_delete" {
   response "response"
   input_schema "bulk_delete_input"
 
+  node "ids_json" {
+    uses "expression"
+    requires [input]
+    provides [ids_json]
+    config {
+      expression "json(input.ids)"
+    }
+  }
+  node "caller" {
+    uses "expression"
+    provides [caller_id]
+    config {
+      expression "principal.id"
+    }
+  }
+
+  node "global_flag" {
+    uses "expression"
+    provides [is_global]
+    config {
+      expression "principal.roles has_any ['admin', 'super_admin'] ? 1 : 0"
+    }
+  }
+
+  node "gate_query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [caller_id, is_global, ids_json]
+    provides [gate_rows]
+    config {
+      statement "SELECT CASE WHEN $1 = 1 THEN 1 WHEN EXISTS (SELECT 1 FROM charge_master c WHERE c.id IN (SELECT value FROM json_each($3)) AND NOT ((SELECT f.client_id FROM work_items wi JOIN facilities f ON f.facility_id = wi.facility_id WHERE wi.work_item_id = c.work_item_id) IS NOT NULL AND EXISTS (SELECT 1 FROM v_membership_scope a WHERE a.user_id = $2 AND a.role = 'admin' AND a.company_id = (SELECT f.client_id FROM work_items wi JOIN facilities f ON f.facility_id = wi.facility_id WHERE wi.work_item_id = c.work_item_id) AND a.facility_id IN ('*', (SELECT facility_id FROM work_items WHERE work_item_id = c.work_item_id)) AND a.work_item_id IN ('*', c.work_item_id)))) THEN 0 ELSE 1 END AS ok"
+      args [is_global, caller_id, ids_json]
+    }
+  }
+
+  node "gate_row" {
+    uses "data.first"
+    requires [gate_rows]
+    provides [gate]
+    config {
+      source_fact "gate_rows"
+    }
+  }
+
+  node "authorize" {
+    uses "validate.expression"
+    kind pure
+    requires [gate]
+    provides [authorized]
+    config {
+      expression "gate.ok == 1"
+      code "FORBIDDEN"
+      category "permission"
+      message "you do not administer this workspace"
+    }
+  }
+
+  node "deactivate" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [ids_json, authorized]
+    provides [deactivated]
+    config {
+      statement "UPDATE charge_master SET status = 'inactive', updated_at = CURRENT_TIMESTAMP WHERE status = 'active' AND id IN (SELECT value FROM json_each($1))"
+      args [ids_json]
+    }
+  }
+
   node "response" {
     uses "collect"
-    requires [input]
+    requires [deactivated]
     provides [response]
     config {
       status "deleted"

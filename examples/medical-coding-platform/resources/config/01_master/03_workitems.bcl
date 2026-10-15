@@ -97,12 +97,61 @@ intent "workitems.create" {
   description "Register a new work item queue"
   response "response"
   input_schema "workitem_input"
+  node "caller" {
+    uses "expression"
+    provides [caller_id]
+    config {
+      expression "principal.id"
+    }
+  }
+
+  node "global_flag" {
+    uses "expression"
+    provides [is_global]
+    config {
+      expression "principal.roles has_any ['admin', 'super_admin'] ? 1 : 0"
+    }
+  }
+
+  node "gate_query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [caller_id, is_global, input]
+    provides [gate_rows]
+    config {
+      statement "SELECT CASE WHEN $1 = 1 THEN 1 WHEN (SELECT client_id FROM facilities WHERE facility_id = $3) IS NULL THEN 0 WHEN EXISTS (SELECT 1 FROM v_membership_scope a WHERE a.user_id = $2 AND a.role = 'admin' AND a.company_id = (SELECT client_id FROM facilities WHERE facility_id = $3) AND a.facility_id IN ('*', $3) AND a.work_item_id IN ('*', '*')) THEN 1 ELSE 0 END AS ok"
+      args [is_global, caller_id, input.facility_id]
+    }
+  }
+
+  node "gate_row" {
+    uses "data.first"
+    requires [gate_rows]
+    provides [gate]
+    config {
+      source_fact "gate_rows"
+    }
+  }
+
+  node "authorize" {
+    uses "validate.expression"
+    kind pure
+    requires [gate]
+    provides [authorized]
+    config {
+      expression "gate.ok == 1"
+      code "FORBIDDEN"
+      category "permission"
+      message "you do not administer this workspace"
+    }
+  }
 
   node "id" {
     uses "expression"
     provides [work_item_id]
     config {
-      expression "'wi_' + timestamp()"
+      expression "'wi_' + uuid()"
     }
   }
 
@@ -110,7 +159,7 @@ intent "workitems.create" {
     uses "database.exec"
     resource "database"
     kind effect
-    requires [work_item_id, input]
+    requires [work_item_id, input, authorized]
     provides [saved]
     config {
       statement "INSERT INTO work_items (work_item_id, facility_id, work_item_type, name, status, created_at, updated_at) VALUES ($1, $2, $3, $4, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
@@ -160,6 +209,55 @@ intent "workitems.types_create" {
 intent "workitems.settings_update" {
   description "Update work item configuration settings"
   response "response"
+  node "caller" {
+    uses "expression"
+    provides [caller_id]
+    config {
+      expression "principal.id"
+    }
+  }
+
+  node "global_flag" {
+    uses "expression"
+    provides [is_global]
+    config {
+      expression "principal.roles has_any ['admin', 'super_admin'] ? 1 : 0"
+    }
+  }
+
+  node "gate_query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [caller_id, is_global, wid]
+    provides [gate_rows]
+    config {
+      statement "SELECT CASE WHEN $1 = 1 THEN 1 WHEN (SELECT f.client_id FROM work_items wi JOIN facilities f ON f.facility_id = wi.facility_id WHERE wi.work_item_id = $3) IS NULL THEN 0 WHEN EXISTS (SELECT 1 FROM v_membership_scope a WHERE a.user_id = $2 AND a.role = 'admin' AND a.company_id = (SELECT f.client_id FROM work_items wi JOIN facilities f ON f.facility_id = wi.facility_id WHERE wi.work_item_id = $3) AND a.facility_id IN ('*', (SELECT facility_id FROM work_items WHERE work_item_id = $3)) AND a.work_item_id IN ('*', $3)) THEN 1 ELSE 0 END AS ok"
+      args [is_global, caller_id, wid]
+    }
+  }
+
+  node "gate_row" {
+    uses "data.first"
+    requires [gate_rows]
+    provides [gate]
+    config {
+      source_fact "gate_rows"
+    }
+  }
+
+  node "authorize" {
+    uses "validate.expression"
+    kind pure
+    requires [gate]
+    provides [authorized]
+    config {
+      expression "gate.ok == 1"
+      code "FORBIDDEN"
+      category "permission"
+      message "you do not administer this workspace"
+    }
+  }
 
   node "wid" {
     uses "request.param"
@@ -173,7 +271,7 @@ intent "workitems.settings_update" {
     uses "database.exec"
     resource "database"
     kind effect
-    requires [wid, input]
+    requires [wid, input, authorized]
     provides [saved]
     config {
       statement "INSERT INTO work_item_settings (work_item_id, setting_key, setting_value, created_at) VALUES ($1, $2, $3, CURRENT_TIMESTAMP)"

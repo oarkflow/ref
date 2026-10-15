@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"github.com/oarkflow/ref/aegis/pkg"
 	"github.com/oarkflow/ref/aegis/vm"
 	"github.com/oarkflow/ref/platform"
+	"github.com/oarkflow/ref/signing"
 )
 
 var (
@@ -37,7 +39,10 @@ func Register() {
 			Config: []platform.ConfigField{
 				{Name: "package", Type: "string", Required: true, Summary: "Path to .apkg protected container"},
 				{Name: "function", Type: "string", Required: true, Summary: "Exported function entrypoint to invoke"},
-				{Name: "key", Type: "string", Required: false, Summary: "AES-256 package key in hex (defaults to AEGIS_KEY env)"},
+				{Name: "key", Type: "string", Required: false, Summary: "AES-256 package key in hex (defaults to key_file, AEGIS_KEY, AEGIS_KEY_FILE)"},
+				{Name: "key_file", Type: "string", Required: false, Summary: "File holding the hex package key"},
+				{Name: "trusted_keys", Type: "string", Required: false, Summary: "JWKS file of trusted signers; enforces package signature (or AEGIS_TRUSTED_KEYS)"},
+				{Name: "result_type", Type: "string", Required: false, Summary: "uint64 (default), int32, int64 or bool"},
 				{Name: "args", Type: "slice", Required: false, Summary: "List of input fields/values passed to function"},
 				{Name: "fuel", Type: "int", Required: false, Summary: "Instruction fuel budget (default 1,000,000)"},
 			},
@@ -63,13 +68,104 @@ func Register() {
 
 type cachedModule struct {
 	module *ir.Module
-	fuel   int64
 }
 
 var (
 	moduleCacheMu sync.RWMutex
 	moduleCache   = map[string]*cachedModule{}
 )
+
+// resolveKey returns the 32-byte package key from config.key, config.key_file,
+// AEGIS_KEY or AEGIS_KEY_FILE (in that order).
+func resolveKey(cfg map[string]any) ([]byte, error) {
+	keyHex, _ := cfg["key"].(string)
+	if keyHex == "" {
+		if f, _ := cfg["key_file"].(string); f != "" {
+			b, err := os.ReadFile(f)
+			if err != nil {
+				return nil, fmt.Errorf("read key_file: %w", err)
+			}
+			keyHex = string(b)
+		}
+	}
+	if keyHex == "" {
+		keyHex = os.Getenv("AEGIS_KEY")
+	}
+	if keyHex == "" {
+		if f := os.Getenv("AEGIS_KEY_FILE"); f != "" {
+			b, err := os.ReadFile(f)
+			if err != nil {
+				return nil, fmt.Errorf("read AEGIS_KEY_FILE: %w", err)
+			}
+			keyHex = string(b)
+		}
+	}
+	if keyHex == "" {
+		return nil, fmt.Errorf("encryption key required (config.key, config.key_file, AEGIS_KEY or AEGIS_KEY_FILE)")
+	}
+	key, err := hex.DecodeString(strings.TrimSpace(keyHex))
+	if err != nil || len(key) != 32 {
+		return nil, fmt.Errorf("invalid 32-byte hex key")
+	}
+	return key, nil
+}
+
+// resolveTrusted loads the trusted verification keys (JWKS) from
+// config.trusted_keys or AEGIS_TRUSTED_KEYS. It returns nil when none are set.
+func resolveTrusted(cfg map[string]any) (*signing.KeySet, error) {
+	path, _ := cfg["trusted_keys"].(string)
+	if path == "" {
+		path = os.Getenv("AEGIS_TRUSTED_KEYS")
+	}
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read trusted_keys: %w", err)
+	}
+	return signing.ParseJWKS(data)
+}
+
+// loadModule reads, verifies and decrypts a package. With trusted keys the
+// signature is enforced; without them only the hashes and AEAD tag are checked.
+func loadModule(pkgPath string, key []byte, trusted *signing.KeySet) (*ir.Module, error) {
+	raw, err := os.ReadFile(pkgPath)
+	if err != nil {
+		return nil, fmt.Errorf("read package %q: %w", pkgPath, err)
+	}
+	sealed, err := pkg.Unmarshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("unmarshal package: %w", err)
+	}
+	if trusted != nil {
+		return pkg.NewReader(trusted).Decrypt(sealed, key)
+	}
+	if !pkg.VerifyHash(sealed.Payload, sealed.Manifest.PayloadHash) {
+		return nil, fmt.Errorf("payload hash mismatch (tampered)")
+	}
+	const nonceSize = 12
+	if len(sealed.Payload) < nonceSize {
+		return nil, fmt.Errorf("payload too short")
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	aad := []byte(sealed.Manifest.PackageID + "|" + sealed.Manifest.BuildID)
+	plaintext, err := gcm.Open(nil, sealed.Payload[:nonceSize], sealed.Payload[nonceSize:], aad)
+	if err != nil {
+		return nil, fmt.Errorf("decryption failed: %w", err)
+	}
+	if !pkg.VerifyHash(plaintext, sealed.Manifest.PlaintextHash) {
+		return nil, fmt.Errorf("plaintext integrity failed")
+	}
+	return ir.Decode(plaintext)
+}
 
 // BuildAegisExec compiles an Aegis execution node into a platform.Action.
 func BuildAegisExec(_ platform.BuildContext, spec platform.NodeSpec) (platform.Action, error) {
@@ -82,16 +178,18 @@ func BuildAegisExec(_ platform.BuildContext, spec platform.NodeSpec) (platform.A
 		return nil, fmt.Errorf("node %q: aegis.exec requires config.function", spec.Name)
 	}
 
-	keyHex, _ := spec.Config["key"].(string)
-	if keyHex == "" {
-		keyHex = os.Getenv("AEGIS_KEY")
-	}
-
 	fuelLimit := int64(1000000)
 	if f, ok := spec.Config["fuel"].(int); ok && f > 0 {
 		fuelLimit = int64(f)
 	} else if f, ok := spec.Config["fuel"].(float64); ok && f > 0 {
 		fuelLimit = int64(f)
+	}
+
+	resultType, _ := spec.Config["result_type"].(string)
+	switch resultType {
+	case "", "uint64", "int32", "int64", "bool":
+	default:
+		return nil, fmt.Errorf("node %q: unsupported result_type %q (uint64|int32|int64|bool)", spec.Name, resultType)
 	}
 
 	var argKeys []string
@@ -110,80 +208,41 @@ func BuildAegisExec(_ platform.BuildContext, spec platform.NodeSpec) (platform.A
 		provides = spec.Provides[0]
 	}
 
-	// Helper to load and decrypt module
 	loadMod := func() (*ir.Module, error) {
+		key, err := resolveKey(spec.Config)
+		if err != nil {
+			return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+		}
+		trusted, err := resolveTrusted(spec.Config)
+		if err != nil {
+			return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+		}
+		// Cache by path and key so a different key never reuses a module.
+		fp := sha256.Sum256(key)
+		cacheKey := pkgPath + "|" + hex.EncodeToString(fp[:8])
+		if trusted != nil {
+			for _, k := range trusted.Keys() {
+				cacheKey += "|" + k.Thumbprint()
+			}
+		}
+
 		moduleCacheMu.RLock()
-		if c, found := moduleCache[pkgPath]; found {
-			moduleCacheMu.RUnlock()
+		c, found := moduleCache[cacheKey]
+		moduleCacheMu.RUnlock()
+		if found {
 			return c.module, nil
 		}
-		moduleCacheMu.RUnlock()
 
 		moduleCacheMu.Lock()
 		defer moduleCacheMu.Unlock()
-
-		if c, found := moduleCache[pkgPath]; found {
+		if c, found := moduleCache[cacheKey]; found {
 			return c.module, nil
 		}
-
-		if keyHex == "" {
-			keyHex = os.Getenv("AEGIS_KEY")
-		}
-		if keyHex == "" {
-			return nil, fmt.Errorf("node %q: aegis.exec requires encryption key (config.key or AEGIS_KEY env)", spec.Name)
-		}
-
-		keyBytes, err := hex.DecodeString(strings.TrimSpace(keyHex))
-		if err != nil || len(keyBytes) != 32 {
-			return nil, fmt.Errorf("node %q: invalid 32-byte hex key: %w", spec.Name, err)
-		}
-
-		pkgBytes, err := os.ReadFile(pkgPath)
+		mod, err := loadModule(pkgPath, key, trusted)
 		if err != nil {
-			return nil, fmt.Errorf("node %q: read package %q: %w", spec.Name, pkgPath, err)
+			return nil, fmt.Errorf("node %q: %w", spec.Name, err)
 		}
-
-		sealedPkg, err := pkg.Unmarshal(pkgBytes)
-		if err != nil {
-			return nil, fmt.Errorf("node %q: unmarshal package: %w", spec.Name, err)
-		}
-
-		if !pkg.VerifyHash(sealedPkg.Payload, sealedPkg.Manifest.PayloadHash) {
-			return nil, fmt.Errorf("node %q: payload hash mismatch (tampered)", spec.Name)
-		}
-
-		const nonceSize = 12
-		if len(sealedPkg.Payload) < nonceSize {
-			return nil, fmt.Errorf("node %q: payload too short", spec.Name)
-		}
-		nonce := sealedPkg.Payload[:nonceSize]
-		ciphertext := sealedPkg.Payload[nonceSize:]
-
-		block, err := aes.NewCipher(keyBytes)
-		if err != nil {
-			return nil, err
-		}
-		gcm, err := cipher.NewGCM(block)
-		if err != nil {
-			return nil, err
-		}
-
-		aad := []byte(sealedPkg.Manifest.PackageID + "|" + sealedPkg.Manifest.BuildID)
-		plaintext, err := gcm.Open(nil, nonce, ciphertext, aad)
-		if err != nil {
-			return nil, fmt.Errorf("node %q: decryption failed: %w", spec.Name, err)
-		}
-
-		if !pkg.VerifyHash(plaintext, sealedPkg.Manifest.PlaintextHash) {
-			return nil, fmt.Errorf("node %q: plaintext integrity failed", spec.Name)
-		}
-
-		mod, err := ir.Decode(plaintext)
-		if err != nil {
-			return nil, fmt.Errorf("node %q: decode IR module: %w", spec.Name, err)
-		}
-
-		moduleCache[pkgPath] = &cachedModule{module: mod, fuel: fuelLimit}
+		moduleCache[cacheKey] = &cachedModule{module: mod}
 		return mod, nil
 	}
 
@@ -193,16 +252,12 @@ func BuildAegisExec(_ platform.BuildContext, spec platform.NodeSpec) (platform.A
 			return platform.ActionResult{}, err
 		}
 
-		// Parse arguments from inputs or literals
 		var callArgs []uint64
 		for _, argKey := range argKeys {
-			val := resolveArg(ctx.Inputs, argKey)
-			callArgs = append(callArgs, val)
+			callArgs = append(callArgs, resolveArg(ctx.Inputs, argKey))
 		}
 
-		v, err := vm.New(mod, vm.Config{
-			InitialFuel: fuelLimit,
-		})
+		v, err := vm.New(mod, vm.Config{InitialFuel: fuelLimit})
 		if err != nil {
 			return platform.ActionResult{}, fmt.Errorf("node %q: instantiate VM: %w", spec.Name, err)
 		}
@@ -217,15 +272,24 @@ func BuildAegisExec(_ platform.BuildContext, spec platform.NodeSpec) (platform.A
 			return platform.ActionResult{}, fmt.Errorf("node %q: VM execution failed: %w", spec.Name, err)
 		}
 
-		resVal := uint64(0)
+		var first uint64
 		if len(results) > 0 {
-			resVal = results[0]
+			first = results[0]
+		}
+		var result any = first
+		switch resultType {
+		case "int32":
+			result = int64(int32(first))
+		case "int64":
+			result = int64(first)
+		case "bool":
+			result = first != 0
 		}
 
 		return platform.ActionResult{
 			Outputs: map[string]any{
 				provides: map[string]any{
-					"result":    resVal,
+					"result":    result,
 					"results":   results,
 					"fuel_used": fuelLimit - v.RemainingFuel(),
 					"status":    "ok",

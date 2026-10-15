@@ -8,3 +8,4 @@ bin/
 examples/medical-coding-platform/migrator
 examples/medical-coding-platform/server
 *.apkg
+__pycache__

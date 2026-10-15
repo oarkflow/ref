@@ -201,10 +201,10 @@ func openSecureTransport(_ context.Context, spec ResourceSpec) (Resource, io.Clo
 
 	// The client's integrity pins come from the manifest `make wasm` wrote.
 	manifestPath := filepath.ToSlash(filepath.Clean(filepath.Join(configString(spec.Config, "wasm_dir", "static/wasm"), "asset-manifest.json")))
-	manifestPath = strings.TrimPrefix(manifestPath, "/")
 	var raw []byte
 	if spec.FS != nil {
-		raw, err = fs.ReadFile(spec.FS, manifestPath)
+		// fs.FS paths are rooted without a leading slash; disk paths keep theirs.
+		raw, err = fs.ReadFile(spec.FS, strings.TrimPrefix(manifestPath, "/"))
 	} else {
 		raw, err = os.ReadFile(manifestPath)
 	}

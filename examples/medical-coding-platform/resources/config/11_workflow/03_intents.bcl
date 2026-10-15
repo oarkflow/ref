@@ -1,0 +1,230 @@
+# ===========================================================================
+# Workflow intents: thin wrappers over the pipeline actions. Who may do what
+# is decided by the engine (stage roles, field permissions, workspace roles),
+# never here.
+# ===========================================================================
+
+intent "workflow.start" {
+  response "case"
+  node "case" {
+    uses "pipeline.start"
+    resource "coding_cases"
+    kind effect
+    requires [input]
+    provides [case]
+  }
+}
+
+intent "workflow.list" {
+  response "cases"
+  node "cases" {
+    uses "pipeline.list"
+    resource "coding_cases"
+    provides [cases]
+  }
+}
+
+intent "workflow.queue_page" {
+  description "Work queue for the page: cases the caller can act on, plus the workspaces they can start one in"
+  response "response"
+  node "cases" {
+    uses "pipeline.list"
+    resource "coding_cases"
+    provides [cases]
+  }
+  node "response" {
+    uses "collect"
+    requires [cases]
+    provides [response]
+    config {
+      data "cases"
+    }
+  }
+}
+
+intent "workflow.view" {
+  response "view"
+  node "view" {
+    uses "pipeline.view"
+    resource "coding_cases"
+    provides [view]
+  }
+}
+
+intent "workflow.get" {
+  response "case"
+  node "case" {
+    uses "pipeline.get"
+    resource "coding_cases"
+    provides [case]
+  }
+}
+
+intent "workflow.save" {
+  response "view"
+  node "view" {
+    uses "pipeline.save"
+    resource "coding_cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "workflow.act" {
+  response "view"
+  node "view" {
+    uses "pipeline.act"
+    resource "coding_cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "workflow.work" {
+  description "Claim, release, assign, hold or resume the current stage"
+  response "view"
+  node "view" {
+    uses "pipeline.work"
+    resource "coding_cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "workflow.choices" {
+  description "Options of a dependent input for given values of the inputs it depends on"
+  response "choices"
+  node "choices" {
+    uses "pipeline.choices"
+    resource "coding_cases"
+    requires [input]
+    provides [choices]
+  }
+}
+
+intent "workflow.settings_get" {
+  description "Workspace settings of a unit and those in force there"
+  response "settings"
+  node "settings" {
+    uses "pipeline.workspace_get"
+    resource "coding_cases"
+    provides [settings]
+    config {
+      # Settings are an administrator's: scope comes from the units the
+      # caller administers, not those they merely work in.
+      scope_claim "admin_units"
+    }
+  }
+}
+
+intent "workflow.settings_set" {
+  description "Replace a unit's workspace settings (stage SLAs and field rules)"
+  response "settings"
+  node "settings" {
+    uses "pipeline.workspace_set"
+    resource "coding_cases"
+    kind effect
+    requires [input]
+    provides [settings]
+    config {
+      scope_claim "admin_units"
+    }
+  }
+}
+
+# Work items the caller may start a case in: every work item their
+# memberships cover (a company or facility role covers everything beneath it);
+# global administrators see all.
+intent "workflow.units" {
+  description "Work items the caller may open cases in"
+  response "response"
+
+  node "caller" {
+    uses "expression"
+    provides [caller_id]
+    config {
+      expression "principal.id"
+    }
+  }
+
+  node "global_flag" {
+    uses "expression"
+    provides [is_global]
+    config {
+      expression "principal.roles has_any ['admin', 'super_admin'] ? 1 : 0"
+    }
+  }
+
+  node "query" {
+    uses "database.query"
+    resource "database"
+    kind read
+    requires [caller_id, is_global]
+    provides [units]
+    config {
+      statement "SELECT w.work_item_id AS id, w.name AS name, f.facility_id AS facility_id, f.facility_name AS facility_name, f.client_id AS company_id FROM work_items w JOIN facilities f ON f.facility_id = w.facility_id WHERE w.status = 'active' AND ($1 = 1 OR EXISTS (SELECT 1 FROM v_membership_scope m WHERE m.user_id = $2 AND m.company_id = f.client_id AND m.facility_id IN ('*', f.facility_id) AND m.work_item_id IN ('*', w.work_item_id))) ORDER BY f.facility_name, w.name"
+      args [is_global, caller_id]
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [units]
+    provides [response]
+    config {
+      data "units"
+    }
+  }
+}
+
+# Copies companies, facilities and work items that have no org unit yet into
+# the workspace hierarchy, so a new workspace can start cases at once. Global
+# administrators only (the route requires it).
+intent "workflow.sync_org" {
+  description "Create org units for workspaces that do not have one"
+  response "response"
+
+  node "companies" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    provides [companies_done]
+    config {
+      statement "INSERT OR IGNORE INTO org_units (tenant_id, id, parent_id, level, code, name, path, attrs) SELECT '', c.id, NULL, 'company', c.id, c.name, '', NULL FROM companies c WHERE c.status = 'active'"
+    }
+  }
+
+  node "facilities" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [companies_done]
+    provides [facilities_done]
+    config {
+      statement "INSERT OR IGNORE INTO org_units (tenant_id, id, parent_id, level, code, name, path, attrs) SELECT '', f.facility_id, f.client_id, 'facility', f.facility_id, f.facility_name, '', NULL FROM facilities f WHERE f.status = 'active' AND f.client_id IN (SELECT id FROM org_units)"
+    }
+  }
+
+  node "workitems" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [facilities_done]
+    provides [workitems_done]
+    config {
+      statement "INSERT OR IGNORE INTO org_units (tenant_id, id, parent_id, level, code, name, path, attrs) SELECT '', w.work_item_id, w.facility_id, 'workitem', w.work_item_id, w.name, '', NULL FROM work_items w WHERE w.status = 'active' AND w.facility_id IN (SELECT id FROM org_units)"
+    }
+  }
+
+  node "response" {
+    uses "collect"
+    requires [workitems_done]
+    provides [response]
+    config {
+      status "synced"
+    }
+  }
+}

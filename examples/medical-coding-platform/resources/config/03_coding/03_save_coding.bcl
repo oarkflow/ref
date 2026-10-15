@@ -8,7 +8,7 @@ intent "coding.save_documentation" {
     uses "expression"
     provides [user_id]
     config {
-      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+      expression "principal.id"
     }
   }
 
@@ -33,7 +33,7 @@ intent "coding.save_documentation" {
     requires [input]
     provides [next_status]
     config {
-      expression "input.request_qa ? 'IN_QA' : 'COMPLETE'"
+      expression "input.request_qa ? 'IN_QA' : 'DE_OPEN'"
     }
   }
 
@@ -204,7 +204,7 @@ intent "coding.edit_documentation" {
     uses "expression"
     provides [user_id]
     config {
-      expression "principal.id != '' ? principal.id : 'usr_coder_01'"
+      expression "principal.id"
     }
   }
 

@@ -34,6 +34,13 @@ type Engine struct {
 	// Lookup resolves an input's lookup set (reference data) into options for
 	// the case. When set, submitted values must be one of them.
 	Lookup func(set string, c *Case) []Option
+	// LookupFor resolves a lookup for an input that depends_on other inputs:
+	// deps holds their current values, keyed as the input names them. When it
+	// is unset, such an input falls back to Lookup.
+	LookupFor func(set string, c *Case, deps map[string]any) []Option
+	// Overrides returns the workspace settings that apply to a case (see
+	// Overrides), or nil. It is called often; keep it cheap.
+	Overrides func(c *Case) *Overrides
 
 	// Directory adds workers to the definition's worker blocks (host
 	// directory, HR system). Entries with the same id replace them.
@@ -70,13 +77,42 @@ type Option struct {
 	Label string `json:"label"`
 }
 
+// lookupOptions resolves an input's lookup set for the case, narrowed by the
+// values of the inputs it depends on.
+func (e *Engine) lookupOptions(c *Case, form string, in Input) []Option {
+	if in.Lookup == "" {
+		return nil
+	}
+	if len(in.DependsOn) > 0 && e.LookupFor != nil {
+		deps := make(map[string]any, len(in.DependsOn))
+		for _, d := range in.DependsOn {
+			v, _ := c.Get(depPath(form, d))
+			deps[d] = v
+		}
+		return e.LookupFor(in.Lookup, c, deps)
+	}
+	if e.Lookup != nil {
+		return e.Lookup(in.Lookup, c)
+	}
+	return nil
+}
+
+// depPath is the case path a depends_on entry names: a bare name is an input
+// of the same form.
+func depPath(form, dep string) string {
+	if strings.Contains(dep, ".") {
+		return dep
+	}
+	return form + "." + dep
+}
+
 // checkLookup validates a coerced value against the input's lookup set.
-func (e *Engine) checkLookup(c *Case, in Input, v any) (string, string) {
-	if in.Lookup == "" || e.Lookup == nil || v == nil {
+func (e *Engine) checkLookup(c *Case, form string, in Input, v any) (string, string) {
+	if in.Lookup == "" || (e.Lookup == nil && e.LookupFor == nil) || v == nil {
 		return "", ""
 	}
 	valid := map[string]bool{}
-	for _, o := range e.Lookup(in.Lookup, c) {
+	for _, o := range e.lookupOptions(c, form, in) {
 		valid[o.Value] = true
 	}
 	values := []any{v}
@@ -89,6 +125,30 @@ func (e *Engine) checkLookup(c *Case, in Input, v any) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+// Choices lists the options of a lookup-backed input for the given values of
+// the inputs it depends on, so a form can refresh a dependent select before
+// anything is saved. It answers only for inputs the actor may see.
+func (e *Engine) Choices(c *Case, actor Actor, form, input string, deps map[string]any) ([]Option, error) {
+	in, cf, ok := e.C.input(form, input)
+	if !ok || cf == nil {
+		return nil, fmt.Errorf("%w: input %s.%s", ErrNotFound, form, input)
+	}
+	if in.Lookup == "" {
+		return nil, badState("input %s.%s has no lookup", form, input)
+	}
+	if !e.visibleTo(cf, in, e.Env(c, actor), actor) {
+		return nil, forbidden("you may not view input %s.%s", form, input)
+	}
+	if len(in.DependsOn) == 0 || e.LookupFor == nil {
+		return e.lookupOptions(c, form, in), nil
+	}
+	clean := make(map[string]any, len(in.DependsOn))
+	for _, d := range in.DependsOn {
+		clean[d] = deps[d]
+	}
+	return e.LookupFor(in.Lookup, c, clean), nil
 }
 
 // NewEngine returns an engine for c.
@@ -212,6 +272,9 @@ func (e *Engine) Env(c *Case, actor Actor) map[string]any {
 		stages[name] = map[string]any{"status": ss.Status, "nodes": nodes}
 	}
 	env["stages"] = stages
+	if ov := e.overridesFor(c); ov != nil {
+		env[envOverrides] = ov
+	}
 	return env
 }
 
@@ -319,7 +382,8 @@ func (e *Engine) enterStage(ctx context.Context, c *Case, name string, actor Act
 	ss.EnteredAt = &now
 	ss.CompletedAt = nil
 	ss.Visits++
-	if d, _ := parseDuration(st.Due); d > 0 {
+	eff := e.stageFor(c, st)
+	if d, _ := parseDuration(eff.Due); d > 0 {
 		due := now.Add(d)
 		ss.DueAt = &due
 	}
@@ -332,7 +396,7 @@ func (e *Engine) enterStage(ctx context.Context, c *Case, name string, actor Act
 		ss.PreviousAssignee = ss.Assignee
 	}
 	ss.Assignee, ss.AssignedAt, ss.Routing, ss.Suspended, ss.SLA, ss.Review = "", nil, nil, nil, nil, nil
-	e.startSLA(st, ss, now)
+	e.startSLA(eff, ss, now)
 	c.emit("stage.entered", name, actor.ID, now, nil)
 	routeRoles, passed, err := e.enterReviews(ctx, c, st, ss, actor, env, depth)
 	if err != nil || passed {
@@ -622,13 +686,15 @@ func (e *Engine) editable(c *Case, st *Stage, ss *StageState, actor Actor) map[s
 		if ok, err := e.cond(g.VisibleIf, env); err != nil || !ok {
 			continue
 		}
+		g := g
 		for _, form := range g.Forms {
+			cf := e.C.forms[form]
 			inputs, _ := e.C.FormInputs(form)
 			for _, in := range inputs {
 				if in.Compute != "" {
 					continue
 				}
-				if ok, err := e.cond(in.VisibleIf, env); err != nil || !ok {
+				if !e.visibleTo(cf, in, env, actor) || !mayEditInput(actor, &g, cf, in) || e.disabledBy(&g, cf, in, env) {
 					continue
 				}
 				if correcting {
@@ -717,6 +783,21 @@ func (e *Engine) saveInto(c *Case, actor Actor, stage string, data map[string]an
 		return nil, err
 	}
 	allowed := e.previewEditable(c, st, ss, actor, data)
+	// Lookups are checked against the case as it will stand: a parent and the
+	// dependent input saved together must agree.
+	lookupCase := c.Clone()
+	for form, inputs := range allowed {
+		if e.C.forms[form].Repeatable {
+			continue
+		}
+		if values, ok := data[form].(map[string]any); ok {
+			for name := range inputs {
+				if v, ok := values[name]; ok {
+					lookupCase.Set(form+"."+name, v)
+				}
+			}
+		}
+	}
 	type write struct {
 		path  string
 		value any
@@ -765,7 +846,7 @@ func (e *Engine) saveInto(c *Case, actor Actor, stage string, data map[string]an
 					}
 					v, rule, msg := e.C.coerce(form, in, value)
 					if msg == "" {
-						rule, msg = e.checkLookup(c, in, v)
+						rule, msg = e.checkLookup(lookupCase, form, in, v)
 					}
 					if msg != "" {
 						errs = append(errs, FieldError{Path: fmt.Sprintf("%s.%d.%s", form, i, name), Rule: rule, Message: msg})
@@ -805,7 +886,7 @@ func (e *Engine) saveInto(c *Case, actor Actor, stage string, data map[string]an
 				v, rule, msg = e.C.coerce(form, in, values[name])
 			}
 			if msg == "" {
-				rule, msg = e.checkLookup(c, in, v)
+				rule, msg = e.checkLookup(lookupCase, form, in, v)
 			}
 			if msg != "" {
 				errs = append(errs, FieldError{Path: form + "." + name, Rule: rule, Message: msg})
@@ -911,7 +992,7 @@ func (e *Engine) missingRequired(c *Case, st *Stage, ss *StageState, actor Actor
 					if _, editable := inputs[in.Name]; !editable {
 						continue
 					}
-					if e.required(in, env) && missingValue(in, entry[in.Name]) {
+					if e.required(form, in, env) && missingValue(in, entry[in.Name]) {
 						errs = append(errs, FieldError{Path: fmt.Sprintf("%s.%d.%s", form, i, in.Name), Rule: "required", Message: titleOr(in.Label, in.Name) + " is required"})
 					}
 				}
@@ -923,7 +1004,7 @@ func (e *Engine) missingRequired(c *Case, st *Stage, ss *StageState, actor Actor
 				continue
 			}
 			v, _ := c.Get(form + "." + in.Name)
-			if e.required(in, env) && missingValue(in, v) {
+			if e.required(form, in, env) && missingValue(in, v) {
 				errs = append(errs, FieldError{Path: form + "." + in.Name, Rule: "required", Message: titleOr(in.Label, in.Name) + " is required"})
 			}
 		}
@@ -932,8 +1013,11 @@ func (e *Engine) missingRequired(c *Case, st *Stage, ss *StageState, actor Actor
 	return errs
 }
 
-func (e *Engine) required(in Input, env map[string]any) bool {
+func (e *Engine) required(form string, in Input, env map[string]any) bool {
 	if in.Required {
+		return true
+	}
+	if fo, ok := fieldOverride(env, form+"."+in.Name); ok && isTrue(fo.Required) {
 		return true
 	}
 	if in.RequiredIf == "" {
@@ -1441,13 +1525,14 @@ func (e *Engine) NodeAct(ctx context.Context, in *Case, actor Actor, stage, node
 		var missing []FieldError
 		env := e.Env(c, actor)
 		for _, form := range n.Forms {
+			cf := e.C.forms[form]
 			inputs, _ := e.C.FormInputs(form)
 			for _, in := range inputs {
-				if ok, _ := e.cond(in.VisibleIf, env); !ok {
+				if !e.formShown(cf, env) || !e.inputShown(form, in, env) {
 					continue
 				}
 				v, _ := c.Get(form + "." + in.Name)
-				if e.required(in, env) && missingValue(in, v) {
+				if e.required(form, in, env) && missingValue(in, v) {
 					missing = append(missing, FieldError{Path: form + "." + in.Name, Rule: "required", Message: titleOr(in.Label, in.Name) + " is required"})
 				}
 			}
@@ -1566,7 +1651,7 @@ func (e *Engine) reviewPaths(c *Case, n *Node) []string {
 			if in.Compute != "" {
 				continue // derived, not submitted: nothing to verify
 			}
-			if ok, _ := e.cond(in.VisibleIf, env); !ok {
+			if !e.formShown(cf, env) || !e.inputShown(form, in, env) {
 				continue
 			}
 			path := form + "." + in.Name

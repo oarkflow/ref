@@ -381,20 +381,19 @@ func TestBCLEndToEndWebRoutes(t *testing.T) {
 		return resp, string(bodyBytes)
 	}
 
-	// 1. Test GET /
-	resp, body := doReq("GET", "/")
-	t.Logf("GET / status=%d", resp.StatusCode)
-	if resp.StatusCode != 200 {
-		t.Errorf("expected status 200 for GET /, got %d (body=%s)", resp.StatusCode, body)
-	}
-	if !strings.Contains(body, "Operational Dashboard") {
-		t.Errorf("expected dashboard title in GET / response")
+	// Application pages require a signed-in session: an anonymous request must
+	// be refused, never served as a fallback user.
+	for _, page := range []string{"/", "/dashboard", "/coding/queue", "/coding/wi_memorial_er/enc_1001", "/qa", "/suspends", "/dataentry", "/web/facilities"} {
+		resp, body := doReq("GET", page)
+		if resp.StatusCode != 401 {
+			t.Errorf("expected anonymous GET %s to be refused with 401, got %d (body=%s)", page, resp.StatusCode, body)
+		}
 	}
 
-	// 2. Test GET /dashboard
-	resp, body = doReq("GET", "/dashboard")
-	if resp.StatusCode != 200 {
-		t.Errorf("expected status 200 for GET /dashboard, got %d", resp.StatusCode)
+	// A form action must be refused the same way.
+	resp, body := doReq("POST", "/web/coding/wi_memorial_er/enc_1001/start-coding")
+	if resp.StatusCode != 401 {
+		t.Errorf("expected anonymous POST start-coding to be refused with 401, got %d (body=%s)", resp.StatusCode, body)
 	}
 
 	// 3. Test GET /login
@@ -404,36 +403,6 @@ func TestBCLEndToEndWebRoutes(t *testing.T) {
 	}
 	if !strings.Contains(body, "Sign In") {
 		t.Errorf("expected Sign In in /login response")
-	}
-
-	// 4. Test GET /coding/queue
-	resp, body = doReq("GET", "/coding/queue")
-	if resp.StatusCode != 200 {
-		t.Errorf("expected status 200 for GET /coding/queue, got %d (body=%s)", resp.StatusCode, body)
-	}
-
-	// 5. Test GET /coding/wi_memorial_er/enc_1001 (workspace)
-	resp, body = doReq("GET", "/coding/wi_memorial_er/enc_1001")
-	if resp.StatusCode != 200 {
-		t.Errorf("expected status 200 for workspace, got %d (body=%s)", resp.StatusCode, body)
-	}
-
-	// 6. Test GET /qa
-	resp, body = doReq("GET", "/qa")
-	if resp.StatusCode != 200 {
-		t.Errorf("expected status 200 for /qa, got %d", resp.StatusCode)
-	}
-
-	// 7. Test GET /suspends
-	resp, body = doReq("GET", "/suspends")
-	if resp.StatusCode != 200 {
-		t.Errorf("expected status 200 for /suspends, got %d", resp.StatusCode)
-	}
-
-	// 8. Test GET /dataentry
-	resp, body = doReq("GET", "/dataentry")
-	if resp.StatusCode != 200 {
-		t.Errorf("expected status 200 for /dataentry, got %d", resp.StatusCode)
 	}
 
 	// 9. Test GET /static/css/app.css
