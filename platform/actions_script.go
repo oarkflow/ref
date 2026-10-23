@@ -131,6 +131,14 @@ var scriptAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) (Ac
 		return nil, fmt.Errorf("node %q: unknown script %q%s", spec.Name, id, scriptHint(build.Platform))
 	}
 	provides := append([]string(nil), spec.Provides...)
+	// params are the node type's checked configuration (see definitions.go).
+	var params map[string]any
+	if raw, ok := spec.Config["params"].(map[string]any); ok {
+		var err error
+		if params, err = plainData(raw); err != nil {
+			return nil, fmt.Errorf("node %q: params: %w", spec.Name, err)
+		}
+	}
 
 	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
 		env := actionEnv(ctx)
@@ -138,6 +146,9 @@ var scriptAction = ActionFactoryFunc(func(build BuildContext, spec NodeSpec) (Ac
 		data, err := scriptData(env)
 		if err != nil {
 			return ActionResult{}, fmt.Errorf("script %s: %w", id, err)
+		}
+		if params != nil {
+			data["params"] = params
 		}
 		value, err := sc.Run(data)
 		if err != nil {
@@ -243,6 +254,7 @@ func scriptData(env Env) (map[string]any, error) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, err
 	}
+	delete(out, helperEnvKey)
 	for k, v := range out {
 		out[k] = wholeNumbers(v)
 	}

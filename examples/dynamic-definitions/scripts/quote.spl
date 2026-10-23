@@ -1,0 +1,7 @@
+// Handler quote. Sees input (the request body) and principal.
+let subtotal = 0;
+let lines = input.lines;
+for (let i = 0; i < len(lines); i = i + 1) {
+  subtotal = subtotal + lines[i].qty * lines[i].price;
+}
+{"subtotal": subtotal, "lines": len(lines), "quoted_by": principal.id}

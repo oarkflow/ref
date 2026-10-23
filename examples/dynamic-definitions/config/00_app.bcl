@@ -1,0 +1,37 @@
+# Dynamic definitions example.
+#
+# Node types, helpers and handlers are written in BCL and SPL here: there is no Go in
+# this directory. Run it with
+#
+#   make run dir=./examples/dynamic-definitions
+#
+# and see README.md for what to call.
+
+name "dynamic-definitions"
+environment env("APP_ENV", "development")
+
+role "clerk"  { permissions ["quote:create", "risk:score"] }
+role "viewer" { permissions ["quote:read"] }
+role "admin"  { permissions ["*"] }
+
+resource "rbac" {
+  kind "authz.rbac"
+  config { superuser_roles ["admin"] }
+}
+
+# Two callers on one authenticator, so a refusal can be shown: the clerk may use
+# everything here; the viewer is who it says it is and is still refused.
+resource "api_auth" {
+  kind "auth.api_key"
+  config {
+    keys [
+      { value env("CLERK_KEY", "dev-clerk-key-change-me-0123456789")  principal_id "clerk-1"  roles ["clerk"] },
+      { value env("VIEWER_KEY", "dev-viewer-key-change-me-012345678") principal_id "viewer-1" roles ["viewer"] }
+    ]
+  }
+}
+
+resource "limits" {
+  kind "ratelimit.memory"
+  description "Per-process rate limiter for the handlers"
+}

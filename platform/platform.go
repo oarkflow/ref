@@ -119,6 +119,8 @@ type Platform struct {
 
 	// scripts are the compiled script blocks, by id.
 	scripts map[string]*Script
+	// defs holds the helpers and inventory of the dynamic definitions.
+	defs *definitionSet
 
 	registry  *Registry
 	resources map[string]Resource
@@ -551,6 +553,12 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 		swaggerPrefix:     opts.SwaggerPrefix,
 		disableSwagger:    opts.DisableSwagger,
 	}
+	doc, defs, err := expandDefinitions(doc, opts.FS, opts.Registry)
+	if err != nil {
+		return nil, fmt.Errorf("ref/platform: %w", err)
+	}
+	p.defs = defs
+	p.Document = doc
 	scripts, err := compileScripts(doc.Scripts, opts.FS)
 	if err != nil {
 		return nil, fmt.Errorf("ref/platform: %w", err)

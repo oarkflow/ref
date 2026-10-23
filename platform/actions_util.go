@@ -46,6 +46,9 @@ func actionEnv(ctx *ActionContext) Env {
 	env["principal"] = principalMap(ctx.Principal)
 	env["tenant"] = ctx.TenantID
 	env["now"] = ctx.Now.Format(time.RFC3339Nano)
+	if call := ctx.Platform.helperCaller(); call != nil {
+		env[helperEnvKey] = call
+	}
 	if _, shadowed := ctx.Inputs["input"]; !shadowed {
 		env["input"] = nil
 	}

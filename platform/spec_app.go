@@ -57,6 +57,15 @@ type Document struct {
 	// Scripts are named SPL scripts that nodes and pipeline hooks refer to by id.
 	Scripts []ScriptSpec `bcl:"script,block"`
 
+	// Dynamic definitions written in BCL and SPL, governed by DefinitionPolicy
+	// and signed by Publishers (see definitions.go). expandDefinitions consumes
+	// them before validation.
+	DefinitionPolicy *DefinitionPolicySpec `bcl:"definition_policy"`
+	Publishers       []PublisherSpec       `bcl:"publisher,block"`
+	NodeTypes        []NodeTypeSpec        `bcl:"node_type,block"`
+	Helpers          []HelperSpec          `bcl:"helper,block"`
+	Handlers         []HandlerSpec         `bcl:"handler,block"`
+
 	// Entities are declarative data resources: a migrated table plus a
 	// validated REST API with filters, search, export, aggregates, access
 	// rules and hooks (see entity.go).

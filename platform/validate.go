@@ -99,6 +99,11 @@ func Validate(ctx context.Context, src []byte, baseDir string, opts LoadOptions)
 			doc = resolved
 		}
 	}
+	if expandedDefs, _, err := expandDefinitions(doc, opts.FS, opts.Registry); err != nil {
+		fail(err)
+	} else {
+		doc = expandedDefs
+	}
 	if extended, err := expandExtensions(doc); err != nil {
 		fail(err)
 	} else {

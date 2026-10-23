@@ -58,6 +58,8 @@ import (
 //	money_minor("NPR", a)  money_from_minor("NPR", 12345)
 //	currency_minor_units("JPY")  currency_symbol("NPR")
 var exprFunctions = map[string]bcl.EvalFunction{
+	"helper": exprHelper,
+
 	"bs_date":                     fnBSDate,
 	"bs_format":                   fnBSFormat(false),
 	"bs_format_np":                fnBSFormat(true),

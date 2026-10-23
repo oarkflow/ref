@@ -1,0 +1,6 @@
+// Node type risk.score. Sees the node's facts (input), params and principal.
+let level = "low";
+if (input.total > params.threshold) {
+  level = "high";
+}
+{"level": level, "threshold": params.threshold}

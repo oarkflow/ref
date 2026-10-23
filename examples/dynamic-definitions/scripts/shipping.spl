@@ -1,0 +1,10 @@
+// Helper shipping. Sees its parameters by name.
+let cost = 25;
+if (kg <= 1) {
+  cost = 5;
+} else {
+  if (kg <= 10) {
+    cost = 12;
+  }
+}
+cost

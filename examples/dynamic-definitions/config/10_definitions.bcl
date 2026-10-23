@@ -1,0 +1,55 @@
+# Who may publish definitions, and the ceilings every definition runs under.
+# Development loads them unsigned. For production add `require_signature true`, give
+# each definition a `publisher` and `signature` (platform.SignDefinition), and declare
+# the publisher with its public key; example_test.go shows the signed form.
+definition_policy {
+  max_timeout "1s"
+  max_steps 200000
+}
+
+# A node type: reusable, configured at each use, and guarded by its own authz rule.
+node_type "risk.score" {
+  description "Rate an order total against a threshold"
+  param "threshold" { type "number" default 1000 }
+  authz { permissions ["risk:score"] authorizer "rbac" }
+  file "scripts/risk_score.spl"
+}
+
+# Helpers: a pure function as a BCL expression, and one as a script.
+helper "vat" {
+  description "Tax on an amount at a rate in percent"
+  params [amount, rate]
+  expr "amount * rate / 100"
+}
+helper "shipping" {
+  description "Shipping by weight band"
+  params [kg]
+  file "scripts/shipping.spl"
+}
+
+# Handlers: endpoints with no intent or route written by hand. Closed unless they say
+# otherwise, so each names who may call it.
+handler "quote" {
+  description "Price a list of lines"
+  method POST
+  path "/quote"
+  auth "api_auth"
+  authz { permissions ["quote:create"] authorizer "rbac" }
+  rate_limit { limit 60 window "1m" }
+  file "scripts/quote.spl"
+}
+handler "shipping" {
+  description "Shipping cost for a weight, through the shipping helper"
+  method POST
+  path "/shipping"
+  auth "api_auth"
+  authz { roles ["clerk"] authorizer "rbac" }
+  helper "shipping"
+}
+handler "live" {
+  description "Liveness; the only open handler"
+  method GET
+  path "/live"
+  public true
+  file "scripts/live.spl"
+}

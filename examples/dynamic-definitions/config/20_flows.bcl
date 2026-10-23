@@ -1,0 +1,45 @@
+# A hand-written intent that uses all three: the node type, a helper node and a helper
+# called inside an expression.
+intent "order.review" {
+  description "Risk, tax and the total with tax for one order"
+  response "result"
+  node "risk" {
+    uses "risk.score"
+    requires [input]
+    provides [risk]
+    config { threshold 500 }
+  }
+  node "tax" {
+    uses "helper.call"
+    requires [input]
+    provides [tax]
+    config {
+      helper "vat"
+      args { amount "input.total" rate "13" }
+    }
+  }
+  node "result" {
+    uses "data.transform"
+    kind pure
+    requires [input, risk, tax]
+    provides [result]
+    config {
+      data {
+        extract {
+          level "risk.level"
+          tax "tax"
+          total_with_tax "input.total + helper('vat', input.total, 13)"
+        }
+        pick ["level", "tax", "total_with_tax"]
+      }
+    }
+  }
+}
+
+route "order.review" {
+  method POST
+  path "/orders/review"
+  intent "order.review"
+  auth "api_auth"
+  authz { roles ["clerk"] authorizer "rbac" }
+}
