@@ -23,12 +23,28 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	addr := fs.String("addr", ":8080", "HTTP listen address")
 	keyPath := fs.String("key", "", "Path to Ed25519 signing key PEM file (optional)")
 	ttlSec := fs.Int("ttl", 3600, "Session grant TTL in seconds")
+	storePath := fs.String("store", "", "Path to a SQLite file for packages, grants and revocations to survive a restart (default: in-memory, forgotten on exit)")
+	rateLimit := fs.Int("rate-limit", 120, "Requests per minute per client IP across every endpoint (0 disables)")
+	rateBurst := fs.Int("rate-burst", 20, "Requests a client may make immediately before the per-minute rate applies")
+	sessionKeys := fs.Bool("session-keys", false, "Hand out an HKDF-derived per-session key instead of the package's exact master key; only correct if every package was itself built fresh per session (see control.WithRawMasterKeyGrants). Leave this off for anything sealed with `aegis package` and registered with `aegis register`")
 
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	store := control.NewMemoryStore()
+	var store control.Store
+	if *storePath != "" {
+		sqlStore, err := control.OpenSQLite(*storePath)
+		if err != nil {
+			return fmt.Errorf("aegis: serve: open store %q: %w", *storePath, err)
+		}
+		defer sqlStore.Close()
+		store = sqlStore
+		fmt.Fprintf(stdout, "Persistent store: %s\n", *storePath)
+	} else {
+		store = control.NewMemoryStore()
+		fmt.Fprintln(stderr, "aegis: serve: no -store given; every package, grant and revocation will be forgotten when this process exits")
+	}
 	keyMgr := control.NewKeyManager(store)
 	attestReg := attest.DefaultRegistry()
 
@@ -50,14 +66,26 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	}
 
 	ttl := time.Duration(*ttlSec) * time.Second
-	gs := control.NewGrantService(store, keyMgr,
+	gsOpts := []control.GrantServiceOption{
 		control.WithTTL(ttl),
 		control.WithAttestRegistry(attestReg),
-	)
+	}
+	if !*sessionKeys {
+		// Every package this CLI can seal (`aegis package`) and register
+		// (`aegis register`) uses one fixed key for the whole package, not
+		// one built fresh per session; a grant must hand that same key
+		// back. See WithRawMasterKeyGrants's doc comment for the
+		// alternative -session-keys opts into.
+		gsOpts = append(gsOpts, control.WithRawMasterKeyGrants())
+	}
+	gs := control.NewGrantService(store, keyMgr, gsOpts...)
 	opts = append(opts,
 		control.WithServerGrantService(gs),
 		control.WithServerTTL(ttl),
 	)
+	if *rateLimit > 0 {
+		opts = append(opts, control.WithServerRateLimit(*rateLimit, *rateBurst))
+	}
 
 	srv := control.NewServer(store, opts...)
 

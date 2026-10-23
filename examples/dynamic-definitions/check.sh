@@ -136,6 +136,10 @@ broken over-ceiling   "ceiling" \
   sed -i.bak -e 's/max_steps 200000/max_steps 10/; s#file "scripts/risk_score.spl"#file "scripts/risk_score.spl" max_steps 500#' config/10_definitions.bcl
 broken shadow-builtin "shadow" \
   sed -i.bak -e 's/node_type "risk.score"/node_type "collect"/; s/uses "risk.score"/uses "collect"/' config/10_definitions.bcl config/20_flows.bcl
+broken disk-under-ephemeral "storage_policy" \
+  sed -i.bak -e '/^storage_policy/a\
+resource "disk_cache" { kind "cache.file" config { dir ".data/cache" } }
+' config/00_app.bcl
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

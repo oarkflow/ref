@@ -11,7 +11,7 @@
 dir  ?= $(DIR)
 addr ?=
 
-.PHONY: run build test tidy wasm wasm-docker wasm-trusted aegis aegis-run
+.PHONY: run build test tidy wasm wasm-docker wasm-trusted aegis aegis-run release release-obfuscated verify-release
 
 aegis:
 	@mkdir -p bin
@@ -37,6 +37,68 @@ aegis-package: aegis
 aegis-run-pkg: aegis
 	@test -n "$(pkg)" || { echo "usage: make aegis-run-pkg pkg=app.apkg [addr=:8080]"; exit 2; }
 	./bin/aegis run -key .data/aegis/master.enc -pubkey .data/aegis/master.pub "$(pkg)" $(if $(addr),-addr $(addr))
+
+# Release builds: -trimpath and a stripped symbol table (-s -w, no build ID)
+# remove every source path on this machine and every function/method name
+# from the symbol table `go tool nm` reads. They do NOT remove Go's own
+# runtime function-name strings (kept for panics and stack traces) — a
+# plain release binary still contains "github.com/oarkflow/..." as readable
+# text; `scripts/verify-build.sh` catches this, `make release-obfuscated`
+# (below) is what actually removes it.
+#
+#   make release                 # bin/release/{aegis,ref}-<os>-<arch>[.exe]
+#   make verify-release          # checks every binary release just built
+RELEASE_DIR    := bin/release
+RELEASE_LDFLAGS := -s -w -buildid=
+RELEASE_TARGETS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
+
+release:
+	@mkdir -p $(RELEASE_DIR)
+	@for t in $(RELEASE_TARGETS); do \
+		os=$${t%/*}; arch=$${t#*/}; ext=""; \
+		if [ "$$os" = "windows" ]; then ext=".exe"; fi; \
+		echo "==> aegis $$os/$$arch"; \
+		GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags="$(RELEASE_LDFLAGS)" -o $(RELEASE_DIR)/aegis-$$os-$$arch$$ext ./aegis/cmd/aegis || exit 1; \
+		echo "==> ref $$os/$$arch"; \
+		(cd cmd/ref && GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags="$(RELEASE_LDFLAGS)" -o ../../$(RELEASE_DIR)/ref-$$os-$$arch$$ext .) || exit 1; \
+	done
+	@echo "built $$(ls $(RELEASE_DIR) | wc -l | tr -d ' ') binaries in $(RELEASE_DIR)"
+
+# Same, but also obfuscates with garble: package paths, identifiers and
+# string literals are renamed/encrypted so they do not appear in the binary
+# even as runtime bookkeeping (verified: a plain release binary had ~9,700
+# occurrences of "github.com/oarkflow/" as text; the garbled one had 0).
+# This has a real, measured cost — on this machine, building ./aegis/cmd/aegis
+# alone went from 16s to 71s (4.3x) and 31MB to 104MB (3.4x); no runtime
+# startup-time difference was measurable. It is a one-time release-build
+# cost, not a per-request one, but it is not free, hence a separate target
+# rather than the default. See docs/aegis-protection-plan.md, phase 2.
+#
+# Needs `go install mvdan.cc/garble@latest` and a garble release that
+# supports your Go toolchain version (garble trails new Go releases; check
+# `garble version` against `go version` before relying on this).
+release-obfuscated:
+	@command -v garble >/dev/null || { echo "garble is required: go install mvdan.cc/garble@latest"; exit 1; }
+	@mkdir -p $(RELEASE_DIR)
+	@for t in $(RELEASE_TARGETS); do \
+		os=$${t%/*}; arch=$${t#*/}; ext=""; \
+		if [ "$$os" = "windows" ]; then ext=".exe"; fi; \
+		echo "==> aegis $$os/$$arch (garbled)"; \
+		GOOS=$$os GOARCH=$$arch garble -literals -tiny build -trimpath -ldflags="$(RELEASE_LDFLAGS)" -o $(RELEASE_DIR)/aegis-$$os-$$arch$$ext ./aegis/cmd/aegis || exit 1; \
+		echo "==> ref $$os/$$arch (garbled)"; \
+		(cd cmd/ref && GOOS=$$os GOARCH=$$arch garble -literals -tiny build -trimpath -ldflags="$(RELEASE_LDFLAGS)" -o ../../$(RELEASE_DIR)/ref-$$os-$$arch$$ext .) || exit 1; \
+	done
+	@echo "built $$(ls $(RELEASE_DIR) | wc -l | tr -d ' ') obfuscated binaries in $(RELEASE_DIR)"
+
+# Verifies every binary in bin/release against scripts/verify-build.sh. Pass
+# allow_paths=1 after a plain `make release` (expected to still carry
+# package-path strings); omit it after `make release-obfuscated`.
+verify-release:
+	@test -d $(RELEASE_DIR) || { echo "nothing in $(RELEASE_DIR); run make release or make release-obfuscated first"; exit 2; }
+	@failed=0; for f in $(RELEASE_DIR)/*; do \
+		echo "--- $$f"; \
+		scripts/verify-build.sh $(if $(allow_paths),--allow-package-paths) "$$f" || failed=1; \
+	done; exit $$failed
 
 run:
 	@test -n "$(dir)" || { echo "usage: make run dir=./examples/smsgateway [addr=:8080]"; exit 2; }

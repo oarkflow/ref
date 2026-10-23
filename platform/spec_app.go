@@ -80,6 +80,12 @@ type Document struct {
 	Currencies []CurrencySpec `bcl:"currency,block"`
 	// Residency declares where data may live and be sent (see residency.go).
 	Residency *ResidencySpec `bcl:"residency"`
+
+	// StoragePolicy is "" (unrestricted, default), "ephemeral" (refuse to
+	// load if any resource would write to a real disk path) or
+	// "ephemeral_warn" (log the same violations and load anyway); see
+	// storage_policy.go.
+	StoragePolicy string `bcl:"storage_policy,ident"`
 }
 
 // SecretSpec resolves one named secret at load time, from the environment or a

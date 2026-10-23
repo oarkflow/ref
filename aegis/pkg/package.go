@@ -21,8 +21,9 @@ const (
 	// AlgorithmAES256GCM identifies the AES-256-GCM authenticated encryption algorithm.
 	AlgorithmAES256GCM = "AES-256-GCM"
 
-	// KeyDerivationHKDF identifies the HKDF-SHA256 key derivation function.
-	KeyDerivationHKDF = "HKDF-SHA256"
+	// KeyDerivationNone means the manifest's 32-byte key material was used
+	// directly as the AES key, with no further stretching.
+	KeyDerivationNone = "none"
 )
 
 // ProtectionLevel specifies the execution environment hardening and isolation level.
@@ -73,6 +74,11 @@ type Manifest struct {
 	// Encryption metadata (NOT the key itself)
 	EncryptionAlgorithm string `json:"encryption_algorithm"` // "AES-256-GCM"
 	KeyDerivation       string `json:"key_derivation"`       // "HKDF-SHA256"
+
+	// KDF is set only when the packaging key was itself derived from an
+	// operator passphrase (see kdf.go). It is absent for a raw 32-byte key
+	// or a hex-encoded one, which are used directly.
+	KDF *KDFInfo `json:"kdf,omitempty"`
 }
 
 // Package is a sealed, signed unit of protected code containing encrypted IR and metadata.
@@ -97,6 +103,7 @@ type Builder struct {
 	runtimeVersion       string
 	requiredCapabilities []string
 	packageID            string
+	kdf                  *KDFInfo
 }
 
 // NewBuilder initializes a new Package Builder with the specified application ID, version,
@@ -147,6 +154,14 @@ func (b *Builder) SetRequiredCapabilities(caps []string) {
 // SetPackageID configures an explicit package identifier (if unset, a random UUID is generated).
 func (b *Builder) SetPackageID(id string) {
 	b.packageID = id
+}
+
+// SetKDF records that encKey (given to NewBuilder) was itself derived from an
+// operator passphrase via DeriveKey, so the manifest carries the salt and
+// cost parameters the run side needs to reproduce it from the same
+// passphrase. Leave this unset for a raw or hex-encoded key.
+func (b *Builder) SetKDF(info KDFInfo) {
+	b.kdf = &info
 }
 
 // BuildPayload encrypts and signs an arbitrary payload into a sealed Package container.
@@ -221,7 +236,14 @@ func (b *Builder) BuildPayload(plaintext []byte, buildID string, irVersion uint3
 		RequiredCapabilities: b.requiredCapabilities,
 		ExecutionPolicy:      policy,
 		EncryptionAlgorithm:  AlgorithmAES256GCM,
-		KeyDerivation:        KeyDerivationHKDF,
+		// The 32-byte key is used directly as the AES key; nothing stretches
+		// it further. "none" unless the key itself came from DeriveKey, in
+		// which case KDF below names what actually happened.
+		KeyDerivation: KeyDerivationNone,
+		KDF:           b.kdf,
+	}
+	if b.kdf != nil {
+		manifest.KeyDerivation = b.kdf.Algorithm
 	}
 
 	// 7. Canonicalize the manifest JSON

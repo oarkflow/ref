@@ -164,6 +164,7 @@ func TestCLI_EndToEndPipeline(t *testing.T) {
 				"-key", encKeyHex,
 				"-func", tc.fn,
 				"-args", tc.args,
+				"-pubkey", pubKeyPath,
 			}, &runOut, &runErr); err != nil {
 				t.Fatalf("run %s failed: %v, stderr: %s", tc.fn, err, runErr.String())
 			}
@@ -257,6 +258,7 @@ func TestCLI_SubprocessBinary(t *testing.T) {
 		"-key", keyPrefix+".enc",
 		"-func", "Add",
 		"-args", "50,25",
+		"-pubkey", keyPrefix+".pub",
 	)
 	runOut, err := runCmd.CombinedOutput()
 	if err != nil {
@@ -264,6 +266,73 @@ func TestCLI_SubprocessBinary(t *testing.T) {
 	}
 	if !strings.Contains(string(runOut), "Result: 75") {
 		t.Errorf("binary run expected 'Result: 75', got: %s", string(runOut))
+	}
+}
+
+// TestCLI_PassphraseKeyRoundTrips packages and runs a module keyed by a bare
+// passphrase rather than a key file: resolvePackagingKey must derive it with
+// Argon2id and record the salt in the manifest, and resolveRunKey must
+// reproduce the same key from the same passphrase (a wrong one must fail).
+func TestCLI_PassphraseKeyRoundTrips(t *testing.T) {
+	tempDir := t.TempDir()
+	binPath := filepath.Join(tempDir, "aegis_cli")
+	if out, err := exec.Command("go", "build", "-o", binPath, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build aegis binary: %v, output: %s", err, out)
+	}
+
+	keyPrefix := filepath.Join(tempDir, "pass_key")
+	if out, err := exec.Command(binPath, "keygen", "-out", keyPrefix).CombinedOutput(); err != nil {
+		t.Fatalf("keygen: %v, output: %s", err, out)
+	}
+
+	srcPath := filepath.Join(tempDir, "test.go")
+	if err := os.WriteFile(srcPath, []byte(testGoSource), 0644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	airPath := filepath.Join(tempDir, "test.air")
+	if out, err := exec.Command(binPath, "compile", "-src", srcPath, "-out", airPath).CombinedOutput(); err != nil {
+		t.Fatalf("compile: %v, output: %s", err, out)
+	}
+
+	apkgPath := filepath.Join(tempDir, "test.apkg")
+	const passphrase = "correct horse battery staple"
+	pkgOut, err := exec.Command(binPath, "package",
+		"-module", airPath,
+		"-key", keyPrefix+".key",
+		"-enckey", passphrase,
+		"-out", apkgPath,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("package with a passphrase: %v, output: %s", err, pkgOut)
+	}
+	if !strings.Contains(string(pkgOut), "Key Derivation: argon2id") {
+		t.Errorf("package output should report Argon2id derivation, got: %s", pkgOut)
+	}
+
+	// The manifest's kdf.salt is plaintext JSON, not secret; prove it is
+	// there rather than the package silently falling back to a direct key.
+	inspectOut, err := exec.Command(binPath, "inspect", "-pkg", apkgPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("inspect: %v, output: %s", err, inspectOut)
+	}
+
+	runOut, err := exec.Command(binPath, "run",
+		"-pkg", apkgPath, "-key", passphrase, "-func", "Add", "-args", "50,25",
+		"-pubkey", keyPrefix+".pub",
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("run with the same passphrase: %v, output: %s", err, runOut)
+	}
+	if !strings.Contains(string(runOut), "Result: 75") {
+		t.Errorf("expected 'Result: 75', got: %s", runOut)
+	}
+
+	wrongOut, err := exec.Command(binPath, "run",
+		"-pkg", apkgPath, "-key", "wrong passphrase entirely", "-func", "Add", "-args", "50,25",
+		"-pubkey", keyPrefix+".pub",
+	).CombinedOutput()
+	if err == nil {
+		t.Fatalf("run with the wrong passphrase should fail, got: %s", wrongOut)
 	}
 }
 
@@ -339,6 +408,7 @@ func TestCLI_ErrorHandling(t *testing.T) {
 		"-pkg", apkgPath,
 		"-key", wrongKeyHex,
 		"-func", "Exists",
+		"-pubkey", keyPrefix + ".pub",
 	}, &out, &errBuf); err == nil {
 		t.Errorf("expected decryption error with wrong key, got nil")
 	}
@@ -358,5 +428,179 @@ func TestCLI_ErrorHandling(t *testing.T) {
 		"-pubkey", keyPrefix + ".pub",
 	}, &out, &errBuf); err == nil {
 		t.Errorf("expected verification error for tampered package, got nil")
+	}
+}
+
+// TestCLI_RunRequiresSignatureVerification proves the enforcement added
+// alongside the Argon2id change: a .apkg refuses to run without -pubkey,
+// accepts -insecure-skip-verify but warns loudly on stderr when it does, and
+// the integrity check now runs before the plaintext key material exists.
+func TestCLI_RunRequiresSignatureVerification(t *testing.T) {
+	tempDir := t.TempDir()
+	keyPrefix := filepath.Join(tempDir, "sig_key")
+	var out, errBuf bytes.Buffer
+	if err := Run([]string{"keygen", "-out", keyPrefix}, &out, &errBuf); err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+
+	srcPath := filepath.Join(tempDir, "test.go")
+	if err := os.WriteFile(srcPath, []byte(testGoSource), 0644); err != nil {
+		t.Fatal(err)
+	}
+	airPath := filepath.Join(tempDir, "test.air")
+	out.Reset()
+	errBuf.Reset()
+	if err := Run([]string{"compile", "-src", srcPath, "-out", airPath}, &out, &errBuf); err != nil {
+		t.Fatalf("compile: %v, stderr: %s", err, errBuf.String())
+	}
+
+	apkgPath := filepath.Join(tempDir, "test.apkg")
+	out.Reset()
+	errBuf.Reset()
+	if err := Run([]string{
+		"package", "-module", airPath,
+		"-key", keyPrefix + ".key", "-enckey", keyPrefix + ".enc", "-out", apkgPath,
+	}, &out, &errBuf); err != nil {
+		t.Fatalf("package: %v, stderr: %s", err, errBuf.String())
+	}
+
+	t.Run("no pubkey and no skip flag is refused", func(t *testing.T) {
+		var runOut, runErr bytes.Buffer
+		err := Run([]string{
+			"run", "-pkg", apkgPath, "-key", keyPrefix + ".enc", "-func", "Add", "-args", "1,1",
+		}, &runOut, &runErr)
+		if err == nil {
+			t.Fatal("expected a refusal with no -pubkey and no -insecure-skip-verify")
+		}
+		if !strings.Contains(err.Error(), "requires -pubkey") {
+			t.Errorf("wrong refusal reason: %v", err)
+		}
+	})
+
+	t.Run("insecure-skip-verify runs but warns loudly", func(t *testing.T) {
+		var runOut, runErr bytes.Buffer
+		err := Run([]string{
+			"run", "-pkg", apkgPath, "-key", keyPrefix + ".enc", "-func", "Add", "-args", "1,1",
+			"-insecure-skip-verify",
+		}, &runOut, &runErr)
+		if err != nil {
+			t.Fatalf("run with -insecure-skip-verify: %v, stderr: %s", err, runErr.String())
+		}
+		if !strings.Contains(runOut.String(), "Result: 2") {
+			t.Errorf("expected 'Result: 2', got: %s", runOut.String())
+		}
+		if !strings.Contains(runErr.String(), "NOT CHECKED") {
+			t.Errorf("expected a loud warning on stderr, got: %s", runErr.String())
+		}
+	})
+
+	t.Run("pubkey verifies and says so", func(t *testing.T) {
+		var runOut, runErr bytes.Buffer
+		err := Run([]string{
+			"run", "-pkg", apkgPath, "-key", keyPrefix + ".enc", "-func", "Add", "-args", "1,1",
+			"-pubkey", keyPrefix + ".pub",
+		}, &runOut, &runErr)
+		if err != nil {
+			t.Fatalf("run with -pubkey: %v, stderr: %s", err, runErr.String())
+		}
+		if !strings.Contains(runOut.String(), "[Signature] Verified") {
+			t.Errorf("expected a signature-verified line, got: %s", runOut.String())
+		}
+	})
+
+	t.Run("bad integrity-policy value is rejected", func(t *testing.T) {
+		var runOut, runErr bytes.Buffer
+		err := Run([]string{
+			"run", "-pkg", apkgPath, "-key", keyPrefix + ".enc", "-func", "Add", "-args", "1,1",
+			"-pubkey", keyPrefix + ".pub", "-integrity-policy", "nonsense",
+		}, &runOut, &runErr)
+		if err == nil {
+			t.Fatal("expected a flag-validation error for an unknown -integrity-policy value")
+		}
+	})
+}
+
+// TestCLI_PackageRefusesSecretFiles proves the packager's deny-list fails the
+// build outright when the application directory contains a secret file,
+// rather than silently leaving it out (which would let an operator believe
+// a leaked .env was protected when it was never sealed in either way — or,
+// worse, never notice it was sealed in at all).
+func TestCLI_PackageRefusesSecretFiles(t *testing.T) {
+	for name, path := range map[string]string{
+		".env":           ".env",
+		"dotenv variant": ".env.production",
+		"PEM file":       "certs/server.pem",
+		"private key":    "keys/service.key",
+		"SSH key":        "id_rsa",
+	} {
+		t.Run(name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			appDir := filepath.Join(tempDir, "app")
+			if err := os.MkdirAll(filepath.Join(appDir, filepath.Dir(path)), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(appDir, path), []byte("secret"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(appDir, "app.bcl"), []byte(`name "x"`), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			keyPrefix := filepath.Join(tempDir, "deny_key")
+			var out, errBuf bytes.Buffer
+			if err := Run([]string{"keygen", "-out", keyPrefix}, &out, &errBuf); err != nil {
+				t.Fatalf("keygen: %v", err)
+			}
+
+			out.Reset()
+			errBuf.Reset()
+			err := Run([]string{
+				"package", "-dir", appDir,
+				"-key", keyPrefix + ".key", "-enckey", keyPrefix + ".enc",
+				"-out", filepath.Join(tempDir, "app.apkg"),
+			}, &out, &errBuf)
+			if err == nil {
+				t.Fatalf("expected packaging to refuse a directory containing %s", path)
+			}
+			if !strings.Contains(err.Error(), "denied pattern") {
+				t.Errorf("wrong refusal reason: %v", err)
+			}
+		})
+	}
+}
+
+// TestCLI_PackagePrintsManifest proves a successful package lists every file
+// it sealed, so an operator can audit what left the build.
+func TestCLI_PackagePrintsManifest(t *testing.T) {
+	tempDir := t.TempDir()
+	appDir := filepath.Join(tempDir, "app")
+	if err := os.MkdirAll(appDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "app.bcl"), []byte(`name "x"`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "readme.txt"), []byte("hi"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	keyPrefix := filepath.Join(tempDir, "manifest_key")
+	var out, errBuf bytes.Buffer
+	if err := Run([]string{"keygen", "-out", keyPrefix}, &out, &errBuf); err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+
+	out.Reset()
+	errBuf.Reset()
+	if err := Run([]string{
+		"package", "-dir", appDir,
+		"-key", keyPrefix + ".key", "-enckey", keyPrefix + ".enc",
+		"-out", filepath.Join(tempDir, "app.apkg"),
+	}, &out, &errBuf); err != nil {
+		t.Fatalf("package: %v, stderr: %s", err, errBuf.String())
+	}
+
+	if !strings.Contains(out.String(), "app.bcl") || !strings.Contains(out.String(), "readme.txt") {
+		t.Errorf("manifest missing a sealed file, got:\n%s", out.String())
 	}
 }

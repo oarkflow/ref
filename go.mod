@@ -10,13 +10,13 @@ require (
 	github.com/oarkflow/bcl v0.0.37
 	github.com/oarkflow/config v0.0.1
 	github.com/oarkflow/fh v0.0.27
-	github.com/oarkflow/interpreter v0.0.14
+	github.com/oarkflow/interpreter v0.0.15
 	github.com/oarkflow/migrate v0.0.30
 	github.com/oarkflow/rules v0.0.5
 	github.com/oarkflow/spl v0.0.10
 	github.com/oarkflow/tcpguard v0.0.16
 	github.com/oarkflow/template v0.0.4
-	github.com/oarkflow/zlog v0.0.3
+	github.com/oarkflow/zlog v0.0.4
 	github.com/prometheus/client_golang v1.25.0
 	github.com/redis/go-redis/v9 v9.23.0
 	go.opentelemetry.io/otel v1.47.0
@@ -24,6 +24,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.47.0
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.61.0
+	golang.org/x/sys v0.49.0
 	golang.org/x/text v0.43.0
 	modernc.org/sqlite v1.61.0
 )
@@ -71,7 +72,6 @@ require (
 	go.opentelemetry.io/otel/metric v1.47.0 // indirect
 	go.uber.org/atomic v1.12.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	modernc.org/libc v1.79.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

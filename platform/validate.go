@@ -90,6 +90,11 @@ func Validate(ctx context.Context, src []byte, baseDir string, opts LoadOptions)
 	_, err := compileSchemas(doc.Shapes)
 	fail(err)
 	fail(validateRoles(doc.Roles))
+	if warnings, err := enforceStoragePolicy(doc); err != nil {
+		fail(err)
+	} else {
+		r.Warnings = append(r.Warnings, warnings...)
+	}
 	if currencies, err := compileCurrencies(doc); err != nil {
 		fail(err)
 	} else {

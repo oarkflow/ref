@@ -587,6 +587,13 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 	if err := validateRoles(doc.Roles); err != nil {
 		return nil, err
 	}
+	if warnings, err := enforceStoragePolicy(doc); err != nil {
+		return nil, err
+	} else {
+		for _, w := range warnings {
+			slog.Warn("storage_policy ephemeral_warn: a resource writes to disk", "violation", w)
+		}
+	}
 	if p.currencies, err = compileCurrencies(doc); err != nil {
 		return nil, err
 	}

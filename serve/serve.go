@@ -78,6 +78,10 @@ type Options struct {
 	TLSCertFile, TLSKeyFile string
 	// Log receives lifecycle logging.
 	Log *slog.Logger
+	// Gate, when set, runs before every request. A non-zero return is sent
+	// as the response status and the request goes no further. The Aegis
+	// runtime uses it to restrict or isolate a running application.
+	Gate func(method, path string) int
 }
 
 func (o *Options) defaults() error {
@@ -279,6 +283,14 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	}
 
 	srv := fh.NewFast(fh.WithTemplateEngine(renderer))
+	if opts.Gate != nil {
+		srv.Use(func(c fh.Ctx) error {
+			if status := opts.Gate(c.Method(), c.Path()); status != 0 {
+				return c.SendStatus(status)
+			}
+			return c.Next()
+		})
+	}
 	// Cross-origin access is off unless CORS_ALLOW_ORIGINS names origins
 	// (comma separated). Each allowed origin is echoed back on its own; "*" is an
 	// explicit opt-in, never the default, because these apps carry session cookies

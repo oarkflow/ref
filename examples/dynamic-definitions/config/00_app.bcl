@@ -10,6 +10,13 @@
 name "dynamic-definitions"
 environment env("APP_ENV", "development")
 
+# Enforced zero-disk: the load itself refuses to start if any resource below
+# were ever changed to write to a real disk path (cache.file, queue.file,
+# session.file, storage.fs, or database.sql with an on-disk sqlite dsn).
+# This application has none, so the policy costs nothing here and catches
+# the day someone adds one by habit. See docs/aegis-protection-plan.md, phase 5.
+storage_policy "ephemeral"
+
 role "clerk"  { permissions ["quote:create", "risk:score"] }
 role "viewer" { permissions ["quote:read"] }
 role "admin"  { permissions ["*"] }

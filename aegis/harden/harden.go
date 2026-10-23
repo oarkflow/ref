@@ -61,6 +61,32 @@ func Wipe(b []byte) {
 	}
 }
 
+// LockBuffer locks b's backing memory so the OS cannot page it to swap or
+// disk, and reports whether it did. On Linux and macOS, Apply's mlockall (or
+// macOS's encrypted swap) already covers every byte the process holds, so
+// this is a no-op that reports true. On Windows, where there is no per-
+// process equivalent of mlockall available without a rarely granted
+// privilege, this calls VirtualLock on exactly this buffer — the narrower
+// guarantee the plan calls "VirtualLock on key buffers". Call it on key
+// material right after it is resolved, and call UnlockBuffer (or just let
+// the process exit) once it is wiped.
+func LockBuffer(b []byte) bool {
+	if len(b) == 0 {
+		return true
+	}
+	return lockBuffer(b)
+}
+
+// UnlockBuffer releases a lock LockBuffer took. Call it before Wipe-ing a
+// buffer that will be reused for something else; it is unnecessary before
+// process exit, which releases every lock anyway.
+func UnlockBuffer(b []byte) {
+	if len(b) == 0 {
+		return
+	}
+	unlockBuffer(b)
+}
+
 // ScrubEnv removes the named environment variables from the process so a
 // later /proc/<pid>/environ read or child process cannot see them.
 func ScrubEnv(names ...string) {

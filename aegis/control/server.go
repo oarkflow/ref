@@ -47,6 +47,18 @@ func WithServerTTL(ttl time.Duration) ServerOption {
 	}
 }
 
+// WithServerRateLimit limits every endpoint to ratePerMinute requests per
+// minute per remote IP, with up to burst requests allowed immediately. A
+// control server answers grant requests that hand out decryption keys;
+// without this, nothing stops one client (or one compromised credential)
+// from exhausting the server or brute-forcing a device or package ID by
+// request volume alone.
+func WithServerRateLimit(ratePerMinute, burst int) ServerOption {
+	return func(s *Server) {
+		s.rateLimiter = NewRateLimiter(ratePerMinute, burst)
+	}
+}
+
 // Server provides standard net/http handlers exposing the Aegis Control Server API:
 //
 //	POST /v1/grant/request       - Requests execution authorization grant
@@ -66,6 +78,7 @@ type Server struct {
 	signingKeySet *signing.KeySet
 	ttl           time.Duration
 	mux           *http.ServeMux
+	rateLimiter   *RateLimiter
 }
 
 // NewServer initializes a new Server implementing http.Handler.
@@ -99,7 +112,16 @@ func NewServer(store Store, opts ...ServerOption) *Server {
 
 // ServeHTTP delegates request handling to the internal HTTP ServeMux.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mux.ServeHTTP(w, r)
+	// /healthz is a liveness probe: load balancers and orchestrators poll it
+	// far more often than any real client calls the sensitive endpoints
+	// (grant request, package register/revoke), and sharing one per-IP quota
+	// between the two would let routine health checks starve real traffic
+	// from that same IP — exactly backwards from what the limiter is for.
+	if r.URL.Path == "/healthz" {
+		s.mux.ServeHTTP(w, r)
+		return
+	}
+	RateLimited(s.rateLimiter, s.mux).ServeHTTP(w, r)
 }
 
 // Store returns the underlying Store.
@@ -157,13 +179,13 @@ func (s *Server) handleGrantRequest(w http.ResponseWriter, r *http.Request) {
 	// Format response to support both top-level unmarshaling into runtime.Grant
 	// and unmarshaling into GrantResponse
 	resp := map[string]any{
-		"success":     true,
-		"key":         grant.Key,
-		"expires_at":  grant.ExpiresAt,
-		"session_id":  grant.SessionID,
-		"issued_at":   grant.IssuedAt,
-		"conditions":  grant.Conditions,
-		"grant":       grant,
+		"success":    true,
+		"key":        grant.Key,
+		"expires_at": grant.ExpiresAt,
+		"session_id": grant.SessionID,
+		"issued_at":  grant.IssuedAt,
+		"conditions": grant.Conditions,
+		"grant":      grant,
 	}
 
 	s.writeJSON(w, http.StatusOK, resp)

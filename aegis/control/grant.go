@@ -46,6 +46,27 @@ func WithConditions(conditions ...string) GrantServiceOption {
 	}
 }
 
+// WithRawMasterKeyGrants changes what a grant's Key actually is.
+//
+// The default, HKDF-derived per-session key only decrypts a package that
+// was itself sealed with that exact derived key — which means the package
+// must be built fresh for a session ID chosen in advance, every session.
+// That fits an on-demand, build-per-session workflow.
+//
+// It does not fit the far more common one: `aegis package` seals a .apkg
+// once with a fixed master key, and that same file is distributed to and
+// run by many machines, each of which needs that same key back. For that
+// workflow — what `aegis register` and `aegis run -grant-server` both
+// assume — pass this option so RequestGrant hands out the exact master key
+// `aegis register` (or StoreMasterKey directly) stored for the package,
+// unmodified. Nothing else about the grant (its TTL, revocation,
+// conditions, audit trail) changes: only which bytes travel as Key.
+func WithRawMasterKeyGrants() GrantServiceOption {
+	return func(gs *GrantService) {
+		gs.rawMasterKeyGrants = true
+	}
+}
+
 // GrantService evaluates client execution authorization requests, enforces device and
 // package revocation policies, verifies platform attestation evidence, and derives
 // short-lived session decryption keys via KeyManager.
@@ -56,6 +77,10 @@ type GrantService struct {
 	auditLogger       *AuditLogger
 	ttl               time.Duration
 	defaultConditions []string
+	// rawMasterKeyGrants, when true, hands out the package's exact master
+	// key instead of an HKDF-derived per-session key. See
+	// WithRawMasterKeyGrants for which workflow needs which.
+	rawMasterKeyGrants bool
 }
 
 // NewGrantService creates an initialized GrantService.
@@ -241,19 +266,25 @@ func (gs *GrantService) RequestGrantWithSession(ctx context.Context, req runtime
 		sessionID = id
 	}
 
-	// 8. Derive ephemeral session key via KeyManager
-	sessionKey, err := gs.keyManager.DeriveSessionKey(masterKey, sessionID, req.Version)
-	if err != nil {
-		gs.logEvent(ctx, SecurityEvent{
-			EventType: EventGrantDenied,
-			PackageID: req.PackageID,
-			SessionID: sessionID,
-			DeviceID:  req.DeviceID,
-			Success:   false,
-			Reason:    fmt.Sprintf("key derivation failed: %v", err),
-			Timestamp: startTime,
-		})
-		return nil, fmt.Errorf("control: session key derivation failed: %w", err)
+	// 8. The grant's key: the exact master key (WithRawMasterKeyGrants, the
+	// one package/one distributed .apkg workflow) or an HKDF-derived
+	// per-session key (default, the build-fresh-per-session workflow). See
+	// WithRawMasterKeyGrants.
+	sessionKey := masterKey
+	if !gs.rawMasterKeyGrants {
+		sessionKey, err = gs.keyManager.DeriveSessionKey(masterKey, sessionID, req.Version)
+		if err != nil {
+			gs.logEvent(ctx, SecurityEvent{
+				EventType: EventGrantDenied,
+				PackageID: req.PackageID,
+				SessionID: sessionID,
+				DeviceID:  req.DeviceID,
+				Success:   false,
+				Reason:    fmt.Sprintf("key derivation failed: %v", err),
+				Timestamp: startTime,
+			})
+			return nil, fmt.Errorf("control: session key derivation failed: %w", err)
+		}
 	}
 
 	// 9. Calculate grant expiration
@@ -350,9 +381,12 @@ func (gs *GrantService) RefreshGrant(ctx context.Context, sessionID, packageID s
 		version = pkgRec.Version
 	}
 
-	sessionKey, err := gs.keyManager.DeriveSessionKey(masterKey, sessionID, version)
-	if err != nil {
-		return nil, fmt.Errorf("control: failed to re-derive session key: %w", err)
+	sessionKey := masterKey
+	if !gs.rawMasterKeyGrants {
+		sessionKey, err = gs.keyManager.DeriveSessionKey(masterKey, sessionID, version)
+		if err != nil {
+			return nil, fmt.Errorf("control: failed to re-derive session key: %w", err)
+		}
 	}
 
 	now := time.Now().UTC()
