@@ -4,7 +4,7 @@ import {
   Background, BackgroundVariant, Controls, MiniMap, ReactFlow, ReactFlowProvider, ViewportPortal, applyEdgeChanges, applyNodeChanges, useNodesInitialized, useReactFlow,
   type Connection, type Edge, type EdgeChange, type Node, type NodeChange,
 } from "@xyflow/react";
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useShallow } from "zustand/react/shallow";
 import type { BlockNode, Op } from "../api/types";
@@ -25,7 +25,7 @@ import { friendlyKind, TERMS } from "./labels";
 import {
   addIntentNode, addStage, addStep, appendIntentNode, appendStep, buildGraph, connectIntent, connectProcess, deleteSteps,
   disconnectIntent, disconnectIntentMany, disconnectProcess, disconnectProcessMany, edgeShape, insertIntentNode, insertStep, INPUT_NODE,
-  moveStage, removeNodes, renameIntentNode, renameStep, setStart, traceOrder, wouldCycle,
+  isFreeIntentNode, isFreeStep, moveStage, removeNodes, renameIntentNode, renameStep, setStart, spliceIntentNode, spliceStep, traceOrder, wouldCycle,
   type CanvasGraph, type IntentEdge, type NodeTypeInfo, type ProcessEdge,
 } from "./model";
 import { motionAllowed, viewportMs } from "./motion";
@@ -33,6 +33,9 @@ import { EdgePopover } from "./EdgePopover";
 import { Legend } from "./Legend";
 import { NodePanel } from "./NodePanel";
 import { probe } from "./probe";
+import { edgeIdAt } from "./hit";
+import { LivePanel, fillPath, routesFor, type RunResult, type RunRoute } from "./LivePanel";
+import { LiveProvider, createLiveStore, lineStates } from "./live";
 import { nodeTypes } from "./nodes";
 import { DRAG_MIME, InsertPopover, TypeList } from "./Popover";
 import { edgeLabel } from "./labels";
@@ -176,6 +179,7 @@ function CanvasInner() {
   const [edges, setEdges] = useState<Edge[]>([]);
   const flowStore = useMemo(createFlowStore, []);
   const collapsedStore = useMemo(createCollapsedStore, []);
+  const liveStore = useMemo(createLiveStore, []);
   const [ready, setReady] = useState(false);
   const [tweening, setTweening] = useState(false);
   const [guides, setGuidesNow] = useState<Guides>({ x: [], y: [], dx: 0, dy: 0 });
@@ -190,6 +194,7 @@ function CanvasInner() {
   const [fresh, setFresh] = useState<ReadonlySet<string>>(new Set());
   const [active, setActive] = useState<ReadonlySet<string>>(new Set());
   const prevEdgeIds = useRef<Set<string> | null>(null);
+  const [dropEdge, setDropEdge] = useState<string | null>(null);
 
   useEffect(() => {
     if (!elements) return;
@@ -243,14 +248,24 @@ function CanvasInner() {
     return () => clearTimeout(t);
   }, [graph?.path]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const run = useSyncExternalStore(liveStore.subscribe, liveStore.run);
+  const lines = useMemo(
+    () => (graph?.kind === "intent" ? lineStates(graph.edges.map((e) => ({ id: e.id, from: e.from, to: e.to })), run, INPUT_NODE) : null),
+    [graph, run],
+  );
   const shownEdges = useMemo(
     () =>
-      edges.map((e) =>
-        fresh.has(e.id) || active.has(e.id)
-          ? { ...e, animated: true, className: cx(e.className, active.has(e.id) && "cv-edge-active", fresh.has(e.id) && "cv-edge-fresh") }
-          : e,
-      ),
-    [edges, fresh, active],
+      edges.map((e) => {
+        const live = lines?.live.has(e.id), done = lines?.done.has(e.id), failed = lines?.failed.has(e.id), drop = dropEdge === e.id;
+        return fresh.has(e.id) || active.has(e.id) || live || done || failed || drop
+          ? {
+              ...e,
+              animated: fresh.has(e.id) || active.has(e.id) || !!live || e.animated,
+              className: cx(e.className, active.has(e.id) && "cv-edge-active", fresh.has(e.id) && "cv-edge-fresh", live && "cv-edge-live", done && "cv-edge-done", failed && "cv-edge-failed", drop && "cv-edge-drop"),
+            }
+          : e;
+      }),
+    [edges, fresh, active, lines, dropEdge],
   );
 
   const onNodesChange = useCallback(
@@ -465,6 +480,64 @@ function CanvasInner() {
     [file, apply, store],
   );
 
+  // -- putting a step on a connection ---------------------------------------
+  /** Adds a new step of kind `t` on a connection: A -> B becomes A -> X -> B. */
+  const insertOnEdge = useCallback(
+    (edgeId: string, t: NodeTypeInfo, at?: Point) => {
+      const g = graphRef.current;
+      if (!g) return;
+      let r;
+      if (g.kind === "intent") {
+        const e = g.edges.find((x) => x.id === edgeId);
+        if (!e) return;
+        r = insertIntentNode(g, file, e, t);
+      } else if (g.kind === "process") {
+        const e = g.edges.find((x) => x.key === edgeId);
+        if (!e) return;
+        r = insertStep(g, s.catalog, file, e, t);
+      } else return;
+      if (!r.ok) return notify(r.error);
+      const id = r.id;
+      if (at) persist((p) => ({ ...p, [id]: at }));
+      void apply(r.ops).then(() => selectNew(g, id));
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [file, s.catalog, apply, persist, selectNew],
+  );
+
+  /** Puts a step that is already on the canvas (joined to nothing) on a connection. */
+  const spliceOnEdge = useCallback(
+    (edgeId: string, nodeId: string) => {
+      const g = graphRef.current;
+      if (!g) return;
+      let r;
+      if (g.kind === "intent") {
+        const e = g.edges.find((x) => x.id === edgeId);
+        if (!e) return;
+        r = spliceIntentNode(g, file, e, nodeId);
+      } else if (g.kind === "process") {
+        const e = g.edges.find((x) => x.key === edgeId);
+        if (!e) return;
+        r = spliceStep(g, s.catalog, file, e, nodeId);
+      } else return;
+      if (!r.ok) return notify(r.error);
+      void apply(r.ops);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [file, s.catalog, apply],
+  );
+
+  // The connection a dragged step would land on: one under the pointer that can take a step.
+  const edgesRef = useRef(edges);
+  edgesRef.current = edges;
+  const dropTarget = useCallback((x: number, y: number, dragged?: string): string | null => {
+    const id = edgeIdAt(x, y);
+    if (!id) return null;
+    const e = edgesRef.current.find((k) => k.id === id);
+    if (!e || !(e.data as { insertable?: boolean } | undefined)?.insertable) return null;
+    return dragged && (e.source === dragged || e.target === dragged) ? null : id;
+  }, []);
+
   // -- "+" popovers ---------------------------------------------------------
   const openInsert = useCallback(
     (edgeId: string, anchor: DOMRect) => {
@@ -472,27 +545,12 @@ function CanvasInner() {
         anchor,
         title: "Add a step here",
         pick: (t) => {
-          const g = graphRef.current;
           setPop(null);
-          if (!g) return;
-          if (g.kind === "intent") {
-            const e = g.edges.find((x) => x.id === edgeId);
-            if (!e) return;
-            const r = insertIntentNode(g, file, e, t);
-            if (!r.ok) return notify(r.error);
-            void apply(r.ops).then(() => selectNew(g, r.id));
-          } else if (g.kind === "process") {
-            const e = g.edges.find((x) => x.key === edgeId);
-            if (!e) return;
-            const r = insertStep(g, s.catalog, file, e, t);
-            if (!r.ok) return notify(r.error);
-            void apply(r.ops).then(() => selectNew(g, r.id));
-          }
+          insertOnEdge(edgeId, t);
         },
       });
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [file, s.catalog, apply, selectNew],
+    [insertOnEdge],
   );
 
   const openAppend = useCallback(
@@ -667,15 +725,107 @@ function CanvasInner() {
     return () => window.removeEventListener("keydown", onKey);
   }, [store, deselect]);
 
+  // -- live run -------------------------------------------------------------
+  // The canvas shows the latest run of the intent it draws: the server streams each step as it starts and ends.
+  const intentName = graph?.kind === "intent" ? (root?.id ?? "") : "";
+  useEffect(() => { liveStore.setIntent(intentName); }, [liveStore, intentName]);
+  useEffect(() => store.getState().onTrace((ev) => liveStore.push(ev)), [store, liveStore]);
+  // A different draft's run is not this one's.
+  useEffect(() => { liveStore.clear(); }, [liveStore, draftId]);
+
+  const routes: RunRoute[] = useMemo(() => (intentName ? routesFor(s.trees, intentName) : []), [s.trees, intentName]);
+  const [running, setRunning] = useState(false);
+  const [runResult, setRunResult] = useState<RunResult | null>(null);
+  const runRoute = useCallback(
+    async (route: RunRoute, inputs: Record<string, unknown>) => {
+      const st = store.getState();
+      const id = st.draft?.id;
+      if (!id) return;
+      setRunning(true);
+      setRunResult(null);
+      liveStore.clear();
+      const t0 = performance.now();
+      try {
+        // Builds the preview from the draft as it is now (the sandbox: nothing real is touched), then calls the route.
+        const status = await st.api.startPreview(id);
+        if (status.status === "failed" || !status.url) {
+          st.notify("error", status.message ?? "The preview could not start. Fix the problems listed and run again.");
+          return;
+        }
+        const path = fillPath(route.path, inputs);
+        const get = route.method === "GET" || route.method === "HEAD";
+        const url = status.url.replace(/\/$/, "") + (path.startsWith("/") ? path : "/" + path);
+        const res = await fetch(get && Object.keys(inputs).length ? `${url}${url.includes("?") ? "&" : "?"}${new URLSearchParams(Object.entries(inputs).map(([k, v]) => [k, String(v)]))}` : url, {
+          method: route.method,
+          credentials: "include",
+          headers: get ? undefined : { "Content-Type": "application/json" },
+          body: get ? undefined : JSON.stringify(inputs),
+        });
+        setRunResult({ status: res.status, ms: performance.now() - t0 });
+      } catch (e) {
+        setRunResult({ status: 0, ms: performance.now() - t0, error: e instanceof Error ? e.message : String(e) });
+      } finally {
+        setRunning(false);
+      }
+    },
+    [store, liveStore],
+  );
+  const stepLabel = useCallback((id: string) => id, []);
+  const selectStep = useCallback(
+    (id: string) => {
+      const g = graphRef.current;
+      if (g && g.kind === "intent") void store.getState().select(file, pathOf(g, "node", id));
+    },
+    [store, file],
+  );
+
+  // -- dropping a step on a connection --------------------------------------
+  const onDragOverStage = useCallback(
+    (e: React.DragEvent) => {
+      if (!canEdit) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+      const next = e.dataTransfer.types.includes(DRAG_MIME) ? dropTarget(e.clientX, e.clientY) : null;
+      setDropEdge((cur) => (cur === next ? cur : next));
+    },
+    [canEdit, dropTarget],
+  );
+
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       const name = e.dataTransfer.getData(DRAG_MIME);
+      setDropEdge(null);
       if (!name || !canEdit) return;
       e.preventDefault();
       const t = s.catalog?.node_types.find((x) => x.name === name);
-      if (t) void addNode(t, rf.screenToFlowPosition({ x: e.clientX, y: e.clientY }));
+      if (!t) return;
+      const at = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      const onto = dropTarget(e.clientX, e.clientY);
+      // On a connection the new step joins it (A -> X -> B); anywhere else it is a free step to connect by hand.
+      if (onto) insertOnEdge(onto, t, { x: at.x - 132, y: at.y - 36 });
+      else void addNode(t, at);
     },
-    [s.catalog, canEdit, addNode, rf],
+    [s.catalog, canEdit, addNode, rf, dropTarget, insertOnEdge],
+  );
+
+  // The connection under a dragged step's pointer, when the step is free to join it.
+  const freeTargetAt = useCallback(
+    (ev: MouseEvent | TouchEvent, id: string): string | null => {
+      const g = graphRef.current;
+      const free = g?.kind === "intent" ? isFreeIntentNode(g, id) : g?.kind === "process" ? isFreeStep(g, id) : false;
+      const pt = "changedTouches" in ev ? ev.changedTouches[0] : ev;
+      return canEdit && free && pt ? dropTarget(pt.clientX, pt.clientY, id) : null;
+    },
+    [canEdit, dropTarget],
+  );
+
+  // A free step dragged over a connection lights it; letting go puts the step on it.
+  const onNodeDrag = useCallback(
+    (ev: MouseEvent | TouchEvent, n: Node) => {
+      const next = freeTargetAt(ev, n.id);
+      setDropEdge((cur) => (cur === next ? cur : next));
+    },
+    [freeTargetAt],
   );
 
   if (!s.draft) {
@@ -705,11 +855,13 @@ function CanvasInner() {
     <CanvasActionsProvider value={actions}>
     <FlowProvider value={flowStore}>
     <CollapsedProvider value={collapsedStore}>
+    <LiveProvider value={liveStore}>
       <div data-flow-focus={focus ? [...focus].join(",") : ""} className={cx("canvas-page", !motion && "cv-static", hidden && "cv-paused", ready && "cv-ready", tweening && "cv-tween", drawerOpen && "drawer-open", railOpen && "rail-open", minimap && "has-minimap")}>
         <div
           className="cv-stage"
           ref={stageRef}
-          onDragOver={(e) => { if (canEdit) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; } }}
+          onDragOver={onDragOverStage}
+          onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as globalThis.Node | null)) setDropEdge(null); }}
           onDrop={onDrop}
         >
           <ReactFlow
@@ -727,7 +879,16 @@ function CanvasInner() {
               deleteSelection(dn, de);
               return false; // the tree refresh redraws; the server is the source of truth
             }}
-            onNodeDragStop={(_, n) => { setGuides({ x: [], y: [], dx: 0, dy: 0 }); persist((p) => ({ ...p, [n.id]: n.position })); }}
+            onNodeDrag={onNodeDrag}
+            onNodeDragStop={(ev, n) => {
+              setGuides({ x: [], y: [], dx: 0, dy: 0 });
+              persist((p) => ({ ...p, [n.id]: n.position }));
+              // Let go over a connection: the step joins it, and the lines are rewired. The target is read from
+              // where the pointer is now, not from the highlight (which may not have rendered yet after a quick drag).
+              const onto = freeTargetAt(ev, n.id);
+              setDropEdge(null);
+              if (onto) spliceOnEdge(onto, n.id);
+            }}
             // Open the details for a step or connection the user clicks. (Not for selection *reports*: React Flow
             // echoes back the previous selection while ours is catching up, and that must not undo a change of step.)
             onNodeClick={(e, n) => {
@@ -882,6 +1043,10 @@ function CanvasInner() {
             </div>
           )}
 
+          {graph.kind === "intent" && intentName && (
+            <LivePanel intent={intentName} stepLabel={stepLabel} routes={routes} canRun={canEdit} running={running} result={runResult} onRun={(r, i) => void runRoute(r, i)} onSelect={selectStep} />
+          )}
+          {dropEdge && <p className="cv-dropnote" role="status">Let go to put the step on this connection</p>}
           {legend && <Legend kind={graph.kind} onClose={() => setLegend(false)} />}
           {editing && graph.kind === "process" && (() => {
             const pe = graph.edges.find((x) => x.key === editing.edgeId);
@@ -890,6 +1055,7 @@ function CanvasInner() {
           {pop && <InsertPopover anchor={pop.anchor} title={pop.title} types={palette} catalog={s.catalog} onPick={pop.pick} onClose={() => setPop(null)} />}
         </div>
       </div>
+    </LiveProvider>
     </CollapsedProvider>
     </FlowProvider>
     </CanvasActionsProvider>

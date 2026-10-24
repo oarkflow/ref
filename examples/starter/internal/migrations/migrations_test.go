@@ -1,6 +1,7 @@
 package migrations
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -18,11 +19,11 @@ func testConfig(t *testing.T) Config {
 }
 
 func TestPendingListsEveryMigrationOnAFreshDatabase(t *testing.T) {
-	mgr, historyDriver, err := NewManager(testConfig(t))
+	mgr, historyDriver, err := NewManager(context.Background(), testConfig(t))
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
-	pending, err := Pending(mgr, historyDriver)
+	pending, err := Pending(context.Background(), mgr, historyDriver)
 	if err != nil {
 		t.Fatalf("Pending: %v", err)
 	}
@@ -43,14 +44,14 @@ func TestPendingListsEveryMigrationOnAFreshDatabase(t *testing.T) {
 
 func TestApplyClearsPendingAndIsIdempotent(t *testing.T) {
 	config := testConfig(t)
-	mgr, historyDriver, err := NewManager(config)
+	mgr, historyDriver, err := NewManager(context.Background(), config)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
-	if err := Apply(mgr); err != nil {
+	if err := Apply(context.Background(), mgr); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	pending, err := Pending(mgr, historyDriver)
+	pending, err := Pending(context.Background(), mgr, historyDriver)
 	if err != nil {
 		t.Fatalf("Pending after Apply: %v", err)
 	}
@@ -62,7 +63,7 @@ func TestApplyClearsPendingAndIsIdempotent(t *testing.T) {
 	// no-op, not an error — Manager.ApplyMigration skips a migration whose
 	// checksum already matches its recorded history row. This is what lets
 	// cmd/server call Apply on every boot without re-running anything.
-	if err := Apply(mgr); err != nil {
+	if err := Apply(context.Background(), mgr); err != nil {
 		t.Fatalf("second Apply (should be a no-op) = %v", err)
 	}
 }
@@ -73,19 +74,19 @@ func TestPendingIsEmptyAfterMigratingWithASeparateManager(t *testing.T) {
 	// cmd/server (checking on its own boot) actually have: neither knows
 	// about the other's in-memory state, only the database they both open.
 	config := testConfig(t)
-	applier, _, err := NewManager(config)
+	applier, _, err := NewManager(context.Background(), config)
 	if err != nil {
 		t.Fatalf("NewManager (applier): %v", err)
 	}
-	if err := Apply(applier); err != nil {
+	if err := Apply(context.Background(), applier); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
-	checker, historyDriver, err := NewManager(config)
+	checker, historyDriver, err := NewManager(context.Background(), config)
 	if err != nil {
 		t.Fatalf("NewManager (checker): %v", err)
 	}
-	pending, err := Pending(checker, historyDriver)
+	pending, err := Pending(context.Background(), checker, historyDriver)
 	if err != nil {
 		t.Fatalf("Pending: %v", err)
 	}

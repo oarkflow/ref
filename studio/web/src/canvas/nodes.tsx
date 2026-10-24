@@ -6,6 +6,7 @@
 import { Handle, Position, useConnection, useStore, type Node, type NodeProps } from "@xyflow/react";
 import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import { useCanvasActions, useCollapsed, useToggleCollapse } from "./context";
+import { useNodeLive } from "./live";
 import { probe } from "./probe";
 import { Icon } from "./icons";
 import { INPUT_NODE, INPUT_FACT, type IntentNodeInfo, type StageInfo, type StepInfo } from "./model";
@@ -94,11 +95,18 @@ function Header({ id, visual, title, typeText, diag, fx, collapsible, start, too
 function Shell({ id, visual, tone, selected, hasError, fx, exiting, children, className, canAppend, compact }: { id: string; visual: Visual; tone: string; selected: boolean; hasError: boolean; fx: string; exiting?: boolean; children: ReactNode; className?: string; canAppend?: boolean; compact?: boolean }) {
   const actions = useCanvasActions();
   const collapsed = useCollapsed(id);
+  const live = useNodeLive(id);
   return (
     <div
-      className={cx("cv-node", `shape-${visual.shape}`, `tone-${tone}`, selected && "selected", hasError && "has-error", visual.parks && "parks", fx && `fx-${fx}`, exiting && "exiting", collapsed && "collapsed", compact && "compact", className)}
+      className={cx("cv-node", `shape-${visual.shape}`, `tone-${tone}`, selected && "selected", hasError && "has-error", visual.parks && "parks", fx && `fx-${fx}`, exiting && "exiting", collapsed && "collapsed", compact && "compact", live.status && `live-${live.status}`, className)}
     >
       {children}
+      {live.status && live.status !== "waiting" && (
+        <span className="cv-livebadge" role="status" aria-label={`${live.status}${live.ms !== undefined ? `, ${Math.round(live.ms * 10) / 10} milliseconds` : ""}`}>
+          {live.status === "running" ? <i className="spin" /> : live.status === "done" ? <Icon name="check" size={10} /> : <Icon name="x" size={10} />}
+          {live.ms !== undefined && <span>{live.ms < 1 ? "<1" : Math.round(live.ms * 10) / 10} ms</span>}
+        </span>
+      )}
       {canAppend && !actions.readOnly && !compact && (
         <button type="button" className="cv-append nodrag" aria-label="Add a step after this one" title="Add a step after this one" onClick={(e) => actions.appendAfter(id, e.currentTarget.getBoundingClientRect())}>
           <Icon name="plus" size={12} />

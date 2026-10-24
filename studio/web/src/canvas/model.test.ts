@@ -4,7 +4,7 @@ import { catalog as catalogJson } from "../test/helpers";
 import { find, intents, trees } from "./fixtures";
 import {
   INPUT_NODE, addIntentNode, addStage, addStep, buildIntentGraph, buildPipelineGraph, buildProcessGraph, connectIntent,
-  appendIntentNode, appendStep, connectProcess, deleteSteps, disconnectIntent, insertIntentNode, insertStep, traceOrder, disconnectProcess, edgeShape, moveStage, removeNodes, renameIntentNode,
+  appendIntentNode, appendStep, connectProcess, isFreeIntentNode, isFreeStep, spliceIntentNode, spliceStep, deleteSteps, disconnectIntent, insertIntentNode, insertStep, traceOrder, disconnectProcess, edgeShape, moveStage, removeNodes, renameIntentNode,
   renameStep, setStart, wouldCycle,
 } from "./model";
 
@@ -502,5 +502,62 @@ describe("trace order", () => {
   it("walks a pipeline stage by stage", () => {
     const g = buildPipelineGraph(find("passport.bcl", "pipeline", "passport"));
     expect(traceOrder(g)).toEqual([["seq:0"], ["seq:1"], ["seq:2"], ["seq:3"]]);
+  });
+});
+
+describe("drop an existing step onto a line", () => {
+  const g = () => buildIntentGraph(intent("t", "out", [
+    ["a", { uses: '"collect"', requires: "[input]", provides: "[x]" }],
+    ["b", { uses: '"collect"', requires: "[x, other]", provides: "[out]" }],
+    ["o", { uses: '"collect"', provides: "[other]" }],
+    ["free", { uses: '"collect"', provides: "[spare]" }],
+    ["bare", { uses: '"collect"' }],
+  ]));
+
+  it("knows which steps are free to move onto a line", () => {
+    const graph = g();
+    expect(isFreeIntentNode(graph, "free")).toBe(true);
+    expect(isFreeIntentNode(graph, "bare")).toBe(true);
+    expect(isFreeIntentNode(graph, "a")).toBe(false); // needs the request
+    expect(isFreeIntentNode(graph, "o")).toBe(false); // b uses what it makes
+  });
+
+  it("makes the step need what the line carried, and the consumer need what the step makes", () => {
+    const r = spliceIntentNode(g(), FILE, { from: "a", to: "b", fact: "x" }, "free");
+    expect(r.ok && r.ops).toEqual([
+      { op: "setField", file: FILE, path: "intent/t/node/free/requires", value: "[x]" },
+      { op: "setField", file: FILE, path: "intent/t/node/b/requires", value: "[spare, other]" },
+    ]);
+  });
+
+  it("gives a step that makes nothing a fact to make", () => {
+    const r = spliceIntentNode(g(), FILE, { from: "a", to: "b", fact: "x" }, "bare");
+    expect(r.ok && r.ops).toEqual([
+      { op: "setField", file: FILE, path: "intent/t/node/bare/provides", value: "[bare]" },
+      { op: "setField", file: FILE, path: "intent/t/node/bare/requires", value: "[x]" },
+      { op: "setField", file: FILE, path: "intent/t/node/b/requires", value: "[bare, other]" },
+    ]);
+  });
+
+  it("refuses a step that is already joined, one of the line's own ends, and an unrewritable consumer", () => {
+    const edge = { from: "a", to: "b", fact: "x" };
+    expect(spliceIntentNode(g(), FILE, edge, "o")).toMatchObject({ ok: false });
+    expect(spliceIntentNode(g(), FILE, edge, "a")).toMatchObject({ ok: false });
+    expect(spliceIntentNode(g(), FILE, edge, "b")).toMatchObject({ ok: false });
+    expect(spliceIntentNode(g(), FILE, edge, "nope")).toMatchObject({ ok: false });
+    const expr = buildIntentGraph(intent("t", "out", [["a", { provides: "[x]" }], ["b", { requires: "concat(a)", provides: "[out]" }], ["f", { provides: "[y]" }]]));
+    expect(spliceIntentNode(expr, FILE, edge, "f")).toMatchObject({ ok: false });
+  });
+
+  it("splices a free process step into a connection the way a new one is inserted", () => {
+    const pg = buildProcessGraph(processWith([{ id: "ab", kind: "branch", from: "a", to: "b" }]), catalog);
+    expect(isFreeStep(pg, "c")).toBe(true);
+    expect(isFreeStep(pg, "a")).toBe(false);
+    const r = spliceStep(pg, catalog, FILE, pg.edges[0]!, "c");
+    expect(r.ok && r.ops).toEqual([
+      { op: "setField", file: FILE, path: "process/p/edge/ab/to", value: '"c"' },
+      { op: "addBlock", file: FILE, parent: "process/p", type: "edge", id: "c_to_b", body: 'kind simple\nfrom "c"\nto "b"' },
+    ]);
+    expect(spliceStep(pg, catalog, FILE, pg.edges[0]!, "a")).toMatchObject({ ok: false });
   });
 });

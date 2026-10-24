@@ -49,7 +49,7 @@ func Register() {
 		})
 
 		// Register fallback for queue.broker using fh.OpenDurableQueue
-		platform.RegisterResourceDriver("queue.broker", platform.ResourceFactoryFunc(func(_ context.Context, spec platform.ResourceSpec) (platform.Resource, io.Closer, error) {
+		platform.RegisterFallbackResourceDriver("queue.broker", platform.ResourceFactoryFunc(func(_ context.Context, spec platform.ResourceSpec) (platform.Resource, io.Closer, error) {
 			dir, _ := spec.Config["dir"].(string)
 			if dir == "" {
 				dir = ".data/broker"

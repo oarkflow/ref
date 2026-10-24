@@ -168,3 +168,38 @@ func TestSandboxGuard(t *testing.T) {
 		t.Fatalf("explicit allow refused: %v", err)
 	}
 }
+
+// storage.s3 reaches a real bucket (with the host's AWS_* credentials when the
+// document names none), so a preview swaps it for a directory of its own.
+func TestSandboxReplacesS3WithLocalStorage(t *testing.T) {
+	root := t.TempDir()
+	doc := &platform.Document{Resources: []platform.ResourceSpec{
+		res("bucket", "storage.s3", map[string]any{"bucket": "prod-uploads", "endpoint": "https://s3.example", "access_key": "AKIA-PROD", "secret_key": "shh", "max_object_bytes": 1024}),
+	}}
+	changes, err := Sandbox(doc, SandboxOptions{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := doc.Resources[0]
+	if got.Kind != "storage.fs" {
+		t.Fatalf("kind = %q, want storage.fs", got.Kind)
+	}
+	dir, _ := got.Config["dir"].(string)
+	if !strings.HasPrefix(dir, root+string(filepath.Separator)) {
+		t.Errorf("dir %q escapes the root", dir)
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		t.Errorf("dir not created: %v", err)
+	}
+	if got.Config["max_object_bytes"] != 1024 {
+		t.Errorf("size limit dropped: %v", got.Config)
+	}
+	for _, k := range []string{"bucket", "endpoint", "access_key", "secret_key"} {
+		if _, has := got.Config[k]; has {
+			t.Errorf("S3 setting %q survived into the preview", k)
+		}
+	}
+	if len(changes) != 1 || changes[0].Action != ActionReplace || changes[0].Kind != "storage.s3" {
+		t.Errorf("changes = %+v", changes)
+	}
+}

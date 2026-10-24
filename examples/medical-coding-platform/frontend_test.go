@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -311,6 +313,10 @@ func TestBCLEndToEndWebRoutes(t *testing.T) {
 	opts := platform.DefaultLoadOptions()
 	opts.Profile = "development"
 	opts.Templates = renderer
+	// Script and definition files are named relative to the application (its
+	// resources directory), as `aegis run resources` does; without this they
+	// would be looked up from the test's working directory.
+	opts.FS = os.DirFS(filepath.Dir(bclDir))
 
 	p, err := platform.LoadDirRecursive(ctx, bclDir, opts)
 	if err != nil {

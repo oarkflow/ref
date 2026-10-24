@@ -235,6 +235,11 @@ func New(cfg Config) (*Server, error) {
 	}); ok {
 		s.forwardPreviewEvents(ev)
 	}
+	if tr, ok := s.cfg.Preview.(interface {
+		Trace() (<-chan preview.TraceEvent, func())
+	}); ok {
+		s.forwardTrace(tr)
+	}
 	if s.cfg.AppManager != nil {
 		s.appMgr = s.cfg.AppManager
 	}
@@ -260,6 +265,30 @@ func (s *Server) forwardPreviewEvents(ev interface {
 					return
 				}
 				s.Notify(st.ID, "preview", st.Studio())
+			case <-s.done:
+				return
+			}
+		}
+	}()
+}
+
+// forwardTrace relays the execution events of a draft's preview to that
+// draft's event stream, so the canvas can show a run as it happens.
+func (s *Server) forwardTrace(tr interface {
+	Trace() (<-chan preview.TraceEvent, func())
+}) {
+	ch, cancel := tr.Trace()
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer cancel()
+		for {
+			select {
+			case ev, ok := <-ch:
+				if !ok {
+					return
+				}
+				s.Notify(ev.Draft, "trace", ev)
 			case <-s.done:
 				return
 			}

@@ -565,3 +565,35 @@ func mustJSON(c *Case) string {
 	raw, _ := json.Marshal(c)
 	return string(raw)
 }
+
+// A window that runs to midnight leaves the clock on the next day; the walk
+// must not then skip that day too. (It once added 24h to any deadline that
+// crossed midnight, so tests passed or failed with the time of day.)
+func TestCalendarAddCrossesMidnightWithoutSkippingADay(t *testing.T) {
+	start := time.Date(2026, 10, 23, 17, 18, 0, 0, time.UTC) // a Friday evening
+	for name, cal := range map[string]Calendar{
+		"24x7":               {Name: "all", Timezone: "UTC", Hours: "24x7"},
+		"every day to 24:00": {Name: "late", Timezone: "UTC", Hours: "mon-sun 00:00-24:00"},
+	} {
+		wc, err := CompileCalendar(cal)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got, want := wc.Add(start, 10*time.Hour), start.Add(10*time.Hour); !got.Equal(want) {
+			t.Errorf("%s: 10h from %v = %v, want %v", name, start, got, want)
+		}
+		if got, want := wc.Add(start, 50*time.Hour), start.Add(50*time.Hour); !got.Equal(want) {
+			t.Errorf("%s: 50h from %v = %v, want %v", name, start, got, want)
+		}
+	}
+
+	// Office hours still skip the nights and the weekend.
+	office, err := CompileCalendar(Calendar{Name: "office", Timezone: "UTC", Hours: "mon-fri 09:00-17:00"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fri := time.Date(2026, 10, 23, 15, 0, 0, 0, time.UTC)
+	if got, want := office.Add(fri, 4*time.Hour), time.Date(2026, 10, 26, 11, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Errorf("office: 4h from Friday 15:00 = %v, want %v", got, want)
+	}
+}

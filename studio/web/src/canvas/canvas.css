@@ -481,3 +481,59 @@
 .drawer-open .cv-toolbar { right: auto; left: 60px; top: 60px; }
 .cv-edgekind { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; font-size: 12.5px; color: var(--muted); }
 .cv-edgekind select { width: auto; min-width: 96px; }
+
+/* ---- live run -------------------------------------------------------------- */
+/* A card's outline says where the run is: working (pulses), finished, failed. Waiting steps are quiet. */
+.cv-node.live-waiting { opacity: 0.55; }
+.cv-node.live-running { outline: 2px solid var(--accent); outline-offset: 2px; animation: cv-live-pulse 1.1s ease-in-out infinite; }
+.cv-node.live-done { outline: 2px solid var(--ok); outline-offset: 2px; }
+.cv-node.live-failed { outline: 2px solid var(--danger); outline-offset: 2px; }
+.cv-livebadge { position: absolute; top: -10px; right: 10px; display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1; color: #fff; background: var(--accent); box-shadow: var(--cv-shadow-2, 0 1px 4px rgb(0 0 0 / 0.25)); pointer-events: none; animation: cv-pop var(--cv-dur) var(--cv-ease) both; }
+.live-done > .cv-livebadge { background: var(--ok); }
+.live-failed > .cv-livebadge { background: var(--danger); }
+.spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; display: inline-block; animation: cv-spin 0.7s linear infinite; }
+@keyframes cv-spin { to { rotate: 360deg; } }
+@keyframes cv-live-pulse { 0%, 100% { outline-color: var(--accent); } 50% { outline-color: color-mix(in srgb, var(--accent) 25%, transparent); } }
+
+.react-flow__edge.cv-edge-live path.react-flow__edge-path { stroke: var(--accent); stroke-width: 3; }
+.react-flow__edge.cv-edge-done path.react-flow__edge-path { stroke: var(--ok); stroke-width: 2.2; }
+.react-flow__edge.cv-edge-failed path.react-flow__edge-path { stroke: var(--danger); stroke-width: 2.6; stroke-dasharray: 6 4; }
+
+/* a step being dragged over a connection */
+.react-flow__edge.cv-edge-drop path.react-flow__edge-path { stroke: var(--accent); stroke-width: 4; stroke-dasharray: none; filter: drop-shadow(0 0 6px var(--accent)); }
+.cv-dropnote { position: absolute; z-index: 20; left: 50%; bottom: 72px; transform: translateX(-50%); margin: 0; padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 500; color: #fff; background: var(--accent); box-shadow: var(--cv-shadow-3); pointer-events: none; animation: cv-slide var(--cv-dur) var(--cv-ease) both; }
+
+.cv-live { position: absolute; z-index: 6; right: 16px; bottom: 16px; width: 320px; max-height: 60%; display: flex; flex-direction: column; background: var(--cv-surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--cv-shadow-3); font-size: 12px; overflow: hidden; }
+.drawer-open .cv-live { right: 460px; }
+.cv-live[data-state="running"] { border-color: var(--accent); }
+.cv-live[data-state="failed"] { border-color: var(--danger); }
+.cv-livetoggle { all: unset; box-sizing: border-box; width: 100%; display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; }
+.cv-livetoggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.cv-livetoggle small { margin-left: auto; color: var(--muted); }
+.cv-livedot { width: 8px; height: 8px; border-radius: 50%; background: var(--border-strong); flex: none; }
+.cv-livedot.running { background: var(--accent); animation: cv-live-pulse 1.1s ease-in-out infinite; }
+.cv-livedot.done { background: var(--ok); }
+.cv-livedot.failed { background: var(--danger); }
+.cv-livebody { display: flex; flex-direction: column; gap: 8px; padding: 0 12px 12px; overflow: auto; }
+.cv-liverun { display: flex; flex-direction: column; gap: 6px; }
+.cv-liverun textarea { font: 12px/1.4 ui-monospace, monospace; resize: vertical; }
+.cv-liveactions { display: flex; align-items: center; gap: 6px; }
+.cv-liveresult { margin-left: auto; font-size: 11.5px; }
+.cv-liveresult.ok { color: var(--ok); }
+.cv-liveresult.bad { color: var(--danger); }
+.cv-livesteps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.cv-livesteps button { all: unset; box-sizing: border-box; width: 100%; display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
+.cv-livesteps button:hover { background: var(--surface-2); }
+.cv-livesteps button:focus-visible { outline: 2px solid var(--accent); }
+.cv-livesteps .mark { display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; color: #fff; background: var(--accent); flex: none; }
+.cv-livesteps [data-status="done"] .mark { background: var(--ok); }
+.cv-livesteps [data-status="failed"] .mark { background: var(--danger); }
+.cv-livesteps .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-livesteps small { color: var(--muted); font-variant-numeric: tabular-nums; }
+.cv-live .err { margin: 0 0 0 30px; color: var(--danger); overflow-wrap: anywhere; }
+.cv-livehint { color: var(--muted); line-height: 1.4; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cv-node.live-running, .cv-livedot.running { animation: none; }
+  .spin { animation-duration: 2s; }
+}

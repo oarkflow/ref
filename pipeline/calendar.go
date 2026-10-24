@@ -190,7 +190,8 @@ func (wc *WorkCalendar) Add(start time.Time, d time.Duration) time.Time {
 	cur := start.In(wc.loc)
 	remaining := d
 	for i := 0; i < maxCalendarDays; i++ {
-		for _, w := range wc.windowsOn(cur) {
+		day := cur
+		for _, w := range wc.windowsOn(day) {
 			if !cur.Before(w[1]) {
 				continue
 			}
@@ -205,7 +206,9 @@ func (wc *WorkCalendar) Add(start time.Time, d time.Duration) time.Time {
 			remaining -= avail
 			cur = w[1]
 		}
-		y, m, dd := cur.Date()
+		// Move on from the day just worked, not from cur: a window that ends at
+		// midnight leaves cur already on the next day, which would be skipped.
+		y, m, dd := day.Date()
 		cur = time.Date(y, m, dd+1, 0, 0, 0, 0, wc.loc)
 	}
 	return start.Add(d) // a calendar with (almost) no working time: fall back

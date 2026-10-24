@@ -110,6 +110,11 @@ var (
 	driverActions   = map[string]ActionFactory{}
 	driverKinds     = map[string]ResourceKindInfo{}
 	driverActionDoc = map[string]ActionInfo{}
+
+	// Fallbacks apply to every new Registry before the drivers do, so a driver
+	// for the same kind always wins, whichever was registered first.
+	fallbackResources = map[string]ResourceFactory{}
+	fallbackKinds     = map[string]ResourceKindInfo{}
 )
 
 // RegisterResourceDriver installs a resource provider into every Registry
@@ -141,6 +146,31 @@ func RegisterResourceDriver(kind string, factory ResourceFactory, info ...Resour
 		doc.Name = kind
 	}
 	driverKinds[kind] = doc
+}
+
+// RegisterFallbackResourceDriver installs a stand-in for a kind that a real
+// driver may also provide. It replaces the built-in provider of the kind, and is
+// itself replaced by any RegisterResourceDriver for the same kind, in whatever
+// order the two are registered. Use it for "good enough when nothing better is
+// linked in", so two packages that both offer a kind can be linked together
+// instead of panicking. Registering a fallback for a kind twice panics.
+func RegisterFallbackResourceDriver(kind string, factory ResourceFactory, info ...ResourceKindInfo) {
+	kind = normalizeName(kind)
+	if kind == "" || factory == nil {
+		panic("ref/platform: fallback resource driver needs a kind and a factory")
+	}
+	driverMu.Lock()
+	defer driverMu.Unlock()
+	if _, exists := fallbackResources[kind]; exists {
+		panic("ref/platform: duplicate fallback resource driver " + kind)
+	}
+	fallbackResources[kind] = factory
+	doc := ResourceKindInfo{Name: kind}
+	if len(info) > 0 {
+		doc = info[0]
+		doc.Name = kind
+	}
+	fallbackKinds[kind] = doc
 }
 
 // RegisterActionDriver installs an action into every Registry created
@@ -185,6 +215,10 @@ func NewRegistry() *Registry {
 
 	driverMu.RLock()
 	defer driverMu.RUnlock()
+	for kind, factory := range fallbackResources {
+		r.resources[kind] = factory
+		r.kinds[kind] = fallbackKinds[kind]
+	}
 	for kind, factory := range driverResources {
 		r.resources[kind] = factory
 		r.kinds[kind] = driverKinds[kind]

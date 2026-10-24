@@ -21,6 +21,7 @@ import (
 
 	"github.com/oarkflow/bcl"
 	"github.com/oarkflow/fh"
+	"github.com/oarkflow/ref/observer"
 	"github.com/oarkflow/ref/platform"
 	"github.com/oarkflow/ref/studio"
 )
@@ -168,12 +169,14 @@ func (o *Options) defaults() {
 type Service struct {
 	opts Options
 
-	mu       sync.Mutex
-	entries  map[string]*entry
-	subs     map[int]chan Status
-	subSeq   int
-	closed   bool
-	draining bool // Close has started waiting on wg; no further wg.Add
+	mu        sync.Mutex
+	entries   map[string]*entry
+	subs      map[int]chan Status
+	subSeq    int
+	traceSubs map[int]chan TraceEvent
+	traceSeq  int
+	closed    bool
+	draining  bool // Close has started waiting on wg; no further wg.Add
 
 	stopJanitor chan struct{}
 	wg          sync.WaitGroup
@@ -191,7 +194,7 @@ type entry struct {
 // New returns a Service and starts its idle janitor. Call Close to stop it.
 func New(opts Options) *Service {
 	opts.defaults()
-	s := &Service{opts: opts, entries: map[string]*entry{}, subs: map[int]chan Status{}, stopJanitor: make(chan struct{})}
+	s := &Service{opts: opts, entries: map[string]*entry{}, subs: map[int]chan Status{}, traceSubs: map[int]chan TraceEvent{}, stopJanitor: make(chan struct{})}
 	s.wg.Add(1)
 	go s.janitor()
 	return s
@@ -528,6 +531,7 @@ func (s *Service) build(ctx context.Context, d studio.Draft) (*generation, []Cha
 		ResolveImports: false,
 		Strict:         true,
 		Profile:        s.opts.Profile,
+		Observers:      []observer.Observer{newTraceObserver(id, version, s.publishTrace)},
 		Mutate: func(doc *platform.Document) error {
 			c, err := Sandbox(doc, SandboxOptions{Root: root, ExtraKinds: s.opts.ExtraKinds})
 			changes = c

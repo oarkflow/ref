@@ -205,7 +205,22 @@ export interface AuditEntry {
 export type StudioEvent =
   | { type: "changed"; data: { version: number; changed?: string[] } }
   | { type: "diagnostics"; data: { diagnostics: Diagnostic[] } }
-  | { type: "preview"; data: PreviewEventData };
+  | { type: "preview"; data: PreviewEventData }
+  | { type: "trace"; data: TraceEvent };
+
+/** One step of a running intent in the preview, streamed while it runs. */
+export interface TraceEvent {
+  draft: string;
+  time: string;
+  phase: "start" | "end" | "done";
+  intent: string;
+  node?: string;
+  kind?: string;
+  /** wall time once a step (or the whole intent) has finished */
+  ms?: number;
+  error?: string;
+  version?: number;
+}
 
 export interface PreviewStatus {
   status: "starting" | "ready" | "failed";

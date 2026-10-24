@@ -1,7 +1,7 @@
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { ApiError, StudioApi, TOKEN_KEY } from "../api/client";
 import type {
-  BlockNode, BlockSchemas, Catalog, Diagnostic, DraftDetail, DraftSummary, Meta, Op, OpResult, PreviewEventData, Role, Revision,
+  BlockNode, BlockSchemas, Catalog, Diagnostic, DraftDetail, DraftSummary, Meta, Op, OpResult, PreviewEventData, Role, Revision, TraceEvent,
 } from "../api/types";
 import { isWithin } from "../lib/paths";
 import { OpQueue, type RollbackInfo } from "./opQueue";
@@ -78,6 +78,8 @@ export interface StudioState {
   notify(level: Notice["level"], text: string): void;
   dismiss(id: number): void;
   setPreview(on: boolean): void;
+  /** Calls `fn` for every execution event of the open draft's preview; returns the way to stop. Events are not kept in state: a run can be hundreds of them. */
+  onTrace(fn: (ev: TraceEvent) => void): () => void;
 }
 
 export type StudioStore = StoreApi<StudioState>;
@@ -103,6 +105,7 @@ export function createStudioStore(api: StudioApi, opts: StoreOptions = {}): Stud
   let syncTimer: ReturnType<typeof setTimeout> | undefined;
   let validateTimer: ReturnType<typeof setTimeout> | null = null;
   let treeSeq = 0;
+  const traceListeners = new Set<(ev: TraceEvent) => void>();
 
   const store: StudioStore = createStore<StudioState>((set, get) => {
     const notify = (level: Notice["level"], text: string) => {
@@ -213,6 +216,10 @@ export function createStudioStore(api: StudioApi, opts: StoreOptions = {}): Stud
       notify,
       dismiss: (id) => set((s) => ({ notices: s.notices.filter((n) => n.id !== id) })),
       setPreview: (on) => set({ previewOn: on }),
+      onTrace: (fn) => {
+        traceListeners.add(fn);
+        return () => void traceListeners.delete(fn);
+      },
 
       async init() {
         set({ loading: true, authError: null });
@@ -302,6 +309,8 @@ export function createStudioStore(api: StudioApi, opts: StoreOptions = {}): Stud
                 }
               } else if (ev.type === "diagnostics") {
                 set({ diagnostics: ev.data.diagnostics });
+              } else if (ev.type === "trace") {
+                traceListeners.forEach((fn) => fn(ev.data));
               } else if (ev.type === "preview") {
                 set({ previewEvent: { seq: (get().previewEvent?.seq ?? 0) + 1, draftId: id, data: ev.data } });
               }

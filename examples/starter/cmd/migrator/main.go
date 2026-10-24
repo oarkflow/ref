@@ -20,6 +20,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 
@@ -32,7 +33,8 @@ func main() {
 		log.Fatalf("migrator: loading %s: %v", bootstrap.DotenvPath(), err)
 	}
 
-	mgr, _, err := migrations.NewManager(migrations.Config{
+	ctx := context.Background()
+	mgr, _, err := migrations.NewManager(ctx, migrations.Config{
 		Driver:       env("DB_DRIVER", "sqlite"),
 		DSN:          env("DB_DSN", "file:.data/starter/app.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"),
 		MigrationDir: bootstrap.ResolveDir("examples/starter/resources/migrations", "./resources/migrations", "resources/migrations"),
@@ -45,7 +47,7 @@ func main() {
 	// Delegates to github.com/oarkflow/migrate's own CLI dispatch over
 	// os.Args — `migrate`, `migration:rollback --step=1`, `status`,
 	// `migration:validate`, `history`, ... see its README for the full list.
-	mgr.Run()
+	mgr.Run(ctx)
 }
 
 func env(key, fallback string) string {

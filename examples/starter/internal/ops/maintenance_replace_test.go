@@ -12,11 +12,13 @@ import (
 func TestReplaceActionsOnBindsTheOtherGate(t *testing.T) {
 	live, sandbox := NewMaintenanceGate(false, ""), NewMaintenanceGate(false, "")
 
+	// The platform ships stand-ins for both actions, so a registry already has
+	// them: bind the live gate by replacing, as the real server does.
 	r := platform.NewRegistry()
 	for name, f := range map[string]platform.ActionFactory{
 		"ops.maintenance_set": live.setFactory(), "ops.maintenance_status": live.statusFactory(),
 	} {
-		if err := r.RegisterAction(name, f); err != nil {
+		if err := r.Replace(name, f); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -40,7 +42,7 @@ func TestReplaceActionsOnBindsTheOtherGate(t *testing.T) {
 	}
 
 	// A registry that lacks the actions is an error, not a silent no-op.
-	if err := sandbox.ReplaceActionsOn(platform.NewRegistry()); err == nil {
+	if err := sandbox.ReplaceActionsOn(platform.NewEmptyRegistry()); err == nil {
 		t.Error("ReplaceActionsOn on a registry without the actions succeeded")
 	}
 }

@@ -8,6 +8,7 @@
 package migrations
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,12 +46,12 @@ func (c Config) Dialect() string {
 // NewManager connects to the database and returns a Manager plus its own
 // history driver (the Manager does not expose the one it was built with,
 // and Pending needs to read it directly).
-func NewManager(c Config) (*migrate.Manager, migrate.HistoryDriver, error) {
+func NewManager(ctx context.Context, c Config) (*migrate.Manager, migrate.HistoryDriver, error) {
 	dialect := c.Dialect()
 	if dialect == "sqlite" {
 		mkdirForSQLiteDSN(c.DSN)
 	}
-	dbDriver, err := migrate.NewDriver(dialect, c.DSN)
+	dbDriver, err := migrate.NewDriver(ctx, dialect, c.DSN)
 	if err != nil {
 		return nil, nil, fmt.Errorf("connecting (%s driver, dialect %s): %w", c.Driver, dialect, err)
 	}
@@ -58,7 +59,7 @@ func NewManager(c Config) (*migrate.Manager, migrate.HistoryDriver, error) {
 	if historyTable == "" {
 		historyTable = "schema_migrations"
 	}
-	historyDriver, err := migrate.NewHistoryDriver("db", dialect, c.DSN, historyTable)
+	historyDriver, err := migrate.NewHistoryDriver(ctx, "db", dialect, c.DSN, historyTable)
 	if err != nil {
 		return nil, nil, fmt.Errorf("history driver: %w", err)
 	}
@@ -68,6 +69,7 @@ func NewManager(c Config) (*migrate.Manager, migrate.HistoryDriver, error) {
 		migrate.WithDialect(dialect),
 		migrate.WithMigrationDir(c.MigrationDir),
 		migrate.WithSeedDir(c.SeedDir),
+		migrate.WithContext(ctx),
 	)
 	return mgr, historyDriver, nil
 }
@@ -80,12 +82,12 @@ func NewManager(c Config) (*migrate.Manager, migrate.HistoryDriver, error) {
 //
 // Read-only: opens the same connection ValidateHistoryStorage/Load would,
 // never a write transaction.
-func Pending(mgr *migrate.Manager, historyDriver migrate.HistoryDriver) ([]string, error) {
+func Pending(ctx context.Context, mgr *migrate.Manager, historyDriver migrate.HistoryDriver) ([]string, error) {
 	declared, err := mgr.ListMigrationMap()
 	if err != nil {
 		return nil, fmt.Errorf("listing migrations: %w", err)
 	}
-	applied, err := historyDriver.Load()
+	applied, err := historyDriver.Load(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("loading migration history: %w", err)
 	}
@@ -108,7 +110,7 @@ func Pending(mgr *migrate.Manager, historyDriver migrate.HistoryDriver) ([]strin
 // which is itself idempotent (skips a migration whose checksum already
 // matches the recorded one), so calling Apply when nothing is pending is a
 // safe no-op, not a redundant re-run.
-func Apply(mgr *migrate.Manager) error {
+func Apply(ctx context.Context, mgr *migrate.Manager) error {
 	declared, err := mgr.ListMigrationMap()
 	if err != nil {
 		return fmt.Errorf("listing migrations: %w", err)
@@ -134,7 +136,7 @@ func Apply(mgr *migrate.Manager) error {
 			return fmt.Errorf("parsing %s: %w", path, err)
 		}
 		for _, m := range parsed {
-			if err := mgr.ApplyMigration(m); err != nil {
+			if err := mgr.ApplyMigration(ctx, m); err != nil {
 				return fmt.Errorf("applying %q: %w", m.Name, err)
 			}
 		}

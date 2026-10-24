@@ -67,7 +67,12 @@ var kindPolicy = map[string]Action{
 	"authz.rbac": ActionKeep, "authz.engine": ActionKeep, "rules.engine": ActionKeep,
 	"security.tcpguard": ActionKeep, "crypto.signer": ActionKeep,
 	"org.hierarchy": ActionKeep, "identity.users": ActionKeep, "pipeline.cases": ActionKeep,
-	"workflow.http": ActionKeep,
+	"workflow.http": ActionKeep, "workflow.manager": ActionKeep, "app.manager": ActionKeep,
+	"auth.api_key_sql": ActionKeep, "etl.engine": ActionKeep, "sms.router": ActionKeep,
+	"transport.secure": ActionKeep,
+	// in-process stand-ins for messaging drivers: they open no connections
+	"queue.broker": ActionKeep, "sandbox.upstreams": ActionKeep,
+	"service.smpp": ActionKeep, "service.httpsms": ActionKeep,
 	// storage moves into the temp root
 	"database.sql": ActionRewrite,
 	"cache.file":   ActionRewrite, "queue.file": ActionRewrite, "session.file": ActionRewrite,
@@ -75,6 +80,7 @@ var kindPolicy = map[string]Action{
 	// replaced
 	"secret.env": ActionReplace,
 	"auth.oidc":  ActionReplace,
+	"storage.s3": ActionReplace,
 	// outbound: real config, stubbed I/O
 	"service.http": ActionOffline, "service.smtp": ActionOffline, "service.llm": ActionOffline,
 }
@@ -160,6 +166,21 @@ func Sandbox(doc *platform.Document, opts SandboxOptions) ([]Change, error) {
 			spec.Config = map[string]any{"dir": dir}
 			changes = append(changes, Change{Block: resource(spec.Name), Kind: kind, Action: ActionReplace,
 				Detail: "secret.env would read the host environment; replaced by an empty secret.file"})
+		case "storage.s3":
+			// A real bucket, reached with the host's AWS_* credentials when the
+			// document names none: never from a preview.
+			dir := filepath.Join(opts.Root, "storage-fs", slug(spec.Name))
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				return nil, err
+			}
+			cfg := map[string]any{"dir": dir}
+			if v, ok := spec.Config["max_object_bytes"]; ok {
+				cfg["max_object_bytes"] = v
+			}
+			spec.Kind = "storage.fs"
+			spec.Config = cfg
+			changes = append(changes, Change{Block: resource(spec.Name), Kind: kind, Action: ActionReplace,
+				Detail: "storage.s3 would reach a real bucket with the host's credentials; replaced by a storage.fs in the preview temp dir, which starts empty"})
 		case "auth.oidc":
 			cfg := oidcToJWT(spec.Config, spec.Name)
 			spec.Kind = "auth.jwt"

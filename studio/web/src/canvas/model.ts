@@ -703,23 +703,65 @@ export function appendIntentNode(g: IntentGraph, file: string, from: string, typ
   return { ok: true, id, ops: [{ op: "addBlock", file, parent: g.path, type: "node", id, body }] };
 }
 
-/** Splits a simple (or fan-out) connection A -> B into A -> X -> B. */
-export function insertStep(g: ProcessGraph, catalog: Catalog | null | undefined, file: string, edge: ProcessEdge, type: NodeTypeInfo): Result<{ ops: Op[]; id: string }> {
+/** The rewiring that puts step `stepId` on the line A -> B, so it reads A -> X -> B. (The step itself is not added here.) */
+function spliceStepOps(g: ProcessGraph, catalog: Catalog | null | undefined, file: string, edge: ProcessEdge, stepId: string): Result<{ ops: Op[] }> {
   const b = edge.block;
   const shape = edgeShape(edgeInfo(catalog, b.kind));
-  const step = addStep(g, file, type);
-  const ids = new Set([...g.steps.map((s) => s.id), step.id]);
-  const eid = uniqueId(`${step.id}_to_${edge.to}`, g.edgeBlocks.map((e) => e.id));
-  const link: Op = { op: "addBlock", file, parent: g.path, type: "edge", id: eid, body: [`kind simple`, `from ${q(step.id)}`, `to ${q(edge.to)}`].join("\n") };
-  void ids;
+  const eid = uniqueId(`${stepId}_to_${edge.to}`, g.edgeBlocks.map((e) => e.id));
+  const link: Op = { op: "addBlock", file, parent: g.path, type: "edge", id: eid, body: [`kind simple`, `from ${q(stepId)}`, `to ${q(edge.to)}`].join("\n") };
   if (shape === "single") {
-    return { ok: true, id: step.id, ops: [...step.ops, { op: "setField", file, path: childPath(b.path, "to"), value: q(step.id) }, link] };
+    return { ok: true, ops: [{ op: "setField", file, path: childPath(b.path, "to"), value: q(stepId) }, link] };
   }
   if (shape === "forward" && b.targets.editable) {
-    const raws = b.targets.raws.map((r, i) => (b.targets.names[i] === edge.to ? q(step.id) : r));
-    return { ok: true, id: step.id, ops: [...step.ops, { op: "setField", file, path: childPath(b.path, "targets"), value: emitList(raws) }, link] };
+    const raws = b.targets.raws.map((r, i) => (b.targets.names[i] === edge.to ? q(stepId) : r));
+    return { ok: true, ops: [{ op: "setField", file, path: childPath(b.path, "targets"), value: emitList(raws) }, link] };
   }
   return { ok: false, error: "Add a step to this connection from its form: it joins several steps." };
+}
+
+/** Splits a simple (or fan-out) connection A -> B into A -> X -> B. */
+export function insertStep(g: ProcessGraph, catalog: Catalog | null | undefined, file: string, edge: ProcessEdge, type: NodeTypeInfo): Result<{ ops: Op[]; id: string }> {
+  const step = addStep(g, file, type);
+  const r = spliceStepOps(g, catalog, file, edge, step.id);
+  return r.ok ? { ok: true, id: step.id, ops: [...step.ops, ...r.ops] } : r;
+}
+
+/** True for a step nothing leads to and nothing leaves: the kind that can be dropped onto a line. */
+export function isFreeStep(g: ProcessGraph, id: string): boolean {
+  return g.steps.some((s) => s.id === id) && !g.edges.some((e) => e.from === id || e.to === id);
+}
+
+/** Puts a step that is already on the canvas (and joined to nothing) onto a line: A -> B becomes A -> X -> B. */
+export function spliceStep(g: ProcessGraph, catalog: Catalog | null | undefined, file: string, edge: ProcessEdge, stepId: string): Result<{ ops: Op[] }> {
+  if (!isFreeStep(g, stepId)) return { ok: false, error: "Only a step that is not joined to anything yet can be dropped onto a line." };
+  if (edge.from === stepId || edge.to === stepId) return { ok: false, error: "That step is already on this line." };
+  return spliceStepOps(g, catalog, file, edge, stepId);
+}
+
+/** True for a node that needs nothing and whose result nothing uses. */
+export function isFreeIntentNode(g: IntentGraph, id: string): boolean {
+  const n = g.nodes.find((x) => x.id === id);
+  return !!n && n.requires.length === 0 && !g.edges.some((e) => e.from === id || e.to === id);
+}
+
+/** Puts a node that is already on the canvas (and joined to nothing) between a producer and a consumer. */
+export function spliceIntentNode(g: IntentGraph, file: string, edge: Pick<IntentEdge, "from" | "to" | "fact">, nodeId: string): Result<{ ops: Op[] }> {
+  const node = g.nodes.find((n) => n.id === nodeId);
+  const consumer = g.nodes.find((n) => n.id === edge.to);
+  if (!node || !consumer) return { ok: false, error: "Unknown step." };
+  if (nodeId === edge.to || nodeId === edge.from) return { ok: false, error: "That step is already on this line." };
+  if (!isFreeIntentNode(g, nodeId)) return { ok: false, error: "Only a step that is not joined to anything yet can be dropped onto a line." };
+  if (!consumer.editable) return { ok: false, error: `“${consumer.id}” has a Needs list that is an expression; edit it in the form.` };
+  const ops: Op[] = [];
+  let out = node.provides[0];
+  if (!out) {
+    out = uniqueId(factOf(nodeId), g.nodes.flatMap((n) => n.provides));
+    ops.push({ op: "setField", file, path: childPath(node.path, "provides"), value: `[${itemRaw(out)}]` });
+  }
+  ops.push({ op: "setField", file, path: childPath(node.path, "requires"), value: `[${itemRaw(edge.fact)}]` });
+  const raws = consumer.requiresRaw.map((r, i) => (consumer.requires[i] === edge.fact ? itemRaw(out!) : r));
+  ops.push({ op: "setField", file, path: childPath(consumer.path, "requires"), value: emitList(raws) });
+  return { ok: true, ops };
 }
 
 /** Adds a step after `from`, joined by a plain connection. */

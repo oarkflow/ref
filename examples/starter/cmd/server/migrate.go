@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -36,6 +37,7 @@ import (
 // rollback, never force, never seed. Reach for the migrator binary
 // directly for any of those.
 func ensureMigrated(logger *zlog.Logger) error {
+	ctx := context.Background()
 	driver := env("DB_DRIVER", "sqlite")
 	dsn := env("DB_DSN", "file:.data/starter/app.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	// MIGRATIONS_DIR/MIGRATIONS_SEED_DIR override the resolved default —
@@ -54,7 +56,7 @@ func ensureMigrated(logger *zlog.Logger) error {
 		return fmt.Errorf("migration directory %q does not exist (MIGRATIONS_DIR to override)", migrationDir)
 	}
 
-	mgr, historyDriver, err := migrations.NewManager(migrations.Config{
+	mgr, historyDriver, err := migrations.NewManager(ctx, migrations.Config{
 		Driver:       driver,
 		DSN:          dsn,
 		MigrationDir: migrationDir,
@@ -64,7 +66,7 @@ func ensureMigrated(logger *zlog.Logger) error {
 		return fmt.Errorf("connecting to check migrations: %w", err)
 	}
 
-	pending, err := migrations.Pending(mgr, historyDriver)
+	pending, err := migrations.Pending(ctx, mgr, historyDriver)
 	if err != nil {
 		return fmt.Errorf("checking migrations: %w", err)
 	}
@@ -87,7 +89,7 @@ func ensureMigrated(logger *zlog.Logger) error {
 		return fmt.Errorf("%d pending migration(s) (%s) and no terminal to ask — run `go run ./cmd/migrator cli migrate` first, or set AUTO_MIGRATE=true", len(pending), names)
 	}
 
-	if err := migrations.Apply(mgr); err != nil {
+	if err := migrations.Apply(ctx, mgr); err != nil {
 		return fmt.Errorf("applying migrations: %w", err)
 	}
 	logger.Info("migrations applied", zlog.Int("count", len(pending)))
@@ -138,17 +140,18 @@ func migrationDirs() (migrationDir, seedDir string) {
 // starter's schema; unlike ensureMigrated it never asks and never touches the
 // database the process itself serves.
 func migrateSQLite(dsn string) error {
+	ctx := context.Background()
 	migrationDir, seedDir := migrationDirs()
 	if fi, err := os.Stat(migrationDir); err != nil || !fi.IsDir() {
 		return fmt.Errorf("migration directory %q does not exist (MIGRATIONS_DIR to override)", migrationDir)
 	}
-	mgr, _, err := migrations.NewManager(migrations.Config{
+	mgr, _, err := migrations.NewManager(ctx, migrations.Config{
 		Driver: "sqlite", DSN: dsn, MigrationDir: migrationDir, SeedDir: seedDir,
 	})
 	if err != nil {
 		return fmt.Errorf("connecting to the preview database: %w", err)
 	}
-	return migrations.Apply(mgr)
+	return migrations.Apply(ctx, mgr)
 }
 
 func env(key, fallback string) string {

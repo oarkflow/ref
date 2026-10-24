@@ -234,3 +234,45 @@ func TestPreviewOffWithoutOptions(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A request to the preview streams its execution to the draft's event stream:
+// the canvas shows each step of the intent as it starts and finishes.
+func TestPreviewStreamsExecutionTrace(t *testing.T) {
+	e := newEnv(t, withPreview(t, ""))
+	t.Cleanup(func() { e.srv.Close() })
+	id, _ := e.newDraft(tokEditor, "active")
+	stream := e.openStream(id, tokEditor)
+	stream.waitFor("changed", 5*time.Second)
+	br := newBrowser(t, e.ts.URL)
+	if status, st := br.ensure(id); status != 200 || st.Status != "ready" {
+		t.Fatalf("ensure = %d %+v", status, st)
+	}
+	previewEvent(t, stream, "ready")
+
+	if code, _, _ := br.do("GET", "/preview/"+id+"/health", "", nil); code != 200 {
+		t.Fatalf("GET /health: %d", code)
+	}
+	var sawStart, sawEnd, sawDone bool
+	deadline := time.Now().Add(10 * time.Second)
+	for !sawDone && time.Now().Before(deadline) {
+		ev := stream.waitFor("trace", time.Until(deadline))
+		var tr preview.TraceEvent
+		if err := json.Unmarshal([]byte(ev.data), &tr); err != nil {
+			t.Fatalf("trace event %q: %v", ev.data, err)
+		}
+		if tr.Draft != id {
+			t.Fatalf("trace for another draft: %+v", tr)
+		}
+		switch tr.Phase {
+		case "start":
+			sawStart = true
+		case "end":
+			sawEnd = true
+		case "done":
+			sawDone = true
+		}
+	}
+	if !sawStart || !sawEnd || !sawDone {
+		t.Fatalf("trace incomplete: start=%v end=%v done=%v", sawStart, sawEnd, sawDone)
+	}
+}
