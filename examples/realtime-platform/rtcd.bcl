@@ -1,0 +1,29 @@
+# The call service for this demo. Run it with `make rtcd`, or `make run` for
+# both halves. Secrets come from the environment, never from this file.
+
+listen "127.0.0.1:8480"
+
+database { driver "sqlite" dsn "file:.data/rtcd.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)" }
+
+# The audit log gets a database of its own, and every entry is also written to a
+# file you can ship somewhere the database's administrator cannot reach.
+audit { dsn "file:.data/rtcd-audit.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)" file ".data/rtcd-audit.jsonl" }
+
+# The backend services allowed to use the API, each for one tenant. This
+# application is one of them.
+key "realtime-platform" { key env.required("RTCD_API_KEY") tenant "demo" }
+token_secret env.required("RTCD_TOKEN_SECRET")
+
+# Browsers that may open a WebSocket.
+allowed_origins ["http://127.0.0.1:8080", "http://localhost:8080"]
+
+stun_urls ["stun:stun.l.google.com:19302"]
+# turn_urls ["turn:turn.example.com:3478"]
+# turn_secret env.required("TURN_SECRET")
+
+groups { max_owned 50 max_members 100 }
+
+udp_port_min 50000
+udp_port_max 50100
+record_dir ".data/recordings"
+record_layer "highest"

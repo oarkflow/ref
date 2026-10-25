@@ -1,50 +1,44 @@
 # Audio and video calls
 
-`contrib/rtc` adds calls to the `ref` command (`rtc.Register()`), for **peer-to-peer** calls between two people and **group** calls through a Pion **SFU**.
+Calls are run by **rtcd**, a standalone service in its own repository, [oarkflow/rtcd](https://github.com/oarkflow/rtcd): call state, signaling, the Pion SFU, recording and end-to-end encryption. It knows nothing about REF; any backend can use it. REF talks to it through `contrib/rtc` (`rtc.Register()`), which adds one resource and the `call.*` nodes, and depends on it as an ordinary Go module (`github.com/oarkflow/rtcd`).
+
+```
+ browser ──token──▶ rtcd ◀──service key── your backend (REF app)
+    │                 │
+    └── events, SFU signaling, key exchange, media go straight to rtcd
+```
+
+Your application signs users in and gives each one a short-lived token (`call.token`), with the scopes you choose. The browser then keeps a WebSocket to rtcd and does everything over it, so none of the event, signaling or media traffic passes through the application. If you want your application to control who may call whom, mint tokens without the `calls` scope and place calls from the backend with the `call.start` node instead.
 
 ```bcl
 resource "calls" {
-  kind "rtc.calls"
+  kind "rtc.service"
   config {
-    database "db"  hub "live"
-    stun_urls ["stun:stun.l.google.com:19302"]
-    turn_urls ["turn:turn.example.com:3478"]
-    turn_secret env.required("TURN_SECRET")     # coturn use-auth-secret
+    url     env("RTCD_URL", "http://127.0.0.1:8480")
+    api_key env.required("RTCD_API_KEY")        # this application's service key
   }
 }
-resource "sfu" { kind "rtc.sfu"  config { hub "live" calls "calls" udp_port_min 50000 udp_port_max 50100 } }
 ```
-
-Call state lives in SQL, so any node can answer for any call. A signed-in user only: every node needs a principal.
 
 ## Nodes
 
-`call.start` (`to`, `kind` audio|video, `mode` p2p|sfu) · `call.answer` · `call.decline` · `call.end` · `call.get` · `call.signal` · `call.ice_servers`.
+`call.start` (`to`, `kind` audio|video, `mode` p2p|sfu) · `call.answer` · `call.decline` · `call.end` · `call.get` · `call.signal` · `call.e2ee` · `call.ice_servers` · `call.token`. They act as the signed-in user; a node with no principal is refused. rtcd's tenant is the one the service key belongs to; the application's own tenant is not sent. A browser normally needs only `call.token`: with the token it does the rest itself.
 
-Starting a call rings each invitee with a `call.incoming` event on their private topic. A call that rings longer than `ring_timeout` (45 s) is *missed*; it expires when next touched, and `Store.Sweep` ends stale ones for callers who never look again.
+## Running it
 
-## p2p (mode `p2p`, exactly two people)
+The service is a separate program with its own repository. Build it from a checkout (not `go install`: its `go.mod` replaces `pion/ice` with a fork, and Go refuses to install a module that has a `replace`):
 
-Media flows directly between the browsers. The server only relays signaling: `call.signal` with `type` offer, answer, candidate, renegotiate, mute or unmute. The sender is stamped by the server, the payload (≤ 16 KiB) is opaque, and only participants can send to participants. The caller may send an offer while the call still rings; the callee cannot signal before answering. A browser client is in `examples/realtime-platform/static/index.html`; it does both p2p (the *Video call* button in a DM) and group calls (the *Group call* button in a channel).
+```
+git clone git@github.com:oarkflow/rtcd.git && cd rtcd
+go build -o rtcd ./cmd/rtcd
+./rtcd -config rtcd.bcl        # see the config in the rtcd README
+```
 
-## Group calls (mode `sfu`)
+`examples/realtime-platform` runs both halves (`make run`; it expects the checkout next to this repository, or `RTCD_DIR=/path/to/rtcd`) and has a complete `rtcd.bcl`. It is also a working browser client: `static/index.html` keeps one WebSocket to the service and does everything over it.
 
-Each participant sends their media to the server once; the server forwards it to the others. After `call.answer`, a participant talks to the SFU over HTTP:
+## More
 
-| | |
-|---|---|
-| `POST /rtc/sfu/{call}/join` `{sdp}` | the first offer → `{type:"answer", sdp}` |
-| `POST /rtc/sfu/{call}/answer` `{sdp}` | answer to a server offer |
-| `POST /rtc/sfu/{call}/candidate` | a client ICE candidate |
-| `POST /rtc/sfu/{call}/leave` | leave the room |
+Everything about how a call works is documented with the service, in the rtcd repository:
 
-The server answers back as hub events on the user's private topic: `sfu.offer` `{call_id, type, sdp}` (the room's tracks changed: answer it) and `sfu.candidate`. The demo page shows one tile per remote stream. A forwarded track's stream id is the publisher's user id, set by the server, so a publisher cannot pose as someone else.
-
-Authentication is the hub's (the same cookie or key as the sockets); requests need `Content-Type: application/json`, which keeps another site from driving a signed-in browser into a call.
-
-## Operating it
-
-- **One room lives on one node.** Media cannot be split across nodes without cascading SFUs. In a cluster, route every request for a call to one node (hash the call id at the load balancer). Call state and signaling are shared via SQL and the hub backplane regardless.
-- Open the UDP range (`udp_port_min`–`max`) in the firewall; behind static NAT set `public_ips`.
-- **TURN:** `rtc.calls` refuses `turn_urls` without a `turn_secret`. Clients get a credential that expires (`turn_ttl`, default 1 h), derived by HMAC from the secret; the secret is never sent.
-- Limits: `max_peers` (50) per room, `max_rooms` (1000), `max_invitees` (20). Bandwidth estimation, simulcast and recording are not implemented: it forwards what it receives.
+- [README](https://github.com/oarkflow/rtcd): the API (operations and events), groups, the audit log, performance, configuration, ICE restarts.
+- [docs/calls.md](https://github.com/oarkflow/rtcd/blob/main/docs/calls.md): the call model, group calls and their operations, simulcast, network changes, operating notes, and the end-to-end encryption design and its limits.

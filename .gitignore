@@ -9,3 +9,5 @@ examples/medical-coding-platform/migrator
 examples/medical-coding-platform/server
 *.apkg
 __pycache__
+rtcd/server.test
+cmd/ref/ref

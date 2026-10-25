@@ -17,12 +17,12 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/pgx/v5 v5.11.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.3 // indirect
-	github.com/klauspost/compress v1.20.0 // indirect
+	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/oarkflow/authz v0.0.6 // indirect
 	github.com/oarkflow/bcl v0.0.37 // indirect
-	github.com/oarkflow/broker v0.0.0 // indirect
+	github.com/oarkflow/broker v0.0.1 // indirect
 	github.com/oarkflow/config v0.0.1 // indirect
 	github.com/oarkflow/convert v0.0.6 // indirect
 	github.com/oarkflow/fh v0.0.27 // indirect
@@ -30,34 +30,18 @@ require (
 	github.com/oarkflow/ip v0.0.11 // indirect
 	github.com/oarkflow/phone v0.0.7 // indirect
 	github.com/oarkflow/pkg v0.1.47 // indirect
+	github.com/oarkflow/rtcd v0.0.1 // indirect
 	github.com/oarkflow/rules v0.0.5 // indirect
-	github.com/oarkflow/smppflow v0.0.0-00010101000000-000000000000 // indirect
+	github.com/oarkflow/smppflow v0.0.1 // indirect
 	github.com/oarkflow/spl v0.0.10 // indirect
 	github.com/oarkflow/tcpguard v0.0.16 // indirect
 	github.com/oarkflow/template v0.0.4 // indirect
 	github.com/oarkflow/wuid v0.0.1 // indirect
 	github.com/oarkflow/zlog v0.0.4 // indirect
-	github.com/pierrec/lz4/v4 v4.1.29 // indirect
-	github.com/pion/datachannel v1.6.3 // indirect
-	github.com/pion/dtls/v3 v3.1.15 // indirect
-	github.com/pion/ice/v4 v4.4.8 // indirect
-	github.com/pion/interceptor v0.1.51 // indirect
-	github.com/pion/logging v0.2.4 // indirect
-	github.com/pion/mdns/v2 v2.2.2 // indirect
-	github.com/pion/randutil v0.1.0 // indirect
-	github.com/pion/rtcp v1.2.20 // indirect
-	github.com/pion/rtp v1.10.6 // indirect
-	github.com/pion/sctp v1.12.0 // indirect
-	github.com/pion/sdp/v3 v3.0.20 // indirect
-	github.com/pion/srtp/v3 v3.1.3 // indirect
-	github.com/pion/stun/v4 v4.0.1 // indirect
-	github.com/pion/transport/v5 v5.1.1 // indirect
-	github.com/pion/turn/v5 v5.1.2 // indirect
-	github.com/pion/webrtc/v4 v4.2.25 // indirect
+	github.com/pierrec/lz4/v4 v4.1.33 // indirect
 	github.com/redis/go-redis/v9 v9.23.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
-	github.com/wlynxg/anet v0.0.5 // indirect
 	go.etcd.io/raft/v3 v3.7.0 // indirect
 	go.uber.org/atomic v1.12.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
@@ -65,9 +49,8 @@ require (
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
-	golang.org/x/time v0.14.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
-	google.golang.org/grpc v1.83.2 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261012220534-4341edf3f941 // indirect
+	google.golang.org/grpc v1.84.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	modernc.org/libc v1.79.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
@@ -78,9 +61,7 @@ require (
 // interpreter's Windows fix (v0.0.15) and zlog's (v0.0.4) are both published
 // upstream now; no local replace is needed for either.
 replace (
-	github.com/oarkflow/broker => ../../../broker
 	github.com/oarkflow/ref => ../..
 	github.com/oarkflow/ref/contrib/messaging => ../../contrib/messaging
 	github.com/oarkflow/ref/contrib/rtc => ../../contrib/rtc
-	github.com/oarkflow/smppflow => ../../../smppflow
 )

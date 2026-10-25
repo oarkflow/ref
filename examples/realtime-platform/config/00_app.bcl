@@ -94,20 +94,17 @@ resource "chat" {
   config { database "db" hub "live" }
 }
 
+# Calls run in a separate call service (rtcd, github.com/oarkflow/rtcd). This application
+# signs users in and gives each one a short-lived token; the user's browser then
+# keeps a WebSocket to the call service and does everything over it. The service
+# key stays on the server. (The other call.* nodes, call.start, call.answer and
+# so on, are there for a backend that wants to place calls itself.)
 resource "calls" {
-  kind "rtc.calls"
+  kind "rtc.service"
   config {
-    database "db"
-    hub "live"
-    stun_urls ["stun:stun.l.google.com:19302"]
-    # turn_urls ["turn:turn.example.com:3478"]   # needed behind strict NATs
-    # turn_secret env.required("TURN_SECRET")
+    url        env("RTCD_URL", "http://127.0.0.1:8480")
+    api_key    env.required("RTCD_API_KEY")
   }
-}
-
-resource "sfu" {
-  kind "rtc.sfu"
-  config { hub "live" calls "calls" udp_port_min 50000 udp_port_max 50100 }
 }
 
 # ---- Sign in (demo) --------------------------------------------------------
@@ -218,29 +215,9 @@ intent "chat.export" {
 
 # ---- Calls -----------------------------------------------------------------
 
-intent "call.start" {
+intent "call.token" {
   response "r"
-  node "r" { uses "call.start" resource "calls" kind effect requires [input] provides [r] config { to_fact "input.to" kind_fact "input.kind" mode_fact "input.mode" } }
-}
-intent "call.answer" {
-  response "r"
-  node "r" { uses "call.answer" resource "calls" kind effect requires [input] provides [r] config { call_fact "input.call" } }
-}
-intent "call.decline" {
-  response "r"
-  node "r" { uses "call.decline" resource "calls" kind effect requires [input] provides [r] config { call_fact "input.call" } }
-}
-intent "call.end" {
-  response "r"
-  node "r" { uses "call.end" resource "calls" kind effect requires [input] provides [r] config { call_fact "input.call" } }
-}
-intent "call.signal" {
-  response "r"
-  node "r" { uses "call.signal" resource "calls" kind effect requires [input] provides [r] config { call_fact "input.call" to_fact "input.to" type_fact "input.type" data_fact "input.data" } }
-}
-intent "call.ice" {
-  response "r"
-  node "r" { uses "call.ice_servers" resource "calls" kind read provides [r] }
+  node "r" { uses "call.token" resource "calls" kind effect requires [input] provides [r] }
 }
 
 # ---- Operations ------------------------------------------------------------
@@ -271,12 +248,7 @@ route "chat.members"  { method POST path "/api/members"   intent "chat.members" 
 route "chat.presence" { method POST path "/api/presence"  intent "chat.presence" session "sessions" auth "who" }
 route "chat.export"   { method POST path "/api/export"    intent "chat.export"   session "sessions" auth "who" }
 
-route "call.start"   { method POST path "/api/call/start"   intent "call.start"   session "sessions" auth "who" }
-route "call.answer"  { method POST path "/api/call/answer"  intent "call.answer"  session "sessions" auth "who" }
-route "call.decline" { method POST path "/api/call/decline" intent "call.decline" session "sessions" auth "who" }
-route "call.end"     { method POST path "/api/call/end"     intent "call.end"     session "sessions" auth "who" }
-route "call.signal"  { method POST path "/api/call/signal"  intent "call.signal"  session "sessions" auth "who" max_body_bytes 20000 }
-route "call.ice"     { method GET  path "/api/call/ice"     intent "call.ice"     session "sessions" auth "who" }
+route "call.token"   { method POST path "/api/call/token"   intent "call.token"   session "sessions" auth "who" }
 
 route "ops.logs"  { method POST path "/api/ops/logs"  intent "ops.logs"  auth "ops_keys" authz { roles ["admin"] } }
 route "ops.stats" { method GET  path "/api/ops/stats" intent "ops.stats" auth "ops_keys" authz { roles ["admin"] } }
