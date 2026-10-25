@@ -16,6 +16,9 @@ package platform
 
 func registerBuiltinResources(r *Registry) {
 	registerCacheResources(r)
+	registerRealtimeResources(r)
+	registerChatResources(r)
+	registerLogResources(r)
 	registerSessionResources(r)
 	registerDatabaseResources(r)
 	registerQueueResources(r)

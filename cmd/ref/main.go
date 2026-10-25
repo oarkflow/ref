@@ -7,7 +7,7 @@
 //
 // It carries every driver in this repository, including the messaging ones in
 // contrib/messaging (queue.broker, service.smpp, smpp.submit and the sandbox
-// stand-ins).
+// stand-ins) and the calls drivers in contrib/rtc (rtc.calls, rtc.sfu, call.*).
 package main
 
 import (
@@ -18,6 +18,7 @@ import (
 
 	"github.com/oarkflow/ref/contrib/aegis"
 	"github.com/oarkflow/ref/contrib/messaging"
+	"github.com/oarkflow/ref/contrib/rtc"
 	"github.com/oarkflow/ref/serve"
 )
 
@@ -33,6 +34,7 @@ func main() {
 		os.Exit(2)
 	}
 	messaging.Register()
+	rtc.Register()
 	aegis.Register()
 	if err := serve.Run(context.Background(), serve.Options{Dir: flag.Arg(0), Addr: *addr, Env: *env}); err != nil {
 		fmt.Fprintln(os.Stderr, "ref:", err)

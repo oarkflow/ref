@@ -504,3 +504,16 @@ func (g *grantStore) consume(token, principal, binding string) bool {
 type appInstaller interface {
 	install(app *fh.App) error
 }
+
+// AppMounter is the exported form of appInstaller, for a resource in another
+// module (contrib/rtc's SFU) that serves its own endpoints. Platform.Mount calls
+// MountApp after the middleware resources and before the routes.
+type AppMounter interface {
+	MountApp(app *fh.App) error
+}
+
+// platformBinder is a resource that needs the platform itself once it is
+// built, to dispatch intents. Platform.Mount calls bind before install.
+type platformBinder interface {
+	bind(p *Platform)
+}

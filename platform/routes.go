@@ -374,8 +374,16 @@ func (p *Platform) Mount(app *fh.App) error {
 	// static files, so fetching an asset never starts a session, and before the
 	// routes they protect.
 	for _, r := range p.resources {
+		if b, ok := r.(platformBinder); ok {
+			b.bind(p)
+		}
 		if in, ok := r.(appInstaller); ok {
 			if err := in.install(app); err != nil {
+				return err
+			}
+		}
+		if m, ok := r.(AppMounter); ok {
+			if err := m.MountApp(app); err != nil {
 				return err
 			}
 		}

@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Realtime Platform</title>
+<style>
+  :root { --bg:#fff; --fg:#1b1f24; --muted:#6b7280; --line:#e5e7eb; --accent:#2563eb; --mine:#dbeafe; --panel:#f8fafc; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1115; --fg:#e6e8eb; --muted:#9aa3af; --line:#272b33; --accent:#60a5fa; --mine:#1e3a5f; --panel:#161a20; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--fg); height:100vh; display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; gap:.75rem; padding:.6rem 1rem; border-bottom:1px solid var(--line); }
+  header h1 { font-size:1rem; margin:0; flex:1; }
+  .dot { width:.6rem; height:.6rem; border-radius:50%; background:#9ca3af; display:inline-block; }
+  .dot.on { background:#22c55e; }
+  main { flex:1; display:flex; min-height:0; }
+  aside { width:260px; border-right:1px solid var(--line); background:var(--panel); overflow:auto; padding:.5rem; }
+  aside h2 { font-size:.75rem; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:.75rem .5rem .25rem; }
+  .item { display:flex; justify-content:space-between; gap:.5rem; width:100%; text-align:left; padding:.45rem .6rem; border:0; background:none; color:inherit; border-radius:.4rem; font:inherit; cursor:pointer; }
+  .item:hover, .item.sel { background:var(--line); }
+  .badge { background:var(--accent); color:#fff; border-radius:1rem; padding:0 .45rem; font-size:.75rem; }
+  section { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #msgs { flex:1; overflow:auto; padding:1rem; display:flex; flex-direction:column; gap:.4rem; }
+  .m { max-width:70%; padding:.4rem .7rem; border-radius:.7rem; background:var(--panel); border:1px solid var(--line); overflow-wrap:anywhere; white-space:pre-wrap; }
+  .m.me { align-self:flex-end; background:var(--mine); }
+  .m small { display:block; color:var(--muted); font-size:.72rem; }
+  #bar { padding:.25rem 1rem; color:var(--muted); min-height:1.6rem; font-size:.85rem; }
+  form.send { display:flex; gap:.5rem; padding:.6rem 1rem; border-top:1px solid var(--line); }
+  input, button.btn { font:inherit; padding:.5rem .7rem; border-radius:.4rem; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
+  form.send input { flex:1; }
+  button.btn { cursor:pointer; background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.btn.alt { background:var(--bg); color:var(--fg); border-color:var(--line); }
+  #login { margin:auto; display:flex; flex-direction:column; gap:.6rem; width:min(320px, 90vw); }
+  #call { display:none; position:fixed; right:1rem; bottom:1rem; background:var(--panel); border:1px solid var(--line); border-radius:.6rem; padding:.6rem; width:min(520px, 94vw); }
+  #call video { width:100%; border-radius:.4rem; background:#000; }
+  #tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:.4rem; margin-top:.4rem; }
+  #tiles figure { margin:0; position:relative; } #tiles figcaption { position:absolute; left:.4rem; bottom:.3rem; color:#fff; font-size:.75rem; text-shadow:0 0 3px #000; }
+  #call .row { display:flex; gap:.5rem; align-items:center; }
+  .hidden { display:none !important; }
+  @media (max-width: 640px) { aside { width:100px; } .m { max-width:92%; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Realtime Platform <span class="dot" id="conn" title="connection"></span></h1>
+  <span id="who"></span>
+  <a class="item" style="width:auto" href="#" id="export">Export CSV</a>
+</header>
+
+<div id="login">
+  <strong>Demo sign in</strong>
+  <select id="user" class="btn alt"><option>ada</option><option>bob</option><option>cy</option></select>
+  <input id="pw" type="password" placeholder="demo password" autocomplete="current-password">
+  <button class="btn" id="go">Sign in</button>
+  <span id="err" style="color:#dc2626"></span>
+</div>
+
+<main class="hidden" id="app">
+  <aside>
+    <h2>Direct messages</h2><div id="people"></div>
+    <h2>Channels</h2><div id="chans"></div>
+    <button class="item" id="newch">+ New channel</button>
+  </aside>
+  <section>
+    <div id="title" style="padding:.6rem 1rem;border-bottom:1px solid var(--line);display:flex;gap:.5rem;align-items:center">
+      <strong id="ctitle">Pick a conversation</strong><span id="online" style="color:var(--muted);flex:1"></span>
+      <button class="btn alt hidden" id="callbtn">Video call</button>
+      <button class="btn alt hidden" id="groupbtn">Group call</button>
+    </div>
+    <div id="msgs"></div>
+    <div id="bar"></div>
+    <form class="send" id="form"><input id="text" placeholder="Message" autocomplete="off" maxlength="2000" disabled><button class="btn" disabled>Send</button></form>
+  </section>
+</main>
+
+<div id="call">
+  <div class="row"><strong id="cstate" style="flex:1"></strong>
+    <button class="btn" id="accept">Accept</button><button class="btn alt" id="decline">Decline</button><button class="btn alt" id="hangup">Hang up</button></div>
+  <div id="tiles"></div>
+  <video id="local" autoplay playsinline muted style="width:35%"></video>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const PEOPLE = ["ada", "bob", "cy"];
+let me = "", ws = null, chans = [], cur = null, online = {}, typing = {}, lastTyped = 0, call = null;
+
+async function api(path, body, method) {
+  const r = await fetch(path, { method: method || (body === undefined ? "GET" : "POST"), credentials: "same-origin",
+    headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error((j.error && (j.error.message || j.error.code)) || r.status);
+  return j;
+}
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const chanName = c => c.kind === "dm" ? (c.members || []).find(m => m !== me) || "direct message" : c.name;
+
+$("go").onclick = async () => {
+  $("err").textContent = "";
+  try { await api("/api/login", { user: $("user").value, password: $("pw").value }); me = $("user").value; start(); }
+  catch (e) { $("err").textContent = e.message; }
+};
+
+async function start() {
+  $("login").classList.add("hidden"); $("app").classList.remove("hidden"); $("who").textContent = me;
+  connect();
+  const people = $("people"); people.replaceChildren();
+  PEOPLE.filter(p => p !== me).forEach(p => {
+    const b = el("button", "item", p); b.onclick = async () => { const c = await api("/api/dm", { user: p }); await refresh(c.id); }; people.append(b);
+  });
+  await refresh();
+}
+
+async function refresh(open) {
+  chans = (await api("/api/channels")).channels;
+  for (const c of chans) { c.members = (await api("/api/members", { channel: c.id })).members; subscribe(c.id); }
+  const list = $("chans"); list.replaceChildren();
+  chans.filter(c => c.kind !== "dm").forEach(c => list.append(row(c)));
+  const people = $("people");
+  [...people.children].forEach(b => { b.querySelector(".badge")?.remove();
+    const dm = chans.find(c => c.kind === "dm" && (c.members || []).includes(b.firstChild.textContent));
+    if (dm && dm.unread) b.append(el("span", "badge", dm.unread));
+    b.classList.toggle("sel", !!dm && cur === dm.id); b.onclick = async () => { const c = await api("/api/dm", { user: b.firstChild.textContent }); await refresh(c.id); }; });
+  if (open) await openChan(open);
+}
+function row(c) {
+  const b = el("button", "item" + (cur === c.id ? " sel" : ""), chanName(c));
+  if (c.unread) b.append(el("span", "badge", c.unread));
+  b.onclick = () => openChan(c.id); return b;
+}
+
+async function openChan(id) {
+  cur = id; const c = chans.find(x => x.id === id);
+  $("ctitle").textContent = chanName(c); $("callbtn").classList.toggle("hidden", c.kind !== "dm"); $("groupbtn").classList.toggle("hidden", c.kind === "dm");
+  $("text").disabled = false; $("form").querySelector("button").disabled = false;
+  $("msgs").replaceChildren();
+  (await api("/api/history", { channel: id, limit: 100 })).messages.forEach(add);
+  await api("/api/read", { channel: id }).catch(() => {});
+  c.unread = 0; showOnline(); await refreshList();
+}
+async function refreshList() {
+  const fresh = (await api("/api/channels")).channels;
+  fresh.forEach(f => { const o = chans.find(c => c.id === f.id); if (o) o.unread = f.unread; });
+  const list = $("chans"); list.replaceChildren(); chans.filter(c => c.kind !== "dm").forEach(c => list.append(row(c)));
+  [...$("people").children].forEach(b => { b.querySelector(".badge")?.remove();
+    const dm = chans.find(c => c.kind === "dm" && (c.members || []).includes(b.firstChild.textContent));
+    if (dm && dm.unread) b.append(el("span", "badge", dm.unread)); b.classList.toggle("sel", !!dm && cur === dm.id); });
+}
+function add(m) {
+  const d = el("div", "m" + (m.sender === me ? " me" : "")); d.append(el("small", "", m.sender + " · " + new Date(m.created_at).toLocaleTimeString()));
+  d.append(document.createTextNode(m.body)); const box = $("msgs"); box.append(d); box.scrollTop = box.scrollHeight;
+}
+
+$("form").onsubmit = async e => {
+  e.preventDefault(); const body = $("text").value.trim(); if (!body || !cur) return; $("text").value = "";
+  try { await api("/api/send", { channel: cur, body }); } catch (err) { $("bar").textContent = err.message; }
+};
+$("text").oninput = () => { if (cur && Date.now() - lastTyped > 2000) { lastTyped = Date.now(); api("/api/typing", { channel: cur }).catch(() => {}); } };
+$("newch").onclick = async () => { const name = prompt("Channel name"); if (!name) return;
+  const members = (prompt("Members (comma separated)", PEOPLE.filter(p => p !== me).join(",")) || "").split(",").map(s => s.trim()).filter(Boolean);
+  const c = await api("/api/channels", { name, members }); await refresh(c.id); };
+$("export").onclick = async e => { e.preventDefault(); if (!cur) return;
+  const r = await fetch("/api/export", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ channel: cur, format: "csv" }) });
+  const a = el("a"); a.href = URL.createObjectURL(await r.blob()); a.download = "chat-export.csv"; a.click(); };
+
+// ---- realtime ------------------------------------------------------------
+function connect() {
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/realtime/ws");
+  ws.onopen = () => { $("conn").classList.add("on"); chans.forEach(c => subscribe(c.id)); };
+  ws.onclose = () => { $("conn").classList.remove("on"); setTimeout(() => me && connect(), 1500); };
+  ws.onmessage = ev => { let f; try { f = JSON.parse(ev.data); } catch { return; } frame(f); };
+}
+function subscribe(id) { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ op: "subscribe", topic: "chat:" + id, track: true })); }
+function frame(f) {
+  if (f.type === "reply" && f.present) return setOnline(f);
+  if (f.type === "presence") { const id = f.topic.slice(5); online[id] = online[id] || new Set(); f.action === "join" ? online[id].add(f.user) : online[id].delete(f.user); showOnline(); return; }
+  if (f.type !== "message") return;
+  const d = f.data ? JSON.parse(typeof f.data === "string" ? f.data : JSON.stringify(f.data)) : {};
+  if (f.topic.startsWith("chat:")) {
+    const id = f.topic.slice(5);
+    if (f.event === "message") { if (id === cur) { add(d); api("/api/read", { channel: id }).catch(() => {}); } refreshList(); }
+    else if (f.event === "typing" && id === cur && d.user !== me) { typing[d.user] = Date.now(); showTyping(); setTimeout(showTyping, 3200); }
+    else if (f.event === "receipt" && id === cur && d.user !== me) { $("bar").textContent = d.user + " read up to #" + d.seq; }
+    else if (f.event.startsWith("member.")) refresh(cur);
+  } else if (f.topic === "user:" + me) callEvent(f.event, d);
+}
+function setOnline(f) { const id = (f.topic || "").slice(5); online[id] = new Set((f.present || []).map(p => p.user)); showOnline(); }
+function showOnline() { const s = online[cur]; $("online").textContent = s && s.size ? "online: " + [...s].join(", ") : ""; }
+function showTyping() { const who = Object.keys(typing).filter(u => Date.now() - typing[u] < 3000); $("bar").textContent = who.length ? who.join(", ") + " typing…" : ""; }
+
+// ---- p2p video call --------------------------------------------------------
+const pcCfg = ice => ({ iceServers: (ice || []).map(s => ({ urls: s.urls, username: s.username, credential: s.credential })) });
+function callUI(state, ringing) { $("call").style.display = state ? "block" : "none"; $("cstate").textContent = state || "";
+  $("accept").classList.toggle("hidden", !ringing); $("decline").classList.toggle("hidden", !ringing); $("hangup").classList.toggle("hidden", ringing); }
+async function media() { const s = await navigator.mediaDevices.getUserMedia({ audio: true, video: true }); $("local").srcObject = s; return s; }
+function peer(peerUser, ice, stream) {
+  const pc = new RTCPeerConnection(pcCfg(ice)); stream.getTracks().forEach(t => pc.addTrack(t, stream));
+  pc.ontrack = e => addTile(e.streams[0]);
+  pc.onicecandidate = e => { if (e.candidate) signal(peerUser, "candidate", e.candidate.toJSON()); };
+  return pc;
+}
+// One tile per remote stream. In a group call the SFU names each stream after
+// the user who publishes it, so the label cannot be forged by the publisher.
+function addTile(stream) {
+  if (!stream || document.getElementById("t-" + stream.id)) return;
+  const fig = el("figure"); fig.id = "t-" + stream.id;
+  const v = el("video"); v.autoplay = true; v.playsInline = true; v.srcObject = stream;
+  fig.append(v, el("figcaption", "", stream.id));
+  $("tiles").append(fig);
+  stream.onremovetrack = () => { if (!stream.getTracks().length) fig.remove(); };
+}
+const signal = (to, type, data) => api("/api/call/signal", { call: call.id, to, type, data }).catch(() => {});
+$("callbtn").onclick = async () => {
+  const c = chans.find(x => x.id === cur); const other = (c.members || []).find(m => m !== me); if (!other || call) return;
+  const r = await api("/api/call/start", { to: [other], kind: "video", mode: "p2p" });
+  call = { id: r.call.id, peer: other, mode: "p2p", queue: [] }; callUI("Calling " + other + "…", false);
+  const stream = await media(); call.pc = peer(other, r.ice, stream);
+  const offer = await call.pc.createOffer(); await call.pc.setLocalDescription(offer); await signal(other, "offer", { sdp: offer.sdp });
+};
+$("groupbtn").onclick = async () => {
+  const c = chans.find(x => x.id === cur); const others = (c.members || []).filter(m => m !== me); if (!others.length || call) return;
+  const r = await api("/api/call/start", { to: others, kind: "video", mode: "sfu" });
+  call = { id: r.call.id, mode: "sfu", queue: [] }; callUI("Group call: waiting for others…", false);
+  await joinSfu(r.ice);
+};
+const sfu = (action, body) => api("/rtc/sfu/" + call.id + "/" + action, body);
+async function joinSfu(ice) {
+  const stream = await media(); const pc = new RTCPeerConnection(pcCfg(ice)); call.pc = pc; call.joined = false; call.cands = [];
+  stream.getTracks().forEach(t => pc.addTrack(t, stream));
+  pc.ontrack = e => addTile(e.streams[0]);
+  pc.onicecandidate = e => { if (!e.candidate) return; const c = e.candidate.toJSON();
+    if (call && call.joined) sfu("candidate", c).catch(() => {}); else call.cands.push(c); };
+  const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
+  const ans = await sfu("join", { sdp: offer.sdp });
+  await pc.setRemoteDescription({ type: "answer", sdp: ans.sdp });
+  call.joined = true; for (const c of call.cands.splice(0)) sfu("candidate", c).catch(() => {});
+  for (const c of call.remoteCands || []) await pc.addIceCandidate(c).catch(() => {}); call.remoteCands = [];
+  callUI("In group call", false);
+}
+// The server renegotiates whenever someone joins or leaves: answer its offer.
+async function sfuOffer(d) {
+  const pc = call.pc; await pc.setRemoteDescription({ type: "offer", sdp: d.sdp });
+  const a = await pc.createAnswer(); await pc.setLocalDescription(a); await sfu("answer", { sdp: a.sdp });
+  for (const c of call.remoteCands || []) await pc.addIceCandidate(c).catch(() => {}); call.remoteCands = [];
+}
+async function sfuCandidate(d) {
+  if (call.pc && call.pc.remoteDescription) await call.pc.addIceCandidate(d.candidate).catch(() => {});
+  else (call.remoteCands = call.remoteCands || []).push(d.candidate);
+}
+async function callEvent(event, d) {
+  if (event === "call.incoming") { if (call) { api("/api/call/decline", { call: d.call.id }).catch(() => {}); return; }
+    call = { id: d.call.id, peer: d.call.initiator, mode: d.call.mode, ice: d.ice, queue: [] };
+    callUI(d.call.initiator + (d.call.mode === "sfu" ? " started a group call…" : " is calling…"), true); }
+  else if (event === "sfu.offer" && call && d.call_id === call.id) await sfuOffer(d);
+  else if (event === "sfu.candidate" && call && d.call_id === call.id) await sfuCandidate(d);
+  else if (event === "call.signal" && call && d.call_id === call.id) {
+    if (!call.pc) { call.queue.push(d); return; } await handleSignal(d); }
+  else if (event === "call.answered" && call && d.call_id === call.id) callUI("Connected", false);
+  else if (event === "call.ended" || event === "call.declined") { if (call && (d.call_id === call.id)) hangup(false); }
+}
+async function handleSignal(d) {
+  const pc = call.pc;
+  if (d.type === "offer") { await pc.setRemoteDescription({ type: "offer", sdp: d.data.sdp }); const a = await pc.createAnswer(); await pc.setLocalDescription(a); await signal(call.peer, "answer", { sdp: a.sdp }); await drain(); }
+  else if (d.type === "answer") { await pc.setRemoteDescription({ type: "answer", sdp: d.data.sdp }); await drain(); }
+  else if (d.type === "candidate") { if (pc.remoteDescription) await pc.addIceCandidate(d.data).catch(() => {}); else (call.pending = call.pending || []).push(d.data); }
+}
+async function drain() { for (const c of call.pending || []) await call.pc.addIceCandidate(c).catch(() => {}); call.pending = []; }
+$("accept").onclick = async () => {
+  const r = await api("/api/call/answer", { call: call.id });
+  if (call.mode === "sfu") { await joinSfu(r.ice); return; }
+  const stream = await media(); call.pc = peer(call.peer, r.ice, stream);
+  callUI("Connected", false); for (const d of call.queue.splice(0)) await handleSignal(d);
+};
+$("decline").onclick = async () => { await api("/api/call/decline", { call: call.id }).catch(() => {}); hangup(false); };
+$("hangup").onclick = () => hangup(true);
+function hangup(tell) {
+  if (!call) return; if (tell) { if (call.mode === "sfu") sfu("leave", {}).catch(() => {}); api("/api/call/end", { call: call.id }).catch(() => {}); }
+  call.pc && call.pc.close(); const lv = $("local"); lv.srcObject && lv.srcObject.getTracks().forEach(t => t.stop()); lv.srcObject = null;
+  $("tiles").replaceChildren();
+  call = null; callUI(null);
+}
+</script>
+</body>
+</html>

@@ -77,6 +77,9 @@ var kindPolicy = map[string]Action{
 	"database.sql": ActionRewrite,
 	"cache.file":   ActionRewrite, "queue.file": ActionRewrite, "session.file": ActionRewrite,
 	"storage.fs": ActionRewrite, "secret.file": ActionRewrite,
+	// single node: a redis backplane would reach a real server
+	"realtime.hub": ActionRewrite, "chat.store": ActionKeep,
+	"log.memory": ActionKeep, "log.sql": ActionKeep, "log.tee": ActionKeep, "log.file": ActionRewrite,
 	// replaced
 	"secret.env": ActionReplace,
 	"auth.oidc":  ActionReplace,
@@ -156,6 +159,27 @@ func Sandbox(doc *platform.Document, opts SandboxOptions) ([]Change, error) {
 			if kind == "secret.file" {
 				detail = "reads an empty directory; no host secrets"
 			}
+			changes = append(changes, Change{Block: resource(spec.Name), Kind: kind, Action: ActionRewrite, Detail: detail})
+		case "log.file":
+			cfg := cloneConfig(spec.Config)
+			dir := filepath.Join(opts.Root, "log-file", slug(spec.Name))
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				return nil, err
+			}
+			cfg["path"] = filepath.Join(dir, "app.log")
+			spec.Config = cfg
+			changes = append(changes, Change{Block: resource(spec.Name), Kind: kind, Action: ActionRewrite, Detail: "path moved into the preview temp dir"})
+		case "realtime.hub":
+			cfg := cloneConfig(spec.Config)
+			detail := "kept; connections stay in this process"
+			if mode := fmt.Sprint(cfg["backplane"]); mode == "redis" {
+				detail = "redis backplane -> none; a preview must not reach a real Redis, so it is a single node"
+			}
+			cfg["backplane"] = "none"
+			for _, k := range []string{"redis_url", "redis_addr", "redis_password", "redis_db", "redis_channel"} {
+				delete(cfg, k)
+			}
+			spec.Config = cfg
 			changes = append(changes, Change{Block: resource(spec.Name), Kind: kind, Action: ActionRewrite, Detail: detail})
 		case "secret.env":
 			dir := filepath.Join(opts.Root, "secret-file", slug(spec.Name))

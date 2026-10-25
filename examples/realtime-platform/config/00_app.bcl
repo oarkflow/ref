@@ -1,0 +1,289 @@
+name "realtime-platform"
+environment env("APP_ENV", "development")
+
+# A complete realtime application with no application code: signed-in users
+# chat in channels and DMs, see who is online, and call each other (p2p video or
+# a group call through the SFU). Operators read logs and stats with an API key.
+#
+# DEMO ONLY: the three users share DEMO_PASSWORD. Put a real identity provider
+# (auth.jwt / auth.oidc / a users table) in front of it before using this for
+# anything else; nothing below depends on how users sign in.
+
+# ---- Identity --------------------------------------------------------------
+
+resource "sessions" {
+  kind "session.memory"
+  config {
+    secret env.required("SESSION_SECRET")
+    cookie "rt_sid"
+    max_age 12h
+    secure false
+  }
+}
+
+resource "session_auth" {
+  kind "auth.session"
+  config { session "sessions" roles_claim "roles" }
+}
+
+resource "ops_keys" {
+  kind "auth.api_key"
+  description "Operators and tooling: X-API-Key header"
+  config {
+    keys [
+      { value env.required("OPS_API_KEY") principal_id "ops" roles ["admin"] }
+    ]
+  }
+}
+
+resource "who" {
+  kind "auth.chain"
+  config { authenticators ["session_auth", "ops_keys"] }
+}
+
+# ---- Data ------------------------------------------------------------------
+
+resource "db" {
+  kind "database.sql"
+  config {
+    driver "sqlite"
+    dsn env("RT_DB", "file:.data/realtime.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+    max_open_connections 1
+  }
+}
+
+resource "cache" {
+  kind "cache.memory"
+  config { max_entries 10000 }
+}
+
+# ---- Logs: memory for the console, a file for keeps, one sink to the nodes -
+
+resource "log_recent" {
+  kind "log.memory"
+  config { capacity 5000 }
+}
+
+resource "log_file" {
+  kind "log.file"
+  config { path env("RT_LOG", ".data/app.log") max_bytes 16777216 }
+}
+
+resource "logs" {
+  kind "log.tee"
+  config { sinks ["log_recent", "log_file"] }
+}
+
+# ---- Realtime, chat and calls ----------------------------------------------
+
+resource "live" {
+  kind "realtime.hub"
+  description "WebSocket /realtime/ws and SSE /realtime/events"
+  config {
+    authenticator "who"
+    session "sessions"
+    callable ["chat.typing"]
+    allowed_origins split(env("RT_ORIGINS", ""), ",")
+    # backplane "redis"                       # several nodes: share one Redis
+    # redis_addr env.required("REDIS_ADDR")
+  }
+}
+
+resource "chat" {
+  kind "chat.store"
+  config { database "db" hub "live" }
+}
+
+resource "calls" {
+  kind "rtc.calls"
+  config {
+    database "db"
+    hub "live"
+    stun_urls ["stun:stun.l.google.com:19302"]
+    # turn_urls ["turn:turn.example.com:3478"]   # needed behind strict NATs
+    # turn_secret env.required("TURN_SECRET")
+  }
+}
+
+resource "sfu" {
+  kind "rtc.sfu"
+  config { hub "live" calls "calls" udp_port_min 50000 udp_port_max 50100 }
+}
+
+# ---- Sign in (demo) --------------------------------------------------------
+
+intent "auth.login" {
+  response "r"
+  node "secret" { uses "constant" kind pure provides [secret] config { value env.required("DEMO_PASSWORD") } }
+  # validate.expression, not decision.expression: a decision never publishes
+  # its fact, so the nodes after it would not run and every login would be a 403.
+  node "check" {
+    uses "validate.expression"
+    requires [input, secret]
+    provides [ok]
+    config {
+      expression "input.password == secret && (input.user == 'ada' || input.user == 'bob' || input.user == 'cy')"
+      message "unknown user or wrong password"
+      code "UNAUTHENTICATED"
+      category "auth"
+    }
+  }
+  node "who" { uses "session.set" resource "sessions" kind effect requires [input, ok] provides [stored] config { key "user_id" value_fact "input.user" } }
+  node "roles" { uses "constant" kind pure provides [member] config { value ["member"] } }
+  node "grant" { uses "session.set" resource "sessions" kind effect requires [member, stored] provides [granted] config { key "roles" value_fact "member" } }
+  node "r" { uses "collect" requires [input, granted] provides [r] config { unwrap true } }
+}
+
+intent "auth.me" {
+  response "r"
+  node "r" { uses "constant" kind pure provides [r] config { value { ok true } } }
+}
+
+# ---- Chat ------------------------------------------------------------------
+
+intent "chat.channels" {
+  response "r"
+  node "r" { uses "chat.channels" resource "chat" kind read provides [r] }
+}
+
+intent "chat.create" {
+  response "r"
+  node "r" { uses "chat.channel_create" resource "chat" kind effect requires [input] provides [r] config { name_fact "input.name" members_fact "input.members" } }
+}
+
+intent "chat.dm" {
+  response "r"
+  node "r" { uses "chat.dm" resource "chat" kind effect requires [input] provides [r] config { user_fact "input.user" } }
+}
+
+intent "chat.send" {
+  response "r"
+  # Logged first, and the send waits for it, so the entry is always written; it
+  # records that a send was requested. (log.write never fails the request.)
+  node "audit" {
+    uses "log.write"
+    resource "logs"
+    kind effect
+    requires [input]
+    provides [logged]
+    config { level "info" message "message send requested" fields { channel "{{ input.channel }}" bytes "{{ len(input.body) }}" } }
+  }
+  node "r" { uses "chat.send" resource "chat" kind effect requires [input, logged] provides [r] config { channel_fact "input.channel" body_fact "input.body" } }
+}
+
+intent "chat.history" {
+  response "r"
+  node "r" { uses "chat.history" resource "chat" kind read requires [input] provides [r] config { channel_fact "input.channel" before_seq_fact "input.before" limit_fact "input.limit" } }
+}
+
+intent "chat.read" {
+  response "r"
+  node "r" { uses "chat.mark_read" resource "chat" kind effect requires [input] provides [r] config { channel_fact "input.channel" seq_fact "input.seq" } }
+}
+
+intent "chat.typing" {
+  response "r"
+  node "r" { uses "chat.typing" resource "chat" kind effect requires [input] provides [r] config { channel_fact "input.channel" } }
+}
+
+intent "chat.members" {
+  response "r"
+  node "r" { uses "chat.members" resource "chat" kind read requires [input] provides [r] config { channel_fact "input.channel" } }
+}
+
+intent "chat.presence" {
+  description "Who is online in a channel (the caller must be a member)"
+  response "r"
+  node "r" { uses "realtime.presence" resource "live" kind read requires [input] provides [r] config { topic_fact "input.topic" } }
+}
+
+# A report is rows -> file. The rows come from chat.history, which already checks
+# membership, so the export can never include a channel the caller cannot read.
+intent "chat.export" {
+  response "file"
+  node "rows" { uses "chat.history" resource "chat" kind read requires [input] provides [history] config { channel_fact "input.channel" limit_fact "input.limit" } }
+  node "file" {
+    uses "report.export"
+    requires [input, history]
+    provides [file]
+    config {
+      rows_fact "history.messages"
+      format_fact "input.format"
+      columns ["seq:#", "sender:From", "body:Message", "created_at:Sent"]
+      title "Chat export"
+      filename "chat-export"
+    }
+  }
+}
+
+# ---- Calls -----------------------------------------------------------------
+
+intent "call.start" {
+  response "r"
+  node "r" { uses "call.start" resource "calls" kind effect requires [input] provides [r] config { to_fact "input.to" kind_fact "input.kind" mode_fact "input.mode" } }
+}
+intent "call.answer" {
+  response "r"
+  node "r" { uses "call.answer" resource "calls" kind effect requires [input] provides [r] config { call_fact "input.call" } }
+}
+intent "call.decline" {
+  response "r"
+  node "r" { uses "call.decline" resource "calls" kind effect requires [input] provides [r] config { call_fact "input.call" } }
+}
+intent "call.end" {
+  response "r"
+  node "r" { uses "call.end" resource "calls" kind effect requires [input] provides [r] config { call_fact "input.call" } }
+}
+intent "call.signal" {
+  response "r"
+  node "r" { uses "call.signal" resource "calls" kind effect requires [input] provides [r] config { call_fact "input.call" to_fact "input.to" type_fact "input.type" data_fact "input.data" } }
+}
+intent "call.ice" {
+  response "r"
+  node "r" { uses "call.ice_servers" resource "calls" kind read provides [r] }
+}
+
+# ---- Operations ------------------------------------------------------------
+
+intent "ops.logs" {
+  response "r"
+  node "r" { uses "log.query" resource "logs" kind read requires [input] provides [r] config { min_level_fact "input.level" contains_fact "input.q" request_id_fact "input.request_id" limit 200 this_tenant false } }
+}
+
+intent "ops.stats" {
+  response "r"
+  node "r" { uses "realtime.stats" resource "live" kind read provides [r] }
+}
+
+# ---- Routes ----------------------------------------------------------------
+
+route "auth.login" { method POST path "/api/login" intent "auth.login" session "sessions" allow_anonymous true cache_control "no-store" max_body_bytes 1024 }
+route "auth.me"    { method GET  path "/api/me"    intent "auth.me"    session "sessions" auth "who" }
+
+route "chat.channels" { method GET  path "/api/channels"  intent "chat.channels" session "sessions" auth "who" }
+route "chat.create"   { method POST path "/api/channels"  intent "chat.create"   session "sessions" auth "who" }
+route "chat.dm"       { method POST path "/api/dm"        intent "chat.dm"       session "sessions" auth "who" }
+route "chat.send"     { method POST path "/api/send"      intent "chat.send"     session "sessions" auth "who" max_body_bytes 16384 }
+route "chat.history"  { method POST path "/api/history"   intent "chat.history"  session "sessions" auth "who" }
+route "chat.read"     { method POST path "/api/read"      intent "chat.read"     session "sessions" auth "who" }
+route "chat.typing"   { method POST path "/api/typing"    intent "chat.typing"   session "sessions" auth "who" }
+route "chat.members"  { method POST path "/api/members"   intent "chat.members"  session "sessions" auth "who" }
+route "chat.presence" { method POST path "/api/presence"  intent "chat.presence" session "sessions" auth "who" }
+route "chat.export"   { method POST path "/api/export"    intent "chat.export"   session "sessions" auth "who" }
+
+route "call.start"   { method POST path "/api/call/start"   intent "call.start"   session "sessions" auth "who" }
+route "call.answer"  { method POST path "/api/call/answer"  intent "call.answer"  session "sessions" auth "who" }
+route "call.decline" { method POST path "/api/call/decline" intent "call.decline" session "sessions" auth "who" }
+route "call.end"     { method POST path "/api/call/end"     intent "call.end"     session "sessions" auth "who" }
+route "call.signal"  { method POST path "/api/call/signal"  intent "call.signal"  session "sessions" auth "who" max_body_bytes 20000 }
+route "call.ice"     { method GET  path "/api/call/ice"     intent "call.ice"     session "sessions" auth "who" }
+
+route "ops.logs"  { method POST path "/api/ops/logs"  intent "ops.logs"  auth "ops_keys" authz { roles ["admin"] } }
+route "ops.stats" { method GET  path "/api/ops/stats" intent "ops.stats" auth "ops_keys" authz { roles ["admin"] } }
+
+static "assets" {
+  prefix "/"
+  root "static"
+  index "index.html"
+  cache_control "no-cache"
+}
