@@ -1,0 +1,325 @@
+pipeline "government_social_security_allowance" {
+  title "Social Security Allowance"
+  description "Social security allowance application, verification, and disbursement workflow"
+  form "applicant_profile" {
+    title "Applicant Profile"
+    input "full_name" {
+      label "Full Name"
+      kind text
+      required true
+    }
+    input "date_of_birth" {
+      label "Date of Birth"
+      kind date
+      required true
+    }
+    input "gender" {
+      label "Gender"
+      kind select
+      required true
+      options ["male", "female", "other"]
+    }
+    input "citizenship_number" {
+      label "Citizenship Number"
+      kind text
+      required true
+    }
+    input "ward_number" {
+      label "Ward Number"
+      kind select
+      required true
+      options ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]
+    }
+    input "address" {
+      label "Address"
+      kind textarea
+      required true
+    }
+    input "phone" {
+      label "Phone"
+      kind text
+      required true
+    }
+    input "bank_name" {
+      label "Bank Name"
+      kind text
+      required true
+    }
+    input "bank_account" {
+      label "Bank Account Number"
+      kind text
+      required true
+    }
+  }
+  form "allowance_type" {
+    title "Allowance Type"
+    input "allowance_category" {
+      label "Allowance Category"
+      kind select
+      required true
+      options ["old_age", "widow", "disability", "child", "unemployment"]
+    }
+    input "application_reason" {
+      label "Application Reason"
+      kind textarea
+      required true
+    }
+  }
+  form "application_documents" {
+    title "Application Documents"
+    input "citizenship_upload" {
+      label "Citizenship Document"
+      kind file
+      required true
+      accept ["image/*,application/pdf"]
+    }
+    input "photo_upload" {
+      label "Recent Photo"
+      kind file
+      required true
+      accept ["image/*"]
+    }
+    input "bank_document_upload" {
+      label "Bank Document"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  form "ward_review_form" {
+    title "Ward Review"
+    input "ward_recommendation" {
+      label "Ward Recommendation"
+      kind select
+      required true
+      options ["recommended", "not_recommended"]
+    }
+    input "ward_notes" {
+      label "Ward Notes"
+      kind textarea
+    }
+  }
+  form "verification_form" {
+    title "Verification"
+    input "eligibility_verified" {
+      label "Eligibility Verified"
+      kind boolean
+      required true
+    }
+    input "documents_verified" {
+      label "Documents Verified"
+      kind boolean
+      required true
+    }
+    input "income_verified" {
+      label "Income Verified"
+      kind boolean
+    }
+    input "verification_notes" {
+      label "Verification Notes"
+      kind textarea
+    }
+  }
+  form "approval_form" {
+    title "Approval"
+    input "approval_decision" {
+      label "Approval Decision"
+      kind select
+      required true
+      options ["approved", "rejected"]
+    }
+    input "allowance_amount" {
+      label "Allowance Amount"
+      kind text
+    }
+    input "approval_notes" {
+      label "Approval Notes"
+      kind textarea
+    }
+  }
+  form "disbursement_form" {
+    title "Disbursement"
+    input "disbursed" {
+      label "Disbursed"
+      kind boolean
+      required true
+    }
+    input "disbursement_date" {
+      label "Disbursement Date"
+      kind date
+      required true
+    }
+    input "transaction_reference" {
+      label "Transaction Reference"
+      kind text
+      required true
+    }
+    input "disbursement_notes" {
+      label "Disbursement Notes"
+      kind textarea
+    }
+  }
+  form "allowance_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "replacement_document_upload" {
+      label "Replacement Document"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.rejected" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.rejected"
+    body "Case {case.number} has event case.rejected"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "disbursement"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "verification"
+  }
+  stage "application" {
+    title "Application"
+    kind submission
+    public true
+    require_account true
+    roles ["citizen_applicant"]
+    page {
+      title "Application"
+      layout wizard
+      group "application_block" {
+        title "application_block"
+        forms ["applicant_profile", "allowance_type"]
+      }
+      group "application_documents" {
+        title "application_documents"
+        forms ["application_documents"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "ward_review" {
+    title "Ward Review"
+    kind processing
+    roles ["ward_official"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Ward Review"
+      layout wizard
+      group "ward_review_block" {
+        title "ward_review_block"
+        forms ["ward_review_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "verification" {
+    title "Verification"
+    kind review
+    roles ["social_security_officer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Verification"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["verification_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["verification_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "approval" {
+    title "Approval"
+    kind approval
+    roles ["approving_authority"]
+    sla {
+      duration "240m"
+      on_breach "notify"
+    }
+    page {
+      title "Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["approval_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "disbursement" {
+    title "Disbursement"
+    kind processing
+    roles ["disbursement_officer"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Disbursement"
+      layout wizard
+      group "disbursement_block" {
+        title "disbursement_block"
+        forms ["disbursement_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

@@ -66,7 +66,7 @@ var kindPolicy = map[string]Action{
 	"auth.session": ActionKeep, "auth.chain": ActionKeep,
 	"authz.rbac": ActionKeep, "authz.engine": ActionKeep, "rules.engine": ActionKeep,
 	"security.tcpguard": ActionKeep, "crypto.signer": ActionKeep,
-	"org.hierarchy": ActionKeep, "identity.users": ActionKeep, "pipeline.cases": ActionKeep,
+	"org.hierarchy": ActionKeep, "lookup.sources": ActionKeep, "identity.users": ActionKeep, "pipeline.cases": ActionKeep,
 	"workflow.http": ActionKeep, "workflow.manager": ActionKeep, "app.manager": ActionKeep,
 	"auth.api_key_sql": ActionKeep, "etl.engine": ActionKeep, "sms.router": ActionKeep,
 	"transport.secure": ActionKeep,

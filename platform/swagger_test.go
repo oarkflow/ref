@@ -94,8 +94,8 @@ route "users.show" {
 		t.Fatalf("expected components")
 	}
 	sec, ok := comp["securitySchemes"].(map[string]any)
-	if !ok || sec["cookieAuth"] == nil || sec["bearerAuth"] == nil {
-		t.Fatalf("expected securitySchemes with cookieAuth and bearerAuth")
+	if !ok || len(sec) != 0 {
+		t.Fatalf("anonymous API must not advertise unused authentication schemes: %v", sec)
 	}
 
 	app := fh.NewFast()

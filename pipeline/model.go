@@ -63,7 +63,18 @@ type Definition struct {
 	Notes *NotesPolicy `bcl:"notes" json:"notes,omitempty"`
 	// Notify turns pipeline events into notifications for people, delivered
 	// over the host's channels under each recipient's preferences.
-	Notify []NotifyRule `bcl:"notify,block" json:"notify,omitempty"`
+	Notify   []NotifyRule `bcl:"notify,block" json:"notify,omitempty"`
+	Payment  *PaymentSpec `bcl:"payment" json:"payment,omitempty"`
+	AllowRFI bool         `bcl:"allow_rfi" json:"allow_rfi,omitempty"`
+}
+
+// PaymentSpec gates terminal completion until a trusted verifier records a
+// settled provider payment. Amount is in the currency's minor units; zero
+// means the fee varies by case and a verifier must supply the final amount.
+type PaymentSpec struct {
+	Currency      string   `bcl:"currency" json:"currency"`
+	Amount        int64    `bcl:"amount" json:"amount,omitempty"`
+	VerifierRoles []string `bcl:"verifier_roles" json:"verifier_roles"`
 }
 
 // Calendar is working time: weekly hours, holidays and a timezone.
@@ -142,10 +153,15 @@ type SLA struct {
 	Duration   string `bcl:"duration" json:"duration"`
 	WarnBefore string `bcl:"warn_before" json:"warn_before,omitempty"`
 	Calendar   string `bcl:"calendar" json:"calendar,omitempty"`
-	// OnBreach: notify (default), reassign, return (to ReturnTo) or an
-	// action name of the stage to take automatically.
+	// OnBreach: notify (default), reassign, release (back to the queue),
+	// return (to ReturnTo) or an action name of the stage to take
+	// automatically.
 	OnBreach string `bcl:"on_breach" json:"on_breach,omitempty"`
-	ReturnTo string `bcl:"return_to" json:"return_to,omitempty"`
+	// PickupTimeout is how long work may sit unclaimed; then
+	// OnPickupTimeout (notify, the default, or reassign) applies.
+	PickupTimeout   string `bcl:"pickup_timeout" json:"pickup_timeout,omitempty"`
+	OnPickupTimeout string `bcl:"on_pickup_timeout" json:"on_pickup_timeout,omitempty"`
+	ReturnTo        string `bcl:"return_to" json:"return_to,omitempty"`
 	// Escalate lists escalation levels after the breach.
 	Escalate []Escalation `bcl:"escalate,block" json:"escalate,omitempty"`
 }
@@ -407,6 +423,12 @@ type Stage struct {
 	// Public stages may be acted on by the case's applicant (its creator),
 	// including anonymous starts when the host allows it.
 	Public bool `bcl:"public" json:"public,omitempty"`
+	// RequireAccount blocks anonymous starts even when the host allows them
+	// for other public pipelines on the same resource.
+	RequireAccount bool `bcl:"require_account" json:"require_account,omitempty"`
+	// MultiDate allows dated schedule instances and separately validated form
+	// submissions while this stage is active.
+	MultiDate bool `bcl:"multi_date" json:"multi_date,omitempty"`
 	// Roles act at this stage; ViewRoles may only look.
 	Roles     []string `bcl:"roles" json:"roles,omitempty"`
 	ViewRoles []string `bcl:"view_roles" json:"view_roles,omitempty"`

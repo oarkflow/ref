@@ -1,0 +1,350 @@
+pipeline "public_sports_complex_booking" {
+  title "Sports Complex Booking"
+  description "Sports complex and stadium booking in Nepal municipalities for sports events and training"
+  form "sports_booking" {
+    title "Sports Booking"
+    input "facility_name" {
+      label "Facility Name"
+      kind select
+      required true
+      options ["stadium", "indoor_hall", "football_ground", "cricket_ground", "tennis_court"]
+    }
+    input "booking_date" {
+      label "Booking Date"
+      kind date
+      required true
+    }
+    input "start_time" {
+      label "Start Time"
+      kind text
+      required true
+    }
+    input "end_time" {
+      label "End Time"
+      kind text
+      required true
+    }
+  }
+  form "event_details" {
+    title "Event Details"
+    input "event_type" {
+      label "Event Type"
+      kind select
+      required true
+      options ["practice", "tournament", "training", "event", "other"]
+    }
+    input "event_name" {
+      label "Event Name"
+      kind text
+      required true
+    }
+    input "expected_participants" {
+      label "Expected Participants"
+      kind text
+      required true
+    }
+    input "organizer_name" {
+      label "Organizer Name"
+      kind text
+      required true
+    }
+    input "organizer_phone" {
+      label "Organizer Phone"
+      kind text
+      required true
+    }
+  }
+  form "availability_check" {
+    title "Availability Check"
+    input "availability_confirmed" {
+      label "Availability Confirmed"
+      kind boolean
+      required true
+    }
+    input "availability_notes" {
+      label "Availability Notes"
+      kind textarea
+    }
+  }
+  form "facility_verification" {
+    title "Facility Verification"
+    input "facility_verified" {
+      label "Facility Verified"
+      kind boolean
+      required true
+    }
+    input "facility_condition" {
+      label "Facility Condition"
+      kind select
+      options ["excellent", "good", "fair"]
+    }
+  }
+  form "fee_calculation" {
+    title "Fee Calculation"
+    input "rental_fee" {
+      label "Rental Fee (NPR)"
+      kind text
+      required true
+    }
+    input "security_deposit" {
+      label "Security Deposit (NPR)"
+      kind text
+      required true
+    }
+    input "maintenance_charge" {
+      label "Maintenance Charge (NPR)"
+      kind text
+    }
+    input "total_fee" {
+      label "Total Fee (NPR)"
+      kind text
+      required true
+    }
+  }
+  form "payment_verification" {
+    title "Payment Verification"
+    input "payment_verified" {
+      label "Payment Verified"
+      kind boolean
+      required true
+    }
+    input "receipt_number" {
+      label "Receipt Number"
+      kind text
+    }
+    input "payment_date" {
+      label "Payment Date"
+      kind date
+    }
+  }
+  form "booking_approval" {
+    title "Booking Approval"
+    input "booking_approved" {
+      label "Booking Approved"
+      kind boolean
+      required true
+    }
+    input "approval_notes" {
+      label "Approval Notes"
+      kind textarea
+    }
+  }
+  form "terms_accepted" {
+    title "Terms and Conditions"
+    input "terms_accepted_flag" {
+      label "Terms Accepted"
+      kind boolean
+      required true
+    }
+    input "terms_text" {
+      label "Terms and Conditions"
+      kind textarea
+    }
+  }
+  form "booking_confirmation" {
+    title "Booking Confirmation"
+    input "booking_confirmed" {
+      label "Booking Confirmed"
+      kind boolean
+      required true
+    }
+    input "confirmation_number" {
+      label "Confirmation Number"
+      kind text
+      required true
+    }
+  }
+  form "key_handover" {
+    title "Key Handover"
+    input "handover_scheduled" {
+      label "Handover Scheduled"
+      kind boolean
+      required true
+    }
+    input "handover_date" {
+      label "Handover Date"
+      kind date
+      required true
+    }
+    input "handover_time" {
+      label "Handover Time"
+      kind text
+      required true
+    }
+    input "handover_location" {
+      label "Handover Location"
+      kind text
+      required true
+    }
+  }
+  form "sports_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "additional_documents" {
+      label "Additional Documents"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  payment {
+    currency "NPR"
+    amount 0
+    verifier_roles ["payment_officer", "admin"]
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "availability_check"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "fee_verification"
+  }
+  stage "booking_submission" {
+    title "Booking Submission"
+    kind submission
+    public true
+    require_account true
+    roles ["applicant"]
+    page {
+      title "Booking Submission"
+      layout wizard
+      group "booking_block" {
+        title "booking_block"
+        forms ["sports_booking", "event_details"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "availability_check" {
+    title "Availability Check"
+    kind review
+    roles ["booking_officer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Availability Check"
+      layout wizard
+      group "availability_block" {
+        title "availability_block"
+        forms ["availability_check", "facility_verification"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["availability_check", "facility_verification"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "fee_verification" {
+    title "Fee Verification"
+    kind review
+    roles ["fee_officer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Fee Verification"
+      layout wizard
+      group "fee_block" {
+        title "fee_block"
+        forms ["fee_calculation", "payment_verification"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["fee_calculation", "payment_verification"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "final_approval" {
+    title "Final Approval"
+    kind approval
+    roles ["approval_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Final Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["booking_approval", "terms_accepted"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "booking_confirmation" {
+    title "Booking Confirmation"
+    kind processing
+    roles ["admin"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Booking Confirmation"
+      layout wizard
+      group "confirmation_block" {
+        title "confirmation_block"
+        forms ["booking_confirmation", "key_handover"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

@@ -458,6 +458,9 @@ func requireOperator(ctx *ActionContext, roles []string, what string) error {
 		return intent.Failure{Code: "UNAUTHENTICATED", Category: intent.CategoryAuth,
 			Message: what + " needs an authenticated caller"}
 	}
+	if ctx.Principal.ID == "" {
+		return nil // platform-started work (checked above) is trusted, whatever roles an outside caller needs
+	}
 	if len(roles) > 0 && !slices.ContainsFunc(roles, ctx.Principal.HasRole) {
 		return permissionDenied(what + " needs one of the roles " + strings.Join(roles, ", "))
 	}

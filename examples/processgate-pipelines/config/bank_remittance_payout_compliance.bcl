@@ -1,0 +1,227 @@
+pipeline "bank_remittance_payout_compliance" {
+  title "Remittance Payout Compliance"
+  description "Remittance payout processing and compliance verification for banks in Nepal"
+  form "remittance_details" {
+    title "Remittance Details"
+    input "remittance_reference" {
+      label "Remittance Reference"
+      kind text
+      required true
+    }
+    input "sender_name" {
+      label "Sender Name"
+      kind text
+      required true
+    }
+    input "sender_country" {
+      label "Sender Country"
+      kind text
+      required true
+    }
+    input "receiver_name" {
+      label "Receiver Name"
+      kind text
+      required true
+    }
+    input "receiver_account" {
+      label "Receiver Account/Phone"
+      kind text
+      required true
+    }
+    input "amount" {
+      label "Amount (NPR)"
+      kind text
+      required true
+    }
+    input "purpose" {
+      label "Purpose"
+      kind select
+      required true
+      options ["family", "business", "investment", "other"]
+    }
+  }
+  form "compliance_form" {
+    title "Compliance Check"
+    input "aml_check" {
+      label "AML Check"
+      kind boolean
+      required true
+    }
+    input "sanctions_check" {
+      label "Sanctions Check"
+      kind boolean
+      required true
+    }
+    input "source_of_funds" {
+      label "Source of Funds Verified"
+      kind boolean
+      required true
+    }
+    input "compliance_status" {
+      label "Compliance Status"
+      kind select
+      required true
+      options ["cleared", "review", "flagged"]
+    }
+    input "compliance_notes" {
+      label "Compliance Notes"
+      kind textarea
+    }
+  }
+  form "approval_form" {
+    title "Approval"
+    input "approval_decision" {
+      label "Approval Decision"
+      kind select
+      required true
+      options ["approved", "rejected"]
+    }
+    input "approval_notes" {
+      label "Approval Notes"
+      kind textarea
+    }
+  }
+  form "disbursement_form" {
+    title "Disbursement"
+    input "disbursed" {
+      label "Disbursed"
+      kind boolean
+      required true
+    }
+    input "disbursement_date" {
+      label "Disbursement Date"
+      kind date
+      required true
+    }
+    input "transaction_reference" {
+      label "Transaction Reference"
+      kind text
+      required true
+    }
+  }
+  form "remittance_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "compliance_check"
+  }
+  stage "initiation" {
+    title "Initiation"
+    kind submission
+    roles ["operations"]
+    page {
+      title "Initiation"
+      layout wizard
+      group "initiation_block" {
+        title "initiation_block"
+        forms ["remittance_details"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "compliance_check" {
+    title "Compliance Check"
+    kind review
+    roles ["compliance_officer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Compliance Check"
+      layout wizard
+      group "compliance_block" {
+        title "compliance_block"
+        forms ["compliance_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["compliance_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "approval" {
+    title "Approval"
+    kind approval
+    roles ["manager"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["approval_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "disbursement" {
+    title "Disbursement"
+    kind processing
+    roles ["operations"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Disbursement"
+      layout wizard
+      group "disbursement_block" {
+        title "disbursement_block"
+        forms ["disbursement_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

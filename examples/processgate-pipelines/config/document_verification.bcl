@@ -1,0 +1,346 @@
+pipeline "document_verification" {
+  title "Document Verification & Approval"
+  description "Comprehensive document verification pipeline for scan-print-hub integration. Handles document upload, review, verification, change requests, suspension, and final approval with webhook notifications on each status change."
+  form "document_upload_form" {
+    title "document_upload_form"
+    input "document_title" {
+      label "Document Title"
+      kind text
+      required true
+    }
+    input "document_type" {
+      label "Document Type"
+      kind select
+      required true
+      options ["invoice", "contract", "report", "certificate", "letter", "other"]
+    }
+    input "classification" {
+      label "Classification"
+      kind select
+      required true
+      options ["public", "internal", "confidential", "restricted"]
+    }
+    input "description" {
+      label "Description"
+      kind textarea
+    }
+    input "document_file" {
+      label "Upload Document"
+      kind file
+      required true
+    }
+  }
+  form "document_details_form" {
+    title "document_details_form"
+    input "category" {
+      label "Category"
+      kind select
+      required true
+      options ["finance", "legal", "operations", "hr", "compliance", "general"]
+    }
+    input "priority" {
+      label "Priority"
+      kind select
+      required true
+      options ["low", "medium", "high", "critical"]
+    }
+    input "due_date" {
+      label "Due Date"
+      kind date
+    }
+    input "tags" {
+      label "Tags (comma-separated)"
+      kind text
+    }
+  }
+  form "review_form" {
+    title "review_form"
+    input "review_status" {
+      label "Review Status"
+      kind select
+      required true
+      options ["satisfactory", "needs_changes", "rejected"]
+    }
+    input "review_comments" {
+      label "Review Comments"
+      kind textarea
+      required true
+    }
+    input "issues_found" {
+      label "Issues Found"
+      kind select
+      options ["formatting_errors", "missing_information", "incorrect_data", "illegible_content", "wrong_document_type", "no_issues"]
+    }
+  }
+  form "verification_form" {
+    title "verification_form"
+    input "data_accuracy" {
+      label "Data Accuracy"
+      kind select
+      required true
+      options ["accurate", "minor_errors", "major_errors"]
+    }
+    input "completeness" {
+      label "Completeness"
+      kind select
+      required true
+      options ["complete", "partial", "incomplete"]
+    }
+    input "compliance_check" {
+      label "Compliance Check"
+      kind select
+      required true
+      options ["compliant", "non_compliant", "na"]
+    }
+    input "verification_notes" {
+      label "Verification Notes"
+      kind textarea
+    }
+  }
+  form "change_request_form" {
+    title "change_request_form"
+    input "requested_changes" {
+      label "Requested Changes"
+      kind textarea
+      required true
+    }
+    input "change_priority" {
+      label "Change Priority"
+      kind select
+      required true
+      options ["low", "medium", "high", "critical"]
+    }
+    input "change_deadline" {
+      label "Change Deadline"
+      kind date
+    }
+  }
+  form "approval_form" {
+    title "approval_form"
+    input "approval_decision" {
+      label "Decision"
+      kind select
+      required true
+      options ["approved", "rejected"]
+    }
+    input "approval_comments" {
+      label "Comments"
+      kind textarea
+    }
+    input "conditions" {
+      label "Conditions (if any)"
+      kind textarea
+    }
+  }
+  form "comment_form" {
+    title "comment_form"
+    input "comment_message" {
+      label "Comment"
+      kind textarea
+      required true
+      placeholder "Type your comment here..."
+    }
+    input "comment_visibility" {
+      label "Visibility"
+      kind select
+      required true
+      options ["internal", "external"]
+    }
+    input "comment_category" {
+      label "Category"
+      kind select
+      options ["general", "clarification", "issue", "resolution"]
+    }
+    input "comment_attachments" {
+      label "Attachments (optional)"
+      kind file
+    }
+  }
+  form "suspension_form" {
+    title "suspension_form"
+    input "suspension_reason" {
+      label "Suspension Reason"
+      kind textarea
+      required true
+    }
+    input "expected_resolution_date" {
+      label "Expected Resolution Date"
+      kind date
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.information_requested" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.information_requested"
+    body "Case {case.number} has event case.information_requested"
+  }
+  notify "case.rejected" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.rejected"
+    body "Case {case.number} has event case.rejected"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  stage "under_review" {
+    title "Under Review"
+    kind submission
+    roles ["reviewer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Under Review"
+      layout wizard
+      group "review_documents_block" {
+        title "review_documents_block"
+        forms ["document_upload_form", "document_details_form"]
+      }
+      group "review_action_block" {
+        title "review_action_block"
+        forms ["review_form", "comment_form"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "verification" {
+    title "Verification"
+    kind review
+    roles ["verifier"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Verification"
+      layout wizard
+      group "verification_readonly_block" {
+        title "verification_readonly_block"
+        forms ["document_upload_form", "review_form"]
+      }
+      group "verification_action_block" {
+        title "verification_action_block"
+        forms ["verification_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["document_upload_form", "review_form", "verification_form"]
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "under_review"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "change_requested" {
+    title "Change Requested"
+    kind processing
+    roles ["doc_uploader"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Change Requested"
+      layout wizard
+      group "change_request_readonly_block" {
+        title "change_request_readonly_block"
+        forms ["change_request_form"]
+      }
+      group "change_request_editable_block" {
+        title "change_request_editable_block"
+        forms ["document_upload_form", "document_details_form", "comment_form"]
+      }
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "verification"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "approved" {
+    title "Approval"
+    kind approval
+    roles ["approver"]
+    sla {
+      duration "720m"
+      on_breach "notify"
+    }
+    page {
+      title "Approval"
+      layout wizard
+      group "approval_readonly_block" {
+        title "approval_readonly_block"
+        forms ["document_upload_form", "document_details_form", "review_form", "verification_form"]
+      }
+      group "approval_action_block" {
+        title "approval_action_block"
+        forms ["approval_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "suspended" {
+    title "Suspended"
+    kind processing
+    roles ["admin"]
+    page {
+      title "Suspended"
+      layout wizard
+      group "suspension_readonly_block" {
+        title "suspension_readonly_block"
+        forms ["document_upload_form", "document_details_form", "review_form", "verification_form"]
+      }
+      group "suspension_action_block" {
+        title "suspension_action_block"
+        forms ["suspension_form"]
+      }
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "approved"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

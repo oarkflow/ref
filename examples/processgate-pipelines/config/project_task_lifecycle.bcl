@@ -1,0 +1,269 @@
+pipeline "project_task_lifecycle" {
+  title "Project Task Lifecycle"
+  description "Sub-pipeline to manage task lifecycle, SLAs, and approvals for project tasks."
+  form "task_intake" {
+    title "task_intake"
+    input "task_id" {
+      label "Task ID"
+      kind text
+      required true
+    }
+    input "task_title" {
+      label "Task Title"
+      kind text
+      required true
+    }
+    input "task_description" {
+      label "Task Description"
+      kind textarea
+    }
+    input "priority" {
+      label "Priority"
+      kind select
+      required true
+      options ["low", "medium", "high", "critical"]
+    }
+    input "assigned_role" {
+      label "Assigned Role"
+      kind select
+      options ["project_owner", "project_manager", "team_member", "reviewer", "admin"]
+    }
+    input "assigned_to" {
+      label "Assigned To"
+      kind text
+    }
+    input "planned_start" {
+      label "Planned Start"
+      kind date
+    }
+    input "planned_end" {
+      label "Planned End"
+      kind date
+    }
+    input "dependencies" {
+      label "Dependencies"
+      kind textarea
+    }
+    input "project_id" {
+      label "Project ID"
+      kind text
+    }
+    input "project_name" {
+      label "Project Name"
+      kind text
+    }
+    input "project_owner" {
+      label "Project Owner"
+      kind text
+    }
+  }
+  form "task_work_log" {
+    title "task_work_log"
+    input "actual_start" {
+      label "Actual Start"
+      kind date
+    }
+    input "actual_end" {
+      label "Actual End"
+      kind date
+    }
+    input "percent_complete" {
+      label "Percent Complete"
+      kind number
+    }
+    input "hours_spent" {
+      label "Hours Spent"
+      kind number
+    }
+    input "blockers" {
+      label "Blockers"
+      kind textarea
+    }
+    input "work_notes" {
+      label "Work Notes"
+      kind textarea
+    }
+    input "work_attachments" {
+      label "Attachments"
+      kind file
+    }
+  }
+  form "task_review" {
+    title "task_review"
+    input "reviewer" {
+      label "Reviewer"
+      kind text
+    }
+    input "review_notes" {
+      label "Review Notes"
+      kind textarea
+    }
+    input "review_decision" {
+      label "Decision"
+      kind select
+      required true
+      options ["approve", "changes", "reject"]
+    }
+  }
+  form "task_closure" {
+    title "task_closure"
+    input "closure_summary" {
+      label "Closure Summary"
+      kind textarea
+    }
+    input "closure_date" {
+      label "Closure Date"
+      kind date
+    }
+    input "closure_notes" {
+      label "Notes"
+      kind textarea
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.information_requested" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.information_requested"
+    body "Case {case.number} has event case.information_requested"
+  }
+  notify "case.rejected" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.rejected"
+    body "Case {case.number} has event case.rejected"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  stage "queued" {
+    title "Task Intake"
+    kind submission
+    roles ["project_owner", "project_manager"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Task Intake"
+      layout wizard
+      group "task_intake_block" {
+        title "task_intake_block"
+        forms ["task_intake"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "in_progress" {
+    title "Work"
+    kind processing
+    roles ["project_manager", "team_member"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Work"
+      layout wizard
+      group "task_work_block" {
+        title "task_work_block"
+        forms ["task_work_log"]
+      }
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "queued"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "blocked" {
+    title "Blocked"
+    kind processing
+    roles ["project_manager", "team_member"]
+    page {
+      title "Blocked"
+      layout wizard
+      group "task_blocked_block" {
+        title "task_blocked_block"
+        forms ["task_work_log"]
+      }
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "in_progress"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "review" {
+    title "Review"
+    kind processing
+    roles ["reviewer", "project_owner"]
+    sla {
+      duration "720m"
+      on_breach "notify"
+    }
+    page {
+      title "Review"
+      layout wizard
+      group "task_review_block" {
+        title "task_review_block"
+        forms ["task_review"]
+      }
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "blocked"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "completed" {
+    title "Closure"
+    kind processing
+    roles ["project_owner", "admin"]
+    page {
+      title "Closure"
+      layout wizard
+      group "task_closure_block" {
+        title "task_closure_block"
+        forms ["task_closure"]
+      }
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "review"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

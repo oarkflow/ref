@@ -1,0 +1,248 @@
+pipeline "business_it_service_request" {
+  title "IT Service Request"
+  description "IT service request and support ticket management for businesses"
+  form "request_details" {
+    title "Request Details"
+    input "title" {
+      label "Title"
+      kind text
+      required true
+    }
+    input "service_type" {
+      label "Service Type"
+      kind select
+      required true
+      options ["hardware", "software", "network", "access", "equipment", "training", "other"]
+    }
+    input "priority" {
+      label "Priority"
+      kind select
+      required true
+      options ["critical", "high", "medium", "low"]
+    }
+    input "description" {
+      label "Description"
+      kind textarea
+      required true
+    }
+    input "attachments" {
+      label "Attachments"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  form "triage_form" {
+    title "Triage"
+    input "category" {
+      label "Category"
+      kind select
+      required true
+      options ["hardware", "software", "network", "security", "other"]
+    }
+    input "assigned_to" {
+      label "Assigned To"
+      kind text
+      required true
+    }
+    input "estimated_time" {
+      label "Estimated Time (Hours)"
+      kind text
+    }
+    input "triage_notes" {
+      label "Triage Notes"
+      kind textarea
+    }
+  }
+  form "resolution_form" {
+    title "Resolution"
+    input "resolution_description" {
+      label "Resolution Description"
+      kind textarea
+      required true
+    }
+    input "resolution_actions" {
+      label "Actions Taken"
+      kind textarea
+      required true
+    }
+    input "time_spent" {
+      label "Time Spent (Hours)"
+      kind text
+    }
+    input "parts_used" {
+      label "Parts Used"
+      kind textarea
+    }
+  }
+  form "verification_form" {
+    title "Verification"
+    input "issue_resolved" {
+      label "Issue Resolved"
+      kind boolean
+      required true
+    }
+    input "satisfaction_rating" {
+      label "Satisfaction Rating"
+      kind select
+      required true
+      options ["5", "4", "3", "2", "1"]
+    }
+    input "feedback" {
+      label "Feedback"
+      kind textarea
+    }
+  }
+  form "closure_form" {
+    title "Closure"
+    input "closed" {
+      label "Closed"
+      kind boolean
+      required true
+    }
+    input "closure_notes" {
+      label "Closure Notes"
+      kind textarea
+    }
+  }
+  form "it_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "additional_documents" {
+      label "Additional Documents"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  allow_rfi true
+  notify "assigned" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: assigned"
+    body "Case {case.number} has event assigned"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  stage "request_submission" {
+    title "Request Submission"
+    kind submission
+    public true
+    require_account true
+    roles ["requester"]
+    page {
+      title "Request Submission"
+      layout wizard
+      group "request_block" {
+        title "request_block"
+        forms ["request_details"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "triage" {
+    title "Triage"
+    kind review
+    roles ["it_support"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Triage"
+      layout wizard
+      group "triage_block" {
+        title "triage_block"
+        forms ["triage_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["triage_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "resolution" {
+    title "Resolution"
+    kind processing
+    roles ["it_technician"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Resolution"
+      layout wizard
+      group "resolution_block" {
+        title "resolution_block"
+        forms ["resolution_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "verification" {
+    title "Verification"
+    kind review
+    roles ["requester"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Verification"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["verification_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["verification_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "closure" {
+    title "Closure"
+    kind processing
+    roles ["it_support"]
+    page {
+      title "Closure"
+      layout wizard
+      group "closure_block" {
+        title "closure_block"
+        forms ["closure_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

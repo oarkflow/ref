@@ -1,0 +1,343 @@
+pipeline "business_contract_management" {
+  title "Contract Management"
+  description "Contract lifecycle management for businesses in Nepal"
+  form "contract_details" {
+    title "Contract Details"
+    input "contract_title" {
+      label "Contract Title"
+      kind text
+      required true
+    }
+    input "contract_type" {
+      label "Contract Type"
+      kind select
+      required true
+      options ["service", "purchase", "lease", "employment", "partnership", "nda", "other"]
+    }
+    input "party_a" {
+      label "Party A (Our Company)"
+      kind text
+      required true
+    }
+    input "party_b" {
+      label "Party B (Other Party)"
+      kind text
+      required true
+    }
+    input "start_date" {
+      label "Start Date"
+      kind date
+      required true
+    }
+    input "end_date" {
+      label "End Date"
+      kind date
+      required true
+    }
+    input "contract_value" {
+      label "Contract Value (NPR)"
+      kind text
+      required true
+    }
+    input "description" {
+      label "Description"
+      kind textarea
+      required true
+    }
+  }
+  form "terms_conditions" {
+    title "Terms and Conditions"
+    input "terms_text" {
+      label "Terms and Conditions"
+      kind textarea
+      required true
+    }
+    input "payment_terms" {
+      label "Payment Terms"
+      kind textarea
+    }
+    input "deliverables" {
+      label "Deliverables"
+      kind textarea
+    }
+  }
+  form "legal_review_form" {
+    title "Legal Review"
+    input "legal_reviewed" {
+      label "Legal Reviewed"
+      kind boolean
+      required true
+    }
+    input "legal_risks" {
+      label "Legal Risks"
+      kind textarea
+    }
+    input "compliance_check" {
+      label "Compliance Check"
+      kind select
+      required true
+      options ["compliant", "changes", "non_compliant"]
+    }
+    input "legal_notes" {
+      label "Legal Notes"
+      kind textarea
+    }
+  }
+  form "negotiation_form" {
+    title "Negotiation"
+    input "negotiation_status" {
+      label "Negotiation Status"
+      kind select
+      required true
+      options ["in_progress", "completed", "stalled"]
+    }
+    input "negotiated_terms" {
+      label "Negotiated Terms"
+      kind textarea
+      required true
+    }
+    input "final_terms" {
+      label "Final Terms"
+      kind textarea
+    }
+  }
+  form "approval_form" {
+    title "Approval"
+    input "approval_decision" {
+      label "Approval Decision"
+      kind select
+      required true
+      options ["approved", "rejected", "changes"]
+    }
+    input "approval_notes" {
+      label "Approval Notes"
+      kind textarea
+    }
+    input "approver_name" {
+      label "Approver Name"
+      kind text
+      required true
+    }
+    input "approval_date" {
+      label "Approval Date"
+      kind date
+      required true
+    }
+  }
+  form "signing_form" {
+    title "Signing"
+    input "party_a_signed" {
+      label "Party A Signed"
+      kind boolean
+      required true
+    }
+    input "party_b_signed" {
+      label "Party B Signed"
+      kind boolean
+      required true
+    }
+    input "signed_date" {
+      label "Signed Date"
+      kind date
+      required true
+    }
+    input "signed_contract" {
+      label "Signed Contract"
+      kind file
+      required true
+      accept ["application/pdf"]
+    }
+  }
+  form "execution_form" {
+    title "Execution"
+    input "contract_active" {
+      label "Contract Active"
+      kind boolean
+      required true
+    }
+    input "execution_notes" {
+      label "Execution Notes"
+      kind textarea
+    }
+  }
+  form "contract_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "additional_documents" {
+      label "Additional Documents"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "legal_review"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "negotiation"
+  }
+  stage "contract_creation" {
+    title "Contract Creation"
+    kind submission
+    roles ["legal_team"]
+    page {
+      title "Contract Creation"
+      layout wizard
+      group "creation_block" {
+        title "creation_block"
+        forms ["contract_details", "terms_conditions"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "legal_review" {
+    title "Legal Review"
+    kind review
+    roles ["legal_officer"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Legal Review"
+      layout wizard
+      group "legal_block" {
+        title "legal_block"
+        forms ["legal_review_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["legal_review_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "negotiation" {
+    title "Negotiation"
+    kind review
+    roles ["manager"]
+    sla {
+      duration "10080m"
+      on_breach "notify"
+    }
+    page {
+      title "Negotiation"
+      layout wizard
+      group "negotiation_block" {
+        title "negotiation_block"
+        forms ["negotiation_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["negotiation_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "approval" {
+    title "Approval"
+    kind approval
+    roles ["director"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["approval_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "signing" {
+    title "Signing"
+    kind processing
+    roles ["admin"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Signing"
+      layout wizard
+      group "signing_block" {
+        title "signing_block"
+        forms ["signing_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "execution" {
+    title "Execution"
+    kind processing
+    roles ["operations"]
+    page {
+      title "Execution"
+      layout wizard
+      group "execution_block" {
+        title "execution_block"
+        forms ["execution_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

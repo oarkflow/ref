@@ -1,0 +1,214 @@
+pipeline "government_vendor_project_execution" {
+  title "Vendor Project Execution"
+  description "Execution tracking with milestones, inspection, and payment"
+  form "project_scope_snapshot" {
+    title "Project Scope"
+    input "project_reference" {
+      label "Project Reference"
+      kind text
+      required true
+    }
+    input "scope_summary" {
+      label "Scope Summary"
+      kind textarea
+      required true
+    }
+  }
+  form "resource_assignment" {
+    title "Resource Assignment"
+    input "lead_contact" {
+      label "Lead Contact"
+      kind text
+      required true
+    }
+    input "team_roles" {
+      label "Team Roles"
+      kind textarea
+    }
+  }
+  form "inventory_issue_log" {
+    title "Inventory Issue Log"
+    input "issued_items" {
+      label "Issued Items"
+      kind textarea
+      required true
+    }
+  }
+  form "progress_update" {
+    title "Progress Update"
+    input "progress_percent" {
+      label "Progress %"
+      kind text
+      required true
+    }
+    input "blockers" {
+      label "Blockers"
+      kind textarea
+    }
+  }
+  form "milestone_submission" {
+    title "Milestone Submission"
+    input "milestone_id" {
+      label "Milestone ID"
+      kind text
+      required true
+    }
+    input "deliverable_upload" {
+      label "Deliverable Upload"
+      kind file
+      required true
+    }
+  }
+  form "inspection_record" {
+    title "Inspection Record"
+    input "inspection_outcome" {
+      label "Outcome"
+      kind select
+      required true
+      options ["accepted", "rejected"]
+    }
+    input "punchlist_note" {
+      label "Punchlist Note"
+      kind textarea
+    }
+  }
+  form "payment_request" {
+    title "Payment Request"
+    input "invoice_reference" {
+      label "Invoice Reference"
+      kind text
+      required true
+    }
+    input "claimed_milestone" {
+      label "Claimed Milestone"
+      kind text
+      required true
+    }
+  }
+  form "closeout_report" {
+    title "Closeout Report"
+    input "handover_note" {
+      label "Handover Note"
+      kind textarea
+      required true
+    }
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  stage "mobilization" {
+    title "Mobilization"
+    kind submission
+    public true
+    require_account true
+    roles ["project_manager"]
+    sla {
+      duration "7200m"
+      on_breach "notify"
+    }
+    page {
+      title "Mobilization"
+      layout wizard
+      group "mobilization_block" {
+        title "mobilization_block"
+        forms ["project_scope_snapshot", "resource_assignment", "inventory_issue_log"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "in_progress" {
+    title "In Progress"
+    kind processing
+    roles ["vendor_project_lead"]
+    page {
+      title "In Progress"
+      layout wizard
+      group "progress_block" {
+        title "progress_block"
+        forms ["progress_update"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "milestone_review" {
+    title "Milestone Review"
+    kind review
+    roles ["site_engineer_inspector"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Milestone Review"
+      layout wizard
+      group "milestone_block" {
+        title "milestone_block"
+        forms ["milestone_submission"]
+      }
+      group "inspection_block" {
+        title "inspection_block"
+        forms ["inspection_record"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["milestone_submission", "inspection_record"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "payment_pending" {
+    title "Payment Pending"
+    kind processing
+    roles ["finance_payables"]
+    sla {
+      duration "7200m"
+      on_breach "notify"
+    }
+    page {
+      title "Payment Pending"
+      layout wizard
+      group "payment_block" {
+        title "payment_block"
+        forms ["payment_request"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "closeout" {
+    title "Closeout"
+    kind processing
+    roles ["project_manager"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Closeout"
+      layout wizard
+      group "closeout_block" {
+        title "closeout_block"
+        forms ["closeout_report"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

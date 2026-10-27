@@ -37,10 +37,17 @@ func TestOpsGuardRequiresPrincipal(t *testing.T) {
 	if err := requireOperator(user, []string{"ops"}, "x"); err != nil {
 		t.Fatalf("caller with the role: %v", err)
 	}
+	if err := requireOperator(anon, []string{"admin"}, "x"); category(err) != intent.CategoryAuth {
+		t.Fatalf("anonymous http caller with roles: %v", err)
+	}
 	for _, proto := range []string{"internal", "queue", "process"} {
 		ctx := &ActionContext{Invocation: &invocation.Invocation{Transport: invocation.Transport{Protocol: proto}}}
 		if err := requireOperator(ctx, nil, "x"); err != nil {
 			t.Fatalf("%s work: %v", proto, err)
+		}
+		// A role-restricted action (e.g. an admin-only sweep) must still run when the platform starts it.
+		if err := requireOperator(ctx, []string{"admin"}, "x"); err != nil {
+			t.Fatalf("%s work with roles: %v", proto, err)
 		}
 	}
 }

@@ -1,0 +1,263 @@
+pipeline "government_heritage_building_conservation" {
+  title "Heritage Building Conservation"
+  description "Heritage building conservation permit for Nepal"
+  form "building_info" {
+    title "Building Information"
+    input "owner_name" {
+      label "Owner Name"
+      kind text
+      required true
+    }
+    input "owner_contact" {
+      label "Owner Contact"
+      kind text
+      required true
+    }
+    input "building_address" {
+      label "Building Address"
+      kind text
+      required true
+    }
+    input "heritage_status" {
+      label "Heritage Status Known"
+      kind boolean
+      required true
+    }
+    input "heritage_certificate" {
+      label "Heritage Certificate"
+      kind file
+      accept ["application/pdf"]
+    }
+  }
+  form "conservation_plan" {
+    title "Conservation Plan"
+    input "work_description" {
+      label "Work Description"
+      kind textarea
+      required true
+    }
+    input "conservation_method" {
+      label "Conservation Method"
+      kind textarea
+      required true
+    }
+    input "plan_drawings" {
+      label "Plan Drawings"
+      kind file
+      required true
+      accept ["application/pdf"]
+    }
+  }
+  form "heritage_verification_form" {
+    title "Heritage Verification"
+    input "heritage_verified" {
+      label "Heritage Verified"
+      kind boolean
+      required true
+    }
+    input "heritage_level" {
+      label "Heritage Level"
+      kind select
+      required true
+      options ["national", "provincial", "local"]
+    }
+    input "heritage_notes" {
+      label "Heritage Notes"
+      kind textarea
+    }
+  }
+  form "technical_review_form" {
+    title "Technical Review"
+    input "technical_approved" {
+      label "Technically Approved"
+      kind boolean
+      required true
+    }
+    input "structural_assessment" {
+      label "Structural Assessment"
+      kind textarea
+      required true
+    }
+    input "technical_notes" {
+      label "Technical Notes"
+      kind textarea
+    }
+  }
+  form "approval_form" {
+    title "Approval"
+    input "approval_decision" {
+      label "Decision"
+      kind select
+      required true
+      options ["approved", "rejected"]
+    }
+    input "approval_notes" {
+      label "Approval Notes"
+      kind textarea
+    }
+  }
+  form "permit_issuance_form" {
+    title "Permit Issuance"
+    input "permit_issued" {
+      label "Permit Issued"
+      kind boolean
+      required true
+    }
+    input "permit_number" {
+      label "Permit Number"
+      kind text
+      required true
+    }
+    input "issue_date" {
+      label "Issue Date"
+      kind date
+      required true
+    }
+  }
+  form "heritage_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  stage "application" {
+    title "Application"
+    kind submission
+    public true
+    require_account true
+    roles ["applicant"]
+    page {
+      title "Application"
+      layout wizard
+      group "application_block" {
+        title "application_block"
+        forms ["building_info", "conservation_plan"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "heritage_verification" {
+    title "Heritage Verification"
+    kind review
+    roles ["heritage_officer"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Heritage Verification"
+      layout wizard
+      group "heritage_block" {
+        title "heritage_block"
+        forms ["heritage_verification_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["heritage_verification_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "technical_review" {
+    title "Technical Review"
+    kind review
+    roles ["engineer"]
+    sla {
+      duration "5760m"
+      on_breach "notify"
+    }
+    page {
+      title "Technical Review"
+      layout wizard
+      group "technical_block" {
+        title "technical_block"
+        forms ["technical_review_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["technical_review_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "approval" {
+    title "Approval"
+    kind approval
+    roles ["director"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["approval_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "permit_issuance" {
+    title "Permit Issuance"
+    kind processing
+    roles ["admin"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Permit Issuance"
+      layout wizard
+      group "issuance_block" {
+        title "issuance_block"
+        forms ["permit_issuance_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

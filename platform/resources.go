@@ -35,6 +35,7 @@ func registerBuiltinResources(r *Registry) {
 	registerMiscResources(r)
 	registerProcessStoreResources(r)
 	registerOrgResources(r)
+	registerLookupResources(r)
 	registerPipelineResources(r)
 	registerETLResources(r)
 	registerSecureTransportResources(r)

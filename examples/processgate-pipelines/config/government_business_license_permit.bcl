@@ -1,0 +1,462 @@
+pipeline "government_business_license_permit" {
+  title "Business License Permit"
+  description "Business registration, renewal, and operating permit issuance workflow"
+  form "business_profile" {
+    title "Business Profile"
+    input "proprietor_or_company_name" {
+      label "Proprietor/Company Name"
+      kind text
+      required true
+    }
+    input "registration_number" {
+      label "Registration Number"
+      kind text
+      required true
+    }
+    input "pan_number" {
+      label "PAN Number"
+      kind text
+      required true
+    }
+    input "business_address" {
+      label "Business Address"
+      kind textarea
+      required true
+    }
+    input "ward_number" {
+      label "Ward Number"
+      kind select
+      required true
+      options ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]
+    }
+    input "contact_phone" {
+      label "Contact Phone"
+      kind text
+      required true
+    }
+    input "contact_email" {
+      label "Contact Email"
+      kind text
+    }
+  }
+  form "permit_scope" {
+    title "Permit Scope"
+    input "business_category" {
+      label "Business Category"
+      kind select
+      required true
+      options ["retail", "restaurant", "manufacturing", "service", "trading", "other"]
+    }
+    input "business_activity" {
+      label "Business Activity"
+      kind textarea
+      required true
+    }
+    input "floor_area" {
+      label "Floor Area (sq ft)"
+      kind text
+    }
+    input "operating_location" {
+      label "Operating Location"
+      kind text
+      required true
+    }
+    input "renewal_flag" {
+      label "Is Renewal?"
+      kind boolean
+    }
+    input "environmental_or_health_flag" {
+      label "Requires Environmental/Health Check"
+      kind boolean
+    }
+  }
+  form "permit_documents" {
+    title "Permit Documents"
+    input "citizenship_upload" {
+      label "Citizenship Document"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+    input "company_registration_upload" {
+      label "Company Registration"
+      kind file
+      accept ["application/pdf"]
+    }
+    input "pan_certificate_upload" {
+      label "PAN Certificate"
+      kind file
+      accept ["application/pdf"]
+    }
+    input "rent_deed_upload" {
+      label "Rent Deed"
+      kind file
+      accept ["application/pdf"]
+    }
+    input "ownership_proof_upload" {
+      label "Ownership Proof"
+      kind file
+      accept ["application/pdf"]
+    }
+    input "previous_permit_upload" {
+      label "Previous Permit (for renewal)"
+      kind file
+      accept ["application/pdf"]
+    }
+  }
+  form "front_desk_form" {
+    title "Front Desk Review"
+    input "intake_complete" {
+      label "Intake Complete"
+      kind boolean
+      required true
+    }
+    input "application_type" {
+      label "Application Type"
+      kind select
+      required true
+      options ["new", "renewal", "amendment"]
+    }
+    input "intake_note" {
+      label "Intake Note"
+      kind textarea
+    }
+  }
+  form "document_scrutiny" {
+    title "Document Scrutiny"
+    input "document_complete" {
+      label "Documents Complete"
+      kind boolean
+      required true
+    }
+    input "registration_match" {
+      label "Registration Match"
+      kind boolean
+      required true
+    }
+    input "pan_match" {
+      label "PAN Match"
+      kind boolean
+      required true
+    }
+    input "address_match" {
+      label "Address Match"
+      kind boolean
+      required true
+    }
+    input "scrutiny_note" {
+      label "Scrutiny Note"
+      kind textarea
+    }
+  }
+  form "technical_review_form" {
+    title "Technical Review"
+    input "zoning_fit" {
+      label "Zoning Fit"
+      kind select
+      required true
+      options ["compliant", "non_compliant", "needs_review"]
+    }
+    input "inspection_required" {
+      label "Inspection Required"
+      kind boolean
+    }
+    input "health_safety_status" {
+      label "Health/Safety Status"
+      kind select
+      options ["approved", "pending", "issues"]
+    }
+    input "technical_remarks" {
+      label "Technical Remarks"
+      kind textarea
+    }
+  }
+  form "revenue_clearance" {
+    title "Revenue Clearance"
+    input "fee_assessed" {
+      label "Fee Assessed"
+      kind text
+      required true
+    }
+    input "arrears_found" {
+      label "Arrears Found"
+      kind boolean
+      required true
+    }
+    input "payment_reference" {
+      label "Payment Reference"
+      kind text
+    }
+    input "waiver_reason" {
+      label "Waiver Reason"
+      kind textarea
+    }
+    input "revenue_note" {
+      label "Revenue Note"
+      kind textarea
+    }
+  }
+  form "permit_decision" {
+    title "Permit Decision"
+    input "decision" {
+      label "Decision"
+      kind select
+      required true
+      options ["approved", "rejected", "rework"]
+    }
+    input "permit_validity_period" {
+      label "Permit Validity Period"
+      kind text
+    }
+    input "decision_note" {
+      label "Decision Note"
+      kind textarea
+    }
+    input "conditions" {
+      label "Conditions"
+      kind textarea
+    }
+  }
+  form "permit_issue_packet" {
+    title "Permit Issue Packet"
+    input "permit_number" {
+      label "Permit Number"
+      kind text
+      required true
+    }
+    input "issue_date" {
+      label "Issue Date"
+      kind date
+      required true
+    }
+    input "qr_reference" {
+      label "QR Reference"
+      kind text
+    }
+    input "delivery_mode" {
+      label "Delivery Mode"
+      kind select
+      required true
+      options ["pickup", "courier", "digital"]
+    }
+    input "permit_pdf" {
+      label "Permit PDF"
+      kind file
+      accept ["application/pdf"]
+    }
+  }
+  form "permit_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "revised_business_activity" {
+      label "Revised Business Activity"
+      kind textarea
+    }
+    input "replacement_document_upload" {
+      label "Replacement Document"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.rejected" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.rejected"
+    body "Case {case.number} has event case.rejected"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "document_review"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "technical_review"
+  }
+  stage "permit_submission" {
+    title "Application Submission"
+    kind submission
+    public true
+    require_account true
+    roles ["business_applicant"]
+    page {
+      title "Application Submission"
+      layout wizard
+      group "application_core" {
+        title "application_core"
+        forms ["business_profile", "permit_scope"]
+      }
+      group "application_documents" {
+        title "application_documents"
+        forms ["permit_documents"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "front_desk_review" {
+    title "Front Desk Review"
+    kind processing
+    roles ["front_desk_officer"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Front Desk Review"
+      layout wizard
+      group "front_desk_block" {
+        title "front_desk_block"
+        forms ["front_desk_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "document_review" {
+    title "Document Review"
+    kind review
+    roles ["document_verifier"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Document Review"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["document_scrutiny"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["document_scrutiny"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "technical_review" {
+    title "Technical Review"
+    kind review
+    roles ["technical_reviewer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Technical Review"
+      layout wizard
+      group "technical_block" {
+        title "technical_block"
+        forms ["technical_review_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["technical_review_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "revenue_review" {
+    title "Revenue Review"
+    kind processing
+    roles ["revenue_officer"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Revenue Review"
+      layout wizard
+      group "revenue_block" {
+        title "revenue_block"
+        forms ["revenue_clearance"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "approval_decision" {
+    title "Approval Decision"
+    kind approval
+    roles ["licensing_approver"]
+    sla {
+      duration "240m"
+      on_breach "notify"
+    }
+    page {
+      title "Approval Decision"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["permit_decision"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "permit_issuance" {
+    title "Permit Issuance"
+    kind processing
+    roles ["permit_issuer"]
+    sla {
+      duration "240m"
+      on_breach "notify"
+    }
+    page {
+      title "Permit Issuance"
+      layout wizard
+      group "issuance_block" {
+        title "issuance_block"
+        forms ["permit_issue_packet"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

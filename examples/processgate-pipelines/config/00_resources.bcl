@@ -1,0 +1,49 @@
+name "processgate_pipelines"
+version "1"
+resource "database" {
+  kind "database.sql"
+  config {
+    driver "sqlite"
+    dsn env("PROCESSGATE_PIPELINES_DSN", "file:.data/processgate-pipelines.db?_pragma=busy_timeout(5000)")
+    migrations ["CREATE TABLE IF NOT EXISTS processgate_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, channel TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"]
+  }
+}
+resource "cases" {
+  kind "pipeline.cases"
+  config {
+    database "database"
+    pipelines ["anti_corruption_monitoring", "bank_account_closure", "bank_atm_card_issuance", "bank_branch_opening", "bank_credit_card_application", "bank_fixed_deposit", "bank_foreign_exchange", "bank_kyc_account_opening", "bank_loan_approval", "bank_locker_service", "bank_mobile_banking_registration", "bank_regulatory_reporting", "bank_remittance_payout_compliance", "bank_trade_finance", "budget_request_release_approval", "business_budget_approval", "business_contract_management", "business_employee_offboarding", "business_expense_approval", "business_it_service_request", "business_leave_management", "business_performance_appraisal", "business_travel_request", "cabinet_decision_implementation_tracking", "cafe_menu_approval", "citizenship_recommendation_file_tracking", "crop_damage_assessment_relief", "disaster_incident_response_relief", "document_verification", "education_alumni_registration", "education_course_registration", "education_exam_schedule", "education_parent_teacher_meeting", "education_student_admission", "education_student_discipline", "education_student_transfer", "environmental_impact_review_compliance", "farmer_subsidy_grant_administration", "forest_encroachment_restoration_action", "government_advertisement_permit", "government_birth_certificate", "government_building_completion_certificate", "government_building_occupancy_certificate", "government_building_permit", "government_business_license_permit", "government_citizenship_recommendation", "government_contract_management", "government_death_certificate", "government_disability_id_card", "government_electricity_complaint", "government_family_relationship_certificate", "government_heritage_building_conservation", "government_land_house_tax_clearance", "government_local_service_appointment", "government_marriage_registration", "government_migration_basainsarai", "government_nagarpalika_recommendation_letter", "government_national_id_enrollment_support", "government_old_age_pension", "government_procurement_tender", "government_ration_card", "government_senior_citizen_id_card", "government_social_security_allowance", "government_vendor_onboarding", "government_vendor_project_execution", "government_vital_event_correction", "government_ward_recommendation_letter", "government_widow_pension", "health_facility_inspection_corrective_action", "heritage_conservation_work_monitoring", "hydropower_project_approval_monitoring", "industry_registration_renewal_compliance", "inter_ministry_project_obstruction_clearance", "irrigation_scheme_operation_maintenance", "labour_complaint_dispute_resolution", "local_government_service_performance_monitoring", "market_monitoring_consumer_protection", "medicine_stockout_emergency_supply", "nagdhunga_road_construction_progress", "nepal_passport_application", "project_task_activity_tracker", "project_task_lifecycle", "public_building_construction_supervision", "public_community_hall_booking", "public_dog_registration", "public_electricity_connection", "public_grievance_cross_ministry_routing", "public_grievance_resolution", "public_library_card", "public_sports_complex_booking", "public_swimming_pool_access", "public_tree_cutting_permission", "restaurant_table_reservation", "revenue_leakage_audit_observation_closure", "road_maintenance_pothole_response", "scholarship_application_verification", "school_infrastructure_grant_monitoring", "service_water_connection_request", "social_security_enrollment_claim_processing", "staff_transfer_deputation_posting", "tourism_business_licensing_renewal", "urban_drainage_flood_mitigation"]
+    storage "files"
+    allow_anonymous true
+    notify_channels { in_app "notifications.deliver" }
+    signing_secret env.required("PROCESSGATE_PIPELINES_SIGNING_SECRET")
+  }
+}
+resource "files" {
+  kind "storage.fs"
+  config {
+    dir env("PROCESSGATE_PIPELINES_FILES", ".data/files")
+  }
+}
+resource "jwt" {
+  kind "auth.jwt"
+  config {
+    secret env.required("PROCESSGATE_PIPELINES_JWT_SECRET")
+  }
+}
+resource "users" {
+  kind "identity.users"
+  config {
+    database "database"
+    token_issuer "jwt"
+    bootstrap {
+      email env.required("PROCESSGATE_PIPELINES_ADMIN_EMAIL")
+      password env.required("PROCESSGATE_PIPELINES_ADMIN_PASSWORD")
+      tenant "processgate"
+      roles ["admin"]
+    }
+  }
+}
+resource "limits" {
+  kind "ratelimit.memory"
+}

@@ -1,0 +1,369 @@
+pipeline "public_dog_registration" {
+  title "Dog Registration"
+  description "Pet dog registration in Nepal municipalities with vaccination verification and license issuance"
+  form "dog_application" {
+    title "Dog Application"
+    input "owner_full_name" {
+      label "Owner Full Name"
+      kind text
+      required true
+    }
+    input "owner_address" {
+      label "Owner Address"
+      kind text
+      required true
+    }
+    input "owner_phone" {
+      label "Owner Phone"
+      kind text
+      required true
+    }
+    input "owner_citizenship" {
+      label "Citizenship Number"
+      kind text
+      required true
+    }
+  }
+  form "dog_details" {
+    title "Dog Details"
+    input "dog_name" {
+      label "Dog Name"
+      kind text
+      required true
+    }
+    input "breed" {
+      label "Breed"
+      kind text
+      required true
+    }
+    input "age_years" {
+      label "Age (Years)"
+      kind text
+      required true
+    }
+    input "color" {
+      label "Color"
+      kind text
+      required true
+    }
+    input "gender" {
+      label "Gender"
+      kind select
+      required true
+      options ["male", "female"]
+    }
+    input "is_neutered" {
+      label "Neutered/Spayed"
+      kind boolean
+    }
+    input "dog_photo" {
+      label "Dog Photo"
+      kind file
+      required true
+      accept ["image/*"]
+    }
+  }
+  form "document_verification" {
+    title "Document Verification"
+    input "documents_verified" {
+      label "Documents Verified"
+      kind boolean
+      required true
+    }
+    input "verification_notes" {
+      label "Verification Notes"
+      kind textarea
+    }
+  }
+  form "owner_verification" {
+    title "Owner Verification"
+    input "owner_verified" {
+      label "Owner Verified"
+      kind boolean
+      required true
+    }
+  }
+  form "health_check" {
+    title "Health Check"
+    input "health_checked" {
+      label "Health Checked"
+      kind boolean
+      required true
+    }
+    input "health_status" {
+      label "Health Status"
+      kind select
+      required true
+      options ["healthy", "needs_treatment"]
+    }
+    input "health_notes" {
+      label "Health Notes"
+      kind textarea
+    }
+  }
+  form "vaccination_records" {
+    title "Vaccination Records"
+    input "rabies_vaccination" {
+      label "Rabies Vaccination"
+      kind boolean
+      required true
+    }
+    input "vaccination_date" {
+      label "Vaccination Date"
+      kind date
+    }
+    input "vaccination_card" {
+      label "Vaccination Card"
+      kind file
+      required true
+      accept ["image/*,application/pdf"]
+    }
+    input "vaccination_verified" {
+      label "Vaccination Verified"
+      kind boolean
+      required true
+    }
+  }
+  form "registration_approval" {
+    title "Registration Approval"
+    input "registration_approved" {
+      label "Registration Approved"
+      kind boolean
+      required true
+    }
+    input "is_aggressive_breed" {
+      label "Aggressive Breed"
+      kind boolean
+    }
+    input "special_permit_required" {
+      label "Special Permit Required"
+      kind boolean
+    }
+    input "approval_notes" {
+      label "Approval Notes"
+      kind textarea
+    }
+  }
+  form "fee_receipt" {
+    title "Fee Receipt"
+    input "fee_paid" {
+      label "Fee Paid"
+      kind boolean
+      required true
+    }
+    input "receipt_number" {
+      label "Receipt Number"
+      kind text
+    }
+    input "amount_paid" {
+      label "Amount Paid (NPR)"
+      kind text
+    }
+  }
+  form "license_issuance" {
+    title "License Issuance"
+    input "license_issued" {
+      label "License Issued"
+      kind boolean
+      required true
+    }
+    input "license_number" {
+      label "License Number"
+      kind text
+      required true
+    }
+    input "issue_date" {
+      label "Issue Date"
+      kind date
+      required true
+    }
+    input "expiry_date" {
+      label "Expiry Date"
+      kind date
+      required true
+    }
+  }
+  form "tag_issued" {
+    title "Tag Issued"
+    input "tag_issued_flag" {
+      label "Tag Issued"
+      kind boolean
+      required true
+    }
+    input "tag_number" {
+      label "Tag Number"
+      kind text
+      required true
+    }
+  }
+  form "dog_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "additional_documents" {
+      label "Additional Documents"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  payment {
+    currency "NPR"
+    amount 0
+    verifier_roles ["payment_officer", "admin"]
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "document_verification"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "health_verification"
+  }
+  stage "application_submission" {
+    title "Application Submission"
+    kind submission
+    public true
+    require_account true
+    roles ["applicant"]
+    page {
+      title "Application Submission"
+      layout wizard
+      group "application_block" {
+        title "application_block"
+        forms ["dog_application", "dog_details"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "document_verification" {
+    title "Document Verification"
+    kind review
+    roles ["verification_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Document Verification"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["document_verification", "owner_verification"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["document_verification", "owner_verification"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "health_verification" {
+    title "Health Verification"
+    kind review
+    roles ["vet_officer"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Health Verification"
+      layout wizard
+      group "health_block" {
+        title "health_block"
+        forms ["health_check", "vaccination_records"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["health_check", "vaccination_records"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "final_approval" {
+    title "Final Approval"
+    kind approval
+    roles ["registration_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Final Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["registration_approval", "fee_receipt"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "license_issuance" {
+    title "License Issuance"
+    kind processing
+    roles ["admin"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "License Issuance"
+      layout wizard
+      group "issuance_block" {
+        title "issuance_block"
+        forms ["license_issuance", "tag_issued"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

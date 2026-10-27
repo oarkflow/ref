@@ -1,0 +1,328 @@
+pipeline "government_contract_management" {
+  title "Contract Management"
+  description "Contract lifecycle for government procurement"
+  form "contract_request_form" {
+    title "Contract Request"
+    input "contract_type" {
+      label "Contract Type"
+      kind text
+      required true
+    }
+    input "vendor_id" {
+      label "Vendor ID"
+      kind text
+      required true
+    }
+    input "award_reference" {
+      label "Award Reference"
+      kind text
+      required true
+    }
+  }
+  form "commercial_request_form" {
+    title "Commercial Details"
+    input "contract_value" {
+      label "Contract Value"
+      kind text
+      required true
+    }
+    input "payment_structure" {
+      label "Payment Structure"
+      kind select
+      required true
+      options ["milestone", "advance", "recurring"]
+    }
+  }
+  form "request_supporting_documents" {
+    title "Supporting Documents"
+    input "scope_file" {
+      label "Scope File"
+      kind file
+      required true
+    }
+  }
+  form "business_review_form" {
+    title "Business Review"
+    input "business_decision" {
+      label "Decision"
+      kind select
+      required true
+      options ["proceed", "reject"]
+    }
+  }
+  form "legal_review_form" {
+    title "Legal Review"
+    input "legal_decision" {
+      label "Legal Decision"
+      kind select
+      required true
+      options ["approve", "changes"]
+    }
+  }
+  form "finance_review_form" {
+    title "Finance Review"
+    input "finance_decision" {
+      label "Finance Decision"
+      kind select
+      required true
+      options ["approve", "reject"]
+    }
+  }
+  form "payment_schedule_form" {
+    title "Payment Schedule"
+    input "milestone_dates" {
+      label "Milestone Dates"
+      kind textarea
+    }
+  }
+  form "approval_decision_form" {
+    title "Approval Decision"
+    input "approval_decision" {
+      label "Decision"
+      kind select
+      required true
+      options ["approved", "rejected"]
+    }
+  }
+  form "vendor_execution_form" {
+    title "Vendor Execution"
+    input "signed_copy_upload" {
+      label "Signed Contract"
+      kind file
+      required true
+    }
+  }
+  form "execution_record_form" {
+    title "Execution Record"
+    input "execution_date" {
+      label "Execution Date"
+      kind date
+      required true
+    }
+    input "contract_number" {
+      label "Contract Number"
+      kind text
+      required true
+    }
+  }
+  form "contract_activation_form" {
+    title "Contract Activation"
+    input "milestone_schedule_ref" {
+      label "Milestone Schedule Ref"
+      kind text
+    }
+    input "project_reference" {
+      label "Project Reference"
+      kind text
+      required true
+    }
+  }
+  form "contract_rfi_response" {
+    title "RFI Response"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "business_review"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "execution"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "finance_review"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "legal_review"
+  }
+  stage "contract_request" {
+    title "Contract Request"
+    kind submission
+    public true
+    require_account true
+    roles ["contract_requester"]
+    page {
+      title "Contract Request"
+      layout wizard
+      group "request_block" {
+        title "request_block"
+        forms ["contract_request_form", "commercial_request_form"]
+      }
+      group "request_document_block" {
+        title "request_document_block"
+        forms ["request_supporting_documents"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "business_review" {
+    title "Business Review"
+    kind review
+    roles ["department_head"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Business Review"
+      layout wizard
+      group "business_review_block" {
+        title "business_review_block"
+        forms ["business_review_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["business_review_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "legal_review" {
+    title "Legal Review"
+    kind review
+    roles ["legal_officer"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Legal Review"
+      layout wizard
+      group "legal_review_block" {
+        title "legal_review_block"
+        forms ["legal_review_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["legal_review_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "finance_review" {
+    title "Finance Review"
+    kind review
+    roles ["finance_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Finance Review"
+      layout wizard
+      group "finance_review_block" {
+        title "finance_review_block"
+        forms ["finance_review_form", "payment_schedule_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["finance_review_form", "payment_schedule_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "approval" {
+    title "Approval"
+    kind approval
+    roles ["procurement_approver"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["approval_decision_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "execution" {
+    title "Execution"
+    kind processing
+    roles ["contract_admin"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Execution"
+      layout wizard
+      group "execution_block" {
+        title "execution_block"
+        forms ["execution_record_form", "contract_activation_form"]
+      }
+      group "vendor_execution_block" {
+        title "vendor_execution_block"
+        forms ["vendor_execution_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

@@ -1,0 +1,171 @@
+pipeline "public_library_card" {
+  title "Library Card"
+  description "Public library card registration and issuance"
+  form "applicant_info" {
+    title "Applicant Information"
+    input "full_name" {
+      label "Full Name"
+      kind text
+      required true
+    }
+    input "date_of_birth" {
+      label "Date of Birth"
+      kind date
+      required true
+    }
+    input "gender" {
+      label "Gender"
+      kind select
+      required true
+      options ["male", "female", "other"]
+    }
+    input "address" {
+      label "Address"
+      kind text
+      required true
+    }
+    input "phone" {
+      label "Phone"
+      kind text
+      required true
+    }
+    input "email" {
+      label "Email"
+      kind text
+    }
+    input "id_proof" {
+      label "ID Proof"
+      kind file
+      required true
+      accept ["image/*,application/pdf"]
+    }
+  }
+  form "verification_form" {
+    title "Verification"
+    input "documents_verified" {
+      label "Documents Verified"
+      kind boolean
+      required true
+    }
+    input "verification_notes" {
+      label "Verification Notes"
+      kind textarea
+    }
+  }
+  form "issuance_form" {
+    title "Issuance"
+    input "card_issued" {
+      label "Card Issued"
+      kind boolean
+      required true
+    }
+    input "card_number" {
+      label "Card Number"
+      kind text
+      required true
+    }
+    input "issue_date" {
+      label "Issue Date"
+      kind date
+      required true
+    }
+    input "expiry_date" {
+      label "Expiry Date"
+      kind date
+      required true
+    }
+  }
+  form "library_card_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  stage "application" {
+    title "Application"
+    kind submission
+    public true
+    require_account true
+    roles ["applicant"]
+    page {
+      title "Application"
+      layout wizard
+      group "application_block" {
+        title "application_block"
+        forms ["applicant_info"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "verification" {
+    title "Verification"
+    kind review
+    roles ["verification_officer"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Verification"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["verification_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["verification_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "issuance" {
+    title "Issuance"
+    kind processing
+    roles ["librarian"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Issuance"
+      layout wizard
+      group "issuance_block" {
+        title "issuance_block"
+        forms ["issuance_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

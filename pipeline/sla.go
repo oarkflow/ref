@@ -26,6 +26,10 @@ func (e *Engine) startSLA(st *Stage, ss *StageState, now time.Time) {
 		}
 		state.WarnAt = &at
 	}
+	if pick, _ := ParseSpan(st.SLA.PickupTimeout); !pick.Zero() {
+		at := pick.From(cal, now)
+		state.PickupDueAt = &at
+	}
 	ss.SLA = state
 	due := state.DueAt
 	ss.DueAt = &due
@@ -74,6 +78,18 @@ func (e *Engine) Sweep(ctx context.Context, in *Case) (*Case, SweepResult, error
 		c.emit("sla.warning", st.Name, "system", now, map[string]any{"due_at": sla.DueAt, "assignee": ss.Assignee})
 		c.History = append(c.History, Entry{At: now, Actor: "system", Stage: st.Name, Action: "sla_warning"})
 		res.Changed = true
+	}
+	if sla.PickupDueAt != nil && !sla.PickupBreached && ss.Assignee == "" && !now.Before(*sla.PickupDueAt) {
+		sla.PickupBreached = true
+		action := orDefault(st.SLA.OnPickupTimeout, "notify")
+		c.History = append(c.History, Entry{At: now, Actor: "system", Stage: st.Name, Action: "sla_pickup_breached", To: action})
+		c.emit("sla.pickup_breached", st.Name, "system", now, map[string]any{"due_at": *sla.PickupDueAt, "action": action})
+		res.Changed = true
+		if action == "reassign" {
+			if err := e.route(ctx, c, st, ss, nil, nil, "pickup timeout"); err != nil {
+				return nil, res, err
+			}
+		}
 	}
 	if sla.Status != SLABreached && !now.Before(sla.DueAt) {
 		sla.Status = SLABreached
@@ -132,6 +148,14 @@ func (e *Engine) onBreach(ctx context.Context, c *Case, st *Stage, ss *StageStat
 			exclude = []string{held}
 		}
 		return e.route(ctx, c, st, ss, nil, exclude, "SLA breached")
+	case "release":
+		if held := ss.Assignee; held != "" {
+			now := e.now()
+			e.setAssignee(c, st.Name, ss, "", now)
+			c.History = append(c.History, Entry{At: now, Actor: "system", Stage: st.Name, Action: "release", From: held, Comment: "SLA breached"})
+			c.emit("released", st.Name, "system", now, map[string]any{"from": held})
+		}
+		return nil
 	case "return":
 		return e.returnTo(c, st, ss, st.SLA.ReturnTo, system, "SLA breached", nil, e.now())
 	default:

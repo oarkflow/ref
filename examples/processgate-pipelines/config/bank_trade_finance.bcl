@@ -1,0 +1,470 @@
+pipeline "bank_trade_finance" {
+  title "Bank Trade Finance"
+  description "Trade finance workflow for Letters of Credit and Bank Guarantees aligned with Nepal Rastra Bank regulations"
+  form "trade_details" {
+    title "Trade Details"
+    input "trade_type" {
+      label "Trade Type"
+      kind select
+      required true
+      options ["lc", "bg"]
+    }
+    input "amount" {
+      label "Amount"
+      kind text
+      required true
+    }
+    input "currency" {
+      label "Currency"
+      kind select
+      required true
+      options ["USD", "EUR", "NPR", "INR"]
+    }
+    input "tenor_days" {
+      label "Tenor (Days)"
+      kind text
+      required true
+    }
+    input "purpose" {
+      label "Purpose"
+      kind textarea
+      required true
+    }
+  }
+  form "beneficiary_info" {
+    title "Beneficiary Information"
+    input "beneficiary_name" {
+      label "Beneficiary Name"
+      kind text
+      required true
+    }
+    input "beneficiary_country" {
+      label "Beneficiary Country"
+      kind text
+      required true
+    }
+    input "beneficiary_bank" {
+      label "Beneficiary Bank"
+      kind text
+      required true
+    }
+    input "beneficiary_bank_address" {
+      label "Beneficiary Bank Address"
+      kind textarea
+      required true
+    }
+    input "beneficiary_account" {
+      label "Beneficiary Account Number"
+      kind text
+    }
+  }
+  form "document_requirements" {
+    title "Document Requirements"
+    input "required_documents" {
+      label "Required Documents List"
+      kind textarea
+      required true
+    }
+    input "shipment_details" {
+      label "Shipment Details"
+      kind textarea
+    }
+    input "incoterms" {
+      label "Incoterms"
+      kind select
+      options ["FOB", "CIF", "CFR", "EXW", "DDP"]
+    }
+  }
+  form "document_check" {
+    title "Document Check"
+    input "documents_verified" {
+      label "Documents Verified"
+      kind boolean
+      required true
+    }
+    input "discrepancies_found" {
+      label "Discrepancies Found"
+      kind boolean
+    }
+    input "discrepancy_notes" {
+      label "Discrepancy Notes"
+      kind textarea
+    }
+    input "document_review_notes" {
+      label "Review Notes"
+      kind textarea
+    }
+  }
+  form "terms_verification" {
+    title "Terms Verification"
+    input "terms_compliant" {
+      label "Terms Compliant"
+      kind boolean
+      required true
+    }
+    input "value_confirmed" {
+      label "Value Confirmed"
+      kind boolean
+      required true
+    }
+    input "terms_verification_notes" {
+      label "Terms Verification Notes"
+      kind textarea
+    }
+  }
+  form "risk_evaluation" {
+    title "Risk Evaluation"
+    input "credit_risk_score" {
+      label "Credit Risk Score"
+      kind text
+      required true
+    }
+    input "country_risk" {
+      label "Country Risk"
+      kind select
+      required true
+      options ["low", "medium", "high"]
+    }
+    input "currency_risk" {
+      label "Currency Risk"
+      kind select
+      required true
+      options ["low", "medium", "high"]
+    }
+    input "overall_risk_rating" {
+      label "Overall Risk Rating"
+      kind select
+      required true
+      options ["low", "medium", "high"]
+    }
+    input "risk_notes" {
+      label "Risk Notes"
+      kind textarea
+    }
+  }
+  form "collateral_check" {
+    title "Collateral Check"
+    input "collateral_required" {
+      label "Collateral Required"
+      kind boolean
+      required true
+    }
+    input "collateral_margin" {
+      label "Collateral Margin (%)"
+      kind text
+    }
+    input "collateral_verified" {
+      label "Collateral Verified"
+      kind boolean
+    }
+    input "collateral_notes" {
+      label "Collateral Notes"
+      kind textarea
+    }
+  }
+  form "compliance_approval" {
+    title "Compliance Approval"
+    input "regulatory_compliance" {
+      label "Regulatory Compliance"
+      kind boolean
+      required true
+    }
+    input "sanction_screening" {
+      label "Sanction Screening"
+      kind boolean
+      required true
+    }
+    input "sanction_result" {
+      label "Sanction Screening Result"
+      kind select
+      required true
+      options ["clear", "review", "flagged"]
+    }
+    input "compliance_approved" {
+      label "Compliance Approved"
+      kind boolean
+      required true
+    }
+    input "approval_notes" {
+      label "Approval Notes"
+      kind textarea
+    }
+  }
+  form "issuance_setup" {
+    title "Issuance Setup"
+    input "lc_number" {
+      label "LC/BG Number"
+      kind text
+    }
+    input "issuance_mode" {
+      label "Issuance Mode"
+      kind select
+      required true
+      options ["irrevocable", "revocable", "standby"]
+    }
+    input "issue_date" {
+      label "Issue Date"
+      kind date
+      required true
+    }
+    input "expiry_date" {
+      label "Expiry Date"
+      kind date
+      required true
+    }
+    input "expiry_place" {
+      label "Expiry Place"
+      kind text
+      required true
+    }
+  }
+  form "issuance_record" {
+    title "Issuance Record"
+    input "issuance_confirmed" {
+      label "Issuance Confirmed"
+      kind boolean
+      required true
+    }
+    input "beneficiary_notified" {
+      label "Beneficiary Notified"
+      kind boolean
+      required true
+    }
+    input "advising_bank" {
+      label "Advising Bank"
+      kind text
+    }
+    input "issuance_notes" {
+      label "Issuance Notes"
+      kind textarea
+    }
+  }
+  form "payment_tracking" {
+    title "Payment Tracking"
+    input "presentation_received" {
+      label "Document Presentation Received"
+      kind boolean
+    }
+    input "payment_status" {
+      label "Payment Status"
+      kind select
+      options ["pending", "paid", "settled", "not_paid"]
+    }
+    input "payment_date" {
+      label "Payment Date"
+      kind date
+    }
+    input "tracking_notes" {
+      label "Tracking Notes"
+      kind textarea
+    }
+  }
+  form "trade_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "additional_documents" {
+      label "Additional Documents"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  payment {
+    currency "NPR"
+    amount 0
+    verifier_roles ["payment_officer", "admin"]
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "document_review"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "risk_assessment"
+  }
+  stage "application_submission" {
+    title "Application Submission"
+    kind submission
+    public true
+    require_account true
+    roles ["trade_applicant"]
+    page {
+      title "Application Submission"
+      layout wizard
+      group "application_block" {
+        title "application_block"
+        forms ["trade_details", "beneficiary_info", "document_requirements"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "rm_review" {
+    title "RM Review"
+    kind processing
+    roles ["relationship_manager"]
+    sla {
+      duration "240m"
+      on_breach "notify"
+    }
+    page {
+      title "RM Review"
+      layout wizard
+      group "application_block" {
+        title "application_block"
+        forms ["trade_details", "beneficiary_info", "document_requirements"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "document_review" {
+    title "Document Review"
+    kind review
+    roles ["trade_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Document Review"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["document_check", "terms_verification"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["document_check", "terms_verification"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "risk_assessment" {
+    title "Risk Assessment"
+    kind review
+    roles ["risk_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Risk Assessment"
+      layout wizard
+      group "risk_block" {
+        title "risk_block"
+        forms ["risk_evaluation", "collateral_check"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["risk_evaluation", "collateral_check"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "pending_approval" {
+    title "Compliance Approval"
+    kind approval
+    roles ["compliance_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Compliance Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["compliance_approval"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "issuance" {
+    title "LC/BG Issuance"
+    kind processing
+    roles ["treasury_officer"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "LC/BG Issuance"
+      layout wizard
+      group "issuance_block" {
+        title "issuance_block"
+        forms ["issuance_setup", "issuance_record", "payment_tracking"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "active" {
+    title "Active Tracking"
+    kind processing
+    roles ["treasury_officer"]
+    page {
+      title "Active Tracking"
+      layout wizard
+      group "issuance_block" {
+        title "issuance_block"
+        forms ["issuance_setup", "issuance_record", "payment_tracking"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

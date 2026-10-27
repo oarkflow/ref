@@ -1212,6 +1212,12 @@ func (e *Engine) beginAct(c *Case, actor Actor, stage string, spec ActionSpec, i
 // answered, every acknowledgement accepted, its rules hold and its nodes are
 // satisfied.
 func (e *Engine) checkAdvance(c *Case, st *Stage, ss *StageState, spec ActionSpec, actor Actor, input ActInput, system bool) error {
+	if c.Status == CaseRequiresInformation {
+		return badState("an information request is pending")
+	}
+	if pay := e.C.Def.Payment; pay != nil && (spec.Outcome == OutcomeApprove || (spec.Next == "" && e.nextStage(st) == "")) && c.Payment == nil {
+		return badState("payment must be verified before completion")
+	}
 	missing := e.missingRequired(c, st, ss, actor)
 	if !system {
 		missing = append(missing, e.checkAcks(c, st, actor, input.Acknowledgements)...)

@@ -1,0 +1,241 @@
+pipeline "public_grievance_resolution" {
+  title "Grievance Resolution"
+  description "Public grievance submission and resolution process"
+  form "grievance_details" {
+    title "Grievance Details"
+    input "full_name" {
+      label "Full Name"
+      kind text
+      required true
+    }
+    input "phone" {
+      label "Phone"
+      kind text
+      required true
+    }
+    input "email" {
+      label "Email"
+      kind text
+    }
+    input "ward" {
+      label "Ward"
+      kind select
+      required true
+      options ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]
+    }
+    input "category" {
+      label "Category"
+      kind select
+      required true
+      options ["infrastructure", "service", "corruption", "utility", "other"]
+    }
+    input "subject" {
+      label "Subject"
+      kind text
+      required true
+    }
+    input "description" {
+      label "Description"
+      kind textarea
+      required true
+    }
+    input "attachments" {
+      label "Supporting Documents"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  form "acknowledgment_form" {
+    title "Acknowledgment"
+    input "acknowledged" {
+      label "Acknowledged"
+      kind boolean
+      required true
+    }
+    input "reference_number" {
+      label "Reference Number"
+      kind text
+      required true
+    }
+    input "estimated_timeline" {
+      label "Estimated Timeline"
+      kind text
+      required true
+    }
+  }
+  form "investigation_form" {
+    title "Investigation"
+    input "investigation_status" {
+      label "Investigation Status"
+      kind select
+      required true
+      options ["in_progress", "completed", "need_info"]
+    }
+    input "findings" {
+      label "Findings"
+      kind textarea
+    }
+    input "investigation_notes" {
+      label "Investigation Notes"
+      kind textarea
+    }
+  }
+  form "resolution_form" {
+    title "Resolution"
+    input "resolution_details" {
+      label "Resolution Details"
+      kind textarea
+      required true
+    }
+    input "action_taken" {
+      label "Action Taken"
+      kind textarea
+      required true
+    }
+    input "citizen_satisfied" {
+      label "Citizen Satisfied"
+      kind boolean
+    }
+  }
+  form "closure_form" {
+    title "Closure"
+    input "case_closed" {
+      label "Case Closed"
+      kind boolean
+      required true
+    }
+    input "closure_notes" {
+      label "Closure Notes"
+      kind textarea
+    }
+  }
+  form "grievance_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+  }
+  allow_rfi true
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  stage "submission" {
+    title "Submission"
+    kind submission
+    public true
+    require_account true
+    roles ["citizen"]
+    page {
+      title "Submission"
+      layout wizard
+      group "submission_block" {
+        title "submission_block"
+        forms ["grievance_details"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "acknowledgment" {
+    title "Acknowledgment"
+    kind processing
+    roles ["helpdesk"]
+    sla {
+      duration "240m"
+      on_breach "notify"
+    }
+    page {
+      title "Acknowledgment"
+      layout wizard
+      group "acknowledgment_block" {
+        title "acknowledgment_block"
+        forms ["acknowledgment_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "investigation" {
+    title "Investigation"
+    kind review
+    roles ["investigation_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Investigation"
+      layout wizard
+      group "investigation_block" {
+        title "investigation_block"
+        forms ["investigation_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["investigation_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "resolution" {
+    title "Resolution"
+    kind processing
+    roles ["resolution_officer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Resolution"
+      layout wizard
+      group "resolution_block" {
+        title "resolution_block"
+        forms ["resolution_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "closure" {
+    title "Closure"
+    kind processing
+    roles ["admin"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Closure"
+      layout wizard
+      group "closure_block" {
+        title "closure_block"
+        forms ["closure_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

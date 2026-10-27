@@ -1,0 +1,258 @@
+pipeline "restaurant_table_reservation" {
+  title "Restaurant Table Reservation"
+  description "Table reservation workflow for Nepali restaurants with availability check, confirmation, and table assignment"
+  form "reservation_details" {
+    title "Reservation Details"
+    input "reservation_date" {
+      label "Reservation Date"
+      kind date
+      required true
+    }
+    input "reservation_time" {
+      label "Reservation Time"
+      kind text
+      required true
+    }
+    input "party_size" {
+      label "Number of Guests"
+      kind text
+      required true
+    }
+    input "occasion" {
+      label "Occasion"
+      kind select
+      options ["none", "birthday", "anniversary", "business", "date", "family", "other"]
+    }
+    input "special_requests" {
+      label "Special Requests"
+      kind textarea
+    }
+  }
+  form "customer_info" {
+    title "Customer Information"
+    input "customer_name" {
+      label "Customer Name"
+      kind text
+      required true
+    }
+    input "customer_phone" {
+      label "Phone Number"
+      kind text
+      required true
+    }
+    input "customer_email" {
+      label "Email"
+      kind text
+    }
+    input "membership_number" {
+      label "Membership Number (if any)"
+      kind text
+    }
+  }
+  form "reservation_modification" {
+    title "Reservation Modification"
+    input "modification_type" {
+      label "Modification Type"
+      kind select
+      required true
+      options ["modify", "cancel"]
+    }
+    input "new_date" {
+      label "New Date (if modifying)"
+      kind date
+    }
+    input "new_time" {
+      label "New Time (if modifying)"
+      kind text
+    }
+    input "new_party_size" {
+      label "New Party Size"
+      kind text
+    }
+    input "cancellation_reason" {
+      label "Cancellation Reason"
+      kind textarea
+    }
+  }
+  form "confirmation_details" {
+    title "Confirmation Details"
+    input "confirmation_status" {
+      label "Confirmation Status"
+      kind select
+      required true
+      options ["confirmed", "waitlisted", "rejected"]
+    }
+    input "table_number" {
+      label "Table Number"
+      kind text
+    }
+    input "arrival_deadline" {
+      label "Arrival Deadline"
+      kind text
+    }
+    input "confirmation_notes" {
+      label "Confirmation Notes"
+      kind textarea
+    }
+  }
+  form "table_details" {
+    title "Table Details"
+    input "table_number_assigned" {
+      label "Table Number Assigned"
+      kind text
+      required true
+    }
+    input "seating_arrangement" {
+      label "Seating Arrangement"
+      kind select
+      options ["round", "square", "rectangular", "booth"]
+    }
+    input "server_assigned" {
+      label "Server Assigned"
+      kind text
+    }
+  }
+  form "seating_notes" {
+    title "Seating Notes"
+    input "seating_preferences" {
+      label "Seating Preferences"
+      kind textarea
+    }
+    input "allergies_notes" {
+      label "Allergies / Dietary Notes"
+      kind textarea
+    }
+    input "vip_status" {
+      label "VIP Status"
+      kind boolean
+    }
+    input "arrival_time" {
+      label "Actual Arrival Time"
+      kind text
+    }
+  }
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "sla.warning" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: sla.warning"
+    body "Case {case.number} has event sla.warning"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "seated"
+  }
+  stage "request_submission" {
+    title "Request Submission"
+    kind submission
+    public true
+    roles ["customer"]
+    page {
+      title "Request Submission"
+      layout wizard
+      group "request_block" {
+        title "request_block"
+        forms ["reservation_details", "customer_info"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "availability_check" {
+    title "Availability Check"
+    kind review
+    roles ["host"]
+    sla {
+      duration "120m"
+      on_breach "notify"
+    }
+    page {
+      title "Availability Check"
+      layout wizard
+      group "confirmation_block" {
+        title "confirmation_block"
+        forms ["confirmation_details"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["confirmation_details"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "confirmation" {
+    title "Confirmation"
+    kind processing
+    roles ["host"]
+    sla {
+      duration "120m"
+      on_breach "notify"
+    }
+    page {
+      title "Confirmation"
+      layout wizard
+      group "confirmation_block" {
+        title "confirmation_block"
+        forms ["confirmation_details"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "table_assignment" {
+    title "Table Assignment"
+    kind processing
+    roles ["server"]
+    page {
+      title "Table Assignment"
+      layout wizard
+      group "table_block" {
+        title "table_block"
+        forms ["table_details", "seating_notes"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "seated" {
+    title "Seated"
+    kind processing
+    roles ["server"]
+    page {
+      title "Seated"
+      layout wizard
+      group "table_block" {
+        title "table_block"
+        forms ["table_details", "seating_notes"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

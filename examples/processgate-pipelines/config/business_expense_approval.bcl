@@ -1,0 +1,346 @@
+pipeline "business_expense_approval" {
+  title "Expense Approval"
+  description "Employee expense claims, travel settlement, petty cash replenishment, and advance adjustment"
+  form "expense_claim" {
+    title "Expense Claim"
+    input "employee_id" {
+      label "Employee ID"
+      kind text
+      required true
+    }
+    input "employee_name" {
+      label "Employee Name"
+      kind text
+      required true
+    }
+    input "department" {
+      label "Department"
+      kind select
+      required true
+      options ["hr", "finance", "it", "operations", "sales", "marketing"]
+    }
+    input "expense_type" {
+      label "Expense Type"
+      kind select
+      required true
+      options ["travel", "accommodation", "meals", "transport", "supplies", "communication", "training", "other"]
+    }
+    input "travel_start_date" {
+      label "Start Date"
+      kind date
+    }
+    input "travel_end_date" {
+      label "End Date"
+      kind date
+    }
+    input "claim_amount" {
+      label "Claim Amount (NPR)"
+      kind text
+      required true
+    }
+    input "currency" {
+      label "Currency"
+      kind select
+      required true
+      options ["npr", "usd", "inr"]
+    }
+    input "advance_reference" {
+      label "Advance Reference (if any)"
+      kind text
+    }
+    input "business_purpose" {
+      label "Business Purpose"
+      kind textarea
+      required true
+    }
+  }
+  form "expense_receipts" {
+    title "Expense Receipts"
+    input "merchant_name" {
+      label "Merchant Name"
+      kind text
+      required true
+    }
+    input "receipt_number" {
+      label "Receipt Number"
+      kind text
+    }
+    input "receipt_date" {
+      label "Receipt Date"
+      kind date
+      required true
+    }
+    input "receipt_amount" {
+      label "Receipt Amount (NPR)"
+      kind text
+      required true
+    }
+    input "vat_flag" {
+      label "VAT Included"
+      kind boolean
+    }
+    input "receipt_upload" {
+      label "Receipt Image/PDF"
+      kind file
+      required true
+      accept ["pdf", "jpg", "jpeg", "png"]
+    }
+    input "expense_note" {
+      label "Notes"
+      kind textarea
+    }
+  }
+  form "expense_verification_form" {
+    title "Expense Verification"
+    input "policy_compliant" {
+      label "Policy Compliant"
+      kind boolean
+      required true
+    }
+    input "duplicate_receipt_check" {
+      label "No Duplicate Receipt"
+      kind boolean
+      required true
+    }
+    input "receipt_legible" {
+      label "Receipt Legible"
+      kind boolean
+      required true
+    }
+    input "receipt_matches_claim" {
+      label "Receipt Matches Claim"
+      kind boolean
+      required true
+    }
+    input "claimable_amount" {
+      label "Claimable Amount (NPR)"
+      kind text
+    }
+    input "finance_note" {
+      label "Finance Review Note"
+      kind textarea
+    }
+  }
+  form "budget_policy_check" {
+    title "Budget & Policy Check"
+    input "budget_code" {
+      label "Budget Code"
+      kind text
+    }
+    input "travel_approval_ref" {
+      label "Travel Approval Reference"
+      kind text
+    }
+    input "advance_adjustment_amount" {
+      label "Advance Adjustment Amount (NPR)"
+      kind text
+    }
+    input "policy_exception_reason" {
+      label "Policy Exception Reason"
+      kind textarea
+    }
+  }
+  form "expense_decision" {
+    title "Expense Decision"
+    input "decision" {
+      label "Decision"
+      kind select
+      required true
+      options ["approve", "reject", "rework"]
+    }
+    input "decision_note" {
+      label "Decision Note"
+      kind textarea
+    }
+    input "reimbursement_priority" {
+      label "Reimbursement Priority"
+      kind select
+      options ["normal", "urgent"]
+    }
+    input "payment_batch" {
+      label "Payment Batch Reference"
+      kind text
+    }
+  }
+  form "reimbursement_release" {
+    title "Reimbursement Release"
+    input "reimbursement_mode" {
+      label "Reimbursement Mode"
+      kind select
+      required true
+      options ["bank", "cash", "payroll"]
+    }
+    input "payroll_cycle" {
+      label "Payroll Cycle"
+      kind text
+    }
+    input "bank_account_ref" {
+      label "Bank Account Reference"
+      kind text
+    }
+    input "paid_date" {
+      label "Paid Date"
+      kind date
+      required true
+    }
+    input "voucher_reference" {
+      label "Voucher Reference"
+      kind text
+    }
+  }
+  form "expense_rfi_response" {
+    title "RFI Response"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "corrected_claim_amount" {
+      label "Corrected Claim Amount (NPR)"
+      kind text
+    }
+    input "revised_receipt_upload" {
+      label "Revised Receipt"
+      kind file
+      accept ["pdf", "jpg", "jpeg", "png"]
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.information_requested" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.information_requested"
+    body "Case {case.number} has event case.information_requested"
+  }
+  notify "case.rejected" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.rejected"
+    body "Case {case.number} has event case.rejected"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  stage "claim_submission_stage" {
+    title "Claim Submission"
+    kind submission
+    roles ["employee_submitter"]
+    page {
+      title "Claim Submission"
+      layout wizard
+      group "claim_submission" {
+        title "claim_submission"
+        forms ["expense_claim", "expense_receipts"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "manager_review_stage" {
+    title "Manager Review"
+    kind approval
+    roles ["line_manager"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Manager Review"
+      layout wizard
+      group "finance_review" {
+        title "finance_review"
+        forms ["expense_verification_form", "budget_policy_check"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "finance_verification_stage" {
+    title "Finance Verification"
+    kind processing
+    roles ["finance_reviewer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Finance Verification"
+      layout wizard
+      group "finance_review" {
+        title "finance_review"
+        forms ["expense_verification_form", "budget_policy_check"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "finance_approval_stage" {
+    title "Finance Approval"
+    kind approval
+    roles ["finance_approver"]
+    sla {
+      duration "240m"
+      on_breach "notify"
+    }
+    page {
+      title "Finance Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["expense_decision"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "reimbursement_execution_stage" {
+    title "Reimbursement Execution"
+    kind processing
+    roles ["payroll_cashier"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Reimbursement Execution"
+      layout wizard
+      group "settlement_block" {
+        title "settlement_block"
+        forms ["reimbursement_release"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

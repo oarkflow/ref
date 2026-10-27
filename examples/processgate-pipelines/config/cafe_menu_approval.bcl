@@ -1,0 +1,432 @@
+pipeline "cafe_menu_approval" {
+  title "Cafe Menu Approval"
+  description "New menu-item approval workflow for Nepali cafes covering recipe validation, ingredient cost review, pricing approval, and launch preparation"
+  form "item_proposal" {
+    title "Item Proposal"
+    input "item_name" {
+      label "Item Name"
+      kind text
+      required true
+    }
+    input "category" {
+      label "Category"
+      kind select
+      required true
+      options ["hot_beverages", "cold_beverages", "food", "desserts", "snacks"]
+    }
+    input "concept_summary" {
+      label "Concept Summary"
+      kind textarea
+      required true
+    }
+    input "target_selling_price" {
+      label "Target Selling Price (NPR)"
+      kind text
+      required true
+    }
+    input "service_mode" {
+      label "Service Mode"
+      kind select
+      required true
+      options ["dine_in", "takeaway", "delivery", "seasonal"]
+    }
+  }
+  form "recipe_details" {
+    title "Recipe Details"
+    input "ingredient_list" {
+      label "Ingredient List"
+      kind textarea
+      required true
+    }
+    input "quantities" {
+      label "Quantities"
+      kind textarea
+      required true
+    }
+    input "prep_method" {
+      label "Preparation Method"
+      kind textarea
+      required true
+    }
+    input "allergens" {
+      label "Allergens"
+      kind textarea
+    }
+    input "expected_yield" {
+      label "Expected Yield"
+      kind text
+      required true
+    }
+  }
+  form "proposal_documents" {
+    title "Proposal Documents"
+    input "tasting_notes_reference" {
+      label "Tasting Notes Reference"
+      kind text
+    }
+    input "inspiration_reference" {
+      label "Inspiration Reference"
+      kind text
+    }
+    input "plating_photo" {
+      label "Plating Photo"
+      kind file
+      accept ["image/*"]
+    }
+  }
+  form "recipe_check" {
+    title "Recipe Check"
+    input "recipe_feasible" {
+      label "Recipe Feasible"
+      kind boolean
+      required true
+    }
+    input "portion_standard" {
+      label "Portion Standard"
+      kind text
+    }
+    input "taste_result" {
+      label "Taste Test Result"
+      kind select
+      required true
+      options ["excellent", "good", "fair", "needs_improvement"]
+    }
+    input "kitchen_note" {
+      label "Kitchen Note"
+      kind textarea
+    }
+  }
+  form "ingredient_cost" {
+    title "Ingredient Cost"
+    input "supplier_options" {
+      label "Supplier Options"
+      kind textarea
+      required true
+    }
+    input "landed_cost" {
+      label "Landed Cost (NPR)"
+      kind text
+      required true
+    }
+    input "availability_status" {
+      label "Availability Status"
+      kind select
+      required true
+      options ["available", "limited", "unavailable"]
+    }
+    input "substitute_plan" {
+      label "Substitute Plan"
+      kind textarea
+    }
+  }
+  form "cost_analysis" {
+    title "Cost Analysis"
+    input "food_cost_percent" {
+      label "Food Cost %"
+      kind text
+      required true
+    }
+    input "suggested_price" {
+      label "Suggested Price (NPR)"
+      kind text
+      required true
+    }
+    input "margin_estimate" {
+      label "Margin Estimate %"
+      kind text
+      required true
+    }
+    input "promo_impact" {
+      label "Promotional Impact"
+      kind textarea
+    }
+  }
+  form "pricing_approval" {
+    title "Pricing Approval"
+    input "final_price" {
+      label "Final Price (NPR)"
+      kind text
+      required true
+    }
+    input "rounding_rule" {
+      label "Rounding Rule"
+      kind select
+      required true
+      options ["none", "round_5", "round_10", "round_50"]
+    }
+    input "discount_allowed" {
+      label "Discount Allowed"
+      kind boolean
+      required true
+    }
+    input "combo_allowed" {
+      label "Combo Allowed"
+      kind boolean
+      required true
+    }
+  }
+  form "menu_decision" {
+    title "Menu Decision"
+    input "decision" {
+      label "Decision"
+      kind select
+      required true
+      options ["approve", "reject", "defer"]
+    }
+    input "decision_note" {
+      label "Decision Note"
+      kind textarea
+    }
+    input "launch_window" {
+      label "Launch Window"
+      kind text
+    }
+    input "approval_conditions" {
+      label "Approval Conditions"
+      kind textarea
+    }
+  }
+  form "launch_plan" {
+    title "Launch Plan"
+    input "training_complete" {
+      label "Staff Training Complete"
+      kind boolean
+      required true
+    }
+    input "menu_assets_ready" {
+      label "Menu Assets Ready"
+      kind boolean
+      required true
+    }
+    input "stock_ready" {
+      label "Stock Ready"
+      kind boolean
+      required true
+    }
+    input "launch_note" {
+      label "Launch Note"
+      kind textarea
+    }
+  }
+  form "menu_activation" {
+    title "Menu Activation"
+    input "pos_enabled" {
+      label "POS Enabled"
+      kind boolean
+      required true
+    }
+    input "menu_board_updated" {
+      label "Menu Board Updated"
+      kind boolean
+      required true
+    }
+    input "activation_date" {
+      label "Activation Date"
+      kind date
+      required true
+    }
+    input "post_launch_review_date" {
+      label "Post-Launch Review Date"
+      kind date
+      required true
+    }
+  }
+  form "menu_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "revised_recipe_note" {
+      label "Revised Recipe Note"
+      kind textarea
+    }
+    input "replacement_file" {
+      label "Replacement Evidence File"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.rejected" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.rejected"
+    body "Case {case.number} has event case.rejected"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "cost_review"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "recipe_review"
+  }
+  stage "item_submission" {
+    title "Item Submission"
+    kind submission
+    roles ["chef"]
+    page {
+      title "Item Submission"
+      layout wizard
+      group "proposal_block" {
+        title "proposal_block"
+        forms ["item_proposal", "recipe_details"]
+      }
+      group "proposal_documents" {
+        title "proposal_documents"
+        forms ["proposal_documents"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "recipe_review" {
+    title "Recipe Review"
+    kind review
+    roles ["kitchen_manager"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Recipe Review"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["recipe_check"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["recipe_check"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "cost_review" {
+    title "Cost Review"
+    kind review
+    roles ["procurement_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Cost Review"
+      layout wizard
+      group "cost_block" {
+        title "cost_block"
+        forms ["ingredient_cost"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["ingredient_cost"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "pricing_analysis" {
+    title "Pricing Analysis"
+    kind processing
+    roles ["accountant"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Pricing Analysis"
+      layout wizard
+      group "pricing_block" {
+        title "pricing_block"
+        forms ["cost_analysis", "pricing_approval"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "manager_approval" {
+    title "Manager Approval"
+    kind approval
+    roles ["cafe_manager"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Manager Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["menu_decision"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "launch_preparation" {
+    title "Launch Preparation"
+    kind processing
+    roles ["operations_manager"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Launch Preparation"
+      layout wizard
+      group "launch_block" {
+        title "launch_block"
+        forms ["launch_plan", "menu_activation"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

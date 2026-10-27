@@ -1,0 +1,320 @@
+pipeline "bank_locker_service" {
+  title "Locker Service"
+  description "Safe deposit locker rental application, verification, and key handover workflow"
+  form "locker_preferences_form" {
+    title "Locker Preferences"
+    input "locker_size" {
+      label "Locker Size"
+      kind select
+      required true
+      options ["small", "medium", "large"]
+    }
+    input "preferred_branch" {
+      label "Preferred Branch"
+      kind text
+      required true
+    }
+    input "tenure" {
+      label "Tenure (years)"
+      kind select
+      required true
+      options ["1", "2", "3"]
+    }
+  }
+  form "applicant_details_form" {
+    title "Applicant Details"
+    input "full_name" {
+      label "Full Name"
+      kind text
+      required true
+    }
+    input "citizenship_number" {
+      label "Citizenship Number"
+      kind text
+      required true
+    }
+    input "account_number" {
+      label "Account Number"
+      kind text
+      required true
+    }
+    input "phone" {
+      label "Phone"
+      kind text
+      required true
+    }
+  }
+  form "intake_form" {
+    title "Branch Intake"
+    input "intake_complete" {
+      label "Intake Complete"
+      kind boolean
+      required true
+    }
+    input "intake_notes" {
+      label "Intake Notes"
+      kind textarea
+    }
+  }
+  form "identity_verification_form" {
+    title "Identity Verification"
+    input "document_verified" {
+      label "Document Verified"
+      kind boolean
+      required true
+    }
+    input "photo_captured" {
+      label "Photo Captured"
+      kind boolean
+      required true
+    }
+  }
+  form "locker_availability_form" {
+    title "Locker Availability"
+    input "locker_number" {
+      label "Locker Number"
+      kind text
+      required true
+    }
+    input "vault_location" {
+      label "Vault Location"
+      kind text
+      required true
+    }
+    input "availability_status" {
+      label "Availability Status"
+      kind select
+      required true
+      options ["available", "not_available"]
+    }
+  }
+  form "security_clearance_form" {
+    title "Security Clearance"
+    input "security_check_passed" {
+      label "Security Check Passed"
+      kind boolean
+      required true
+    }
+    input "key_code" {
+      label "Key Code"
+      kind text
+    }
+  }
+  form "agreement_form" {
+    title "Rental Agreement"
+    input "agreement_signed" {
+      label "Agreement Signed"
+      kind boolean
+      required true
+    }
+    input "terms_accepted" {
+      label "Terms Accepted"
+      kind boolean
+      required true
+    }
+    input "witness_name" {
+      label "Witness Name"
+      kind text
+      required true
+    }
+  }
+  form "key_handover_form" {
+    title "Key Handover"
+    input "key_received" {
+      label "Key Received"
+      kind boolean
+      required true
+    }
+    input "recipient_signature" {
+      label "Recipient Signature"
+      kind text
+      required true
+    }
+    input "access_instructions" {
+      label "Access Instructions"
+      kind textarea
+    }
+  }
+  form "access_record_form" {
+    title "Access Record"
+    input "access_log_maintained" {
+      label "Access Log Maintained"
+      kind boolean
+      required true
+    }
+    input "inspection_record" {
+      label "Inspection Record"
+      kind textarea
+    }
+  }
+  form "locker_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "agreement"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "verification"
+  }
+  stage "application_submission" {
+    title "Application Submission"
+    kind submission
+    public true
+    require_account true
+    roles ["locker_applicant"]
+    page {
+      title "Application Submission"
+      layout wizard
+      group "application_block" {
+        title "application_block"
+        forms ["locker_preferences_form", "applicant_details_form"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "branch_intake" {
+    title "Branch Intake"
+    kind processing
+    roles ["branch_operator"]
+    sla {
+      duration "240m"
+      on_breach "notify"
+    }
+    page {
+      title "Branch Intake"
+      layout wizard
+      group "intake_block" {
+        title "intake_block"
+        forms ["intake_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "verification" {
+    title "Verification"
+    kind review
+    roles ["locker_officer"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Verification"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["identity_verification_form", "locker_availability_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["identity_verification_form", "locker_availability_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "approval" {
+    title "Approval"
+    kind approval
+    roles ["security_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["security_clearance_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "agreement" {
+    title "Agreement"
+    kind processing
+    roles ["locker_officer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Agreement"
+      layout wizard
+      group "agreement_block" {
+        title "agreement_block"
+        forms ["agreement_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "key_handover" {
+    title "Key Handover"
+    kind processing
+    roles ["vault_officer"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Key Handover"
+      layout wizard
+      group "handover_block" {
+        title "handover_block"
+        forms ["key_handover_form", "access_record_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

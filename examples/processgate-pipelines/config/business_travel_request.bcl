@@ -1,0 +1,265 @@
+pipeline "business_travel_request" {
+  title "Travel Request"
+  description "Employee travel request, approval and booking process"
+  form "travel_request" {
+    title "Travel Request"
+    input "employee_name" {
+      label "Employee Name"
+      kind text
+      required true
+    }
+    input "employee_id" {
+      label "Employee ID"
+      kind text
+      required true
+    }
+    input "department" {
+      label "Department"
+      kind select
+      required true
+      options ["engineering", "sales", "marketing", "hr", "finance", "operations"]
+    }
+    input "purpose" {
+      label "Travel Purpose"
+      kind select
+      required true
+      options ["client", "conference", "training", "site_visit", "other"]
+    }
+    input "destination" {
+      label "Destination"
+      kind text
+      required true
+    }
+    input "travel_from" {
+      label "Travel From Date"
+      kind date
+      required true
+    }
+    input "travel_to" {
+      label "Travel To Date"
+      kind date
+      required true
+    }
+    input "estimated_budget" {
+      label "Estimated Budget"
+      kind text
+      required true
+    }
+    input "justification" {
+      label "Justification"
+      kind textarea
+      required true
+    }
+  }
+  form "manager_approval_form" {
+    title "Manager Approval"
+    input "manager_decision" {
+      label "Manager Decision"
+      kind select
+      required true
+      options ["approved", "rejected"]
+    }
+    input "manager_comments" {
+      label "Manager Comments"
+      kind textarea
+    }
+  }
+  form "finance_approval_form" {
+    title "Finance Approval"
+    input "finance_decision" {
+      label "Finance Decision"
+      kind select
+      required true
+      options ["approved", "rejected"]
+    }
+    input "budget_verified" {
+      label "Budget Verified"
+      kind boolean
+      required true
+    }
+    input "finance_comments" {
+      label "Finance Comments"
+      kind textarea
+    }
+  }
+  form "booking_form" {
+    title "Booking"
+    input "flight_booked" {
+      label "Flight Booked"
+      kind boolean
+    }
+    input "hotel_booked" {
+      label "Hotel Booked"
+      kind boolean
+    }
+    input "transport_booked" {
+      label "Transport Booked"
+      kind boolean
+    }
+    input "booking_reference" {
+      label "Booking Reference"
+      kind text
+    }
+    input "booking_notes" {
+      label "Booking Notes"
+      kind textarea
+    }
+  }
+  form "confirmation_form" {
+    title "Confirmation"
+    input "confirmed" {
+      label "Travel Confirmed"
+      kind boolean
+      required true
+    }
+    input "itinerary" {
+      label "Final Itinerary"
+      kind textarea
+      required true
+    }
+    input "confirmation_notes" {
+      label "Confirmation Notes"
+      kind textarea
+    }
+  }
+  form "travel_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  stage "request" {
+    title "Request"
+    kind submission
+    roles ["employee"]
+    page {
+      title "Request"
+      layout wizard
+      group "request_block" {
+        title "request_block"
+        forms ["travel_request"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "manager_approval" {
+    title "Manager Approval"
+    kind approval
+    roles ["manager"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Manager Approval"
+      layout wizard
+      group "manager_approval_block" {
+        title "manager_approval_block"
+        forms ["manager_approval_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "finance_approval" {
+    title "Finance Approval"
+    kind approval
+    roles ["finance_officer"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Finance Approval"
+      layout wizard
+      group "finance_approval_block" {
+        title "finance_approval_block"
+        forms ["finance_approval_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "booking" {
+    title "Booking"
+    kind processing
+    roles ["travel_desk"]
+    sla {
+      duration "720m"
+      on_breach "notify"
+    }
+    page {
+      title "Booking"
+      layout wizard
+      group "booking_block" {
+        title "booking_block"
+        forms ["booking_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "confirmation" {
+    title "Confirmation"
+    kind processing
+    roles ["travel_desk"]
+    sla {
+      duration "240m"
+      on_breach "notify"
+    }
+    page {
+      title "Confirmation"
+      layout wizard
+      group "confirmation_block" {
+        title "confirmation_block"
+        forms ["confirmation_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

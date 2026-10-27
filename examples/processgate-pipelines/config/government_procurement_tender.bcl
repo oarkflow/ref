@@ -1,0 +1,294 @@
+pipeline "government_procurement_tender" {
+  title "Procurement Tender"
+  description "Public procurement tender flow with bidder portal, evaluation, and award"
+  form "bidder_profile" {
+    title "Bidder Profile"
+    input "bidder_name" {
+      label "Bidder Name"
+      kind text
+      required true
+    }
+    input "company_registration_no" {
+      label "Registration Number"
+      kind text
+      required true
+    }
+    input "contact_phone" {
+      label "Contact Phone"
+      kind text
+      required true
+    }
+    input "tender_reference" {
+      label "Tender Reference"
+      kind text
+      required true
+    }
+  }
+  form "bid_submission" {
+    title "Bid Submission"
+    input "bid_amount" {
+      label "Bid Amount"
+      kind text
+      required true
+    }
+    input "bid_validity_date" {
+      label "Bid Validity Date"
+      kind date
+      required true
+    }
+  }
+  form "bid_documents" {
+    title "Bid Documents"
+    input "technical_proposal_upload" {
+      label "Technical Proposal"
+      kind file
+      required true
+    }
+    input "financial_proposal_upload" {
+      label "Financial Proposal"
+      kind file
+      required true
+    }
+    input "bid_bond_reference" {
+      label "Bid Bond Reference"
+      kind text
+    }
+  }
+  form "bid_opening_log" {
+    title "Bid Opening Log"
+    input "opening_date" {
+      label "Opening Date"
+      kind date
+      required true
+    }
+    input "opening_remarks" {
+      label "Opening Remarks"
+      kind textarea
+    }
+  }
+  form "technical_evaluation" {
+    title "Technical Evaluation"
+    input "technical_score" {
+      label "Technical Score"
+      kind text
+      required true
+    }
+    input "compliance_result" {
+      label "Compliance Result"
+      kind select
+      required true
+      options ["pass", "fail"]
+    }
+  }
+  form "financial_evaluation" {
+    title "Financial Evaluation"
+    input "quoted_price" {
+      label "Quoted Price"
+      kind text
+      required true
+    }
+    input "ranking" {
+      label "Ranking"
+      kind text
+      required true
+    }
+  }
+  form "award_decision" {
+    title "Award Decision"
+    input "decision" {
+      label "Decision"
+      kind select
+      required true
+      options ["award", "reject"]
+    }
+    input "selected_bidder" {
+      label "Selected Bidder"
+      kind text
+    }
+    input "award_reference" {
+      label "Award Reference"
+      kind text
+    }
+  }
+  form "contract_packet" {
+    title "Contract Packet"
+    input "letter_of_award_ref" {
+      label "Letter of Award Ref"
+      kind text
+      required true
+    }
+    input "contract_number" {
+      label "Contract Number"
+      kind text
+    }
+  }
+  form "tender_clarification_response" {
+    title "Clarification Response"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "clarification_attachment" {
+      label "Attachment"
+      kind file
+    }
+  }
+  allow_rfi true
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  stage "bid_submission" {
+    title "Bid Submission"
+    kind submission
+    public true
+    require_account true
+    roles ["bidder_user"]
+    page {
+      title "Bid Submission"
+      layout wizard
+      group "bidder_registration" {
+        title "bidder_registration"
+        forms ["bidder_profile"]
+      }
+      group "bid_package" {
+        title "bid_package"
+        forms ["bid_submission", "bid_documents"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "bid_opening" {
+    title "Bid Opening"
+    kind processing
+    roles ["procurement_desk"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Bid Opening"
+      layout wizard
+      group "opening_block" {
+        title "opening_block"
+        forms ["bid_opening_log"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "technical_evaluation" {
+    title "Technical Evaluation"
+    kind review
+    roles ["technical_evaluator"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Technical Evaluation"
+      layout wizard
+      group "technical_block" {
+        title "technical_block"
+        forms ["technical_evaluation"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["technical_evaluation"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "financial_evaluation" {
+    title "Financial Evaluation"
+    kind review
+    roles ["financial_evaluator"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Financial Evaluation"
+      layout wizard
+      group "financial_block" {
+        title "financial_block"
+        forms ["financial_evaluation"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["financial_evaluation"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "award_decision" {
+    title "Award Decision"
+    kind approval
+    roles ["procurement_approver"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Award Decision"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["award_decision"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "contract_handover" {
+    title "Contract Handover"
+    kind processing
+    roles ["contract_admin"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Contract Handover"
+      layout wizard
+      group "contract_block" {
+        title "contract_block"
+        forms ["contract_packet"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

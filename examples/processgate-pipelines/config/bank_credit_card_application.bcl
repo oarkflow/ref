@@ -1,0 +1,487 @@
+pipeline "bank_credit_card_application" {
+  title "Credit Card Application"
+  description "Credit card application, verification, risk assessment, and issuance workflow"
+  form "applicant_profile" {
+    title "Applicant Profile"
+    input "full_name" {
+      label "Full Name"
+      kind text
+      required true
+    }
+    input "date_of_birth" {
+      label "Date of Birth"
+      kind date
+      required true
+    }
+    input "citizenship_number" {
+      label "Citizenship Number"
+      kind text
+      required true
+    }
+    input "pan_number" {
+      label "PAN Number"
+      kind text
+      required true
+    }
+    input "phone" {
+      label "Phone"
+      kind text
+      required true
+    }
+    input "email" {
+      label "Email"
+      kind text
+      required true
+    }
+    input "employment_type" {
+      label "Employment Type"
+      kind select
+      required true
+      options ["salaried", "self_employed", "business"]
+    }
+    input "existing_account" {
+      label "Existing Account Number"
+      kind text
+      required true
+    }
+  }
+  form "income_details_form" {
+    title "Income Details"
+    input "employer_business" {
+      label "Employer/Business Name"
+      kind text
+      required true
+    }
+    input "designation" {
+      label "Designation"
+      kind text
+    }
+    input "monthly_income" {
+      label "Monthly Income"
+      kind text
+      required true
+    }
+    input "annual_income" {
+      label "Annual Income"
+      kind text
+      required true
+    }
+    input "income_proof" {
+      label "Income Proof"
+      kind file
+      required true
+      accept ["application/pdf,image/*"]
+    }
+  }
+  form "card_preferences_form" {
+    title "Card Preferences"
+    input "card_type" {
+      label "Card Type"
+      kind select
+      required true
+      options ["classic", "gold", "platinum", "supreme"]
+    }
+    input "addon_card_required" {
+      label "Add-on Card Required"
+      kind boolean
+    }
+    input "supplementary_holder" {
+      label "Supplementary Card Holder"
+      kind text
+    }
+  }
+  form "intake_form" {
+    title "Branch Intake"
+    input "intake_complete" {
+      label "Intake Complete"
+      kind boolean
+      required true
+    }
+    input "intake_notes" {
+      label "Intake Notes"
+      kind textarea
+    }
+  }
+  form "income_verification_form" {
+    title "Income Verification"
+    input "employer_verified" {
+      label "Employer Verified"
+      kind boolean
+      required true
+    }
+    input "income_proof_valid" {
+      label "Income Proof Valid"
+      kind boolean
+      required true
+    }
+    input "verification_notes" {
+      label "Verification Notes"
+      kind textarea
+    }
+  }
+  form "credit_bureau_check_form" {
+    title "Credit Bureau Check"
+    input "credit_score" {
+      label "Credit Score"
+      kind text
+      required true
+    }
+    input "existing_loans" {
+      label "Existing Loans"
+      kind text
+      required true
+    }
+    input "payment_history" {
+      label "Payment History"
+      kind select
+      required true
+      options ["good", "fair", "poor"]
+    }
+  }
+  form "risk_assessment_form" {
+    title "Risk Assessment"
+    input "risk_tier" {
+      label "Risk Tier"
+      kind select
+      required true
+      options ["low", "medium", "high"]
+    }
+    input "credit_limit_recommended" {
+      label "Credit Limit Recommended"
+      kind text
+      required true
+    }
+    input "interest_rate" {
+      label "Interest Rate"
+      kind text
+      required true
+    }
+    input "processing_fee" {
+      label "Processing Fee"
+      kind text
+      required true
+    }
+  }
+  form "credit_decision_form" {
+    title "Credit Decision"
+    input "decision" {
+      label "Decision"
+      kind select
+      required true
+      options ["approved", "rejected", "review"]
+    }
+    input "credit_limit_sanctioned" {
+      label "Credit Limit Sanctioned"
+      kind text
+    }
+    input "conditions" {
+      label "Conditions"
+      kind textarea
+    }
+  }
+  form "card_production_form" {
+    title "Card Production"
+    input "card_number" {
+      label "Card Number"
+      kind text
+      required true
+    }
+    input "validity" {
+      label "Validity"
+      kind text
+      required true
+    }
+    input "card_produced" {
+      label "Card Produced"
+      kind boolean
+      required true
+    }
+  }
+  form "pin_generation_form" {
+    title "PIN Generation"
+    input "pin_delivery_method" {
+      label "PIN Delivery Method"
+      kind select
+      required true
+      options ["sms", "email", "courier"]
+    }
+    input "pin_set" {
+      label "PIN Set"
+      kind boolean
+      required true
+    }
+  }
+  form "delivery_confirmation_form" {
+    title "Delivery Confirmation"
+    input "delivery_date" {
+      label "Delivery Date"
+      kind date
+      required true
+    }
+    input "recipient_verified" {
+      label "Recipient Verified"
+      kind boolean
+      required true
+    }
+    input "activation_date" {
+      label "Activation Date"
+      kind date
+    }
+    input "first_usage" {
+      label "First Usage"
+      kind boolean
+    }
+  }
+  form "credit_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "replacement_document" {
+      label "Replacement Document"
+      kind file
+      accept ["application/pdf,image/*"]
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.rejected" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.rejected"
+    body "Case {case.number} has event case.rejected"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "credit_bureau_check"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "income_verification"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "risk_assessment"
+  }
+  stage "application_submission" {
+    title "Application Submission"
+    kind submission
+    public true
+    require_account true
+    roles ["card_applicant"]
+    page {
+      title "Application Submission"
+      layout wizard
+      group "application_block" {
+        title "application_block"
+        forms ["applicant_profile"]
+      }
+      group "income_block" {
+        title "income_block"
+        forms ["income_details_form"]
+      }
+      group "preferences_block" {
+        title "preferences_block"
+        forms ["card_preferences_form"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "branch_intake" {
+    title "Branch Intake"
+    kind processing
+    roles ["branch_operator"]
+    sla {
+      duration "240m"
+      on_breach "notify"
+    }
+    page {
+      title "Branch Intake"
+      layout wizard
+      group "intake_block" {
+        title "intake_block"
+        forms ["intake_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "income_verification" {
+    title "Income Verification"
+    kind review
+    roles ["credit_analyst"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Income Verification"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["income_verification_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["income_verification_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "credit_bureau_check" {
+    title "Credit Bureau Check"
+    kind review
+    roles ["credit_analyst"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Credit Bureau Check"
+      layout wizard
+      group "bureau_block" {
+        title "bureau_block"
+        forms ["credit_bureau_check_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["credit_bureau_check_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "risk_assessment" {
+    title "Risk Assessment"
+    kind review
+    roles ["risk_officer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Risk Assessment"
+      layout wizard
+      group "risk_block" {
+        title "risk_block"
+        forms ["risk_assessment_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["risk_assessment_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "pending_approval" {
+    title "Pending Approval"
+    kind approval
+    roles ["compliance_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Pending Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["credit_decision_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "card_production" {
+    title "Card Production"
+    kind processing
+    roles ["card_operations"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Card Production"
+      layout wizard
+      group "production_block" {
+        title "production_block"
+        forms ["card_production_form"]
+      }
+      group "security_block" {
+        title "security_block"
+        forms ["pin_generation_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "delivery_setup" {
+    title "Delivery Setup"
+    kind processing
+    roles ["delivery_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Delivery Setup"
+      layout wizard
+      group "delivery_block" {
+        title "delivery_block"
+        forms ["delivery_confirmation_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

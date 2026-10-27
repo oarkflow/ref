@@ -1,0 +1,359 @@
+pipeline "public_swimming_pool_access" {
+  title "Swimming Pool Access"
+  description "Public swimming pool access registration with health verification and access card issuance"
+  form "pool_application" {
+    title "Pool Application"
+    input "membership_type" {
+      label "Membership Type"
+      kind select
+      required true
+      options ["daily", "monthly", "quarterly", "annual"]
+    }
+    input "duration_months" {
+      label "Duration (Months)"
+      kind text
+      required true
+    }
+  }
+  form "applicant_details" {
+    title "Applicant Details"
+    input "full_name" {
+      label "Full Name"
+      kind text
+      required true
+    }
+    input "date_of_birth" {
+      label "Date of Birth"
+      kind date
+      required true
+    }
+    input "gender" {
+      label "Gender"
+      kind select
+      required true
+      options ["male", "female", "other"]
+    }
+    input "address" {
+      label "Address"
+      kind text
+      required true
+    }
+    input "phone" {
+      label "Phone Number"
+      kind text
+      required true
+    }
+    input "email" {
+      label "Email"
+      kind text
+    }
+    input "citizenship_number" {
+      label "Citizenship Number"
+      kind text
+      required true
+    }
+    input "photo" {
+      label "Photo"
+      kind file
+      required true
+      accept ["image/*"]
+    }
+  }
+  form "document_verification" {
+    title "Document Verification"
+    input "documents_verified" {
+      label "Documents Verified"
+      kind boolean
+      required true
+    }
+    input "verification_notes" {
+      label "Verification Notes"
+      kind textarea
+    }
+  }
+  form "id_proof" {
+    title "Identity Proof"
+    input "identity_verified" {
+      label "Identity Verified"
+      kind boolean
+      required true
+    }
+  }
+  form "health_check" {
+    title "Health Check"
+    input "health_checked" {
+      label "Health Checked"
+      kind boolean
+      required true
+    }
+    input "health_status" {
+      label "Health Status"
+      kind select
+      required true
+      options ["fit", "conditional", "unfit"]
+    }
+    input "health_notes" {
+      label "Health Notes"
+      kind textarea
+    }
+  }
+  form "medical_certificate" {
+    title "Medical Certificate"
+    input "certificate_uploaded" {
+      label "Certificate Uploaded"
+      kind boolean
+      required true
+    }
+    input "certificate_number" {
+      label "Certificate Number"
+      kind text
+    }
+    input "certificate_date" {
+      label "Certificate Date"
+      kind date
+    }
+    input "issuing_authority" {
+      label "Issuing Authority"
+      kind text
+    }
+  }
+  form "membership_approval" {
+    title "Membership Approval"
+    input "membership_approved" {
+      label "Membership Approved"
+      kind boolean
+      required true
+    }
+    input "approval_notes" {
+      label "Approval Notes"
+      kind textarea
+    }
+  }
+  form "fee_receipt" {
+    title "Fee Receipt"
+    input "fee_paid" {
+      label "Fee Paid"
+      kind boolean
+      required true
+    }
+    input "receipt_number" {
+      label "Receipt Number"
+      kind text
+    }
+    input "amount_paid" {
+      label "Amount Paid (NPR)"
+      kind text
+    }
+  }
+  form "card_issuance" {
+    title "Card Issuance"
+    input "card_issued" {
+      label "Card Issued"
+      kind boolean
+      required true
+    }
+    input "card_number" {
+      label "Card Number"
+      kind text
+      required true
+    }
+    input "issue_date" {
+      label "Issue Date"
+      kind date
+      required true
+    }
+    input "expiry_date" {
+      label "Expiry Date"
+      kind date
+      required true
+    }
+  }
+  form "access_granted" {
+    title "Access Granted"
+    input "access_granted_flag" {
+      label "Access Granted"
+      kind boolean
+      required true
+    }
+    input "access_start_date" {
+      label "Access Start Date"
+      kind date
+      required true
+    }
+    input "access_end_date" {
+      label "Access End Date"
+      kind date
+      required true
+    }
+  }
+  form "pool_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "additional_documents" {
+      label "Additional Documents"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  payment {
+    currency "NPR"
+    amount 0
+    verifier_roles ["payment_officer", "admin"]
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "document_verification"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "health_verification"
+  }
+  stage "application_submission" {
+    title "Application Submission"
+    kind submission
+    public true
+    require_account true
+    roles ["applicant"]
+    page {
+      title "Application Submission"
+      layout wizard
+      group "application_block" {
+        title "application_block"
+        forms ["pool_application", "applicant_details"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "document_verification" {
+    title "Document Verification"
+    kind review
+    roles ["verification_officer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Document Verification"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["document_verification", "id_proof"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["document_verification", "id_proof"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "health_verification" {
+    title "Health Verification"
+    kind review
+    roles ["health_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Health Verification"
+      layout wizard
+      group "health_block" {
+        title "health_block"
+        forms ["health_check", "medical_certificate"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["health_check", "medical_certificate"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "final_approval" {
+    title "Final Approval"
+    kind approval
+    roles ["membership_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Final Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["membership_approval", "fee_receipt"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "card_issuance" {
+    title "Card Issuance"
+    kind processing
+    roles ["admin"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Card Issuance"
+      layout wizard
+      group "issuance_block" {
+        title "issuance_block"
+        forms ["card_issuance", "access_granted"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

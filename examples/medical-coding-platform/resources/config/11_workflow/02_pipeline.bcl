@@ -121,7 +121,7 @@ pipeline "medical_coding" {
       label "Downcode / upcode reason"
       kind text
       max_length 300
-      visible_if "em.em_code != ''"
+      visible_if "em.em_code not empty"
       required_if "em.mdm_level == 'Moderate' && em.em_code == '99283'"
     }
   }

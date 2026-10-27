@@ -1,0 +1,358 @@
+pipeline "bank_regulatory_reporting" {
+  title "Regulatory Reporting"
+  description "Regulatory compliance reporting for Nepal banking sector."
+  form "report_details" {
+    title "report_details"
+    input "report_type" {
+      label "Report Type"
+      kind select
+      required true
+      options ["nrb_monthly", "nrb_quarterly", "nrb_annual", "financial"]
+    }
+    input "reporting_period" {
+      label "Reporting Period"
+      kind text
+      required true
+    }
+    input "report_date" {
+      label "Report Date"
+      kind date
+      required true
+    }
+    input "report_description" {
+      label "Description"
+      kind textarea
+    }
+  }
+  form "report_data" {
+    title "report_data"
+    input "report_data_json" {
+      label "Report Data"
+      kind textarea
+      required true
+    }
+    input "supporting_files" {
+      label "Supporting Files"
+      kind file
+      accept ["application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]
+    }
+  }
+  form "data_verification_form" {
+    title "data_verification_form"
+    input "data_verified" {
+      label "Data Verified"
+      kind boolean
+      required true
+    }
+    input "data_accuracy" {
+      label "Data Accuracy"
+      kind select
+      required true
+      options ["100", "95_99", "below_95"]
+    }
+    input "data_issues" {
+      label "Data Issues"
+      kind textarea
+    }
+    input "verification_notes" {
+      label "Verification Notes"
+      kind textarea
+    }
+  }
+  form "compliance_review_form" {
+    title "compliance_review_form"
+    input "compliance_verified" {
+      label "Compliance Verified"
+      kind boolean
+      required true
+    }
+    input "compliance_status" {
+      label "Compliance Status"
+      kind select
+      required true
+      options ["compliant", "minor", "major"]
+    }
+    input "regulatory_requirements" {
+      label "Regulatory Requirements Met"
+      kind boolean
+      required true
+    }
+    input "compliance_notes" {
+      label "Compliance Notes"
+      kind textarea
+    }
+  }
+  form "approval_form" {
+    title "approval_form"
+    input "approval_decision" {
+      label "Approval Decision"
+      kind select
+      required true
+      options ["approved", "rejected", "changes"]
+    }
+    input "approval_notes" {
+      label "Approval Notes"
+      kind textarea
+    }
+    input "approver_name" {
+      label "Approver Name"
+      kind text
+      required true
+    }
+    input "approval_date" {
+      label "Approval Date"
+      kind date
+      required true
+    }
+  }
+  form "submission_form" {
+    title "submission_form"
+    input "report_submitted" {
+      label "Report Submitted"
+      kind boolean
+      required true
+    }
+    input "submission_date" {
+      label "Submission Date"
+      kind date
+      required true
+    }
+    input "submission_reference" {
+      label "Submission Reference"
+      kind text
+    }
+    input "submission_method" {
+      label "Submission Method"
+      kind select
+      required true
+      options ["online", "physical", "email"]
+    }
+  }
+  form "nrb_compliance_matrix_form" {
+    title "nrb_compliance_matrix_form"
+    input "return_code" {
+      label "NRB Return Code"
+      kind text
+      required true
+    }
+    input "materiality_level" {
+      label "Materiality Level"
+      kind select
+      required true
+      options ["low", "moderate", "high"]
+    }
+    input "breach_identified" {
+      label "Breach Identified"
+      kind boolean
+      required true
+    }
+    input "breach_summary" {
+      label "Breach Summary"
+      kind textarea
+    }
+    input "remediation_deadline" {
+      label "Remediation Deadline"
+      kind date
+    }
+    input "nrb_circular_reference" {
+      label "NRB Circular Reference"
+      kind text
+    }
+  }
+  form "nrb_management_attestation_form" {
+    title "nrb_management_attestation_form"
+    input "board_attestation" {
+      label "Board Attestation Available"
+      kind boolean
+      required true
+    }
+    input "attestation_scope" {
+      label "Attestation Scope"
+      kind select
+      required true
+      options ["monthly", "quarterly", "annual", "special"]
+    }
+    input "attestation_signed_by" {
+      label "Attestation Signed By"
+      kind text
+      required true
+    }
+    input "attestation_date" {
+      label "Attestation Date"
+      kind date
+      required true
+    }
+    input "board_resolution_attached" {
+      label "Board Resolution Attached"
+      kind boolean
+      required true
+    }
+    input "attestation_exception_reason" {
+      label "Exception Reason"
+      kind textarea
+    }
+  }
+  form "nrb_submission_clearance_form" {
+    title "nrb_submission_clearance_form"
+    input "dispatch_channel" {
+      label "Dispatch Channel"
+      kind select
+      required true
+      options ["portal", "email", "secure_api"]
+    }
+    input "portal_acknowledged" {
+      label "Portal or Channel Acknowledged"
+      kind boolean
+      required true
+    }
+    input "channel_reference" {
+      label "Channel Reference"
+      kind text
+    }
+    input "dispatch_date" {
+      label "Dispatch Date"
+      kind date
+      required true
+    }
+    input "nrb_receipt_confirmed" {
+      label "NRB Receipt Confirmed"
+      kind boolean
+      required true
+    }
+    input "final_submission_note" {
+      label "Final Submission Note"
+      kind textarea
+    }
+  }
+  form "report_rfi_response" {
+    title "report_rfi_response"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "additional_documents" {
+      label "Additional Documents"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  stage "data_verification" {
+    title "Data Verification"
+    kind submission
+    roles ["data_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Data Verification"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["report_details", "report_data", "data_verification_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["report_details", "report_data", "data_verification_form"]
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "compliance_review" {
+    title "Compliance Review"
+    kind review
+    roles ["compliance_officer"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Compliance Review"
+      layout wizard
+      group "compliance_block" {
+        title "compliance_block"
+        forms ["report_details", "report_data", "data_verification_form", "compliance_review_form", "nrb_compliance_matrix_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["report_details", "report_data", "data_verification_form", "compliance_review_form", "nrb_compliance_matrix_form"]
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "data_verification"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "pending_approval" {
+    title "Approval"
+    kind approval
+    roles ["management"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["report_details", "report_data", "data_verification_form", "compliance_review_form", "nrb_compliance_matrix_form", "approval_form", "nrb_management_attestation_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "compliance_review"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "submitted" {
+    title "Submission"
+    kind processing
+    roles ["admin"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Submission"
+      layout wizard
+      group "submission_block" {
+        title "submission_block"
+        forms ["report_details", "report_data", "data_verification_form", "compliance_review_form", "nrb_compliance_matrix_form", "approval_form", "nrb_management_attestation_form", "submission_form", "nrb_submission_clearance_form"]
+      }
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "pending_approval"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

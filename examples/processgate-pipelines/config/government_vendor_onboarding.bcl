@@ -1,0 +1,275 @@
+pipeline "government_vendor_onboarding" {
+  title "Vendor Onboarding"
+  description "Vendor onboarding with due-diligence, finance review, and activation"
+  form "vendor_profile" {
+    title "Vendor Profile"
+    input "vendor_name" {
+      label "Vendor Name"
+      kind text
+      required true
+    }
+    input "pan_number" {
+      label "PAN Number"
+      kind text
+      required true
+    }
+    input "selected_bidder" {
+      label "Selected Bidder"
+      kind text
+    }
+    input "tender_reference" {
+      label "Tender Reference"
+      kind text
+    }
+    input "award_reference" {
+      label "Award Reference"
+      kind text
+    }
+  }
+  form "vendor_documents" {
+    title "Vendor Documents"
+    input "registration_certificate_upload" {
+      label "Registration Certificate"
+      kind file
+      required true
+    }
+    input "pan_certificate_upload" {
+      label "PAN Certificate"
+      kind file
+      required true
+    }
+    input "award_letter_upload" {
+      label "Award Letter"
+      kind file
+    }
+  }
+  form "bank_tax_details" {
+    title "Bank & Tax Details"
+    input "bank_account_name" {
+      label "Account Name"
+      kind text
+      required true
+    }
+    input "bank_account_number" {
+      label "Account Number"
+      kind text
+      required true
+    }
+    input "bank_name" {
+      label "Bank Name"
+      kind text
+      required true
+    }
+  }
+  form "due_diligence_check" {
+    title "Due Diligence"
+    input "kyc_complete" {
+      label "KYC Complete"
+      kind boolean
+      required true
+    }
+    input "duplicate_vendor_check" {
+      label "Duplicate Vendor Check"
+      kind boolean
+      required true
+    }
+  }
+  form "bank_validation" {
+    title "Bank Validation"
+    input "payee_name_match" {
+      label "Payee Name Match"
+      kind boolean
+      required true
+    }
+    input "withholding_category" {
+      label "Withholding Category"
+      kind text
+    }
+  }
+  form "vendor_decision" {
+    title "Vendor Decision"
+    input "decision" {
+      label "Decision"
+      kind select
+      required true
+      options ["approve", "reject"]
+    }
+    input "decision_note" {
+      label "Decision Note"
+      kind textarea
+    }
+  }
+  form "vendor_activation" {
+    title "Vendor Activation"
+    input "vendor_code" {
+      label "Vendor Code"
+      kind text
+      required true
+    }
+    input "activation_date" {
+      label "Activation Date"
+      kind date
+      required true
+    }
+  }
+  form "vendor_rfi_response" {
+    title "RFI Response"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "compliance_review"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "finance_review"
+  }
+  stage "vendor_submission" {
+    title "Vendor Submission"
+    kind submission
+    public true
+    require_account true
+    roles ["vendor_applicant"]
+    page {
+      title "Vendor Submission"
+      layout wizard
+      group "vendor_submission" {
+        title "vendor_submission"
+        forms ["vendor_profile", "vendor_documents", "bank_tax_details"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "compliance_review" {
+    title "Compliance Review"
+    kind review
+    roles ["compliance_reviewer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Compliance Review"
+      layout wizard
+      group "compliance_block" {
+        title "compliance_block"
+        forms ["due_diligence_check"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["due_diligence_check"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "finance_review" {
+    title "Finance Review"
+    kind review
+    roles ["finance_reviewer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Finance Review"
+      layout wizard
+      group "finance_block" {
+        title "finance_block"
+        forms ["bank_validation"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["bank_validation"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "approval" {
+    title "Approval"
+    kind approval
+    roles ["procurement_approver"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["vendor_decision"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "activation" {
+    title "Activation"
+    kind processing
+    roles ["vendor_registry_officer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Activation"
+      layout wizard
+      group "activation_block" {
+        title "activation_block"
+        forms ["vendor_activation"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

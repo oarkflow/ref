@@ -1,0 +1,248 @@
+pipeline "bank_mobile_banking_registration" {
+  title "Mobile Banking Registration"
+  description "Mobile banking registration, verification, and activation workflow"
+  form "registration_request_form" {
+    title "Registration Request"
+    input "account_number" {
+      label "Account Number"
+      kind text
+      required true
+    }
+    input "mobile_number" {
+      label "Mobile Number"
+      kind text
+      required true
+    }
+    input "id_type" {
+      label "ID Type"
+      kind select
+      required true
+      options ["citizenship", "passport", "driving_license"]
+    }
+    input "id_number" {
+      label "ID Number"
+      kind text
+      required true
+    }
+  }
+  form "device_info_form" {
+    title "Device Information"
+    input "device_type" {
+      label "Device Type"
+      kind select
+      required true
+      options ["android", "ios"]
+    }
+    input "sim_info" {
+      label "SIM Information"
+      kind text
+      required true
+    }
+  }
+  form "account_verification_form" {
+    title "Account Verification"
+    input "account_status" {
+      label "Account Status"
+      kind select
+      required true
+      options ["active", "inactive", "frozen"]
+    }
+    input "balance_verified" {
+      label "Balance Verified"
+      kind boolean
+      required true
+    }
+  }
+  form "kyc_check_form" {
+    title "KYC Check"
+    input "kyc_compliant" {
+      label "KYC Compliant"
+      kind boolean
+      required true
+    }
+    input "kyc_notes" {
+      label "KYC Notes"
+      kind textarea
+    }
+  }
+  form "activation_approval_form" {
+    title "Activation Approval"
+    input "approval_decision" {
+      label "Approval Decision"
+      kind select
+      required true
+      options ["approved", "rejected"]
+    }
+    input "daily_limit" {
+      label "Daily Transaction Limit"
+      kind text
+      required true
+    }
+  }
+  form "limit_setting_form" {
+    title "Limit Setting"
+    input "transaction_limit_set" {
+      label "Transaction Limit Set"
+      kind boolean
+      required true
+    }
+    input "limit_notes" {
+      label "Limit Notes"
+      kind textarea
+    }
+  }
+  form "device_activation_form" {
+    title "Device Activation"
+    input "activation_completed" {
+      label "Activation Completed"
+      kind boolean
+      required true
+    }
+    input "activation_date" {
+      label "Activation Date"
+      kind date
+      required true
+    }
+  }
+  form "app_config_form" {
+    title "App Configuration"
+    input "app_configured" {
+      label "App Configured"
+      kind boolean
+      required true
+    }
+    input "login_credentials_sent" {
+      label "Login Credentials Sent"
+      kind boolean
+      required true
+    }
+  }
+  form "mobile_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "activation"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "verification"
+  }
+  stage "request_submission" {
+    title "Request Submission"
+    kind submission
+    public true
+    require_account true
+    roles ["customer"]
+    page {
+      title "Request Submission"
+      layout wizard
+      group "request_block" {
+        title "request_block"
+        forms ["registration_request_form", "device_info_form"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "verification" {
+    title "Verification"
+    kind review
+    roles ["account_officer"]
+    sla {
+      duration "240m"
+      on_breach "notify"
+    }
+    page {
+      title "Verification"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["account_verification_form", "kyc_check_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["account_verification_form", "kyc_check_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "approval" {
+    title "Approval"
+    kind approval
+    roles ["operations_officer"]
+    sla {
+      duration "120m"
+      on_breach "notify"
+    }
+    page {
+      title "Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["activation_approval_form", "limit_setting_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "activation" {
+    title "Activation"
+    kind processing
+    roles ["it_support"]
+    sla {
+      duration "60m"
+      on_breach "notify"
+    }
+    page {
+      title "Activation"
+      layout wizard
+      group "activation_block" {
+        title "activation_block"
+        forms ["device_activation_form", "app_config_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

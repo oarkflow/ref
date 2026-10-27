@@ -1,0 +1,314 @@
+pipeline "education_student_transfer" {
+  title "Student Transfer"
+  description "Student transfer process between schools and colleges in Nepal"
+  form "student_info" {
+    title "Student Information"
+    input "student_name" {
+      label "Student Name"
+      kind text
+      required true
+    }
+    input "student_dob" {
+      label "Date of Birth"
+      kind date
+      required true
+    }
+    input "gender" {
+      label "Gender"
+      kind select
+      required true
+      options ["male", "female", "other"]
+    }
+    input "grade" {
+      label "Current Grade/Class"
+      kind text
+      required true
+    }
+    input "student_photo" {
+      label "Student Photo"
+      kind file
+      required true
+      accept ["image/*"]
+    }
+  }
+  form "transfer_details" {
+    title "Transfer Details"
+    input "current_school" {
+      label "Current School"
+      kind text
+      required true
+    }
+    input "current_school_address" {
+      label "Current School Address"
+      kind text
+      required true
+    }
+    input "new_school" {
+      label "New School"
+      kind text
+      required true
+    }
+    input "new_school_address" {
+      label "New School Address"
+      kind text
+      required true
+    }
+    input "transfer_reason" {
+      label "Reason for Transfer"
+      kind textarea
+      required true
+    }
+  }
+  form "current_school_verification" {
+    title "Current School Verification"
+    input "student_enrolled" {
+      label "Student Currently Enrolled"
+      kind boolean
+      required true
+    }
+    input "academic_record" {
+      label "Academic Record Verified"
+      kind boolean
+      required true
+    }
+    input "no_dues" {
+      label "No Dues Certificate"
+      kind boolean
+      required true
+    }
+    input "transfer_certificate" {
+      label "Transfer Certificate"
+      kind file
+      required true
+      accept ["application/pdf"]
+    }
+    input "verification_notes" {
+      label "Verification Notes"
+      kind textarea
+    }
+  }
+  form "new_school_acceptance" {
+    title "New School Acceptance"
+    input "seat_available" {
+      label "Seat Available"
+      kind boolean
+      required true
+    }
+    input "grade_accepted" {
+      label "Grade Accepted"
+      kind boolean
+      required true
+    }
+    input "admission_confirmed" {
+      label "Admission Confirmed"
+      kind boolean
+      required true
+    }
+    input "acceptance_letter" {
+      label "Acceptance Letter"
+      kind file
+      required true
+      accept ["application/pdf"]
+    }
+    input "acceptance_notes" {
+      label "Acceptance Notes"
+      kind textarea
+    }
+  }
+  form "final_approval_form" {
+    title "Final Approval"
+    input "approval_decision" {
+      label "Approval Decision"
+      kind select
+      required true
+      options ["approved", "rejected"]
+    }
+    input "approval_notes" {
+      label "Approval Notes"
+      kind textarea
+    }
+  }
+  form "transfer_completion" {
+    title "Transfer Completion"
+    input "transfer_completed" {
+      label "Transfer Completed"
+      kind boolean
+      required true
+    }
+    input "completion_date" {
+      label "Completion Date"
+      kind date
+      required true
+    }
+    input "records_updated" {
+      label "Records Updated"
+      kind boolean
+      required true
+    }
+  }
+  form "transfer_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "additional_documents" {
+      label "Additional Documents"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "current_school_verification"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "new_school_approval"
+  }
+  stage "application_submission" {
+    title "Application Submission"
+    kind submission
+    public true
+    require_account true
+    roles ["parent"]
+    page {
+      title "Application Submission"
+      layout wizard
+      group "application_block" {
+        title "application_block"
+        forms ["student_info", "transfer_details"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "current_school_verification" {
+    title "Current School Verification"
+    kind review
+    roles ["current_school"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Current School Verification"
+      layout wizard
+      group "current_school_block" {
+        title "current_school_block"
+        forms ["current_school_verification"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["current_school_verification"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "new_school_approval" {
+    title "New School Approval"
+    kind review
+    roles ["new_school"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "New School Approval"
+      layout wizard
+      group "new_school_block" {
+        title "new_school_block"
+        forms ["new_school_acceptance"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["new_school_acceptance"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "final_approval" {
+    title "Final Approval"
+    kind approval
+    roles ["education_office"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Final Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["final_approval_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "completion" {
+    title "Transfer Completion"
+    kind processing
+    roles ["admin"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Transfer Completion"
+      layout wizard
+      group "completion_block" {
+        title "completion_block"
+        forms ["transfer_completion"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

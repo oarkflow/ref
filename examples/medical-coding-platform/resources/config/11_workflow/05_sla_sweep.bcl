@@ -1,0 +1,37 @@
+# ===========================================================================
+# SLA sweep. Stage SLAs (warnings, breaches, escalation, held cases resuming)
+# only take effect when the sweep runs, so it runs every minute through the
+# job queue (exactly one replica fires it) and administrators can run it on
+# demand. Stage SLAs are edited in Studio: Form designer > SLA.
+# ===========================================================================
+
+intent "workflow.sla_sweep" {
+  description "Apply SLA warnings, breaches, escalations and hold expiry to every open case"
+  response "sweep"
+  node "sweep" {
+    uses "pipeline.sweep"
+    resource "coding_cases"
+    kind effect
+    provides [sweep]
+    config {
+      roles ["admin", "super_admin"]
+    }
+  }
+}
+
+route "workflow.api.sla_sweep" {
+  method POST
+  path "/workflow/api/sla/sweep"
+  intent "workflow.sla_sweep"
+  session "sessions"
+  auth "session_auth"
+  allow_anonymous false
+  cache_control "no-store"
+}
+
+schedule "sla_sweep" {
+  description "Apply stage SLAs every minute"
+  cron "* * * * *"
+  queue "jobs"
+  intent "workflow.sla_sweep"
+}

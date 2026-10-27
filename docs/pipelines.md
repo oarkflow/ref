@@ -90,6 +90,10 @@ Who may see and change what is declared on the stage, group, form and input, and
 | `disabled_if` | input, form, group | Shown read-only while true (`disabled: true` in the view); a write to it is ignored. |
 | `required_if` | input | Required while true. |
 
+**What conditions can read.** Form values (`billing.claim_status`), the case (`case.org_unit` is the workspace, `case.status`, `case.stage`), the user (`actor.roles has 'qa'`, `actor.is_applicant`) and stages (`stages.coding.status`). A stage's `skip_if` is checked when the case reaches it; `entry_conditions` must all hold or the stage cannot open (the transition fails with the failing condition); `requires` lists stages that must be completed or skipped first.
+
+**Empty values in conditions.** Write `form.field empty` and `form.field not empty`. They are true for a value that was never entered, one that was cleared, and zero. Do not write `form.field != ''` to mean "filled in": a value that was never entered is not equal to `''`, so that is true before the person has answered. Studio's rule builder writes `empty` / `not empty` and flags the other pattern.
+
 Role limits are strict: the applicant of a public stage is not exempt. Only an outside party holding a signed link is, because the link itself names what they may fill. Stage `roles` still decide who may act at all; these settings narrow what an actor who may act can touch.
 
 ```bcl
@@ -292,6 +296,31 @@ Queues:
 - `scope=queue&assignee=unassigned|me|<id>` filters a stage queue.
 - Queue rows carry `assignee`, `sla_status` and `on_hold`.
 
+### Lookups from any data source
+
+A `lookup "name"` input takes its choices from a `lookup.sources` resource (named by `lookup_resource` on `pipeline.cases`), then from the `org.hierarchy` lookups for any set the source does not define.
+
+```bcl
+resource "catalog" {
+  kind "lookup.sources"
+  config {
+    database "database"                 # for sql sets (read-only SELECTs)
+    service  "payer_api"                # a service.http resource, for http sets
+    sets [
+      { name "sex" type "static" entries [ { value "F" label "Female" }, { value "M" label "Male" } ] },
+      { name "em_codes" type "sql" args ["mdm_level"] ttl "10m"
+        query "SELECT code AS value, label FROM em_codes WHERE mdm_level = ?" },
+      { name "payers" type "http" path "/v1/payers" items_path "data" value_field "id" label_field "name" ttl "15m" }
+    ]
+  }
+}
+```
+
+- **static**: `entries` of `{value label attrs{}}`; `attrs` lists the values of a `depends_on` field an entry applies to.
+- **sql**: one `SELECT` returning `value` and `label`. `args` names the `depends_on` fields passed as positional parameters; with a parameter unset there are no choices yet.
+- **http**: calls the `service` (so its host allowlist and private-network block apply). `params` may use `{field}` placeholders for dependencies; `items_path` is the dotted path to the list; each item is an object (`value_field`, `label_field`) or a plain value.
+- **cache**: `ttl` (default 5m); when a refresh fails the last good list is served instead of nothing. `timeout` defaults to 3s.
+
 ### SLAs, business calendars and escalation
 
 ```bcl
@@ -299,7 +328,8 @@ sla {
   duration "2d"                 # 2 working days; "16h" = 16 working hours
   warn_before "4h"
   calendar "office"
-  on_breach "reassign"          # notify | reassign | return (return_to) | <action name>
+  on_breach "reassign"          # notify | reassign | release | return (return_to) | <action name>
+  pickup_timeout "1h"           # unclaimed work breaches after this; on_pickup_timeout notify | reassign
   escalate "senior" { after "1d"  assign_roles ["senior_officer"]  notify ["director"] }
   escalate "director" { after "3d"  assign_roles ["director"] }
 }
@@ -309,12 +339,15 @@ sla {
 
 **`pipeline.sweep`.** Run it on a schedule. It applies every time-based rule:
 - the warning, with the `sla.warning` event;
+- the pickup timeout of unclaimed work, with the `sla.pickup_breached` event (once);
 - the breach, with the `sla.breached` event and the breach action;
 - each escalation level after the breach, which re-routes to the level's roles, with the `sla.escalated` event;
 - the end of holds whose `until` has passed;
 - retention.
 
 A case changed concurrently is skipped until the next run.
+
+Run the sweep from a `schedule` (through a queue) and, if you like, an admin-only route. A sweep restricted with `roles` still runs when the schedule starts it: work the platform starts itself is trusted.
 
 ### Notes
 

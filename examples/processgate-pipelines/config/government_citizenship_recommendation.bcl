@@ -1,0 +1,230 @@
+pipeline "government_citizenship_recommendation" {
+  title "Citizenship Recommendation"
+  description "Citizenship recommendation letter process in Nepal"
+  form "applicant_info" {
+    title "Applicant Information"
+    input "full_name" {
+      label "Full Name"
+      kind text
+      required true
+    }
+    input "date_of_birth" {
+      label "Date of Birth"
+      kind date
+      required true
+    }
+    input "birth_place" {
+      label "Birth Place"
+      kind text
+      required true
+    }
+    input "father_name" {
+      label "Father's Name"
+      kind text
+      required true
+    }
+    input "mother_name" {
+      label "Mother's Name"
+      kind text
+      required true
+    }
+    input "permanent_address" {
+      label "Permanent Address"
+      kind text
+      required true
+    }
+    input "current_address" {
+      label "Current Address"
+      kind text
+      required true
+    }
+    input "ward" {
+      label "Ward"
+      kind select
+      required true
+      options ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]
+    }
+    input "citizenship_type" {
+      label "Citizenship Type"
+      kind select
+      required true
+      options ["birth", "descent", "naturalization"]
+    }
+    input "documents" {
+      label "Supporting Documents"
+      kind file
+      required true
+      accept ["image/*,application/pdf"]
+    }
+  }
+  form "verification_form" {
+    title "Verification"
+    input "documents_verified" {
+      label "Documents Verified"
+      kind boolean
+      required true
+    }
+    input "verification_notes" {
+      label "Verification Notes"
+      kind textarea
+    }
+  }
+  form "approval_form" {
+    title "Approval"
+    input "approval_decision" {
+      label "Approval Decision"
+      kind select
+      required true
+      options ["approved", "rejected"]
+    }
+    input "approval_notes" {
+      label "Approval Notes"
+      kind textarea
+    }
+  }
+  form "issuance_form" {
+    title "Issuance"
+    input "recommendation_issued" {
+      label "Recommendation Issued"
+      kind boolean
+      required true
+    }
+    input "reference_number" {
+      label "Reference Number"
+      kind text
+      required true
+    }
+    input "issue_date" {
+      label "Issue Date"
+      kind date
+      required true
+    }
+  }
+  form "citizenship_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "verification"
+  }
+  stage "application" {
+    title "Application"
+    kind submission
+    public true
+    require_account true
+    roles ["applicant"]
+    page {
+      title "Application"
+      layout wizard
+      group "application_block" {
+        title "application_block"
+        forms ["applicant_info"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "verification" {
+    title "Verification"
+    kind review
+    roles ["verification_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Verification"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["verification_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["verification_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "approval" {
+    title "Approval"
+    kind approval
+    roles ["approval_officer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["approval_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "issuance" {
+    title "Issuance"
+    kind processing
+    roles ["admin"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Issuance"
+      layout wizard
+      group "issuance_block" {
+        title "issuance_block"
+        forms ["issuance_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

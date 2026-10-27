@@ -11,26 +11,12 @@ import (
 // declarations used by the runtime. The returned value can be JSON encoded.
 func (p *Platform) OpenAPI() map[string]any {
 	paths := map[string]any{}
-	components := map[string]any{"schemas": map[string]any{}, "securitySchemes": map[string]any{
-		"bearerAuth": map[string]any{
-			"type":         "http",
-			"scheme":       "bearer",
-			"bearerFormat": "JWT",
-			"description":  "JWT Bearer token",
-		},
-		"apiKeyAuth": map[string]any{
-			"type":        "apiKey",
-			"in":          "header",
-			"name":        "X-API-Key",
-			"description": "API key authentication header",
-		},
-		"cookieAuth": map[string]any{
-			"type":        "apiKey",
-			"in":          "cookie",
-			"name":        "clear_session_id",
-			"description": "Session cookie authentication",
-		},
-	}}
+	components := map[string]any{"schemas": map[string]any{}, "securitySchemes": map[string]any{}}
+	securitySchemes := components["securitySchemes"].(map[string]any)
+	resources := make(map[string]ResourceSpec, len(p.Document.Resources))
+	for _, resource := range p.Document.Resources {
+		resources[resource.Name] = resource
+	}
 	schemaDefs := components["schemas"].(map[string]any)
 	shapesMap := make(map[string]SchemaSpec, len(p.Document.Shapes))
 	for _, shape := range p.Document.Shapes {
@@ -112,11 +98,9 @@ func (p *Platform) OpenAPI() map[string]any {
 		if len(params) > 0 {
 			op["parameters"] = params
 		}
-		if route.Auth != "" || (!route.AllowAnonymous && (route.Authz != nil || route.Session != "")) {
-			op["security"] = []any{
-				map[string]any{"cookieAuth": []string{}},
-				map[string]any{"bearerAuth": []string{}},
-				map[string]any{"apiKeyAuth": []string{}},
+		if route.Auth != "" && !route.AllowAnonymous {
+			if security := openAPISecurity(route.Auth, resources, securitySchemes, map[string]bool{}); len(security) > 0 {
+				op["security"] = security
 			}
 		}
 		responses := op["responses"].(map[string]any)
@@ -200,6 +184,45 @@ func (p *Platform) OpenAPI() map[string]any {
 		map[string]any{"url": "/", "description": "Current Environment"},
 	}
 	return map[string]any{"openapi": "3.1.0", "info": info, "servers": servers, "paths": paths, "components": components}
+}
+
+// openAPISecurity follows the actual authenticator graph. A chain represents
+// alternatives, so each supported mechanism gets its own security requirement.
+func openAPISecurity(name string, resources map[string]ResourceSpec, schemes map[string]any, visiting map[string]bool) []any {
+	resource, ok := resources[name]
+	if !ok || visiting[name] {
+		return nil
+	}
+	visiting[name] = true
+	defer delete(visiting, name)
+	switch resource.Kind {
+	case "auth.chain":
+		var result []any
+		for _, child := range configStrings(resource.Config, "authenticators") {
+			result = append(result, openAPISecurity(child, resources, schemes, visiting)...)
+		}
+		return result
+	case "auth.session":
+		session, ok := resources[configString(resource.Config, "session", "")]
+		if !ok {
+			return nil
+		}
+		key := "cookieAuth_" + session.Name
+		schemes[key] = map[string]any{"type": "apiKey", "in": "cookie", "name": configString(session.Config, "cookie", "sid")}
+		return []any{map[string]any{key: []string{}}}
+	case "auth.api_key":
+		key := "apiKeyAuth_" + name
+		schemes[key] = map[string]any{"type": "apiKey", "in": "header", "name": configString(resource.Config, "header", "X-API-Key")}
+		return []any{map[string]any{key: []string{}}}
+	case "auth.jwt", "auth.oidc":
+		schemes["bearerAuth"] = map[string]any{"type": "http", "scheme": "bearer"}
+		return []any{map[string]any{"bearerAuth": []string{}}}
+	case "auth.basic":
+		schemes["basicAuth"] = map[string]any{"type": "http", "scheme": "basic"}
+		return []any{map[string]any{"basicAuth": []string{}}}
+	default:
+		return nil
+	}
 }
 
 // WriteOpenAPI writes the generated API contract as stable, indented JSON.
@@ -419,26 +442,6 @@ func formatTag(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "auth", "login", "me":
 		return "Authentication"
-	case "coding":
-		return "Medical Coding"
-	case "qa":
-		return "Quality Assurance"
-	case "de", "dataentry", "data entry":
-		return "Charge Data Entry"
-	case "suspends", "suspend":
-		return "Chart Suspensions"
-	case "facilities", "facility":
-		return "Facilities"
-	case "workitem", "workitems":
-		return "Workitems"
-	case "provider", "providers":
-		return "Healthcare Providers"
-	case "charge code", "charge_code", "chargemaster":
-		return "Chargemaster"
-	case "cpt", "cpt code", "cpts":
-		return "CPT & Medical Terminology"
-	case "admin", "users", "roles", "companies":
-		return "Administration & RBAC"
 	default:
 		words := strings.Fields(s)
 		for i, w := range words {
@@ -450,7 +453,7 @@ func formatTag(s string) string {
 	}
 }
 
-func humanizeOperation(name, path string) string {
+func humanizeOperation(name, _ string) string {
 	cleanName := strings.TrimPrefix(name, "web_client.")
 	parts := strings.Split(cleanName, ".")
 	target := cleanName

@@ -1,0 +1,181 @@
+pipeline "government_local_service_appointment" {
+  title "Local Service Appointment"
+  description "Queue booking and appointment system for local government services in Nepal"
+  form "booking_details" {
+    title "Booking Details"
+    input "service_type" {
+      label "Service Type"
+      kind select
+      required true
+      options ["certificate", "verification", "payment", "complaint", "information", "other"]
+    }
+    input "citizen_name" {
+      label "Name"
+      kind text
+      required true
+    }
+    input "citizen_phone" {
+      label "Phone"
+      kind text
+      required true
+    }
+    input "preferred_date" {
+      label "Preferred Date"
+      kind date
+      required true
+    }
+    input "preferred_time" {
+      label "Preferred Time"
+      kind text
+      required true
+    }
+    input "notes" {
+      label "Notes"
+      kind textarea
+    }
+  }
+  form "confirmation_form" {
+    title "Confirmation"
+    input "appointment_confirmed" {
+      label "Appointment Confirmed"
+      kind boolean
+      required true
+    }
+    input "appointment_time" {
+      label "Appointment Time"
+      kind text
+      required true
+    }
+    input "queue_number" {
+      label "Queue Number"
+      kind text
+      required true
+    }
+    input "confirmation_notes" {
+      label "Confirmation Notes"
+      kind textarea
+    }
+  }
+  form "service_form" {
+    title "Service Delivery"
+    input "service_provided" {
+      label "Service Provided"
+      kind boolean
+      required true
+    }
+    input "service_notes" {
+      label "Service Notes"
+      kind textarea
+    }
+  }
+  form "completion_form" {
+    title "Completion"
+    input "appointment_completed" {
+      label "Completed"
+      kind boolean
+      required true
+    }
+    input "completion_notes" {
+      label "Completion Notes"
+      kind textarea
+    }
+  }
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "sla.warning" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: sla.warning"
+    body "Case {case.number} has event sla.warning"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  stage "booking" {
+    title "Booking"
+    kind submission
+    public true
+    require_account true
+    roles ["citizen"]
+    page {
+      title "Booking"
+      layout wizard
+      group "booking_block" {
+        title "booking_block"
+        forms ["booking_details"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "confirmation" {
+    title "Confirmation"
+    kind processing
+    roles ["admin"]
+    sla {
+      duration "60m"
+      on_breach "notify"
+    }
+    page {
+      title "Confirmation"
+      layout wizard
+      group "confirmation_block" {
+        title "confirmation_block"
+        forms ["confirmation_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "service" {
+    title "Service Delivery"
+    kind processing
+    roles ["service_officer"]
+    page {
+      title "Service Delivery"
+      layout wizard
+      group "service_block" {
+        title "service_block"
+        forms ["service_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "completion" {
+    title "Completion"
+    kind processing
+    roles ["admin"]
+    page {
+      title "Completion"
+      layout wizard
+      group "completion_block" {
+        title "completion_block"
+        forms ["completion_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

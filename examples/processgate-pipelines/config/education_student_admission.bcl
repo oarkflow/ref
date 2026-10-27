@@ -1,0 +1,332 @@
+pipeline "education_student_admission" {
+  title "Student Admission"
+  description "Student admission application, verification and enrollment process"
+  form "personal_info" {
+    title "Personal Information"
+    input "full_name" {
+      label "Full Name"
+      kind text
+      required true
+    }
+    input "date_of_birth" {
+      label "Date of Birth"
+      kind date
+      required true
+    }
+    input "gender" {
+      label "Gender"
+      kind select
+      required true
+      options ["male", "female", "other"]
+    }
+    input "nationality" {
+      label "Nationality"
+      kind text
+      required true
+    }
+    input "phone" {
+      label "Phone"
+      kind text
+      required true
+    }
+    input "email" {
+      label "Email"
+      kind text
+      required true
+    }
+  }
+  form "academic_info" {
+    title "Academic Information"
+    input "program" {
+      label "Program"
+      kind select
+      required true
+      options ["cs", "business", "engineering", "arts", "science"]
+    }
+    input "level" {
+      label "Level"
+      kind select
+      required true
+      options ["bachelor", "master", "phd"]
+    }
+    input "previous_school" {
+      label "Previous School/College"
+      kind text
+      required true
+    }
+    input "gpa" {
+      label "GPA/Percentage"
+      kind text
+      required true
+    }
+    input "documents" {
+      label "Academic Documents"
+      kind file
+      required true
+      accept ["application/pdf"]
+    }
+  }
+  form "verification_form" {
+    title "Document Verification"
+    input "documents_verified" {
+      label "Documents Verified"
+      kind boolean
+      required true
+    }
+    input "academic_records_verified" {
+      label "Academic Records Verified"
+      kind boolean
+      required true
+    }
+    input "verification_notes" {
+      label "Verification Notes"
+      kind textarea
+    }
+  }
+  form "entrance_exam_form" {
+    title "Entrance Exam"
+    input "exam_date" {
+      label "Exam Date"
+      kind date
+      required true
+    }
+    input "exam_center" {
+      label "Exam Center"
+      kind text
+      required true
+    }
+    input "score" {
+      label "Score"
+      kind text
+      required true
+    }
+    input "exam_result" {
+      label "Result"
+      kind select
+      required true
+      options ["passed", "failed"]
+    }
+  }
+  form "interview_form" {
+    title "Interview"
+    input "interview_date" {
+      label "Interview Date"
+      kind date
+      required true
+    }
+    input "interview_score" {
+      label "Interview Score"
+      kind text
+      required true
+    }
+    input "interview_notes" {
+      label "Interview Notes"
+      kind textarea
+    }
+  }
+  form "approval_form" {
+    title "Approval"
+    input "approval_decision" {
+      label "Approval Decision"
+      kind select
+      required true
+      options ["approved", "rejected"]
+    }
+    input "approval_notes" {
+      label "Approval Notes"
+      kind textarea
+    }
+  }
+  form "enrollment_form" {
+    title "Enrollment"
+    input "enrolled" {
+      label "Enrolled"
+      kind boolean
+      required true
+    }
+    input "student_id" {
+      label "Student ID"
+      kind text
+      required true
+    }
+    input "enrollment_date" {
+      label "Enrollment Date"
+      kind date
+      required true
+    }
+    input "class_section" {
+      label "Class/Section"
+      kind text
+      required true
+    }
+  }
+  form "admission_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "document_verification"
+  }
+  stage "application" {
+    title "Application"
+    kind submission
+    public true
+    require_account true
+    roles ["applicant"]
+    page {
+      title "Application"
+      layout wizard
+      group "application_block" {
+        title "application_block"
+        forms ["personal_info", "academic_info"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "document_verification" {
+    title "Document Verification"
+    kind review
+    roles ["verification_officer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Document Verification"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["verification_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["verification_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "entrance_exam" {
+    title "Entrance Exam"
+    kind processing
+    roles ["exam_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Entrance Exam"
+      layout wizard
+      group "entrance_exam_block" {
+        title "entrance_exam_block"
+        forms ["entrance_exam_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "interview" {
+    title "Interview"
+    kind processing
+    roles ["admission_committee"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Interview"
+      layout wizard
+      group "interview_block" {
+        title "interview_block"
+        forms ["interview_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "approval" {
+    title "Approval"
+    kind approval
+    roles ["admission_committee"]
+    sla {
+      duration "720m"
+      on_breach "notify"
+    }
+    page {
+      title "Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["approval_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "enrollment" {
+    title "Enrollment"
+    kind processing
+    roles ["admin"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Enrollment"
+      layout wizard
+      group "enrollment_block" {
+        title "enrollment_block"
+        forms ["enrollment_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

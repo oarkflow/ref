@@ -1,0 +1,312 @@
+pipeline "bank_loan_approval" {
+  title "Loan Approval"
+  description "Bank loan application and approval process in Nepal"
+  form "loan_details" {
+    title "Loan Details"
+    input "loan_type" {
+      label "Loan Type"
+      kind select
+      required true
+      options ["personal", "home", "business", "education", "vehicle", "agricultural"]
+    }
+    input "loan_amount" {
+      label "Loan Amount (NPR)"
+      kind text
+      required true
+    }
+    input "loan_purpose" {
+      label "Purpose of Loan"
+      kind textarea
+      required true
+    }
+    input "tenure_months" {
+      label "Tenure (Months)"
+      kind text
+      required true
+    }
+    input "applicant_name" {
+      label "Applicant Name"
+      kind text
+      required true
+    }
+    input "applicant_address" {
+      label "Address"
+      kind text
+      required true
+    }
+    input "applicant_phone" {
+      label "Phone"
+      kind text
+      required true
+    }
+    input "applicant_income" {
+      label "Monthly Income (NPR)"
+      kind text
+      required true
+    }
+    input "id_document" {
+      label "ID Document"
+      kind file
+      required true
+      accept ["image/*,application/pdf"]
+    }
+    input "income_document" {
+      label "Income Document"
+      kind file
+      required true
+      accept ["application/pdf"]
+    }
+  }
+  form "verification_form" {
+    title "Document Verification"
+    input "documents_verified" {
+      label "Documents Verified"
+      kind boolean
+      required true
+    }
+    input "id_verified" {
+      label "ID Verified"
+      kind boolean
+      required true
+    }
+    input "income_verified" {
+      label "Income Verified"
+      kind boolean
+      required true
+    }
+    input "verification_notes" {
+      label "Verification Notes"
+      kind textarea
+    }
+  }
+  form "assessment_form" {
+    title "Credit Assessment"
+    input "credit_score" {
+      label "Credit Score"
+      kind text
+      required true
+    }
+    input "debt_to_income" {
+      label "Debt to Income Ratio"
+      kind text
+      required true
+    }
+    input "collateral_value" {
+      label "Collateral Value (NPR)"
+      kind text
+    }
+    input "risk_rating" {
+      label "Risk Rating"
+      kind select
+      required true
+      options ["low", "medium", "high"]
+    }
+    input "assessment_notes" {
+      label "Assessment Notes"
+      kind textarea
+    }
+    input "recommended_amount" {
+      label "Recommended Amount (NPR)"
+      kind text
+    }
+  }
+  form "approval_form" {
+    title "Approval"
+    input "approval_decision" {
+      label "Approval Decision"
+      kind select
+      required true
+      options ["approved", "rejected", "modified"]
+    }
+    input "approved_amount" {
+      label "Approved Amount (NPR)"
+      kind text
+    }
+    input "interest_rate" {
+      label "Interest Rate (%)"
+      kind text
+    }
+    input "approval_notes" {
+      label "Approval Notes"
+      kind textarea
+    }
+  }
+  form "disbursement_form" {
+    title "Disbursement"
+    input "disbursed" {
+      label "Disbursed"
+      kind boolean
+      required true
+    }
+    input "disbursement_date" {
+      label "Disbursement Date"
+      kind date
+      required true
+    }
+    input "disbursement_reference" {
+      label "Reference Number"
+      kind text
+      required true
+    }
+  }
+  form "loan_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "credit_assessment"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "document_verification"
+  }
+  stage "application" {
+    title "Application"
+    kind submission
+    public true
+    require_account true
+    roles ["applicant"]
+    page {
+      title "Application"
+      layout wizard
+      group "application_block" {
+        title "application_block"
+        forms ["loan_details"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "document_verification" {
+    title "Document Verification"
+    kind review
+    roles ["verification_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Document Verification"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["verification_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["verification_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "credit_assessment" {
+    title "Credit Assessment"
+    kind review
+    roles ["credit_officer"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Credit Assessment"
+      layout wizard
+      group "assessment_block" {
+        title "assessment_block"
+        forms ["assessment_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["assessment_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "approval" {
+    title "Approval"
+    kind approval
+    roles ["loan_committee"]
+    sla {
+      duration "5760m"
+      on_breach "notify"
+    }
+    page {
+      title "Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["approval_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "disbursement" {
+    title "Disbursement"
+    kind processing
+    roles ["operations"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Disbursement"
+      layout wizard
+      group "disbursement_block" {
+        title "disbursement_block"
+        forms ["disbursement_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

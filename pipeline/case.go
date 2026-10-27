@@ -12,13 +12,14 @@ import (
 
 // Case statuses.
 const (
-	CaseDraft      = "draft"
-	CaseInProgress = "in_progress"
-	CaseReturned   = "returned"
-	CaseApproved   = "approved"
-	CaseRejected   = "rejected"
-	CaseWithdrawn  = "withdrawn"
-	CaseCompleted  = "completed"
+	CaseDraft               = "draft"
+	CaseInProgress          = "in_progress"
+	CaseReturned            = "returned"
+	CaseRequiresInformation = "requires_information"
+	CaseApproved            = "approved"
+	CaseRejected            = "rejected"
+	CaseWithdrawn           = "withdrawn"
+	CaseCompleted           = "completed"
 )
 
 // Stage statuses.
@@ -88,7 +89,9 @@ type Case struct {
 	// submission to a diff-reviewed stage and each approval there.
 	Snapshots []Snapshot `json:"snapshots,omitempty"`
 	// Acknowledgements records every accepted page acknowledgement.
-	Acknowledgements []AckRecord `json:"acknowledgements,omitempty"`
+	Acknowledgements    []AckRecord          `json:"acknowledgements,omitempty"`
+	Payment             *PaymentRecord       `json:"payment,omitempty"`
+	InformationRequests []InformationRequest `json:"information_requests,omitempty"`
 
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
@@ -97,6 +100,28 @@ type Case struct {
 	// events are emitted by the last operation, for the host to dispatch
 	// after the case is saved. They are not persisted.
 	events []Event
+}
+
+// InformationRequest pauses a case for applicant clarification at its current stage.
+type InformationRequest struct {
+	ID             string         `json:"id"`
+	Stage          string         `json:"stage"`
+	Reason         string         `json:"reason"`
+	RequestedBy    string         `json:"requested_by"`
+	RequestedAt    time.Time      `json:"requested_at"`
+	PreviousStatus string         `json:"previous_status"`
+	Response       map[string]any `json:"response,omitempty"`
+	RespondedBy    string         `json:"responded_by,omitempty"`
+	RespondedAt    *time.Time     `json:"responded_at,omitempty"`
+}
+
+// PaymentRecord is a settlement attested by a trusted payment verifier.
+type PaymentRecord struct {
+	Reference  string    `json:"reference"`
+	Amount     int64     `json:"amount"`
+	Currency   string    `json:"currency"`
+	VerifiedBy string    `json:"verified_by"`
+	VerifiedAt time.Time `json:"verified_at"`
 }
 
 // Visit is one stay of a case in a stage.
@@ -173,7 +198,27 @@ type StageState struct {
 	Suspended        *Suspension      `json:"suspended,omitempty"`
 	// Review records review-mode decisions of the current visit: the
 	// sampling decision and, for diff reviews, the revision approved.
-	Review *ReviewState `json:"review,omitempty"`
+	Review    *ReviewState `json:"review,omitempty"`
+	Schedules []Schedule   `json:"schedules,omitempty"`
+}
+
+// Schedule is one dated instance of a multi-date stage.
+type Schedule struct {
+	ID          string               `json:"id"`
+	Date        time.Time            `json:"scheduled_date"`
+	Label       string               `json:"label,omitempty"`
+	CreatedBy   string               `json:"created_by"`
+	CreatedAt   time.Time            `json:"created_at"`
+	Submissions []ScheduleSubmission `json:"submissions,omitempty"`
+}
+
+// ScheduleSubmission preserves each dated form submission independently.
+type ScheduleSubmission struct {
+	ID   string         `json:"id"`
+	Form string         `json:"form"`
+	Data map[string]any `json:"data"`
+	By   string         `json:"by"`
+	At   time.Time      `json:"at"`
 }
 
 // RoutingDecision explains an assignment: who was considered and why.
@@ -210,6 +255,9 @@ type SLAState struct {
 	WarnAt     *time.Time `json:"warn_at,omitempty"`
 	DueAt      time.Time  `json:"due_at"`
 	BreachedAt *time.Time `json:"breached_at,omitempty"`
+	// PickupDueAt is when unclaimed work breaches its pickup timeout.
+	PickupDueAt    *time.Time `json:"pickup_due_at,omitempty"`
+	PickupBreached bool       `json:"pickup_breached,omitempty"`
 	// Level is the escalation level reached (0 = none).
 	Level int `json:"level,omitempty"`
 }

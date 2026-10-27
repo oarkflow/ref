@@ -1,0 +1,356 @@
+pipeline "public_tree_cutting_permission" {
+  title "Tree Cutting Permission"
+  description "Tree cutting permission in Nepal with site inspection and environmental impact assessment"
+  form "tree_application" {
+    title "Tree Application"
+    input "purpose" {
+      label "Purpose of Cutting"
+      kind select
+      required true
+      options ["construction", "development", "disease", "safety", "other"]
+    }
+    input "land_ownership" {
+      label "Land Ownership"
+      kind select
+      required true
+      options ["private", "public", "government"]
+    }
+    input "location" {
+      label "Location"
+      kind text
+      required true
+    }
+    input "ward" {
+      label "Ward"
+      kind select
+      required true
+      options ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]
+    }
+    input "land_document" {
+      label "Land Ownership Document"
+      kind file
+      required true
+      accept ["image/*,application/pdf"]
+    }
+  }
+  form "tree_details" {
+    title "Tree Details"
+    input "number_of_trees" {
+      label "Number of Trees"
+      kind text
+      required true
+    }
+    input "tree_species" {
+      label "Tree Species"
+      kind textarea
+      required true
+    }
+    input "tree_sizes" {
+      label "Tree Sizes (Girth in inches)"
+      kind textarea
+      required true
+    }
+    input "tree_photos" {
+      label "Tree Photos"
+      kind file
+      required true
+      accept ["image/*"]
+    }
+  }
+  form "site_inspection" {
+    title "Site Inspection"
+    input "inspection_date" {
+      label "Inspection Date"
+      kind date
+      required true
+    }
+    input "inspection_report" {
+      label "Inspection Report"
+      kind textarea
+      required true
+    }
+    input "inspection_conclusion" {
+      label "Inspection Conclusion"
+      kind select
+      required true
+      options ["approved", "review", "not_approved"]
+    }
+    input "inspector_name" {
+      label "Inspector Name"
+      kind text
+      required true
+    }
+  }
+  form "tree_estimate" {
+    title "Tree Estimate"
+    input "trees_estimated" {
+      label "Trees Estimated"
+      kind text
+      required true
+    }
+    input "estimated_volume" {
+      label "Estimated Volume (cubic feet)"
+      kind text
+      required true
+    }
+    input "replacement_required" {
+      label "Replacement Planting Required"
+      kind boolean
+      required true
+    }
+    input "replacement_count" {
+      label "Replacement Tree Count"
+      kind text
+    }
+  }
+  form "impact_assessment" {
+    title "Environmental Impact Assessment"
+    input "impact_assessed" {
+      label "Impact Assessed"
+      kind boolean
+      required true
+    }
+    input "environmental_impact" {
+      label "Environmental Impact"
+      kind select
+      required true
+      options ["low", "medium", "high"]
+    }
+    input "impact_notes" {
+      label "Impact Notes"
+      kind textarea
+      required true
+    }
+  }
+  form "mitigation_plan" {
+    title "Mitigation Plan"
+    input "mitigation_planned" {
+      label "Mitigation Planned"
+      kind boolean
+      required true
+    }
+    input "mitigation_measures" {
+      label "Mitigation Measures"
+      kind textarea
+    }
+    input "replacement_plan" {
+      label "Replacement Plan"
+      kind textarea
+    }
+  }
+  form "approval_record" {
+    title "Approval Record"
+    input "approval_decision" {
+      label "Approval Decision"
+      kind select
+      required true
+      options ["approved", "rejected", "conditional"]
+    }
+    input "approval_notes" {
+      label "Approval Notes"
+      kind textarea
+    }
+  }
+  form "conditions" {
+    title "Conditions"
+    input "conditions_set" {
+      label "Conditions Set"
+      kind boolean
+      required true
+    }
+    input "conditions_text" {
+      label "Conditions"
+      kind textarea
+    }
+    input "replanting_required" {
+      label "Replanting Required"
+      kind boolean
+    }
+  }
+  form "permission_issuance" {
+    title "Permission Issuance"
+    input "permission_issued" {
+      label "Permission Issued"
+      kind boolean
+      required true
+    }
+    input "permission_number" {
+      label "Permission Number"
+      kind text
+      required true
+    }
+    input "issue_date" {
+      label "Issue Date"
+      kind date
+      required true
+    }
+    input "valid_until" {
+      label "Valid Until"
+      kind date
+      required true
+    }
+  }
+  form "records_updated" {
+    title "Records Updated"
+    input "records_updated_flag" {
+      label "Records Updated"
+      kind boolean
+      required true
+    }
+    input "forest_records" {
+      label "Forest Records Updated"
+      kind boolean
+    }
+  }
+  form "tree_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "additional_documents" {
+      label "Additional Documents"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  stage "application_submission" {
+    title "Application Submission"
+    kind submission
+    public true
+    require_account true
+    roles ["applicant"]
+    page {
+      title "Application Submission"
+      layout wizard
+      group "application_block" {
+        title "application_block"
+        forms ["tree_application", "tree_details"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "site_inspection" {
+    title "Site Inspection"
+    kind review
+    roles ["forest_officer"]
+    sla {
+      duration "10080m"
+      on_breach "notify"
+    }
+    page {
+      title "Site Inspection"
+      layout wizard
+      group "inspection_block" {
+        title "inspection_block"
+        forms ["site_inspection", "tree_estimate"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["site_inspection", "tree_estimate"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "environmental_review" {
+    title "Environmental Review"
+    kind review
+    roles ["environmental_officer"]
+    sla {
+      duration "7200m"
+      on_breach "notify"
+    }
+    page {
+      title "Environmental Review"
+      layout wizard
+      group "environment_block" {
+        title "environment_block"
+        forms ["impact_assessment", "mitigation_plan"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["impact_assessment", "mitigation_plan"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "final_approval" {
+    title "Final Approval"
+    kind approval
+    roles ["approval_officer"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Final Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["approval_record", "conditions"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "permission_issuance" {
+    title "Permission Issuance"
+    kind processing
+    roles ["admin"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Permission Issuance"
+      layout wizard
+      group "issuance_block" {
+        title "issuance_block"
+        forms ["permission_issuance", "records_updated"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

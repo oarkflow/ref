@@ -1,0 +1,240 @@
+pipeline "public_community_hall_booking" {
+  title "Community Hall Booking"
+  description "Community hall booking and reservation for events"
+  form "booking_info" {
+    title "Booking Information"
+    input "applicant_name" {
+      label "Applicant Name"
+      kind text
+      required true
+    }
+    input "phone" {
+      label "Phone"
+      kind text
+      required true
+    }
+    input "address" {
+      label "Address"
+      kind text
+      required true
+    }
+    input "hall_name" {
+      label "Hall Name"
+      kind select
+      required true
+      options ["main", "conference", "community"]
+    }
+    input "event_type" {
+      label "Event Type"
+      kind select
+      required true
+      options ["wedding", "cultural", "meeting", "training", "other"]
+    }
+    input "event_date" {
+      label "Event Date"
+      kind date
+      required true
+    }
+    input "start_time" {
+      label "Start Time"
+      kind text
+      required true
+    }
+    input "end_time" {
+      label "End Time"
+      kind text
+      required true
+    }
+    input "expected_attendees" {
+      label "Expected Attendees"
+      kind text
+      required true
+    }
+    input "id_proof" {
+      label "ID Proof"
+      kind file
+      required true
+      accept ["image/*,application/pdf"]
+    }
+  }
+  form "verification_form" {
+    title "Verification"
+    input "documents_verified" {
+      label "Documents Verified"
+      kind boolean
+      required true
+    }
+    input "availability_check" {
+      label "Availability Check"
+      kind boolean
+      required true
+    }
+    input "verification_notes" {
+      label "Verification Notes"
+      kind textarea
+    }
+  }
+  form "approval_form" {
+    title "Approval"
+    input "approval_decision" {
+      label "Approval Decision"
+      kind select
+      required true
+      options ["approved", "rejected"]
+    }
+    input "approval_notes" {
+      label "Approval Notes"
+      kind textarea
+    }
+  }
+  form "confirmation_form" {
+    title "Confirmation"
+    input "booking_confirmed" {
+      label "Booking Confirmed"
+      kind boolean
+      required true
+    }
+    input "booking_reference" {
+      label "Booking Reference"
+      kind text
+      required true
+    }
+    input "confirmation_date" {
+      label "Confirmation Date"
+      kind date
+      required true
+    }
+    input "rental_charge" {
+      label "Rental Charge"
+      kind text
+      required true
+    }
+  }
+  form "hall_booking_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "verification"
+  }
+  stage "booking" {
+    title "Booking"
+    kind submission
+    public true
+    require_account true
+    roles ["applicant"]
+    page {
+      title "Booking"
+      layout wizard
+      group "booking_block" {
+        title "booking_block"
+        forms ["booking_info"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "verification" {
+    title "Verification"
+    kind review
+    roles ["verification_officer"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Verification"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["verification_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["verification_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "approval" {
+    title "Approval"
+    kind approval
+    roles ["approval_officer"]
+    sla {
+      duration "720m"
+      on_breach "notify"
+    }
+    page {
+      title "Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["approval_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "confirmation" {
+    title "Confirmation"
+    kind processing
+    roles ["admin"]
+    sla {
+      duration "240m"
+      on_breach "notify"
+    }
+    page {
+      title "Confirmation"
+      layout wizard
+      group "confirmation_block" {
+        title "confirmation_block"
+        forms ["confirmation_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

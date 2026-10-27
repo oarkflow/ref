@@ -1,0 +1,339 @@
+pipeline "education_student_discipline" {
+  title "Student Discipline Case"
+  description "Student discipline case management in educational institutions in Nepal"
+  form "case_details" {
+    title "Case Details"
+    input "student_name" {
+      label "Student Name"
+      kind text
+      required true
+    }
+    input "student_grade" {
+      label "Grade/Class"
+      kind text
+      required true
+    }
+    input "student_roll" {
+      label "Roll Number"
+      kind text
+    }
+    input "incident_date" {
+      label "Incident Date"
+      kind date
+      required true
+    }
+    input "incident_location" {
+      label "Incident Location"
+      kind text
+      required true
+    }
+    input "incident_type" {
+      label "Incident Type"
+      kind select
+      required true
+      options ["violence", "bullying", "cheating", "disrespect", "damage", "drugs", "other"]
+    }
+    input "incident_description" {
+      label "Incident Description"
+      kind textarea
+      required true
+    }
+    input "witnesses" {
+      label "Witnesses"
+      kind textarea
+    }
+    input "evidence" {
+      label "Evidence"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  form "investigation_report" {
+    title "Investigation Report"
+    input "investigation_started" {
+      label "Investigation Started"
+      kind date
+      required true
+    }
+    input "investigators" {
+      label "Investigators"
+      kind textarea
+      required true
+    }
+    input "facts_collected" {
+      label "Facts Collected"
+      kind textarea
+      required true
+    }
+    input "student_statement" {
+      label "Student Statement"
+      kind textarea
+    }
+    input "witness_statements" {
+      label "Witness Statements"
+      kind textarea
+    }
+    input "investigation_conclusion" {
+      label "Investigation Conclusion"
+      kind select
+      required true
+      options ["confirmed", "partial", "not_confirmed"]
+    }
+    input "investigation_report_file" {
+      label "Investigation Report File"
+      kind file
+      accept ["application/pdf"]
+    }
+  }
+  form "hearing_details" {
+    title "Hearing Details"
+    input "hearing_date" {
+      label "Hearing Date"
+      kind date
+      required true
+    }
+    input "hearing_time" {
+      label "Hearing Time"
+      kind text
+      required true
+    }
+    input "hearing_location" {
+      label "Hearing Location"
+      kind text
+      required true
+    }
+    input "attendees" {
+      label "Attendees"
+      kind textarea
+      required true
+    }
+    input "parent_notified" {
+      label "Parent Notified"
+      kind boolean
+      required true
+    }
+    input "student_defense" {
+      label "Student Defense"
+      kind textarea
+    }
+    input "hearing_outcome" {
+      label "Hearing Outcome"
+      kind textarea
+      required true
+    }
+  }
+  form "decision_details" {
+    title "Decision Details"
+    input "decision" {
+      label "Decision"
+      kind select
+      required true
+      options ["exonerated", "warning", "suspension", "expulsion", "service", "fine", "other"]
+    }
+    input "decision_reason" {
+      label "Decision Reason"
+      kind textarea
+      required true
+    }
+    input "appeal_available" {
+      label "Appeal Available"
+      kind boolean
+      required true
+    }
+    input "appeal_deadline" {
+      label "Appeal Deadline"
+      kind date
+    }
+    input "decision_date" {
+      label "Decision Date"
+      kind date
+      required true
+    }
+  }
+  form "resolution_details" {
+    title "Resolution Details"
+    input "case_closed" {
+      label "Case Closed"
+      kind boolean
+      required true
+    }
+    input "resolution_date" {
+      label "Resolution Date"
+      kind date
+      required true
+    }
+    input "resolution_notes" {
+      label "Resolution Notes"
+      kind textarea
+    }
+    input "records_updated" {
+      label "Records Updated"
+      kind boolean
+      required true
+    }
+  }
+  form "discipline_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "additional_documents" {
+      label "Additional Documents"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  allow_rfi true
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "decision"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "hearing"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "investigation"
+  }
+  stage "case_filing" {
+    title "Case Filing"
+    kind submission
+    roles ["teacher"]
+    page {
+      title "Case Filing"
+      layout wizard
+      group "case_block" {
+        title "case_block"
+        forms ["case_details"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "investigation" {
+    title "Investigation"
+    kind review
+    roles ["discipline_committee"]
+    sla {
+      duration "10080m"
+      on_breach "notify"
+    }
+    page {
+      title "Investigation"
+      layout wizard
+      group "investigation_block" {
+        title "investigation_block"
+        forms ["investigation_report"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["investigation_report"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "hearing" {
+    title "Hearing"
+    kind review
+    roles ["discipline_committee"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Hearing"
+      layout wizard
+      group "hearing_block" {
+        title "hearing_block"
+        forms ["hearing_details"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["hearing_details"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "decision" {
+    title "Decision"
+    kind approval
+    roles ["principal"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Decision"
+      layout wizard
+      group "decision_block" {
+        title "decision_block"
+        forms ["decision_details"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "resolution" {
+    title "Resolution"
+    kind processing
+    roles ["admin"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Resolution"
+      layout wizard
+      group "resolution_block" {
+        title "resolution_block"
+        forms ["resolution_details"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

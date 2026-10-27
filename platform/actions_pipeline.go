@@ -41,6 +41,12 @@ func registerPipelineActions(r *Registry) {
 		Provides: "The pipeline definition",
 		Config:   common,
 	})
+	mustAction(r, "pipeline.catalog", pipelineAction("catalog"), ActionInfo{
+		Family: "workflow", Kind: "read",
+		Summary:  "List the resource's pipelines: [{name, title, description, stages}] (for a start page)",
+		Provides: "The pipeline catalog",
+		Config:   common,
+	})
 	mustAction(r, "pipeline.start", pipelineAction("start"), ActionInfo{
 		Family: "workflow", Kind: "effect",
 		Summary:  "Start a case (optionally saving input.data into the first stage)",
@@ -221,6 +227,12 @@ func registerPipelineActions(r *Registry) {
 		Provides: "The file download",
 		Config:   with(caseParam, pathParam, ConfigField{Name: "file_id_fact", Type: "fact", Summary: "Fact path of the file id of a multi-file input (default: :file_id, ?file_id=)"}),
 	})
+	mustAction(r, "pipeline.schedule_list", pipelineAction("schedule_list"), ActionInfo{Family: "workflow", Kind: "read", Summary: "List dated instances and submissions of a multi-date stage", Provides: "The stage schedules", Config: common})
+	mustAction(r, "pipeline.schedule_create", pipelineAction("schedule_create"), ActionInfo{Family: "workflow", Kind: "effect", Summary: "Create a dated instance on a multi-date stage", Provides: "The created schedule and updated view", Config: common})
+	mustAction(r, "pipeline.schedule_submit", pipelineAction("schedule_submit"), ActionInfo{Family: "workflow", Kind: "effect", Summary: "Submit validated form data to a dated instance", Provides: "The submission and updated view", Config: common})
+	mustAction(r, "pipeline.payment_record", pipelineAction("payment_record"), ActionInfo{Family: "workflow", Kind: "effect", Summary: "Record a settled payment after a trusted verifier or provider intent confirms it", Provides: "The verified payment and updated case", Config: append(slices.Clone(common), ConfigField{Name: "verify_intent", Type: "string", Summary: "Optional gateway verification intent returning {verified, reference, amount, currency}"})})
+	mustAction(r, "pipeline.request_information", pipelineAction("request_information"), ActionInfo{Family: "workflow", Kind: "effect", Summary: "Pause the case and request clarification from its applicant", Provides: "The request and updated case", Config: common})
+	mustAction(r, "pipeline.submit_information", pipelineAction("submit_information"), ActionInfo{Family: "workflow", Kind: "effect", Summary: "Submit an applicant response and resume the stage", Provides: "The response and updated case", Config: common})
 	mustAction(r, "pipeline.bulk", pipelineAction("bulk"), ActionInfo{
 		Family: "workflow", Kind: "effect",
 		Summary:  "Apply one operation (act, node, work, note, hold) to many cases ({ids, op, stage, ...}); each case is authorised and saved on its own",
@@ -236,6 +248,7 @@ var pipelineConfigKeys = []string{
 	"number", "number_fact", "verify_url", "event_id", "event_id_fact",
 	"path", "path_fact", "file_fact", "file_id", "file_id_fact",
 	"form", "form_fact", "input_name", "input_name_fact", "deps_fact", "unit", "unit_fact", "scope_claim",
+	"verify_intent",
 }
 
 func pipelineAction(op string) ActionFactory {
@@ -365,7 +378,7 @@ func (h *pipelineHandler) load(ctx *ActionContext) (*pipeline.Case, *pipeline.En
 	if c.TenantID != ctx.TenantID {
 		return nil, nil, pipeline.Actor{}, notFound("case", id)
 	}
-	if want := configString(h.spec.Config, "pipeline", ""); want != "" && c.Pipeline != want {
+	if want := h.param(ctx, "pipeline"); want != "" && c.Pipeline != want {
 		return nil, nil, pipeline.Actor{}, notFound("case", id)
 	}
 	e, err := h.engine(c.Pipeline)
@@ -410,11 +423,18 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 	case "workspace_get", "workspace_set":
 		return h.workspace(ctx)
 	case "describe":
-		e, err := h.engine("")
+		e, err := h.engine(h.param(ctx, "pipeline"))
 		if err != nil {
 			return ActionResult{}, err
 		}
 		return h.out(e.C.Def)
+	case "catalog":
+		out := make([]map[string]any, 0, len(h.res.order))
+		for _, name := range h.res.order {
+			def := h.res.engines[name].C.Def
+			out = append(out, map[string]any{"name": name, "title": def.Title, "description": def.Description, "stages": len(def.Stages)})
+		}
+		return h.out(out)
 	case "start":
 		return h.start(ctx, hookCtx)
 	case "verify":
@@ -450,6 +470,14 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 	}
 	if h.op == "file" {
 		return h.download(ctx, c, e, actor)
+	}
+	if h.op == "schedule_list" {
+		stage := h.param(ctx, "stage")
+		items, err := e.Schedules(c, actor, stage)
+		if err != nil {
+			return ActionResult{}, pipelineFailure(err)
+		}
+		return h.out(map[string]any{"schedules": items})
 	}
 
 	// Mutations: a client that sends the revision it rendered gets a clean
@@ -529,6 +557,62 @@ func (h *pipelineHandler) apply(ctx *ActionContext, hookCtx context.Context, c *
 			return nil, nil, invalidInput("input.data must be an object of forms")
 		}
 		next, err = e.Save(hookCtx, c, actor, stage, data)
+	case "schedule_create":
+		var item *pipeline.Schedule
+		next, item, err = e.AddSchedule(hookCtx, c, actor, stage, str("scheduled_date"), str("label"))
+		if err == nil {
+			extra = map[string]any{"schedule": item}
+		}
+	case "schedule_submit":
+		form := str("form_key")
+		if form == "" {
+			form = str("form")
+		}
+		data, _ := body["data"].(map[string]any)
+		var item *pipeline.ScheduleSubmission
+		next, item, err = e.SubmitSchedule(hookCtx, c, actor, stage, str("schedule"), form, data)
+		if err == nil {
+			extra = map[string]any{"submission": item}
+		}
+	case "payment_record":
+		ref, currency := str("reference"), str("currency")
+		amount, aerr := strconv.ParseInt(str("amount"), 10, 64)
+		if aerr != nil {
+			return nil, nil, invalidInput("amount must be an integer number of minor currency units")
+		}
+		if verify := configString(h.spec.Config, "verify_intent", ""); verify != "" {
+			if ctx.Platform == nil {
+				return nil, nil, unavailable("payment verifier is unavailable")
+			}
+			result, verr := ctx.Platform.CallIntent(hookCtx, verify, map[string]any{"case_id": c.ID, "pipeline": c.Pipeline, "reference": ref, "amount": amount, "currency": currency}, ctx)
+			if verr != nil {
+				return nil, nil, verr
+			}
+			confirmed, _ := result.(map[string]any)
+			if confirmed["verified"] != true || Stringify(confirmed["reference"]) != ref || Stringify(confirmed["currency"]) != currency || int64(toFloat(confirmed["amount"])) != amount {
+				return nil, nil, permissionDenied("the payment provider did not verify this settlement")
+			}
+		}
+		next, err = e.RecordPayment(hookCtx, c, actor, ref, amount, currency)
+		if err == nil {
+			extra = map[string]any{"payment": next.Payment}
+		}
+	case "request_information":
+		var item *pipeline.InformationRequest
+		next, item, err = e.RequestInformation(hookCtx, c, actor, str("reason"))
+		if err == nil {
+			extra = map[string]any{"information_request": item}
+		}
+	case "submit_information":
+		response, _ := body["payload"].(map[string]any)
+		if response == nil {
+			response, _ = body["response"].(map[string]any)
+		}
+		var item *pipeline.InformationRequest
+		next, item, err = e.SubmitInformation(hookCtx, c, actor, response)
+		if err == nil {
+			extra = map[string]any{"information_request": item}
+		}
 	case "act":
 		action := str("action")
 		if action == "" {
@@ -631,14 +715,14 @@ func (h *pipelineHandler) commit(ctx *ActionContext, hookCtx context.Context, e 
 }
 
 func (h *pipelineHandler) start(ctx *ActionContext, hookCtx context.Context) (ActionResult, error) {
-	e, err := h.engine("")
+	e, err := h.engine(h.param(ctx, "pipeline"))
 	if err != nil {
 		return ActionResult{}, err
 	}
 	actor := actorOf(ctx.Principal)
 	accessKey := ""
 	if actor.ID == "" {
-		if !h.res.allowAnonymous || !e.C.Def.Stages[0].Public {
+		if !h.res.allowAnonymous || !e.C.Def.Stages[0].Public || e.C.Def.Stages[0].RequireAccount {
 			return ActionResult{}, permissionDenied("sign in to start a " + orDefaultString(e.C.Def.Title, e.C.Def.Name))
 		}
 		accessKey = randomHex(24)
@@ -699,7 +783,7 @@ func (h *pipelineHandler) start(ctx *ActionContext, hookCtx context.Context) (Ac
 }
 
 func (h *pipelineHandler) list(ctx *ActionContext) (ActionResult, error) {
-	e, err := h.engine("")
+	e, err := h.engine(h.param(ctx, "pipeline"))
 	if err != nil {
 		return ActionResult{}, err
 	}
@@ -857,7 +941,9 @@ func (h *pipelineHandler) get(c *pipeline.Case, e *pipeline.Engine, actor pipeli
 		"org_unit": c.OrgUnit, "created_by": c.CreatedBy, "revision": c.Revision,
 		"created_at": c.CreatedAt, "updated_at": c.UpdatedAt,
 		"stages": stages, "history": c.History, "certificates": c.Certificates, "triage": c.Triage,
-		"acknowledgements": c.Acknowledgements,
+		"payment":              c.Payment,
+		"information_requests": c.InformationRequests,
+		"acknowledgements":     c.Acknowledgements,
 	})
 }
 

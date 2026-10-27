@@ -14,6 +14,7 @@ import { useShortcuts } from "./Workspace";
 
 // Routes that aren't needed for the first paint are split out and fetched on demand.
 const CanvasPage = lazy(() => import("./canvas/CanvasPage").then((m) => ({ default: m.CanvasPage })));
+const DesignerPage = lazy(() => import("./designer/DesignerPage").then((m) => ({ default: m.DesignerPage })));
 const JourneysPage = lazy(() => import("./journeys/JourneysPage").then((m) => ({ default: m.JourneysPage })));
 const PageList = lazy(() => import("./pages/PageList").then((m) => ({ default: m.PageList })));
 const TemplateEditor = lazy(() => import("./pages/TemplateEditor").then((m) => ({ default: m.TemplateEditor })));
@@ -72,7 +73,7 @@ export function SignIn() {
 }
 
 /** Routes that have their own full-bleed layout and no side panel. */
-const NO_SIDE_PANEL = (p: string) => p.startsWith("/canvas") || p.startsWith("/journeys") || p.startsWith("/pages") || p.startsWith("/revisions") || p === "/audit";
+const NO_SIDE_PANEL = (p: string) => p.startsWith("/canvas") || p.startsWith("/designer") || p.startsWith("/journeys") || p.startsWith("/pages") || p.startsWith("/revisions") || p === "/audit";
 
 function Shell({ theme, onTheme }: { theme: string; onTheme(): void }) {
   const loc = useLocation();
@@ -103,6 +104,7 @@ function Shell({ theme, onTheme }: { theme: string; onTheme(): void }) {
                     <Route path="/edit" element={<EditorView />} />
                     <Route path="/files/:file" element={<FilesView />} />
                     <Route path="/canvas" element={<CanvasPage />} />
+                    <Route path="/designer" element={<DesignerPage />} />
                     <Route path="/journeys" element={<JourneysPage />} />
                     <Route path="/pages" element={<PageList />} />
                     <Route path="/pages/edit" element={<TemplateEditor />} />

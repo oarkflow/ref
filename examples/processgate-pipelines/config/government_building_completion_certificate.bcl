@@ -1,0 +1,385 @@
+pipeline "government_building_completion_certificate" {
+  title "Building Completion Certificate"
+  description "Building completion certificate issuance aligned with Nepal Building Act and municipal regulations"
+  form "building_details" {
+    title "Building Details"
+    input "building_address" {
+      label "Building Address"
+      kind textarea
+      required true
+    }
+    input "ward_number" {
+      label "Ward Number"
+      kind select
+      required true
+      options ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"]
+    }
+    input "floor_area" {
+      label "Floor Area (sq ft)"
+      kind text
+      required true
+    }
+    input "building_type" {
+      label "Building Type"
+      kind select
+      required true
+      options ["residential", "commercial", "mixed", "industrial", "institutional"]
+    }
+    input "number_of_floors" {
+      label "Number of Floors"
+      kind text
+      required true
+    }
+    input "construction_start_date" {
+      label "Construction Start Date"
+      kind date
+      required true
+    }
+    input "construction_end_date" {
+      label "Construction End Date"
+      kind date
+      required true
+    }
+    input "owner_name" {
+      label "Owner Name"
+      kind text
+      required true
+    }
+    input "owner_contact" {
+      label "Owner Contact"
+      kind text
+      required true
+    }
+  }
+  form "construction_docs" {
+    title "Construction Documents"
+    input "building_permit_upload" {
+      label "Building Permit"
+      kind file
+      required true
+      accept ["pdf"]
+    }
+    input "design_approval_upload" {
+      label "Design Approval"
+      kind file
+      required true
+      accept ["pdf"]
+    }
+    input "architect_certificate_upload" {
+      label "Architect Certificate"
+      kind file
+      required true
+      accept ["pdf"]
+    }
+    input "completion_photo_upload" {
+      label "Completion Photos"
+      kind file
+      required true
+      accept ["jpg", "jpeg", "png", "pdf"]
+    }
+    input "structural_certificate_upload" {
+      label "Structural Certificate"
+      kind file
+      accept ["pdf"]
+    }
+  }
+  form "structural_inspection" {
+    title "Structural Inspection"
+    input "foundation_inspection" {
+      label "Foundation Inspection"
+      kind select
+      required true
+      options ["pass", "fail", "needs_improvement"]
+    }
+    input "structure_inspection" {
+      label "Structure Inspection"
+      kind select
+      required true
+      options ["pass", "fail", "needs_improvement"]
+    }
+    input "columns_beams_inspection" {
+      label "Columns & Beams Inspection"
+      kind select
+      required true
+      options ["pass", "fail", "needs_improvement"]
+    }
+    input "slab_inspection" {
+      label "Slab Inspection"
+      kind select
+      required true
+      options ["pass", "fail", "needs_improvement"]
+    }
+    input "inspection_report_upload" {
+      label "Inspection Report"
+      kind file
+      required true
+      accept ["pdf"]
+    }
+    input "inspection_notes" {
+      label "Inspection Notes"
+      kind textarea
+    }
+  }
+  form "safety_check" {
+    title "Safety Check"
+    input "fire_safety_check" {
+      label "Fire Safety"
+      kind select
+      required true
+      options ["pass", "fail", "na"]
+    }
+    input "earthquake_resistance_check" {
+      label "Earthquake Resistance"
+      kind select
+      required true
+      options ["pass", "fail", "needs_improvement"]
+    }
+    input "electrical_safety_check" {
+      label "Electrical Safety"
+      kind select
+      required true
+      options ["pass", "fail", "needs_improvement"]
+    }
+    input "safety_report_upload" {
+      label "Safety Report"
+      kind file
+      accept ["pdf"]
+    }
+    input "safety_notes" {
+      label "Safety Notes"
+      kind textarea
+    }
+  }
+  form "document_verification_form" {
+    title "Document Verification"
+    input "permit_verified" {
+      label "Building Permit Verified"
+      kind boolean
+      required true
+    }
+    input "design_compliance_checked" {
+      label "Design Compliance Checked"
+      kind boolean
+      required true
+    }
+    input "document_notes" {
+      label "Document Notes"
+      kind textarea
+    }
+  }
+  form "tax_clearance_form" {
+    title "Tax Clearance"
+    input "property_tax_cleared" {
+      label "Property Tax Cleared"
+      kind boolean
+      required true
+    }
+    input "building_tax_cleared" {
+      label "Building Tax Cleared"
+      kind boolean
+      required true
+    }
+    input "tax_amount_paid" {
+      label "Tax Amount Paid"
+      kind text
+    }
+    input "tax_clearance_date" {
+      label "Tax Clearance Date"
+      kind date
+    }
+    input "tax_notes" {
+      label "Tax Notes"
+      kind textarea
+    }
+  }
+  form "completion_approval" {
+    title "Completion Approval"
+    input "approval_decision" {
+      label "Decision"
+      kind select
+      required true
+      options ["approve", "reject", "rework"]
+    }
+    input "approval_conditions" {
+      label "Approval Conditions"
+      kind textarea
+    }
+    input "rejection_reason" {
+      label "Rejection Reason"
+      kind textarea
+    }
+  }
+  form "certificate_issue_form" {
+    title "Certificate Issue"
+    input "certificate_number" {
+      label "Certificate Number"
+      kind text
+      required true
+    }
+    input "issue_date" {
+      label "Issue Date"
+      kind date
+      required true
+    }
+    input "certificate_valid_until" {
+      label "Valid Until"
+      kind date
+    }
+    input "certificate_pdf" {
+      label "Certificate PDF"
+      kind file
+      accept ["pdf"]
+    }
+  }
+  form "completion_rfi_response" {
+    title "RFI Response"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+    }
+    input "replacement_document_upload" {
+      label "Replacement Document"
+      kind file
+      accept ["pdf", "jpg", "jpeg", "png"]
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.information_requested" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.information_requested"
+    body "Case {case.number} has event case.information_requested"
+  }
+  notify "case.rejected" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.rejected"
+    body "Case {case.number} has event case.rejected"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  stage "application_submission" {
+    title "Application Submission"
+    kind submission
+    public true
+    require_account true
+    roles ["property_owner"]
+    page {
+      title "Application Submission"
+      layout wizard
+      group "application_block" {
+        title "application_block"
+        forms ["building_details", "construction_docs"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "document_verification_stage" {
+    title "Document Verification"
+    kind processing
+    roles ["ward_officer"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Document Verification"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["document_verification_form", "tax_clearance_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "inspection_stage" {
+    title "Building Inspection"
+    kind review
+    roles ["building_inspector"]
+    sla {
+      duration "10080m"
+      on_breach "notify"
+    }
+    page {
+      title "Building Inspection"
+      layout wizard
+      group "inspection_block" {
+        title "inspection_block"
+        forms ["structural_inspection", "safety_check"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["structural_inspection", "safety_check"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "tax_clearance_stage" {
+    title "Tax Clearance"
+    kind processing
+    roles ["tax_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Tax Clearance"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["document_verification_form", "tax_clearance_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "pending_approval_stage" {
+    title "Final Approval"
+    kind approval
+    roles ["license_officer"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Final Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["completion_approval", "certificate_issue_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 2
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

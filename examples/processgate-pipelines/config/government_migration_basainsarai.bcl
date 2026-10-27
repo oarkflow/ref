@@ -1,0 +1,313 @@
+pipeline "government_migration_basainsarai" {
+  title "Migration Registration"
+  description "Migration or basainsarai registration for citizens moving into or out of a ward"
+  form "migration_applicant_profile" {
+    title "Applicant Profile"
+    input "applicant_name" {
+      label "Applicant Name"
+      kind text
+      required true
+    }
+    input "household_head_name" {
+      label "Household Head Name"
+      kind text
+      required true
+    }
+    input "current_ward_number" {
+      label "Current Ward Number"
+      kind select
+      required true
+      options ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"]
+    }
+    input "contact_phone" {
+      label "Contact Phone"
+      kind text
+      required true
+    }
+  }
+  form "migration_details_form" {
+    title "Migration Details"
+    input "move_type" {
+      label "Move Type"
+      kind select
+      required true
+      options ["migration_in", "migration_out"]
+    }
+    input "old_address" {
+      label "Old Address"
+      kind textarea
+    }
+    input "new_address" {
+      label "New Address"
+      kind textarea
+      required true
+    }
+    input "move_date" {
+      label "Move Date"
+      kind date
+      required true
+    }
+    input "family_member_count" {
+      label "Number of Family Members"
+      kind text
+    }
+  }
+  form "migration_documents" {
+    title "Supporting Documents"
+    input "citizenship_upload" {
+      label "Citizenship"
+      kind file
+      required true
+      accept ["pdf", "jpg", "jpeg", "png"]
+    }
+    input "family_relation_upload" {
+      label "Family Relationship Proof"
+      kind file
+      required true
+      accept ["pdf", "jpg", "jpeg", "png"]
+    }
+    input "source_destination_letter_upload" {
+      label "Source/Destination Letter"
+      kind file
+      accept ["pdf", "jpg", "jpeg", "png"]
+    }
+  }
+  form "migration_verification_form" {
+    title "Migration Verification"
+    input "identity_confirmed" {
+      label "Identity Confirmed"
+      kind boolean
+      required true
+    }
+    input "movement_claim_validated" {
+      label "Movement Claim Validated"
+      kind boolean
+      required true
+    }
+    input "residency_note" {
+      label "Residency Note"
+      kind textarea
+    }
+    input "verification_outcome" {
+      label "Verification Outcome"
+      kind select
+      required true
+      options ["verified", "not_verified", "needs_info"]
+    }
+  }
+  form "household_record_check" {
+    title "Household Record Check"
+    input "family_record_match" {
+      label "Family Record Match"
+      kind boolean
+      required true
+    }
+    input "ward_register_note" {
+      label "Ward Register Note"
+      kind textarea
+    }
+    input "duplicate_request_check" {
+      label "No Duplicate Request"
+      kind boolean
+      required true
+    }
+  }
+  form "migration_decision" {
+    title "Migration Decision"
+    input "decision" {
+      label "Decision"
+      kind select
+      required true
+      options ["approve", "reject", "rework"]
+    }
+    input "registrar_note" {
+      label "Registrar Note"
+      kind textarea
+    }
+    input "rejection_reason" {
+      label "Rejection Reason"
+      kind textarea
+    }
+  }
+  form "migration_certificate_issue" {
+    title "Certificate Issuance"
+    input "certificate_number" {
+      label "Certificate Number"
+      kind text
+      required true
+    }
+    input "issue_date" {
+      label "Issue Date"
+      kind date
+      required true
+    }
+    input "delivery_mode" {
+      label "Delivery Mode"
+      kind select
+      required true
+      options ["pickup", "home_delivery"]
+    }
+    input "certificate_pdf" {
+      label "Certificate PDF"
+      kind file
+      accept ["pdf"]
+    }
+  }
+  form "migration_rfi_response" {
+    title "RFI Response"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+    }
+    input "replacement_document_upload" {
+      label "Replacement Document"
+      kind file
+      accept ["pdf", "jpg", "jpeg", "png"]
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.information_requested" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.information_requested"
+    body "Case {case.number} has event case.information_requested"
+  }
+  notify "case.rejected" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.rejected"
+    body "Case {case.number} has event case.rejected"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  stage "citizen_submission" {
+    title "Citizen Submission"
+    kind submission
+    public true
+    roles ["citizen_applicant"]
+    page {
+      title "Citizen Submission"
+      layout wizard
+      group "application_block" {
+        title "application_block"
+        forms ["migration_applicant_profile", "migration_details_form"]
+      }
+      group "application_documents" {
+        title "application_documents"
+        forms ["migration_documents"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "ward_intake" {
+    title "Ward Intake"
+    kind processing
+    roles ["ward_helpdesk"]
+    sla {
+      duration "240m"
+      on_breach "notify"
+    }
+    page {
+      title "Ward Intake"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["migration_verification_form"]
+      }
+      group "record_block" {
+        title "record_block"
+        forms ["household_record_check"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "migration_verification_stage" {
+    title "Migration Verification"
+    kind processing
+    roles ["registration_clerk"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Migration Verification"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["migration_verification_form"]
+      }
+      group "record_block" {
+        title "record_block"
+        forms ["household_record_check"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "registrar_approval" {
+    title "Registrar Approval"
+    kind approval
+    roles ["registrar"]
+    sla {
+      duration "240m"
+      on_breach "notify"
+    }
+    page {
+      title "Registrar Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["migration_decision"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "certificate_issuance" {
+    title "Certificate Issuance"
+    kind processing
+    roles ["distribution_officer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Certificate Issuance"
+      layout wizard
+      group "issuance_block" {
+        title "issuance_block"
+        forms ["migration_certificate_issue"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

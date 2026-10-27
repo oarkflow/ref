@@ -56,13 +56,7 @@ The CLEAR platform configuration is strictly segregated into logical subdirector
 
 ```text
 examples/medical-coding-platform/
-├── cmd/
-│   ├── server/                     # Primary Ref server bootstrap & daemon
-│   │   ├── main.go                 # Configuration loading, telemetry, listen
-│   │   ├── migrate.go              # Delegates to contrib/migrate.EnsureMigrated
-│   │   └── errors.go               # Standardized JSON error response handler
-│   └── migrator/                   # Standalone CLI for schema and seed management
-│       └── main.go                 # Commands: up, migrate, seed, db:seed
+├── Makefile                        # Runs the generic REF CLI and optional Aegis packaging
 ├── resources/
 │   ├── config/                     # Modular BCL Business Logic
 │   │   ├── 00_core/                # Database pool, sessions, auth policies
@@ -263,12 +257,9 @@ CLEAR includes **automatic, zero-boilerplate Swagger UI generation** directly in
 
 ### Key Swagger UI Capabilities
 1. **Zero-Configuration Mounting**: Automatically mounted at `/docs` whenever `p.Mount(app)` is executed.
-2. **Smart Domain Grouping**: Automatically categorizes endpoints into clinical and operational tags (`Authentication`, `Medical Coding`, `Quality Assurance`, `Charge Data Entry`, `Chart Suspensions`, `Facilities`, `Workitems`, `Healthcare Providers`, `Chargemaster`, `CPT & Medical Terminology`, `Administration & RBAC`).
+2. **Route Grouping**: Endpoints use their declared BCL tags or a readable tag inferred from the route name.
 3. **Interactive "Try it out" & Authorization**:
-   - Built-in **Authorize** modal supporting:
-     - `cookieAuth`: Session cookie authentication (`clear_session_id`).
-     - `bearerAuth`: JWT Bearer tokens (`Authorization: Bearer <token>`).
-     - `apiKeyAuth`: API key header (`X-API-Key`).
+   - The **Authorize** modal lists the authentication mechanisms actually used by each route. Session-protected routes advertise `clear_session_id`; bearer and API-key schemes appear where those authenticators are configured.
 4. **Instant Search & Deep-Linking**:
    - Integrated live filter bar to quickly locate endpoints by path or keyword.
    - Deep-linking (`deepLinking: true`) enables direct URL anchors to specific methods.
@@ -336,26 +327,30 @@ SECRETS_DIR=./.data/secrets
 AUTO_MIGRATE=true
 ```
 
+The bundled frontend uses the same origin as the API. For a separate browser
+client using bearer tokens, set `CORS_ALLOW_ORIGINS` to a comma-separated list
+of exact origins, such as `https://coding.example.com,https://review.example.com`.
+Cookie-authenticated writes remain subject to REF's route-level CSRF policy.
+
 ### Step 2: Database Migration & Seeding
-Using the compiled standalone migrator:
+Using the generic REF CLI from the repository root:
 ```sh
-# Build the migrator utility
-go build -o migrator ./cmd/migrator
+mkdir -p bin && cd cmd/ref && go build -o ../../bin/ref . && cd ../..
+
+# Check the complete BCL application without opening the database
+./bin/ref validate ./examples/medical-coding-platform
 
 # Apply schema migrations
-./migrator migrate
+./bin/ref migrate ./examples/medical-coding-platform
 
 # Seed baseline facilities, users, providers, and test charts
-./migrator seed
+./bin/ref seed ./examples/medical-coding-platform
 ```
 
 ### Step 3: Run the CLEAR Platform Server
 ```sh
-# Build the platform server
-go build -o server ./cmd/server
-
-# Start the server daemon
-./server
+# Run the BCL application with the shared REF executable
+../../bin/ref -addr :3000 .
 ```
 
 Output:
@@ -741,19 +736,19 @@ Common error codes:
 ### Docker / Containerized Environment
 CLEAR compiles to a single, static binary with no external runtime dependencies:
 ```dockerfile
-FROM golang:1.24-alpine AS builder
+FROM golang:1.27-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o server ./cmd/server
+RUN cd cmd/ref && CGO_ENABLED=0 go build -o /app/ref .
 
 FROM alpine:latest
 WORKDIR /app
-COPY --from=builder /app/server .
-COPY resources/ resources/
+COPY --from=builder /app/ref .
+COPY examples/medical-coding-platform/resources/ resources/
 EXPOSE 3000
-ENTRYPOINT ["./server"]
+ENTRYPOINT ["./ref", "-addr", ":3000", "."]
 ```
 
 ### PostgreSQL Configuration
@@ -763,11 +758,7 @@ To connect to an enterprise PostgreSQL cluster:
    DB_DRIVER=postgres
    DB_DSN=postgres://clear_user:secret@postgres.internal:5432/clear_db?sslmode=require
    ```
-2. Uncomment the PostgreSQL driver in `cmd/server/main.go`:
-   ```go
-   _ "github.com/jackc/pgx/v5/stdlib"
-   ```
-3. Run `./migrator migrate` to provision PostgreSQL tables.
+2. Run `ref migrate <application directory>` to provision PostgreSQL tables.
 
 ---
 
@@ -815,4 +806,3 @@ DB_DSN="file:clear?mode=memory&cache=shared&_pragma=busy_timeout(5000)" \
 ```
 
 Once running, all 215 endpoints and Swagger UI (`http://localhost:3000/docs`) are immediately available.
-

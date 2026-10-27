@@ -1,0 +1,230 @@
+pipeline "education_exam_schedule" {
+  title "Exam Schedule Management"
+  description "Exam schedule creation, approval, and publishing for schools and colleges in Nepal"
+  form "exam_details" {
+    title "Exam Details"
+    input "exam_name" {
+      label "Exam Name"
+      kind text
+      required true
+    }
+    input "exam_year" {
+      label "Exam Year"
+      kind text
+      required true
+    }
+    input "exam_term" {
+      label "Term"
+      kind select
+      required true
+      options ["first", "second", "third", "annual"]
+    }
+    input "level" {
+      label "Level"
+      kind select
+      required true
+      options ["primary", "lower_secondary", "secondary", "higher_secondary", "bachelor", "master"]
+    }
+    input "start_date" {
+      label "Start Date"
+      kind date
+      required true
+    }
+    input "end_date" {
+      label "End Date"
+      kind date
+      required true
+    }
+  }
+  form "subject_schedule" {
+    title "Subject Schedule"
+    input "subject_count" {
+      label "Number of Subjects"
+      kind text
+      required true
+    }
+    input "subjects_json" {
+      label "Subjects and Dates"
+      kind textarea
+      required true
+    }
+  }
+  form "schedule_verification" {
+    title "Schedule Verification"
+    input "schedule_verified" {
+      label "Schedule Verified"
+      kind boolean
+      required true
+    }
+    input "conflict_check" {
+      label "Conflict Check"
+      kind select
+      required true
+      options ["no_conflict", "minor", "major"]
+    }
+    input "verification_notes" {
+      label "Verification Notes"
+      kind textarea
+    }
+  }
+  form "exam_approval" {
+    title "Exam Approval"
+    input "approval_decision" {
+      label "Approval Decision"
+      kind select
+      required true
+      options ["approved", "rejected", "changes"]
+    }
+    input "approval_notes" {
+      label "Approval Notes"
+      kind textarea
+    }
+  }
+  form "publication_details" {
+    title "Publication Details"
+    input "published" {
+      label "Published"
+      kind boolean
+      required true
+    }
+    input "publication_date" {
+      label "Publication Date"
+      kind date
+      required true
+    }
+    input "publication_channels" {
+      label "Publication Channels"
+      kind textarea
+    }
+  }
+  form "exam_schedule_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "additional_documents" {
+      label "Additional Documents"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "verification"
+  }
+  stage "schedule_creation" {
+    title "Schedule Creation"
+    kind submission
+    roles ["teacher"]
+    page {
+      title "Schedule Creation"
+      layout wizard
+      group "schedule_block" {
+        title "schedule_block"
+        forms ["exam_details", "subject_schedule"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "verification" {
+    title "Verification"
+    kind review
+    roles ["principal"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Verification"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["schedule_verification"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["schedule_verification"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "approval" {
+    title "Approval"
+    kind approval
+    roles ["director"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["exam_approval"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "publication" {
+    title "Publication"
+    kind processing
+    roles ["admin"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Publication"
+      layout wizard
+      group "publication_block" {
+        title "publication_block"
+        forms ["publication_details"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

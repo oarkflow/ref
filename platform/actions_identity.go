@@ -16,6 +16,7 @@ import (
 // than the roles in their token.
 
 func registerIdentityActions(r *Registry) {
+	registerIdentityRegistrationActions(r)
 	mustAction(r, "identity.login", ActionFactoryFunc(buildIdentityLogin), ActionInfo{
 		Family:       "identity",
 		Summary:      "Verify an email and password against identity.users and issue a JWT carrying the chosen tenant's roles",

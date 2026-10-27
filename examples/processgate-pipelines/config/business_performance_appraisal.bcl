@@ -1,0 +1,256 @@
+pipeline "business_performance_appraisal" {
+  title "Performance Appraisal"
+  description "Employee performance appraisal cycle management"
+  form "employee_self_assessment" {
+    title "Self Assessment"
+    input "achievements" {
+      label "Key Achievements"
+      kind textarea
+      required true
+    }
+    input "challenges" {
+      label "Challenges Faced"
+      kind textarea
+      required true
+    }
+    input "goals_met" {
+      label "Goals Met"
+      kind textarea
+      required true
+    }
+    input "future_goals" {
+      label "Future Goals"
+      kind textarea
+      required true
+    }
+    input "training_needs" {
+      label "Training Needs"
+      kind textarea
+    }
+  }
+  form "manager_assessment" {
+    title "Manager Assessment"
+    input "performance_rating" {
+      label "Performance Rating"
+      kind select
+      required true
+      options ["5", "4", "3", "2", "1"]
+    }
+    input "strengths" {
+      label "Strengths"
+      kind textarea
+      required true
+    }
+    input "areas_improvement" {
+      label "Areas of Improvement"
+      kind textarea
+      required true
+    }
+    input "manager_comments" {
+      label "Manager Comments"
+      kind textarea
+    }
+  }
+  form "hr_assessment" {
+    title "HR Assessment"
+    input "hr_reviewed" {
+      label "HR Reviewed"
+      kind boolean
+      required true
+    }
+    input "hr_rating" {
+      label "HR Rating"
+      kind select
+      required true
+      options ["5", "4", "3", "2", "1"]
+    }
+    input "hr_comments" {
+      label "HR Comments"
+      kind textarea
+    }
+  }
+  form "calibration_form" {
+    title "Calibration"
+    input "final_rating" {
+      label "Final Rating"
+      kind select
+      required true
+      options ["5", "4", "3", "2", "1"]
+    }
+    input "calibration_notes" {
+      label "Calibration Notes"
+      kind textarea
+    }
+  }
+  form "finalization_form" {
+    title "Finalization"
+    input "appraisal_completed" {
+      label "Appraisal Completed"
+      kind boolean
+      required true
+    }
+    input "completion_date" {
+      label "Completion Date"
+      kind date
+      required true
+    }
+  }
+  form "appraisal_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "hr_review"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "manager_review"
+  }
+  stage "self_assessment" {
+    title "Self Assessment"
+    kind submission
+    roles ["employee"]
+    page {
+      title "Self Assessment"
+      layout wizard
+      group "self_block" {
+        title "self_block"
+        forms ["employee_self_assessment"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "manager_review" {
+    title "Manager Review"
+    kind review
+    roles ["manager"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Manager Review"
+      layout wizard
+      group "manager_block" {
+        title "manager_block"
+        forms ["manager_assessment"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["manager_assessment"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "hr_review" {
+    title "HR Review"
+    kind review
+    roles ["hr_manager"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "HR Review"
+      layout wizard
+      group "hr_block" {
+        title "hr_block"
+        forms ["hr_assessment"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["hr_assessment"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "calibration" {
+    title "Calibration"
+    kind approval
+    roles ["director"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Calibration"
+      layout wizard
+      group "calibration_block" {
+        title "calibration_block"
+        forms ["calibration_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "finalization" {
+    title "Finalization"
+    kind processing
+    roles ["hr_manager"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Finalization"
+      layout wizard
+      group "final_block" {
+        title "final_block"
+        forms ["finalization_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

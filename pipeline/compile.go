@@ -53,6 +53,11 @@ func Compile(def *Definition) (*Compiled, error) {
 		sealed:       map[string]bool{},
 	}
 	where := "pipeline " + def.Name
+	if pay := def.Payment; pay != nil {
+		if pay.Currency == "" || pay.Amount < 0 || len(pay.VerifierRoles) == 0 {
+			return nil, fmt.Errorf("%s: payment needs a currency, nonnegative amount and verifier_roles", where)
+		}
+	}
 	catalog := map[string]Input{}
 	for _, in := range def.Inputs {
 		if err := checkInput(in); err != nil {
@@ -311,8 +316,14 @@ func (c *Compiled) checkStage(st Stage) error {
 		if sla.Calendar != "" && c.calendars[sla.Calendar] == nil {
 			return fmt.Errorf("sla uses unknown calendar %q", sla.Calendar)
 		}
+		if _, err := ParseSpan(sla.PickupTimeout); err != nil {
+			return fmt.Errorf("sla pickup_timeout: %w", err)
+		}
+		if !oneOf(sla.OnPickupTimeout, "", "notify", "reassign") {
+			return fmt.Errorf("sla on_pickup_timeout %q is not notify or reassign", sla.OnPickupTimeout)
+		}
 		switch sla.OnBreach {
-		case "", "notify", "reassign":
+		case "", "notify", "reassign", "release":
 		case "return":
 			if sla.ReturnTo != "" && !stageExists(sla.ReturnTo) {
 				return fmt.Errorf("sla return_to names unknown stage %q", sla.ReturnTo)

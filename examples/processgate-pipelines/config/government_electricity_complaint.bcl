@@ -1,0 +1,247 @@
+pipeline "government_electricity_complaint" {
+  title "Electricity Complaint"
+  description "Public complaint system for electricity infrastructure in Nepal"
+  form "complaint_details" {
+    title "Complaint Details"
+    input "complaint_type" {
+      label "Complaint Type"
+      kind select
+      required true
+      options ["street_light", "outage", "fault", "illegal", "billing", "other"]
+    }
+    input "location" {
+      label "Location"
+      kind text
+      required true
+    }
+    input "ward" {
+      label "Ward"
+      kind select
+      required true
+      options ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]
+    }
+    input "description" {
+      label "Description"
+      kind textarea
+      required true
+    }
+    input "photos" {
+      label "Photos"
+      kind file
+      accept ["image/*"]
+    }
+  }
+  form "complainant_info" {
+    title "Complainant Info"
+    input "complainant_name" {
+      label "Name"
+      kind text
+      required true
+    }
+    input "complainant_phone" {
+      label "Phone"
+      kind text
+      required true
+    }
+  }
+  form "review_form" {
+    title "Review"
+    input "complaint_valid" {
+      label "Complaint Valid"
+      kind boolean
+      required true
+    }
+    input "priority" {
+      label "Priority"
+      kind select
+      required true
+      options ["high", "medium", "low"]
+    }
+    input "review_notes" {
+      label "Review Notes"
+      kind textarea
+    }
+  }
+  form "investigation_form" {
+    title "Investigation"
+    input "findings" {
+      label "Findings"
+      kind textarea
+      required true
+    }
+    input "root_cause" {
+      label "Root Cause"
+      kind textarea
+    }
+    input "investigation_photos" {
+      label "Investigation Photos"
+      kind file
+      accept ["image/*"]
+    }
+  }
+  form "resolution_form" {
+    title "Resolution"
+    input "action_taken" {
+      label "Action Taken"
+      kind textarea
+      required true
+    }
+    input "issue_resolved" {
+      label "Issue Resolved"
+      kind boolean
+      required true
+    }
+    input "resolution_photos" {
+      label "Resolution Photos"
+      kind file
+      accept ["image/*"]
+    }
+  }
+  form "closure_form" {
+    title "Closure"
+    input "complainant_satisfied" {
+      label "Complainant Satisfied"
+      kind boolean
+    }
+    input "closure_notes" {
+      label "Closure Notes"
+      kind textarea
+    }
+  }
+  form "complaint_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+  }
+  allow_rfi true
+  notify "assigned" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: assigned"
+    body "Case {case.number} has event assigned"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  stage "complaint_registration" {
+    title "Complaint Registration"
+    kind submission
+    public true
+    require_account true
+    roles ["complainant"]
+    page {
+      title "Complaint Registration"
+      layout wizard
+      group "complaint_block" {
+        title "complaint_block"
+        forms ["complaint_details", "complainant_info"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "review" {
+    title "Review"
+    kind review
+    roles ["review_officer"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Review"
+      layout wizard
+      group "review_block" {
+        title "review_block"
+        forms ["review_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["review_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "investigation" {
+    title "Investigation"
+    kind review
+    roles ["field_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Investigation"
+      layout wizard
+      group "investigation_block" {
+        title "investigation_block"
+        forms ["investigation_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["investigation_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "resolution" {
+    title "Resolution"
+    kind processing
+    roles ["technical_team"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Resolution"
+      layout wizard
+      group "resolution_block" {
+        title "resolution_block"
+        forms ["resolution_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "closure" {
+    title "Closure"
+    kind processing
+    roles ["admin"]
+    page {
+      title "Closure"
+      layout wizard
+      group "closure_block" {
+        title "closure_block"
+        forms ["closure_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

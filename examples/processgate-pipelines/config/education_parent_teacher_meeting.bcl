@@ -1,0 +1,259 @@
+pipeline "education_parent_teacher_meeting" {
+  title "Parent Teacher Meeting"
+  description "Parent teacher meeting scheduling and management in educational institutions"
+  form "meeting_request" {
+    title "Meeting Request"
+    input "parent_name" {
+      label "Parent Name"
+      kind text
+      required true
+    }
+    input "parent_phone" {
+      label "Parent Phone"
+      kind text
+      required true
+    }
+    input "parent_email" {
+      label "Parent Email"
+      kind text
+    }
+    input "student_name" {
+      label "Student Name"
+      kind text
+      required true
+    }
+    input "student_grade" {
+      label "Grade/Class"
+      kind text
+      required true
+    }
+    input "meeting_topic" {
+      label "Meeting Topic"
+      kind select
+      required true
+      options ["academic", "behavior", "attendance", "general", "other"]
+    }
+    input "topic_description" {
+      label "Topic Description"
+      kind textarea
+      required true
+    }
+    input "preferred_dates" {
+      label "Preferred Dates"
+      kind textarea
+      required true
+    }
+  }
+  form "teacher_review_form" {
+    title "Teacher Review"
+    input "request_approved" {
+      label "Request Approved"
+      kind select
+      required true
+      options ["approved", "reschedule", "declined"]
+    }
+    input "teacher_notes" {
+      label "Teacher Notes"
+      kind textarea
+    }
+    input "suggested_dates" {
+      label "Suggested Dates"
+      kind textarea
+    }
+  }
+  form "schedule_details" {
+    title "Schedule Details"
+    input "meeting_date" {
+      label "Meeting Date"
+      kind date
+      required true
+    }
+    input "meeting_time" {
+      label "Meeting Time"
+      kind text
+      required true
+    }
+    input "meeting_location" {
+      label "Meeting Location"
+      kind text
+      required true
+    }
+    input "duration_minutes" {
+      label "Duration (Minutes)"
+      kind text
+      required true
+    }
+    input "meeting_link" {
+      label "Meeting Link (Optional)"
+      kind text
+    }
+  }
+  form "confirmation_form" {
+    title "Confirmation"
+    input "parent_confirmed" {
+      label "Parent Confirmed"
+      kind boolean
+      required true
+    }
+    input "confirmation_notes" {
+      label "Confirmation Notes"
+      kind textarea
+    }
+  }
+  form "meeting_completion_form" {
+    title "Meeting Completion"
+    input "meeting_held" {
+      label "Meeting Held"
+      kind boolean
+      required true
+    }
+    input "meeting_summary" {
+      label "Meeting Summary"
+      kind textarea
+    }
+    input "follow_up_required" {
+      label "Follow-up Required"
+      kind boolean
+    }
+    input "follow_up_notes" {
+      label "Follow-up Notes"
+      kind textarea
+    }
+  }
+  form "meeting_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "additional_documents" {
+      label "Additional Documents"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  stage "request_submission" {
+    title "Request Submission"
+    kind submission
+    public true
+    require_account true
+    roles ["parent"]
+    page {
+      title "Request Submission"
+      layout wizard
+      group "request_block" {
+        title "request_block"
+        forms ["meeting_request"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "teacher_review" {
+    title "Teacher Review"
+    kind review
+    roles ["teacher"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Teacher Review"
+      layout wizard
+      group "teacher_block" {
+        title "teacher_block"
+        forms ["teacher_review_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["teacher_review_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "scheduling" {
+    title "Scheduling"
+    kind processing
+    roles ["admin"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Scheduling"
+      layout wizard
+      group "schedule_block" {
+        title "schedule_block"
+        forms ["schedule_details"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "confirmation" {
+    title "Confirmation"
+    kind processing
+    roles ["parent"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Confirmation"
+      layout wizard
+      group "confirmation_block" {
+        title "confirmation_block"
+        forms ["confirmation_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "meeting_completion" {
+    title "Meeting Completion"
+    kind processing
+    roles ["teacher"]
+    page {
+      title "Meeting Completion"
+      layout wizard
+      group "completion_block" {
+        title "completion_block"
+        forms ["meeting_completion_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

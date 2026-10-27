@@ -1,0 +1,1356 @@
+[
+  {
+    "name": "anti_corruption_monitoring",
+    "slug": "anti-corruption-monitoring",
+    "source": "bundles/nepal-digital-governance/pipeline-anti-corruption-monitoring.import.json",
+    "forms": 7,
+    "stages": 6,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage"
+    ]
+  },
+  {
+    "name": "bank_account_closure",
+    "slug": "bank-account-closure",
+    "source": "bundles/pipeline-bank-account-closure.import.json",
+    "forms": 6,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "bank_atm_card_issuance",
+    "slug": "bank-atm-card-issuance",
+    "source": "bundles/pipeline-bank-atm-card-issuance.import.json",
+    "forms": 5,
+    "stages": 4,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "bank_branch_opening",
+    "slug": "bank-branch-opening",
+    "source": "bundles/pipeline-bank-branch-opening.import.json",
+    "forms": 11,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "pipeline enables multi-date but no stage declares schedule support",
+      "unmapped notification event: launched"
+    ]
+  },
+  {
+    "name": "bank_credit_card_application",
+    "slug": "bank-credit-card-application",
+    "source": "bundles/pipeline-bank-credit-card-application.import.json",
+    "forms": 12,
+    "stages": 8,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: activation",
+      "unmapped notification event: delivery",
+      "unmapped notification event: production"
+    ]
+  },
+  {
+    "name": "bank_fixed_deposit",
+    "slug": "bank-fixed-deposit",
+    "source": "bundles/pipeline-bank-fixed-deposit.import.json",
+    "forms": 8,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source names no payment gateway; configure a provider verification intent or use manual officer verification",
+      "source payment amount is zero; a trusted verifier must supply the assessed fee",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: fd_created"
+    ]
+  },
+  {
+    "name": "bank_foreign_exchange",
+    "slug": "bank-foreign-exchange",
+    "source": "bundles/pipeline-bank-foreign-exchange.import.json",
+    "forms": 9,
+    "stages": 4,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source names no payment gateway; configure a provider verification intent or use manual officer verification",
+      "source payment amount is zero; a trusted verifier must supply the assessed fee",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: executed"
+    ]
+  },
+  {
+    "name": "bank_kyc_account_opening",
+    "slug": "bank-kyc-account-opening",
+    "source": "bundles/pipeline-bank-kyc-account-opening.import.json",
+    "forms": 9,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: account_opened"
+    ]
+  },
+  {
+    "name": "bank_loan_approval",
+    "slug": "bank-loan-approval",
+    "source": "bundles/pipeline-bank-loan-approval.import.json",
+    "forms": 6,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: assessment",
+      "unmapped notification event: disbursed"
+    ]
+  },
+  {
+    "name": "bank_locker_service",
+    "slug": "bank-locker-service",
+    "source": "bundles/pipeline-bank-locker-service.import.json",
+    "forms": 10,
+    "stages": 6,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: handover"
+    ]
+  },
+  {
+    "name": "bank_mobile_banking_registration",
+    "slug": "bank-mobile-banking-registration",
+    "source": "bundles/pipeline-bank-mobile-banking-registration.import.json",
+    "forms": 9,
+    "stages": 4,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "bank_regulatory_reporting",
+    "slug": "bank-regulatory-reporting",
+    "source": "bundles/pipeline-bank-regulatory-reporting.import.json",
+    "forms": 10,
+    "stages": 4,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "first stage rollback has no preceding stage"
+    ]
+  },
+  {
+    "name": "bank_remittance_payout_compliance",
+    "slug": "bank-remittance-payout-compliance",
+    "source": "bundles/pipeline-bank-remittance-payout-compliance.import.json",
+    "forms": 5,
+    "stages": 4,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding"
+    ]
+  },
+  {
+    "name": "bank_trade_finance",
+    "slug": "bank-trade-finance",
+    "source": "bundles/pipeline-bank-trade-finance.import.json",
+    "forms": 12,
+    "stages": 7,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "pipeline enables multi-date but no stage declares schedule support",
+      "source names no payment gateway; configure a provider verification intent or use manual officer verification",
+      "source payment amount is zero; a trusted verifier must supply the assessed fee",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: expiry"
+    ]
+  },
+  {
+    "name": "budget_request_release_approval",
+    "slug": "budget-request-release-approval",
+    "source": "generated/government-ministry-pipelines/budget-request-release-approval",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage"
+    ]
+  },
+  {
+    "name": "business_budget_approval",
+    "slug": "business-budget-approval",
+    "source": "bundles/pipeline-business-budget-approval.import.json",
+    "forms": 7,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding"
+    ]
+  },
+  {
+    "name": "business_contract_management",
+    "slug": "business-contract-management",
+    "source": "bundles/pipeline-business-contract-management.import.json",
+    "forms": 8,
+    "stages": 6,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "unmapped notification event: expiring",
+      "unmapped notification event: signed"
+    ]
+  },
+  {
+    "name": "business_employee_offboarding",
+    "slug": "business-employee-offboarding",
+    "source": "bundles/pipeline-business-employee-offboarding.import.json",
+    "forms": 7,
+    "stages": 6,
+    "warnings": [
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "unmapped notification event: clearance"
+    ]
+  },
+  {
+    "name": "business_expense_approval",
+    "slug": "business-expense-approval",
+    "source": "bundles/pipeline-business-expense-approval.import.json",
+    "forms": 7,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "RFI response payload is stored without a source form schema binding"
+    ]
+  },
+  {
+    "name": "business_it_service_request",
+    "slug": "business-it-service-request",
+    "source": "bundles/pipeline-business-it-service-request.import.json",
+    "forms": 6,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: in_progress",
+      "unmapped notification event: resolved"
+    ]
+  },
+  {
+    "name": "business_leave_management",
+    "slug": "business-leave-management",
+    "source": "bundles/pipeline-business-leave-management.import.json",
+    "forms": 5,
+    "stages": 4,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "RFI response payload is stored without a source form schema binding"
+    ]
+  },
+  {
+    "name": "business_performance_appraisal",
+    "slug": "business-performance-appraisal",
+    "source": "bundles/pipeline-business-performance-appraisal.import.json",
+    "forms": 6,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding"
+    ]
+  },
+  {
+    "name": "business_travel_request",
+    "slug": "business-travel-request",
+    "source": "bundles/pipeline-business-travel-request.import.json",
+    "forms": 6,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "unmapped notification event: booked"
+    ]
+  },
+  {
+    "name": "cabinet_decision_implementation_tracking",
+    "slug": "cabinet-decision-implementation-tracking",
+    "source": "generated/government-ministry-pipelines/cabinet-decision-implementation-tracking",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage"
+    ]
+  },
+  {
+    "name": "cafe_menu_approval",
+    "slug": "cafe-menu-approval",
+    "source": "bundles/pipeline-cafe-menu-approval.import.json",
+    "forms": 11,
+    "stages": 6,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "unmapped notification event: launch"
+    ]
+  },
+  {
+    "name": "citizenship_recommendation_file_tracking",
+    "slug": "citizenship-recommendation-file-tracking",
+    "source": "generated/government-ministry-pipelines/citizenship-recommendation-file-tracking",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "crop_damage_assessment_relief",
+    "slug": "crop-damage-assessment-relief",
+    "source": "generated/government-ministry-pipelines/crop-damage-assessment-relief",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "disaster_incident_response_relief",
+    "slug": "disaster-incident-response-relief",
+    "source": "generated/government-ministry-pipelines/disaster-incident-response-relief",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "document_verification",
+    "slug": "document-verification",
+    "source": "bundles/pipeline-document-verification.import.json",
+    "forms": 8,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding"
+    ]
+  },
+  {
+    "name": "education_alumni_registration",
+    "slug": "education-alumni-registration",
+    "source": "bundles/pipeline-education-alumni-registration.import.json",
+    "forms": 2,
+    "stages": 2,
+    "warnings": [
+      "ProcessGate field verification scope needs manual review",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: verified"
+    ]
+  },
+  {
+    "name": "education_course_registration",
+    "slug": "education-course-registration",
+    "source": "bundles/pipeline-education-course-registration.import.json",
+    "forms": 6,
+    "stages": 4,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: enrolled"
+    ]
+  },
+  {
+    "name": "education_exam_schedule",
+    "slug": "education-exam-schedule",
+    "source": "bundles/pipeline-education-exam-schedule.import.json",
+    "forms": 6,
+    "stages": 4,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "unmapped notification event: published"
+    ]
+  },
+  {
+    "name": "education_parent_teacher_meeting",
+    "slug": "education-parent-teacher-meeting",
+    "source": "bundles/pipeline-education-parent-teacher-meeting.import.json",
+    "forms": 6,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: confirmed",
+      "unmapped notification event: scheduled"
+    ]
+  },
+  {
+    "name": "education_student_admission",
+    "slug": "education-student-admission",
+    "source": "bundles/pipeline-education-student-admission.import.json",
+    "forms": 8,
+    "stages": 6,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: enrolled"
+    ]
+  },
+  {
+    "name": "education_student_discipline",
+    "slug": "education-student-discipline",
+    "source": "bundles/pipeline-education-student-discipline.import.json",
+    "forms": 6,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "unmapped notification event: resolved"
+    ]
+  },
+  {
+    "name": "education_student_transfer",
+    "slug": "education-student-transfer",
+    "source": "bundles/pipeline-education-student-transfer.import.json",
+    "forms": 7,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "environmental_impact_review_compliance",
+    "slug": "environmental-impact-review-compliance",
+    "source": "generated/government-ministry-pipelines/environmental-impact-review-compliance",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage"
+    ]
+  },
+  {
+    "name": "farmer_subsidy_grant_administration",
+    "slug": "farmer-subsidy-grant-administration",
+    "source": "generated/government-ministry-pipelines/farmer-subsidy-grant-administration",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "forest_encroachment_restoration_action",
+    "slug": "forest-encroachment-restoration-action",
+    "source": "generated/government-ministry-pipelines/forest-encroachment-restoration-action",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "government_advertisement_permit",
+    "slug": "government-advertisement-permit",
+    "source": "bundles/pipeline-government-advertisement-permit.import.json",
+    "forms": 5,
+    "stages": 4,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "government_birth_certificate",
+    "slug": "government-birth-certificate",
+    "source": "bundles/pipeline-government-birth-certificate.import.json",
+    "forms": 8,
+    "stages": 6,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review"
+    ]
+  },
+  {
+    "name": "government_building_completion_certificate",
+    "slug": "government-building-completion-certificate",
+    "source": "bundles/pipeline-government-building-completion-certificate.import.json",
+    "forms": 9,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding"
+    ]
+  },
+  {
+    "name": "government_building_occupancy_certificate",
+    "slug": "government-building-occupancy-certificate",
+    "source": "bundles/pipeline-government-building-occupancy-certificate.import.json",
+    "forms": 8,
+    "stages": 6,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding"
+    ]
+  },
+  {
+    "name": "government_building_permit",
+    "slug": "government-building-permit",
+    "source": "bundles/pipeline-government-building-permit.import.json",
+    "forms": 8,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "government_business_license_permit",
+    "slug": "government-business-license-permit",
+    "source": "bundles/pipeline-government-business-license-permit.import.json",
+    "forms": 10,
+    "stages": 7,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: inspection_request",
+      "unmapped notification event: payment_due"
+    ]
+  },
+  {
+    "name": "government_citizenship_recommendation",
+    "slug": "government-citizenship-recommendation",
+    "source": "bundles/pipeline-government-citizenship-recommendation.import.json",
+    "forms": 5,
+    "stages": 4,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "government_contract_management",
+    "slug": "government-contract-management",
+    "source": "bundles/pipeline-government-contract-management.import.json",
+    "forms": 12,
+    "stages": 6,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "government_death_certificate",
+    "slug": "government-death-certificate",
+    "source": "bundles/pipeline-government-death-certificate.import.json",
+    "forms": 6,
+    "stages": 4,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "government_disability_id_card",
+    "slug": "government-disability-id-card",
+    "source": "bundles/pipeline-government-disability-id-card.import.json",
+    "forms": 8,
+    "stages": 6,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review"
+    ]
+  },
+  {
+    "name": "government_electricity_complaint",
+    "slug": "government-electricity-complaint",
+    "source": "bundles/pipeline-government-electricity-streetlight-public-infrastructure-complaint.import.json",
+    "forms": 7,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: resolved"
+    ]
+  },
+  {
+    "name": "government_family_relationship_certificate",
+    "slug": "government-family-relationship-certificate",
+    "source": "bundles/pipeline-government-family-relationship-certificate.import.json",
+    "forms": 6,
+    "stages": 4,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "government_heritage_building_conservation",
+    "slug": "government-heritage-building-conservation",
+    "source": "bundles/pipeline-government-heritage-building-conservation.import.json",
+    "forms": 7,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: inspection",
+      "unmapped notification event: permitted"
+    ]
+  },
+  {
+    "name": "government_land_house_tax_clearance",
+    "slug": "government-land-house-tax-clearance",
+    "source": "bundles/pipeline-government-land-house-tax-clearance.import.json",
+    "forms": 9,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "government_local_service_appointment",
+    "slug": "government-local-service-appointment",
+    "source": "bundles/pipeline-government-local-service-appointment-queue-booking.import.json",
+    "forms": 4,
+    "stages": 4,
+    "warnings": [
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "government_marriage_registration",
+    "slug": "government-marriage-registration",
+    "source": "bundles/pipeline-government-marriage-registration.import.json",
+    "forms": 9,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "government_migration_basainsarai",
+    "slug": "government-migration-basainsarai",
+    "source": "bundles/pipeline-government-migration-basainsarai.import.json",
+    "forms": 8,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "RFI response payload is stored without a source form schema binding"
+    ]
+  },
+  {
+    "name": "government_nagarpalika_recommendation_letter",
+    "slug": "government-nagarpalika-recommendation-letter",
+    "source": "bundles/pipeline-government-nagarpalika-recommendation-letter.import.json",
+    "forms": 9,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "first stage rollback has no preceding stage"
+    ]
+  },
+  {
+    "name": "government_national_id_enrollment_support",
+    "slug": "government-national-id-enrollment-support",
+    "source": "bundles/pipeline-government-national-id-enrollment-support.import.json",
+    "forms": 8,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "RFI response payload is stored without a source form schema binding"
+    ]
+  },
+  {
+    "name": "government_old_age_pension",
+    "slug": "government-old-age-pension",
+    "source": "bundles/pipeline-government-old-age-pension.import.json",
+    "forms": 5,
+    "stages": 4,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: enrolled"
+    ]
+  },
+  {
+    "name": "government_procurement_tender",
+    "slug": "government-procurement-tender",
+    "source": "bundles/pipeline-government-procurement-tender.import.json",
+    "forms": 9,
+    "stages": 6,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: award",
+      "unmapped notification event: clarification",
+      "unmapped notification event: contract_handoff"
+    ]
+  },
+  {
+    "name": "government_ration_card",
+    "slug": "government-ration-card",
+    "source": "bundles/pipeline-government-ration-card.import.json",
+    "forms": 9,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "RFI response payload is stored without a source form schema binding"
+    ]
+  },
+  {
+    "name": "government_senior_citizen_id_card",
+    "slug": "government-senior-citizen-id-card",
+    "source": "bundles/pipeline-government-senior-citizen-id-card.import.json",
+    "forms": 5,
+    "stages": 4,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "government_social_security_allowance",
+    "slug": "government-social-security-allowance",
+    "source": "bundles/pipeline-government-social-security-allowance.import.json",
+    "forms": 8,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "government_vendor_onboarding",
+    "slug": "government-vendor-onboarding",
+    "source": "bundles/pipeline-government-vendor-onboarding.import.json",
+    "forms": 8,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: activated"
+    ]
+  },
+  {
+    "name": "government_vendor_project_execution",
+    "slug": "government-vendor-project-execution",
+    "source": "bundles/pipeline-government-vendor-project-execution.import.json",
+    "forms": 8,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate field verification scope needs manual review",
+      "pipeline enables multi-date but no stage declares schedule support",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: milestone_accepted",
+      "unmapped notification event: milestone_submitted",
+      "unmapped notification event: payment_status"
+    ]
+  },
+  {
+    "name": "government_vital_event_correction",
+    "slug": "government-vital-event-correction",
+    "source": "bundles/pipeline-government-vital-event-correction.import.json",
+    "forms": 8,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "RFI response payload is stored without a source form schema binding"
+    ]
+  },
+  {
+    "name": "government_ward_recommendation_letter",
+    "slug": "government-ward-recommendation-letter",
+    "source": "bundles/pipeline-government-ward-recommendation-letter.import.json",
+    "forms": 8,
+    "stages": 4,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "first stage rollback has no preceding stage"
+    ]
+  },
+  {
+    "name": "government_widow_pension",
+    "slug": "government-widow-pension",
+    "source": "bundles/pipeline-government-widow-pension.import.json",
+    "forms": 5,
+    "stages": 4,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: enrolled"
+    ]
+  },
+  {
+    "name": "health_facility_inspection_corrective_action",
+    "slug": "health-facility-inspection-corrective-action",
+    "source": "generated/government-ministry-pipelines/health-facility-inspection-corrective-action",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "heritage_conservation_work_monitoring",
+    "slug": "heritage-conservation-work-monitoring",
+    "source": "generated/government-ministry-pipelines/heritage-conservation-work-monitoring",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "hydropower_project_approval_monitoring",
+    "slug": "hydropower-project-approval-monitoring",
+    "source": "generated/government-ministry-pipelines/hydropower-project-approval-monitoring",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage"
+    ]
+  },
+  {
+    "name": "industry_registration_renewal_compliance",
+    "slug": "industry-registration-renewal-compliance",
+    "source": "generated/government-ministry-pipelines/industry-registration-renewal-compliance",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "inter_ministry_project_obstruction_clearance",
+    "slug": "inter-ministry-project-obstruction-clearance",
+    "source": "generated/government-ministry-pipelines/inter-ministry-project-obstruction-clearance",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage"
+    ]
+  },
+  {
+    "name": "irrigation_scheme_operation_maintenance",
+    "slug": "irrigation-scheme-operation-maintenance",
+    "source": "generated/government-ministry-pipelines/irrigation-scheme-operation-maintenance",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "labour_complaint_dispute_resolution",
+    "slug": "labour-complaint-dispute-resolution",
+    "source": "generated/government-ministry-pipelines/labour-complaint-dispute-resolution",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "local_government_service_performance_monitoring",
+    "slug": "local-government-service-performance-monitoring",
+    "source": "generated/government-ministry-pipelines/local-government-service-performance-monitoring",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage"
+    ]
+  },
+  {
+    "name": "market_monitoring_consumer_protection",
+    "slug": "market-monitoring-consumer-protection",
+    "source": "generated/government-ministry-pipelines/market-monitoring-consumer-protection",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "medicine_stockout_emergency_supply",
+    "slug": "medicine-stockout-emergency-supply",
+    "source": "generated/government-ministry-pipelines/medicine-stockout-emergency-supply",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage"
+    ]
+  },
+  {
+    "name": "nagdhunga_road_construction_progress",
+    "slug": "nagdhunga-road-construction-progress",
+    "source": "generated/government-ministry-pipelines/nagdhunga-road-construction-progress",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "nepal_passport_application",
+    "slug": "nepal-passport-application",
+    "source": "bundles/nepal-digital-governance/pipeline-passport-application.import.json",
+    "forms": 9,
+    "stages": 6,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "project_task_activity_tracker",
+    "slug": "project-task-activity-tracker",
+    "source": "bundles/pipeline-project-task-activity-tracker.import.json",
+    "forms": 7,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage"
+    ]
+  },
+  {
+    "name": "project_task_lifecycle",
+    "slug": "project-task-lifecycle",
+    "source": "bundles/pipeline-project-task-lifecycle.import.json",
+    "forms": 4,
+    "stages": 5,
+    "warnings": [
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage"
+    ]
+  },
+  {
+    "name": "public_building_construction_supervision",
+    "slug": "public-building-construction-supervision",
+    "source": "generated/government-ministry-pipelines/public-building-construction-supervision",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage"
+    ]
+  },
+  {
+    "name": "public_community_hall_booking",
+    "slug": "public-community-hall-booking",
+    "source": "bundles/pipeline-public-community-hall-booking.import.json",
+    "forms": 5,
+    "stages": 4,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: confirmed"
+    ]
+  },
+  {
+    "name": "public_dog_registration",
+    "slug": "public-dog-registration",
+    "source": "bundles/pipeline-public-dog-registration.import.json",
+    "forms": 11,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source names no payment gateway; configure a provider verification intent or use manual officer verification",
+      "source payment amount is zero; a trusted verifier must supply the assessed fee",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: registered"
+    ]
+  },
+  {
+    "name": "public_electricity_connection",
+    "slug": "public-electricity-connection",
+    "source": "bundles/pipeline-public-electricity-connection.import.json",
+    "forms": 11,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding"
+    ]
+  },
+  {
+    "name": "public_grievance_cross_ministry_routing",
+    "slug": "public-grievance-cross-ministry-routing",
+    "source": "generated/government-ministry-pipelines/public-grievance-cross-ministry-routing",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "public_grievance_resolution",
+    "slug": "public-grievance-resolution",
+    "source": "bundles/pipeline-public-grievance-resolution.import.json",
+    "forms": 6,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: resolved"
+    ]
+  },
+  {
+    "name": "public_library_card",
+    "slug": "public-library-card",
+    "source": "bundles/pipeline-public-library-card.import.json",
+    "forms": 4,
+    "stages": 3,
+    "warnings": [
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "public_sports_complex_booking",
+    "slug": "public-sports-complex-booking",
+    "source": "bundles/pipeline-public-sports-complex-booking.import.json",
+    "forms": 11,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "pipeline enables multi-date but no stage declares schedule support",
+      "source names no payment gateway; configure a provider verification intent or use manual officer verification",
+      "source payment amount is zero; a trusted verifier must supply the assessed fee",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "public_swimming_pool_access",
+    "slug": "public-swimming-pool-access",
+    "source": "bundles/pipeline-public-swimming-pool-access.import.json",
+    "forms": 11,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "pipeline enables multi-date but no stage declares schedule support",
+      "source names no payment gateway; configure a provider verification intent or use manual officer verification",
+      "source payment amount is zero; a trusted verifier must supply the assessed fee",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "public_tree_cutting_permission",
+    "slug": "public-tree-cutting-permission",
+    "source": "bundles/pipeline-public-tree-cutting-permission.import.json",
+    "forms": 11,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP",
+      "unmapped notification event: environment",
+      "unmapped notification event: inspection"
+    ]
+  },
+  {
+    "name": "restaurant_table_reservation",
+    "slug": "restaurant-table-reservation",
+    "source": "bundles/pipeline-restaurant-table-reservation.import.json",
+    "forms": 6,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate field verification scope needs manual review",
+      "pipeline enables multi-date but no stage declares schedule support"
+    ]
+  },
+  {
+    "name": "revenue_leakage_audit_observation_closure",
+    "slug": "revenue-leakage-audit-observation-closure",
+    "source": "generated/government-ministry-pipelines/revenue-leakage-audit-observation-closure",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage"
+    ]
+  },
+  {
+    "name": "road_maintenance_pothole_response",
+    "slug": "road-maintenance-pothole-response",
+    "source": "generated/government-ministry-pipelines/road-maintenance-pothole-response",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "scholarship_application_verification",
+    "slug": "scholarship-application-verification",
+    "source": "generated/government-ministry-pipelines/scholarship-application-verification",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "school_infrastructure_grant_monitoring",
+    "slug": "school-infrastructure-grant-monitoring",
+    "source": "generated/government-ministry-pipelines/school-infrastructure-grant-monitoring",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "service_water_connection_request",
+    "slug": "service-water-connection-request",
+    "source": "bundles/pipeline-service-water-connection-request.import.json",
+    "forms": 5,
+    "stages": 4,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "social_security_enrollment_claim_processing",
+    "slug": "social-security-enrollment-claim-processing",
+    "source": "generated/government-ministry-pipelines/social-security-enrollment-claim-processing",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "staff_transfer_deputation_posting",
+    "slug": "staff-transfer-deputation-posting",
+    "source": "generated/government-ministry-pipelines/staff-transfer-deputation-posting",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage"
+    ]
+  },
+  {
+    "name": "tourism_business_licensing_renewal",
+    "slug": "tourism-business-licensing-renewal",
+    "source": "generated/government-ministry-pipelines/tourism-business-licensing-renewal",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  },
+  {
+    "name": "urban_drainage_flood_mitigation",
+    "slug": "urban-drainage-flood-mitigation",
+    "source": "generated/government-ministry-pipelines/urban-drainage-flood-mitigation",
+    "forms": 5,
+    "stages": 5,
+    "warnings": [
+      "ProcessGate approval identity and assignment policy needs manual review",
+      "ProcessGate field verification scope needs manual review",
+      "RFI response payload is stored without a source form schema binding",
+      "first stage rollback has no preceding stage",
+      "source registration verification differs from authenticator-app TOTP"
+    ]
+  }
+]

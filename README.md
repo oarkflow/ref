@@ -1,5 +1,8 @@
 # Runtime Execution Fabric (REF)
 
+For the ProcessGate catalog comparison and remaining implementation work, see [ProcessGate feature parity audit](docs/processgate-parity.md).
+The [ProcessGate pipeline migration example](examples/processgate-pipelines/) contains 102 converted flow templates with a reproducible converter and a per-flow limitations manifest.
+
 The **Runtime Execution Fabric (REF)** is a compiled, capability-driven, transport-neutral application execution runtime built into `fh`.
 
 Rather than processing requests through linear, sequential middleware pipelines (`Request -> MW1 -> MW2 -> Handler`), REF compiles application business logic into a **dependency-readiness directed acyclic graph (DAG)** with typed facts, algebraic policy evaluation, and controlled two-phase effect lifecycles.
@@ -12,6 +15,8 @@ Rather than processing requests through linear, sequential middleware pipelines 
 make run dir=./examples/smsgateway            # any directory with config/ (or bcl/, or app.bcl), templates/, static/
 make run dir=./examples/smsgateway addr=:9000
 make build                                    # bin/ref
+bin/ref validate ./examples/medical-coding-platform  # static BCL check, no database opened
+bin/ref show ./examples/medical-coding-platform      # declared resources, routes and pipelines
 ```
 
 `cmd/ref` is its own module and runs the application with its BCL, rules, SPL templates, static files, sessions, authorization, workflows, workers and every driver in this repository, with no application code.

@@ -70,6 +70,9 @@ type Options struct {
 	// Load, when set, adjusts the platform's load options (a host that needs to
 	// mutate the document or attach observers).
 	Load func(*platform.LoadOptions)
+	// OnPlatform, when set, receives the loaded platform before the server
+	// starts, for hosts that need to reach its resources (Studio's lookup test).
+	OnPlatform func(*platform.Platform)
 	// Ready is closed with the listen address once the server accepts
 	// connections. Optional; tests use it.
 	Ready func(addr string)
@@ -122,6 +125,12 @@ func (o *Options) defaults() error {
 		abs, err := filepath.Abs(o.Dir)
 		if err != nil {
 			return err
+		}
+		// Applications that keep all deployable files under resources/ must
+		// resolve scripts, rules and storage paths from that directory too.
+		// Prefer a top-level app when both layouts are present.
+		if o.ConfigDir == "" && !hasAppConfig(abs) && hasAppConfig(filepath.Join(abs, "resources")) {
+			abs = filepath.Join(abs, "resources")
 		}
 		o.Dir = abs
 		if o.ConfigDir == "" {
@@ -201,6 +210,26 @@ func (o *Options) defaults() error {
 	return nil
 }
 
+func hasAppConfig(dir string) bool {
+	if info, err := os.Stat(filepath.Join(dir, "app.bcl")); err == nil && !info.IsDir() {
+		return true
+	}
+	for _, name := range []string{"config", "bcl"} {
+		found := false
+		_ = filepath.WalkDir(filepath.Join(dir, name), func(_ string, entry fs.DirEntry, err error) error {
+			if err == nil && !entry.IsDir() && strings.HasSuffix(entry.Name(), ".bcl") {
+				found = true
+				return fs.SkipAll
+			}
+			return nil
+		})
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
 func envOr(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
@@ -221,6 +250,8 @@ type App struct {
 // Start compiles the application and starts serving, returning once it listens.
 func Start(ctx context.Context, opts Options) (*App, error) {
 	aegis.Register()
+	addrExplicit, envExplicit := opts.Addr != "", opts.Env != ""
+	certExplicit, keyExplicit := opts.TLSCertFile != "", opts.TLSKeyFile != ""
 	if err := opts.defaults(); err != nil {
 		return nil, err
 	}
@@ -236,18 +267,32 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		}
 	}
 	// 2. Load host dotenv files if present
-	for _, candidate := range []string{
+	dotenvCandidates := []string{
 		filepath.Join(opts.Dir, config.DotenvPath()),
 		filepath.Join(opts.Dir, ".env"),
 		filepath.Join(opts.Dir, ".env.example"),
+	}
+	if filepath.Base(opts.Dir) == "resources" {
+		dotenvCandidates = append(dotenvCandidates,
+			filepath.Join(filepath.Dir(opts.Dir), config.DotenvPath()),
+			filepath.Join(filepath.Dir(opts.Dir), ".env.example"))
+	}
+	dotenvCandidates = append(dotenvCandidates,
 		config.DotenvPath(),
 		".env",
 		".env.example",
-	} {
+	)
+	for _, candidate := range dotenvCandidates {
 		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
 			_ = config.LoadDotenv(candidate)
 			break
 		}
+	}
+	// The application .env is loaded after locating its directory. Re-read
+	// runtime defaults now so its values take effect without replacing options
+	// explicitly supplied by the caller.
+	if err := opts.applyRuntimeEnv(addrExplicit, envExplicit, certExplicit, keyExplicit); err != nil {
+		return nil, err
 	}
 
 	if opts.FS == nil {
@@ -280,6 +325,9 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	if opts.OnPlatform != nil {
+		opts.OnPlatform(p)
 	}
 
 	srv := fh.NewFast(fh.WithTemplateEngine(renderer))
@@ -368,6 +416,29 @@ func Start(ctx context.Context, opts Options) (*App, error) {
 		opts.Ready(a.Addr)
 	}
 	return a, nil
+}
+
+func (o *Options) applyRuntimeEnv(addrExplicit, envExplicit, certExplicit, keyExplicit bool) error {
+	if !addrExplicit {
+		if addr := os.Getenv("REF_ADDR"); addr != "" {
+			o.Addr = addr
+		} else if port := os.Getenv("PORT"); port != "" {
+			o.Addr = ":" + port
+		}
+	}
+	if !envExplicit {
+		o.Env = envOr("APP_ENV", "development")
+	}
+	if !certExplicit {
+		o.TLSCertFile = os.Getenv("TLS_CERT_FILE")
+	}
+	if !keyExplicit {
+		o.TLSKeyFile = os.Getenv("TLS_KEY_FILE")
+	}
+	if (o.TLSCertFile == "") != (o.TLSKeyFile == "") {
+		return errors.New("serve: TLS needs both TLS_CERT_FILE and TLS_KEY_FILE")
+	}
+	return nil
 }
 
 // URL is the base URL of the running server, usable from the same host.

@@ -1,0 +1,327 @@
+pipeline "bank_fixed_deposit" {
+  title "Bank Fixed Deposit"
+  description "Fixed deposit account opening for Nepali banks and financial institutions with interest rate calculation and maturity handling"
+  form "fd_details" {
+    title "FD Details"
+    input "deposit_amount" {
+      label "Deposit Amount (NPR)"
+      kind text
+      required true
+    }
+    input "tenure_months" {
+      label "Tenure (Months)"
+      kind select
+      required true
+      options ["3", "6", "12", "18", "24", "36"]
+    }
+    input "interest_frequency" {
+      label "Interest Payment Frequency"
+      kind select
+      required true
+      options ["monthly", "quarterly", "half_yearly", "maturity"]
+    }
+    input "auto_renewal" {
+      label "Auto Renewal"
+      kind boolean
+      required true
+    }
+  }
+  form "deposit_source" {
+    title "Source of Funds"
+    input "source_of_funds" {
+      label "Source of Funds"
+      kind select
+      required true
+      options ["savings", "salary", "business", "property", "inheritance", "other"]
+    }
+    input "transaction_description" {
+      label "Transaction Description"
+      kind textarea
+      required true
+    }
+  }
+  form "maturity_preference" {
+    title "Maturity Preference"
+    input "renewal_option" {
+      label "Renewal Option"
+      kind select
+      required true
+      options ["same_tenure", "different_tenure", "principal_interest_savings", "principal_savings_interest_credit"]
+    }
+    input "withdrawal_mode" {
+      label "Withdrawal Mode"
+      kind select
+      required true
+      options ["savings", "cheque", "cash"]
+    }
+    input "interest_disbursement" {
+      label "Interest Disbursement Account"
+      kind text
+      required true
+    }
+  }
+  form "deposit_verification" {
+    title "Deposit Verification"
+    input "payment_verified" {
+      label "Payment Verified"
+      kind boolean
+      required true
+    }
+    input "account_verified" {
+      label "Account Verified"
+      kind boolean
+      required true
+    }
+    input "verification_notes" {
+      label "Verification Notes"
+      kind textarea
+    }
+  }
+  form "source_verification" {
+    title "Source Verification"
+    input "source_confirmed" {
+      label "Source Confirmed"
+      kind boolean
+      required true
+    }
+    input "aml_check_passed" {
+      label "AML Check Passed"
+      kind boolean
+      required true
+    }
+    input "source_verification_notes" {
+      label "Source Verification Notes"
+      kind textarea
+    }
+  }
+  form "interest_rate_approval" {
+    title "Interest Rate Approval"
+    input "applicable_rate" {
+      label "Applicable Interest Rate (%)"
+      kind text
+      required true
+    }
+    input "total_interest" {
+      label "Total Interest (NPR)"
+      kind text
+      required true
+    }
+    input "maturity_amount" {
+      label "Maturity Amount (NPR)"
+      kind text
+      required true
+    }
+    input "approval_notes" {
+      label "Approval Notes"
+      kind textarea
+    }
+  }
+  form "fd_account_setup" {
+    title "FD Account Setup"
+    input "fd_account_number" {
+      label "FD Account Number"
+      kind text
+      required true
+    }
+    input "passbook_issued" {
+      label "Passbook Issued"
+      kind boolean
+      required true
+    }
+    input "certificate_issued" {
+      label "FD Certificate Issued"
+      kind boolean
+      required true
+    }
+    input "issue_date" {
+      label "Issue Date"
+      kind date
+      required true
+    }
+    input "maturity_date" {
+      label "Maturity Date"
+      kind date
+      required true
+    }
+  }
+  form "fd_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "additional_documents" {
+      label "Additional Documents"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  payment {
+    currency "NPR"
+    amount 0
+    verifier_roles ["payment_officer", "admin"]
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "sla.warning" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: sla.warning"
+    body "Case {case.number} has event sla.warning"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "verification"
+  }
+  stage "application_submission" {
+    title "Application Submission"
+    kind submission
+    public true
+    require_account true
+    roles ["fd_applicant"]
+    page {
+      title "Application Submission"
+      layout wizard
+      group "application_block" {
+        title "application_block"
+        forms ["fd_details"]
+      }
+      group "source_block" {
+        title "source_block"
+        forms ["deposit_source"]
+      }
+      group "maturity_block" {
+        title "maturity_block"
+        forms ["maturity_preference"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "branch_intake" {
+    title "Branch Intake"
+    kind processing
+    roles ["branch_operator"]
+    sla {
+      duration "120m"
+      on_breach "notify"
+    }
+    page {
+      title "Branch Intake"
+      layout wizard
+      group "application_block" {
+        title "application_block"
+        forms ["fd_details"]
+      }
+      group "source_block" {
+        title "source_block"
+        forms ["deposit_source"]
+      }
+      group "maturity_block" {
+        title "maturity_block"
+        forms ["maturity_preference"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "verification" {
+    title "Verification"
+    kind review
+    roles ["deposit_officer"]
+    sla {
+      duration "240m"
+      on_breach "notify"
+    }
+    page {
+      title "Verification"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["deposit_verification", "source_verification"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["deposit_verification", "source_verification"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "approval" {
+    title "Approval"
+    kind approval
+    roles ["finance_officer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["interest_rate_approval"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "deposit_confirmation" {
+    title "Deposit Confirmation"
+    kind processing
+    roles ["deposit_officer"]
+    sla {
+      duration "60m"
+      on_breach "notify"
+    }
+    page {
+      title "Deposit Confirmation"
+      layout wizard
+      group "account_block" {
+        title "account_block"
+        forms ["fd_account_setup"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

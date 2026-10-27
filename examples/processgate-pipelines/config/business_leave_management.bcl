@@ -1,0 +1,222 @@
+pipeline "business_leave_management" {
+  title "Leave Management"
+  description "Employee leave request, approval and tracking process"
+  form "leave_request" {
+    title "Leave Request"
+    input "employee_name" {
+      label "Employee Name"
+      kind text
+      required true
+    }
+    input "employee_id" {
+      label "Employee ID"
+      kind text
+      required true
+    }
+    input "department" {
+      label "Department"
+      kind select
+      required true
+      options ["engineering", "sales", "marketing", "hr", "finance", "operations"]
+    }
+    input "leave_type" {
+      label "Leave Type"
+      kind select
+      required true
+      options ["annual", "sick", "casual", "maternity", "paternity", "unpaid"]
+    }
+    input "start_date" {
+      label "Start Date"
+      kind date
+      required true
+    }
+    input "end_date" {
+      label "End Date"
+      kind date
+      required true
+    }
+    input "total_days" {
+      label "Total Days"
+      kind text
+      required true
+    }
+    input "reason" {
+      label "Reason"
+      kind textarea
+      required true
+    }
+    input "attachment" {
+      label "Supporting Document"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  form "manager_review_form" {
+    title "Manager Review"
+    input "manager_approval" {
+      label "Manager Approval"
+      kind select
+      required true
+      options ["approved", "rejected", "modification"]
+    }
+    input "manager_comments" {
+      label "Manager Comments"
+      kind textarea
+    }
+  }
+  form "hr_approval_form" {
+    title "HR Approval"
+    input "hr_approval" {
+      label "HR Approval"
+      kind select
+      required true
+      options ["approved", "rejected"]
+    }
+    input "leave_balance_check" {
+      label "Leave Balance Check"
+      kind boolean
+      required true
+    }
+    input "hr_comments" {
+      label "HR Comments"
+      kind textarea
+    }
+  }
+  form "acknowledgment_form" {
+    title "Acknowledgment"
+    input "acknowledged" {
+      label "Acknowledged"
+      kind boolean
+      required true
+    }
+    input "acknowledgment_notes" {
+      label "Notes"
+      kind textarea
+    }
+  }
+  form "leave_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.rejected" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.rejected"
+    body "Case {case.number} has event case.rejected"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  stage "request" {
+    title "Request"
+    kind submission
+    roles ["employee"]
+    page {
+      title "Request"
+      layout wizard
+      group "request_block" {
+        title "request_block"
+        forms ["leave_request"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "manager_review" {
+    title "Manager Review"
+    kind approval
+    roles ["manager"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Manager Review"
+      layout wizard
+      group "manager_review_block" {
+        title "manager_review_block"
+        forms ["manager_review_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "hr_approval" {
+    title "HR Approval"
+    kind approval
+    roles ["hr_officer"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "HR Approval"
+      layout wizard
+      group "hr_approval_block" {
+        title "hr_approval_block"
+        forms ["hr_approval_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "acknowledgment" {
+    title "Acknowledgment"
+    kind processing
+    roles ["hr_officer"]
+    sla {
+      duration "240m"
+      on_breach "notify"
+    }
+    page {
+      title "Acknowledgment"
+      layout wizard
+      group "acknowledgment_block" {
+        title "acknowledgment_block"
+        forms ["acknowledgment_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

@@ -1,6 +1,7 @@
 ADDR ?= :3000
 ROOT_DIR := $(abspath ../..)
 AEGIS := $(ROOT_DIR)/bin/aegis
+REF := $(ROOT_DIR)/bin/ref
 
 SESSION_SECRET ?= super-secure-argon2id-medical-coding-session-secret-32-bytes
 JWT_SECRET ?= super-secure-argon2id-medical-coding-jwt-secret-32-bytes
@@ -19,14 +20,15 @@ default: run
 # resources/migrations on disk, so this runs before either `run` or `secure`.
 migrate:
 	@mkdir -p $(dir $(DB_FILE))
+	@mkdir -p $(ROOT_DIR)/bin
+	@cd $(ROOT_DIR)/cmd/ref && go build -o $(REF) .
 	@fresh=0; test -f "$(DB_FILE)" || fresh=1; \
-	  cd "$(CURDIR)" && DB_DSN="$(DB_DSN)" go run ./cmd/migrator migrate && \
-	  if [ "$$fresh" = 1 ] && [ "$(SEED)" = 1 ]; then DB_DSN="$(DB_DSN)" go run ./cmd/migrator seed; fi
+	  DB_DSN="$(DB_DSN)" $(REF) migrate "$(CURDIR)" && \
+	  if [ "$$fresh" = 1 ] && [ "$(SEED)" = 1 ]; then DB_DSN="$(DB_DSN)" $(REF) seed "$(CURDIR)"; fi
 
-# Run directly using Aegis
+# Run the configuration-only application through the generic REF runner.
 run: migrate
-	@cd $(ROOT_DIR) && go build -o bin/aegis ./aegis/cmd/aegis
-	@cd $(ROOT_DIR) && SESSION_SECRET="$(SESSION_SECRET)" JWT_SECRET="$(JWT_SECRET)" DB_DSN="$(DB_DSN)" ./bin/aegis run -addr $(ADDR) "$(CURDIR)/resources"
+	@SESSION_SECRET="$(SESSION_SECRET)" JWT_SECRET="$(JWT_SECRET)" DB_DSN="$(DB_DSN)" $(REF) -addr $(ADDR) "$(CURDIR)"
 
 # Package and run completely protected in-memory via Aegis VFS (zero disk residue)
 secure: package migrate
@@ -44,7 +46,7 @@ clean:
 
 help:
 	@echo "Available commands for Medical Coding Platform:"
-	@echo "  make         - Run directly with Aegis"
+	@echo "  make         - Run with the generic REF runner"
 	@echo "  make secure  - Package & run completely protected via in-memory VFS (zero disk trace)"
 	@echo "  make package - Build sealed .apkg container"
 	@echo "  make migrate - Apply schema migrations (seeds demo data on a new database; SEED=0 to skip)"

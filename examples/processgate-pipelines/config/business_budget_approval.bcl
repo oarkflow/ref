@@ -1,0 +1,302 @@
+pipeline "business_budget_approval" {
+  title "Budget Approval"
+  description "Budget approval workflow for businesses in Nepal"
+  form "budget_details" {
+    title "Budget Details"
+    input "budget_title" {
+      label "Budget Title"
+      kind text
+      required true
+    }
+    input "budget_type" {
+      label "Budget Type"
+      kind select
+      required true
+      options ["operational", "capital", "project", "emergency", "marketing"]
+    }
+    input "department" {
+      label "Department"
+      kind text
+      required true
+    }
+    input "fiscal_year" {
+      label "Fiscal Year"
+      kind text
+      required true
+    }
+    input "requested_amount" {
+      label "Requested Amount (NPR)"
+      kind text
+      required true
+    }
+    input "justification" {
+      label "Justification"
+      kind textarea
+      required true
+    }
+    input "supporting_documents" {
+      label "Supporting Documents"
+      kind file
+      accept ["application/pdf"]
+    }
+  }
+  form "budget_breakdown" {
+    title "Budget Breakdown"
+    input "line_items" {
+      label "Line Items"
+      kind textarea
+      required true
+    }
+    input "timeline" {
+      label "Timeline"
+      kind textarea
+    }
+    input "expected_outcomes" {
+      label "Expected Outcomes"
+      kind textarea
+      required true
+    }
+  }
+  form "finance_review_form" {
+    title "Finance Review"
+    input "budget_feasibility" {
+      label "Budget Feasibility"
+      kind select
+      required true
+      options ["feasible", "modification", "not_feasible"]
+    }
+    input "funds_available" {
+      label "Funds Available"
+      kind boolean
+      required true
+    }
+    input "finance_comments" {
+      label "Finance Comments"
+      kind textarea
+    }
+    input "recommended_amount" {
+      label "Recommended Amount (NPR)"
+      kind text
+    }
+  }
+  form "management_approval_form" {
+    title "Management Approval"
+    input "management_decision" {
+      label "Decision"
+      kind select
+      required true
+      options ["approved", "rejected", "changes"]
+    }
+    input "management_comments" {
+      label "Comments"
+      kind textarea
+    }
+  }
+  form "final_approval_form" {
+    title "Final Approval"
+    input "final_decision" {
+      label "Final Decision"
+      kind select
+      required true
+      options ["approved", "rejected"]
+    }
+    input "approved_amount" {
+      label "Approved Amount (NPR)"
+      kind text
+      required true
+    }
+    input "final_comments" {
+      label "Final Comments"
+      kind textarea
+    }
+    input "approval_date" {
+      label "Approval Date"
+      kind date
+      required true
+    }
+  }
+  form "allocation_form" {
+    title "Budget Allocation"
+    input "allocated" {
+      label "Allocated"
+      kind boolean
+      required true
+    }
+    input "allocation_date" {
+      label "Allocation Date"
+      kind date
+      required true
+    }
+    input "allocation_reference" {
+      label "Allocation Reference"
+      kind text
+    }
+    input "allocation_notes" {
+      label "Allocation Notes"
+      kind textarea
+    }
+  }
+  form "budget_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "additional_documents" {
+      label "Additional Documents"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.rejected" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.rejected"
+    body "Case {case.number} has event case.rejected"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "finance_review"
+  }
+  stage "budget_submission" {
+    title "Budget Submission"
+    kind submission
+    roles ["requester"]
+    page {
+      title "Budget Submission"
+      layout wizard
+      group "submission_block" {
+        title "submission_block"
+        forms ["budget_details", "budget_breakdown"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "finance_review" {
+    title "Finance Review"
+    kind review
+    roles ["finance_team"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Finance Review"
+      layout wizard
+      group "finance_block" {
+        title "finance_block"
+        forms ["finance_review_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["finance_review_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "management_approval" {
+    title "Management Approval"
+    kind approval
+    roles ["manager"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Management Approval"
+      layout wizard
+      group "management_block" {
+        title "management_block"
+        forms ["management_approval_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "final_approval" {
+    title "Final Approval"
+    kind approval
+    roles ["director"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Final Approval"
+      layout wizard
+      group "final_block" {
+        title "final_block"
+        forms ["final_approval_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "allocation" {
+    title "Budget Allocation"
+    kind processing
+    roles ["finance_team"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Budget Allocation"
+      layout wizard
+      group "allocation_block" {
+        title "allocation_block"
+        forms ["allocation_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

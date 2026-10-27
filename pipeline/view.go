@@ -68,16 +68,17 @@ type LinkView struct {
 
 // CaseSummary is the case header.
 type CaseSummary struct {
-	ID        string    `json:"id"`
-	Number    string    `json:"number"`
-	Pipeline  string    `json:"pipeline"`
-	Title     string    `json:"title,omitempty"`
-	Status    string    `json:"status"`
-	Stage     string    `json:"stage"`
-	Revision  int64     `json:"revision"`
-	CreatedBy string    `json:"created_by,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        string         `json:"id"`
+	Number    string         `json:"number"`
+	Pipeline  string         `json:"pipeline"`
+	Title     string         `json:"title,omitempty"`
+	Status    string         `json:"status"`
+	Stage     string         `json:"stage"`
+	Revision  int64          `json:"revision"`
+	CreatedBy string         `json:"created_by,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	Payment   *PaymentRecord `json:"payment,omitempty"`
 }
 
 // StageView describes the viewed stage.
@@ -249,7 +250,7 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 	}
 	v := &View{
 		Case: CaseSummary{ID: c.ID, Number: c.Number, Pipeline: c.Pipeline, Title: e.C.Def.Title, Status: c.Status,
-			Stage: c.Stage, Revision: c.Revision, CreatedBy: c.CreatedBy, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt},
+			Stage: c.Stage, Revision: c.Revision, CreatedBy: c.CreatedBy, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Payment: c.Payment},
 		Stage: StageView{Name: st.Name, Title: st.Title, Kind: st.Kind, Description: st.Description, Status: ss.Status,
 			DueAt: ss.DueAt, Current: c.Stage == stage},
 	}

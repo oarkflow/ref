@@ -1,0 +1,249 @@
+pipeline "education_course_registration" {
+  title "Course Registration"
+  description "Course registration and enrollment process"
+  form "student_info" {
+    title "Student Information"
+    input "full_name" {
+      label "Full Name"
+      kind text
+      required true
+    }
+    input "date_of_birth" {
+      label "Date of Birth"
+      kind date
+      required true
+    }
+    input "gender" {
+      label "Gender"
+      kind select
+      required true
+      options ["male", "female", "other"]
+    }
+    input "email" {
+      label "Email"
+      kind text
+      required true
+    }
+    input "phone" {
+      label "Phone"
+      kind text
+      required true
+    }
+    input "address" {
+      label "Address"
+      kind text
+      required true
+    }
+  }
+  form "course_info" {
+    title "Course Information"
+    input "course_name" {
+      label "Course Name"
+      kind select
+      required true
+      options ["cs", "bm", "eng", "arts", "science"]
+    }
+    input "semester" {
+      label "Semester"
+      kind select
+      required true
+      options ["spring", "fall"]
+    }
+    input "academic_year" {
+      label "Academic Year"
+      kind text
+      required true
+    }
+    input "previous_qualification" {
+      label "Previous Qualification"
+      kind text
+      required true
+    }
+    input "documents" {
+      label "Supporting Documents"
+      kind file
+      required true
+      accept ["image/*,application/pdf"]
+    }
+  }
+  form "verification_form" {
+    title "Verification"
+    input "documents_verified" {
+      label "Documents Verified"
+      kind boolean
+      required true
+    }
+    input "eligibility_check" {
+      label "Eligibility Check"
+      kind boolean
+      required true
+    }
+    input "verification_notes" {
+      label "Verification Notes"
+      kind textarea
+    }
+  }
+  form "approval_form" {
+    title "Approval"
+    input "approval_decision" {
+      label "Approval Decision"
+      kind select
+      required true
+      options ["approved", "rejected"]
+    }
+    input "approval_notes" {
+      label "Approval Notes"
+      kind textarea
+    }
+  }
+  form "enrollment_form" {
+    title "Enrollment"
+    input "student_enrolled" {
+      label "Student Enrolled"
+      kind boolean
+      required true
+    }
+    input "enrollment_number" {
+      label "Enrollment Number"
+      kind text
+      required true
+    }
+    input "enrollment_date" {
+      label "Enrollment Date"
+      kind date
+      required true
+    }
+    input "class_section" {
+      label "Class Section"
+      kind text
+      required true
+    }
+  }
+  form "course_reg_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "verification"
+  }
+  stage "registration" {
+    title "Registration"
+    kind submission
+    public true
+    require_account true
+    roles ["student"]
+    page {
+      title "Registration"
+      layout wizard
+      group "registration_block" {
+        title "registration_block"
+        forms ["student_info", "course_info"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "verification" {
+    title "Verification"
+    kind review
+    roles ["verification_officer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Verification"
+      layout wizard
+      group "verification_block" {
+        title "verification_block"
+        forms ["verification_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["verification_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "approval" {
+    title "Approval"
+    kind approval
+    roles ["approval_officer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Approval"
+      layout wizard
+      group "approval_block" {
+        title "approval_block"
+        forms ["approval_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "enrollment" {
+    title "Enrollment"
+    kind processing
+    roles ["admin"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Enrollment"
+      layout wizard
+      group "enrollment_block" {
+        title "enrollment_block"
+        forms ["enrollment_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

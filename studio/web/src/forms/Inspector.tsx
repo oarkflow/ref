@@ -1,4 +1,4 @@
-import { Copy, MoreHorizontal, Pencil, Route, Trash2, Workflow } from "lucide-react";
+import { Copy, LayoutTemplate, MoreHorizontal, Pencil, Route, Trash2, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useInRouterContext, useNavigate } from "react-router-dom";
 import { useShallow } from "zustand/react/shallow";
@@ -144,6 +144,9 @@ function InspectorHeader({ file, node, hasId, readOnly }: { file: string; node: 
         )}
         {!readOnly && isCanvasType(node.type) && !inCanvas && (
           <a className="btn" href={canvasHref(file, node.path)}><Workflow size={16} /> Open flow editor</a>
+        )}
+        {top && hasId && node.type === "pipeline" && (
+          <a className="btn" href={`#/designer?file=${encodeURIComponent(file)}&path=${encodeURIComponent(node.path)}`} title="Design this pipeline's forms visually"><LayoutTemplate size={16} /> Open form designer</a>
         )}
         {!readOnly && (
           <Menu label="More actions" align="end" className="icon-btn" trigger={<MoreHorizontal size={18} />}>

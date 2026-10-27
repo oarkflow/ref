@@ -1,0 +1,507 @@
+pipeline "project_task_activity_tracker" {
+  title "Project Task & Activity Tracker"
+  description "Track projects as pipeline entries with plans, schedules, tasks, and activity updates."
+  form "project_intake" {
+    title "project_intake"
+    input "project_name" {
+      label "Project Name"
+      kind text
+      required true
+    }
+    input "project_code" {
+      label "Project Code"
+      kind text
+    }
+    input "project_priority" {
+      label "Priority"
+      kind select
+      required true
+      options ["low", "medium", "high", "critical"]
+    }
+    input "project_type" {
+      label "Project Type"
+      kind select
+      required true
+      options ["internal", "client", "compliance", "engineering", "marketing", "operations"]
+    }
+    input "project_sponsor" {
+      label "Project Sponsor"
+      kind text
+    }
+    input "project_owner" {
+      label "Project Owner"
+      kind text
+    }
+    input "planned_start_date" {
+      label "Planned Start Date"
+      kind date
+      required true
+    }
+    input "planned_end_date" {
+      label "Planned End Date"
+      kind date
+      required true
+    }
+    input "budget_estimate" {
+      label "Budget Estimate"
+      kind number
+    }
+    input "scope_summary" {
+      label "Scope Summary"
+      kind textarea
+      required true
+    }
+    input "success_criteria" {
+      label "Success Criteria"
+      kind textarea
+      required true
+    }
+    input "primary_contact" {
+      label "Primary Contact"
+      kind text
+    }
+    input "primary_contact_email" {
+      label "Primary Contact Email"
+      kind email
+    }
+    input "intake_documents" {
+      label "Supporting Documents"
+      kind file
+    }
+  }
+  form "project_plan" {
+    title "project_plan"
+    input "objectives" {
+      label "Objectives"
+      kind textarea
+      required true
+    }
+    input "deliverables" {
+      label "Key Deliverables"
+      kind textarea
+      required true
+    }
+    input "methodology" {
+      label "Delivery Methodology"
+      kind select
+      required true
+      options ["agile", "waterfall", "hybrid"]
+    }
+    input "estimated_hours" {
+      label "Estimated Effort (hours)"
+      kind number
+    }
+    input "dependency_summary" {
+      label "Key Dependencies"
+      kind text
+    }
+    input "risk_summary" {
+      label "Risk Summary"
+      kind textarea
+    }
+    input "plan_documents" {
+      label "Planning Documents"
+      kind file
+    }
+  }
+  form "project_schedule" {
+    title "project_schedule"
+    input "baseline_start" {
+      label "Baseline Start"
+      kind date
+    }
+    input "baseline_end" {
+      label "Baseline End"
+      kind date
+    }
+    input "planned_start" {
+      label "Planned Start"
+      kind date
+      required true
+    }
+    input "planned_end" {
+      label "Planned End"
+      kind date
+      required true
+    }
+    input "forecast_end" {
+      label "Forecasted End"
+      kind date
+    }
+    input "schedule_notes" {
+      label "Schedule Notes"
+      kind textarea
+    }
+    input "milestone_name" {
+      label "Milestone Name"
+      kind text
+      required true
+    }
+    input "milestone_owner" {
+      label "Owner"
+      kind text
+    }
+    input "milestone_date" {
+      label "Target Date"
+      kind date
+      required true
+    }
+    input "milestone_status" {
+      label "Status"
+      kind select
+      required true
+      options ["planned", "in_progress", "completed", "blocked"]
+    }
+    input "milestone_notes" {
+      label "Notes"
+      kind textarea
+    }
+  }
+  form "project_task_register" {
+    title "project_task_register"
+    input "task_tracking_method" {
+      label "Task Tracking Method"
+      kind select
+      required true
+      options ["internal", "spreadsheet", "external_tool"]
+    }
+    input "external_tool_link" {
+      label "External Tool Link"
+      kind text
+    }
+    input "task_list_upload" {
+      label "Task List Upload (CSV/PDF)"
+      kind file
+    }
+    input "task_title" {
+      label "Task Title"
+      kind text
+      required true
+    }
+    input "task_id" {
+      label "Task ID"
+      kind text
+      required true
+    }
+    input "task_status" {
+      label "Status"
+      kind select
+      required true
+      options ["not_started", "in_progress", "blocked", "completed"]
+    }
+    input "priority" {
+      label "Priority"
+      kind select
+      required true
+      options ["low", "medium", "high", "critical"]
+    }
+    input "assigned_role" {
+      label "Assigned Role"
+      kind select
+      options ["project_owner", "project_manager", "team_member", "reviewer", "admin"]
+    }
+    input "assigned_to" {
+      label "Assigned To"
+      kind text
+    }
+    input "planned_start" {
+      label "Planned Start"
+      kind date
+    }
+    input "planned_end" {
+      label "Planned End"
+      kind date
+    }
+    input "actual_start" {
+      label "Actual Start"
+      kind date
+    }
+    input "actual_end" {
+      label "Actual End"
+      kind date
+    }
+    input "effort_hours" {
+      label "Effort (hours)"
+      kind number
+    }
+    input "percent_complete" {
+      label "Percent Complete"
+      kind number
+    }
+    input "dependencies" {
+      label "Dependencies"
+      kind textarea
+    }
+    input "task_notes" {
+      label "Notes"
+      kind textarea
+    }
+    input "task_attachments" {
+      label "Attachments"
+      kind file
+    }
+  }
+  form "project_activity_log" {
+    title "project_activity_log"
+    input "update_date" {
+      label "Update Date"
+      kind date
+      required true
+    }
+    input "current_status" {
+      label "Current Status"
+      kind select
+      required true
+      options ["not_started", "in_progress", "blocked", "completed"]
+    }
+    input "percent_complete" {
+      label "Percent Complete"
+      kind number
+    }
+    input "hours_spent" {
+      label "Hours Spent"
+      kind number
+    }
+    input "related_task" {
+      label "Related Task"
+      kind text
+    }
+    input "updated_by" {
+      label "Updated By"
+      kind text
+    }
+    input "activity_log" {
+      label "Activity Summary"
+      kind textarea
+      required true
+    }
+    input "blockers" {
+      label "Blockers"
+      kind textarea
+    }
+    input "next_steps" {
+      label "Next Steps"
+      kind textarea
+    }
+    input "evidence_files" {
+      label "Evidence Files"
+      kind file
+    }
+  }
+  form "project_review_closure" {
+    title "project_review_closure"
+    input "deliverables_complete" {
+      label "Deliverables Complete"
+      kind boolean
+    }
+    input "deliverables_summary" {
+      label "Deliverables Summary"
+      kind textarea
+    }
+    input "qa_notes" {
+      label "Quality Notes"
+      kind textarea
+    }
+    input "closure_decision" {
+      label "Closure Decision"
+      kind select
+      required true
+      options ["approve", "changes", "reject"]
+    }
+    input "closure_date" {
+      label "Closure Date"
+      kind date
+    }
+    input "lessons_learned" {
+      label "Lessons Learned"
+      kind textarea
+    }
+    input "final_documents" {
+      label "Final Documents"
+      kind file
+    }
+  }
+  form "project_rfi_response" {
+    title "project_rfi_response"
+    input "rfi_response" {
+      label "Response Details"
+      kind textarea
+      required true
+    }
+    input "response_date" {
+      label "Response Date"
+      kind date
+      required true
+    }
+    input "rfi_attachments" {
+      label "Attachments"
+      kind file
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.information_requested" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.information_requested"
+    body "Case {case.number} has event case.information_requested"
+  }
+  notify "case.rejected" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.rejected"
+    body "Case {case.number} has event case.rejected"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  stage "intake" {
+    title "Intake"
+    kind submission
+    roles ["project_owner", "project_manager"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Intake"
+      layout wizard
+      group "intake_block" {
+        title "intake_block"
+        forms ["project_intake"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "planning" {
+    title "Planning"
+    kind processing
+    roles ["project_manager"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Planning"
+      layout wizard
+      group "planning_block" {
+        title "planning_block"
+        forms ["project_plan", "project_schedule", "project_task_register"]
+      }
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "intake"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "execution" {
+    title "Execution"
+    kind processing
+    roles ["project_manager", "team_member"]
+    sla {
+      duration "10080m"
+      on_breach "notify"
+    }
+    page {
+      title "Execution"
+      layout wizard
+      group "execution_block" {
+        title "execution_block"
+        forms ["project_task_register", "project_schedule", "project_activity_log"]
+      }
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "planning"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "review" {
+    title "Review"
+    kind approval
+    roles ["project_owner", "reviewer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Review"
+      layout wizard
+      group "review_block" {
+        title "review_block"
+        forms ["project_plan", "project_schedule", "project_task_register", "project_review_closure"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "execution"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "completed" {
+    title "Closure"
+    kind approval
+    roles ["project_owner", "admin"]
+    sla {
+      duration "720m"
+      on_breach "notify"
+    }
+    page {
+      title "Closure"
+      layout wizard
+      group "closure_block" {
+        title "closure_block"
+        forms ["project_review_closure", "project_activity_log"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "review"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

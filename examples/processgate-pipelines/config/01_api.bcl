@@ -1,0 +1,508 @@
+intent "notifications.deliver" {
+  response "stored"
+  node "stored" {
+    uses "database.exec"
+    resource "database"
+    kind effect
+    requires [input]
+    provides [stored]
+    config {
+      statement "INSERT INTO processgate_messages (tenant_id, user_id, channel, subject, body) VALUES ($1, $2, $3, $4, $5)"
+      args ["input.tenant_id", "input.user", "input.channel", "input.subject", "input.body"]
+    }
+  }
+}
+
+intent "notifications.mine" {
+  response "messages"
+  node "messages" {
+    uses "database.crud"
+    resource "database"
+    provides [messages]
+    config {
+      operation "list"
+      table "processgate_messages"
+      columns ["id", "tenant_id", "user_id", "channel", "subject", "body", "created_at"]
+      tenant_column "tenant_id"
+      owner_column "user_id"
+      order_by "id"
+      descending true
+    }
+  }
+}
+
+route "notifications.mine" {
+  method GET
+  path "/api/notifications"
+  intent "notifications.mine"
+  auth "jwt"
+}
+
+intent "auth.register" {
+  response "registration"
+  node "registration" {
+    uses "identity.register_totp"
+    resource "users"
+    kind effect
+    requires [input]
+    provides [registration]
+    config {
+      tenant "processgate"
+      role "applicant"
+      issuer "REF ProcessGate Pipelines"
+    }
+  }
+}
+
+intent "auth.confirm" {
+  response "registration"
+  node "registration" {
+    uses "identity.confirm_totp"
+    resource "users"
+    kind effect
+    requires [input]
+    provides [registration]
+  }
+}
+
+intent "auth.login" {
+  response "session"
+  node "session" {
+    uses "identity.login"
+    resource "users"
+    kind effect
+    requires [input]
+    provides [session]
+  }
+}
+
+intent "auth.invite" {
+  response "invitation"
+  node "invitation" {
+    uses "identity.admin"
+    resource "users"
+    kind effect
+    requires [input]
+    provides [invitation]
+    config {
+      operation "invite"
+    }
+  }
+}
+
+intent "auth.accept_invite" {
+  response "member"
+  node "member" {
+    uses "identity.accept_invite"
+    resource "users"
+    kind effect
+    requires [input]
+    provides [member]
+  }
+}
+
+route "auth.register" {
+  method POST
+  path "/api/auth/register"
+  intent "auth.register"
+  cache_control "no-store"
+  rate_limit { limiter "limits" limit 10 window 1m }
+}
+
+route "auth.confirm" {
+  method POST
+  path "/api/auth/register/confirm"
+  intent "auth.confirm"
+  cache_control "no-store"
+  rate_limit { limiter "limits" limit 10 window 1m }
+}
+
+route "auth.login" {
+  method POST
+  path "/api/auth/login"
+  intent "auth.login"
+  cache_control "no-store"
+  rate_limit { limiter "limits" limit 10 window 1m }
+}
+
+route "auth.invite" {
+  method POST
+  path "/api/auth/invite"
+  intent "auth.invite"
+  cache_control "no-store"
+  auth "jwt"
+}
+
+route "auth.accept_invite" {
+  method POST
+  path "/api/auth/invitations/accept"
+  intent "auth.accept_invite"
+  cache_control "no-store"
+  rate_limit { limiter "limits" limit 10 window 1m }
+}
+
+intent "cases.catalog" {
+  response "pipelines"
+  node "pipelines" {
+    uses "pipeline.catalog"
+    resource "cases"
+    provides [pipelines]
+  }
+}
+
+intent "cases.describe" {
+  response "pipeline"
+  node "pipeline" {
+    uses "pipeline.describe"
+    resource "cases"
+    provides [pipeline]
+  }
+}
+
+intent "cases.start" {
+  response "case"
+  node "case" {
+    uses "pipeline.start"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [case]
+  }
+}
+
+intent "cases.list" {
+  response "cases"
+  node "cases" {
+    uses "pipeline.list"
+    resource "cases"
+    provides [cases]
+  }
+}
+
+intent "cases.get" {
+  response "case"
+  node "case" {
+    uses "pipeline.get"
+    resource "cases"
+    provides [case]
+  }
+}
+
+intent "cases.view" {
+  response "view"
+  node "view" {
+    uses "pipeline.view"
+    resource "cases"
+    provides [view]
+  }
+}
+
+intent "cases.save" {
+  response "view"
+  node "view" {
+    uses "pipeline.save"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "cases.act" {
+  response "view"
+  node "view" {
+    uses "pipeline.act"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "cases.node" {
+  response "view"
+  node "view" {
+    uses "pipeline.node"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "cases.work" {
+  response "view"
+  node "view" {
+    uses "pipeline.work"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "cases.upload" {
+  response "view"
+  node "view" {
+    uses "pipeline.upload"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "cases.file" {
+  response "file"
+  node "file" {
+    uses "pipeline.file"
+    resource "cases"
+    provides [file]
+  }
+}
+
+intent "cases.schedule_list" {
+  response "schedules"
+  node "schedules" {
+    uses "pipeline.schedule_list"
+    resource "cases"
+    provides [schedules]
+  }
+}
+
+intent "cases.schedule_create" {
+  response "view"
+  node "view" {
+    uses "pipeline.schedule_create"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "cases.schedule_submit" {
+  response "view"
+  node "view" {
+    uses "pipeline.schedule_submit"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "cases.payment_record" {
+  response "view"
+  node "view" {
+    uses "pipeline.payment_record"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+    config {
+      verify_intent env("PROCESSGATE_PAYMENT_VERIFY_INTENT", "")
+    }
+  }
+}
+
+intent "cases.request_information" {
+  response "view"
+  node "view" {
+    uses "pipeline.request_information"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+intent "cases.submit_information" {
+  response "view"
+  node "view" {
+    uses "pipeline.submit_information"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [view]
+  }
+}
+
+route "catalog" {
+  method GET
+  path "/api/pipelines"
+  intent "cases.catalog"
+  auth "jwt"
+}
+
+route "describe" {
+  method GET
+  path "/api/pipelines/:pipeline"
+  intent "cases.describe"
+  auth "jwt"
+  allow_anonymous true
+}
+
+route "start" {
+  method POST
+  path "/api/pipelines/:pipeline/cases"
+  intent "cases.start"
+  auth "jwt"
+  allow_anonymous true
+  status 201
+}
+
+route "list" {
+  method GET
+  path "/api/pipelines/:pipeline/cases"
+  intent "cases.list"
+  auth "jwt"
+}
+
+route "get" {
+  method GET
+  path "/api/pipelines/:pipeline/cases/:id"
+  intent "cases.get"
+  auth "jwt"
+  allow_anonymous true
+}
+
+route "view" {
+  method GET
+  path "/api/pipelines/:pipeline/cases/:id/stages/:stage"
+  intent "cases.view"
+  auth "jwt"
+  allow_anonymous true
+}
+
+route "save" {
+  method PUT
+  path "/api/pipelines/:pipeline/cases/:id/stages/:stage"
+  intent "cases.save"
+  auth "jwt"
+  allow_anonymous true
+}
+
+route "act" {
+  method POST
+  path "/api/pipelines/:pipeline/cases/:id/stages/:stage/actions/:action"
+  intent "cases.act"
+  auth "jwt"
+  allow_anonymous true
+}
+
+route "node" {
+  method POST
+  path "/api/pipelines/:pipeline/cases/:id/stages/:stage/nodes/:node/:verb"
+  intent "cases.node"
+  auth "jwt"
+}
+
+route "work" {
+  method POST
+  path "/api/pipelines/:pipeline/cases/:id/stages/:stage/work/:op"
+  intent "cases.work"
+  auth "jwt"
+}
+
+route "upload" {
+  method POST
+  path "/api/pipelines/:pipeline/cases/:id/stages/:stage/files/:path"
+  intent "cases.upload"
+  auth "jwt"
+  allow_anonymous true
+  max_body_bytes 10485760
+}
+
+route "file" {
+  method GET
+  path "/api/pipelines/:pipeline/cases/:id/files/:path"
+  intent "cases.file"
+  auth "jwt"
+  allow_anonymous true
+}
+
+route "schedule_list" {
+  method GET
+  path "/api/pipelines/:pipeline/cases/:id/stages/:stage/schedules"
+  intent "cases.schedule_list"
+  auth "jwt"
+  allow_anonymous true
+}
+
+route "schedule_create" {
+  method POST
+  path "/api/pipelines/:pipeline/cases/:id/stages/:stage/schedules"
+  intent "cases.schedule_create"
+  auth "jwt"
+  allow_anonymous true
+}
+
+route "schedule_submit" {
+  method POST
+  path "/api/pipelines/:pipeline/cases/:id/stages/:stage/schedules/:schedule/submissions"
+  intent "cases.schedule_submit"
+  auth "jwt"
+  allow_anonymous true
+}
+
+route "payment_record" {
+  method POST
+  path "/api/pipelines/:pipeline/cases/:id/payments/verify"
+  intent "cases.payment_record"
+  auth "jwt"
+}
+
+route "request_information" {
+  method POST
+  path "/api/pipelines/:pipeline/cases/:id/request-information"
+  intent "cases.request_information"
+  auth "jwt"
+  allow_anonymous true
+}
+
+route "submit_information" {
+  method POST
+  path "/api/pipelines/:pipeline/cases/:id/submit-information"
+  intent "cases.submit_information"
+  auth "jwt"
+  allow_anonymous true
+}
+
+static "app" {
+  prefix "/app"
+  root env("PROCESSGATE_PIPELINES_STATIC", "static")
+  index "index.html"
+}
+
+resource "bus" {
+  kind "queue.sql"
+  description "Durable queue so one replica fires each scheduled sweep"
+  config {
+    database "database"
+    table "processgate_jobs"
+    workers 1
+  }
+}
+
+intent "sla.sweep" {
+  response "sweep"
+  node "sweep" {
+    uses "pipeline.sweep"
+    resource "cases"
+    kind effect
+    provides [sweep]
+    config {
+      roles ["admin"]
+    }
+  }
+}
+
+route "sla.sweep" {
+  method POST
+  path "/api/admin/sla/sweep"
+  intent "sla.sweep"
+  auth "jwt"
+}
+
+schedule "sla_sweep" { every 1m queue "bus" intent "sla.sweep" }

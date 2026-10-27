@@ -1,0 +1,511 @@
+pipeline "anti_corruption_monitoring" {
+  title "Anti-Corruption Monitoring"
+  description "End-to-end anti-corruption monitoring pipeline for CIAA — from transaction recording through red-flag analysis, evidence collection, verification, committee reporting, and legal action"
+  form "transaction_record_form" {
+    title "transaction_record_form"
+    input "subject_name" {
+      label "Subject Name"
+      kind text
+      required true
+      placeholder "Full name of the subject"
+    }
+    input "subject_nid" {
+      label "Subject NID"
+      kind text
+      required true
+      placeholder "National Identity Number"
+    }
+    input "designation" {
+      label "Designation"
+      kind text
+      placeholder "Current designation or role"
+    }
+    input "pep_flag" {
+      label "Politically Exposed Person (PEP)"
+      kind boolean
+    }
+    input "data_source" {
+      label "Data Source"
+      kind select
+      required true
+      options ["bank_accounts", "digital_wallets", "shares_securities_sebon", "land_property", "whistleblower"]
+      placeholder "Select data source"
+    }
+    input "transaction_type" {
+      label "Transaction Type"
+      kind select
+      required true
+      options ["financial", "asset_acquisition", "asset_disposal", "cross_border", "income_mismatch"]
+      placeholder "Select transaction type"
+    }
+    input "transaction_amount_npr" {
+      label "Transaction Amount (NPR)"
+      kind number
+      required true
+      placeholder "Amount in Nepalese Rupees"
+    }
+    input "transaction_date" {
+      label "Transaction Date"
+      kind date
+      placeholder "Select transaction date"
+    }
+    input "description" {
+      label "Description"
+      kind textarea
+      required true
+      placeholder "Describe the transaction details"
+    }
+    input "supporting_documents" {
+      label "Supporting Documents"
+      kind file
+      accept ["application/pdf,image/*"]
+    }
+  }
+  form "red_flag_analysis_form" {
+    title "red_flag_analysis_form"
+    input "income_asset_mismatch" {
+      label "Income vs Asset Mismatch"
+      kind boolean
+    }
+    input "unusual_transaction_volume" {
+      label "Unusual Transaction Volume"
+      kind boolean
+    }
+    input "pep_flag" {
+      label "PEP Flag"
+      kind boolean
+    }
+    input "shell_company_indicators" {
+      label "Shell Company Indicators"
+      kind boolean
+    }
+    input "cross_border_anomaly" {
+      label "Cross-border Anomaly"
+      kind boolean
+    }
+    input "risk_score" {
+      label "Risk Score (1-100)"
+      kind number
+      required true
+      placeholder "Enter risk score between 1 and 100"
+    }
+    input "risk_category" {
+      label "Risk Category"
+      kind select
+      required true
+      options ["low", "medium", "high", "critical"]
+      placeholder "Select risk category"
+    }
+    input "flag_decision" {
+      label "Flag Decision"
+      kind select
+      required true
+      options ["no_flag_archive", "flag_raised"]
+      placeholder "Select flag decision"
+    }
+    input "analysis_notes" {
+      label "Analysis Notes"
+      kind textarea
+      placeholder "Additional analysis notes"
+    }
+  }
+  form "evidence_collection_form" {
+    title "evidence_collection_form"
+    input "bank_record_subpoena_issued" {
+      label "Bank Record Subpoena Issued"
+      kind boolean
+    }
+    input "bank_records" {
+      label "Bank Records"
+      kind file
+      accept ["application/pdf,image/*"]
+    }
+    input "property_docs_retrieved" {
+      label "Property Docs Retrieved"
+      kind boolean
+    }
+    input "travel_records_retrieved" {
+      label "Travel Records Retrieved"
+      kind boolean
+    }
+    input "property_documents" {
+      label "Property Documents"
+      kind file
+      accept ["application/pdf,image/*"]
+    }
+    input "travel_records" {
+      label "Travel Records"
+      kind file
+      accept ["application/pdf,image/*"]
+    }
+    input "additional_evidence" {
+      label "Additional Evidence"
+      kind file
+      accept ["application/pdf,image/*"]
+    }
+    input "evidence_notes" {
+      label "Evidence Notes"
+      kind textarea
+      required true
+      placeholder "Notes on evidence collected"
+    }
+  }
+  form "verification_cross_ref_form" {
+    title "verification_cross_ref_form"
+    input "nid_cross_check_complete" {
+      label "NID Cross-Check Complete"
+      kind boolean
+    }
+    input "income_tax_match" {
+      label "Income Tax Match"
+      kind select
+      required true
+      options ["match", "mismatch", "unavailable"]
+      placeholder "Select income tax match status"
+    }
+    input "asset_declaration_verified" {
+      label "Asset Declaration Verified"
+      kind select
+      required true
+      options ["consistent", "discrepancies", "missing"]
+      placeholder "Select asset declaration status"
+    }
+    input "verification_summary" {
+      label "Verification Summary"
+      kind textarea
+      required true
+      placeholder "Summary of verification findings"
+    }
+    input "verification_report" {
+      label "Verification Report"
+      kind file
+      required true
+      accept ["application/pdf"]
+    }
+  }
+  form "committee_report_form" {
+    title "committee_report_form"
+    input "findings_draft" {
+      label "Findings Draft"
+      kind textarea
+      required true
+      placeholder "Draft findings of the investigation"
+    }
+    input "findings_document" {
+      label "Findings Document"
+      kind file
+      required true
+      accept ["application/pdf"]
+    }
+    input "legal_review_complete" {
+      label "Legal Review Complete"
+      kind boolean
+    }
+    input "legal_review_notes" {
+      label "Legal Review Notes"
+      kind textarea
+      placeholder "Notes from legal review"
+    }
+    input "committee_decision" {
+      label "Committee Decision"
+      kind select
+      required true
+      options ["proceed_legal", "insufficient_evidence", "more_investigation"]
+      placeholder "Select committee decision"
+    }
+    input "signoff_date" {
+      label "Sign-off Date"
+      kind date
+      placeholder "Select sign-off date"
+    }
+  }
+  form "legal_action_form" {
+    title "legal_action_form"
+    input "action_type" {
+      label "Action Type"
+      kind select
+      required true
+      options ["ciaa_prosecution", "asset_freezing", "court_referral", "all"]
+      placeholder "Select action type"
+    }
+    input "prosecution_filed" {
+      label "Prosecution Filed"
+      kind boolean
+    }
+    input "prosecution_reference" {
+      label "Prosecution Reference"
+      kind text
+      placeholder "Prosecution reference number"
+    }
+    input "assets_frozen" {
+      label "Assets Frozen"
+      kind boolean
+    }
+    input "frozen_asset_details" {
+      label "Frozen Asset Details"
+      kind textarea
+      placeholder "Details of frozen assets"
+    }
+    input "court_referred" {
+      label "Court Referred"
+      kind boolean
+    }
+    input "court_case_number" {
+      label "Court Case Number"
+      kind text
+      placeholder "Court case number"
+    }
+    input "legal_documents" {
+      label "Legal Documents"
+      kind file
+      required true
+      accept ["application/pdf"]
+    }
+    input "legal_notes" {
+      label "Legal Notes"
+      kind textarea
+      required true
+      placeholder "Additional legal notes"
+    }
+  }
+  form "anti_corruption_rfi_response" {
+    title "anti_corruption_rfi_response"
+    input "response_clarification" {
+      label "Response / Clarification"
+      kind textarea
+      required true
+      placeholder "Provide your response or clarification"
+    }
+    input "supporting_documents" {
+      label "Supporting Documents"
+      kind file
+      accept ["application/pdf,image/*"]
+    }
+  }
+  allow_rfi true
+  stage "recorded" {
+    title "Transaction Recording"
+    kind submission
+    roles ["registry_analyst", "registry_supervisor"]
+    sla {
+      duration "60m"
+      on_breach "notify"
+    }
+    page {
+      title "Transaction Recording"
+      layout wizard
+      group "transaction_block" {
+        title "transaction_block"
+        forms ["transaction_record_form"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "flag_raised" {
+    title "Red Flag Analysis"
+    kind review
+    roles ["risk_analyst", "risk_supervisor"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+    }
+    page {
+      title "Red Flag Analysis"
+      layout wizard
+      group "transaction_block" {
+        title "transaction_block"
+        forms ["transaction_record_form"]
+      }
+      group "red_flag_block" {
+        title "red_flag_block"
+        forms ["red_flag_analysis_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["transaction_record_form", "red_flag_analysis_form"]
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "recorded"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "investigation_started" {
+    title "Evidence Collection"
+    kind review
+    roles ["investigation_officer", "investigation_head", "ciaa_focal"]
+    sla {
+      duration "14400m"
+      on_breach "notify"
+      pickup_timeout "240m"
+      on_pickup_timeout "notify"
+    }
+    page {
+      title "Evidence Collection"
+      layout wizard
+      group "transaction_block" {
+        title "transaction_block"
+        forms ["transaction_record_form"]
+      }
+      group "red_flag_block" {
+        title "red_flag_block"
+        forms ["red_flag_analysis_form"]
+      }
+      group "evidence_block" {
+        title "evidence_block"
+        forms ["evidence_collection_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["transaction_record_form", "red_flag_analysis_form", "evidence_collection_form"]
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "flag_raised"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "verification_complete" {
+    title "Verification & Cross-Reference"
+    kind review
+    roles ["verification_officer", "investigation_head"]
+    sla {
+      duration "7200m"
+      on_breach "notify"
+    }
+    page {
+      title "Verification & Cross-Reference"
+      layout wizard
+      group "transaction_block" {
+        title "transaction_block"
+        forms ["transaction_record_form"]
+      }
+      group "evidence_block" {
+        title "evidence_block"
+        forms ["evidence_collection_form"]
+      }
+      group "verification_block" {
+        title "verification_block"
+        forms ["verification_cross_ref_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["transaction_record_form", "evidence_collection_form", "verification_cross_ref_form"]
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "investigation_started"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "report_drafted" {
+    title "Committee Report"
+    kind approval
+    roles ["committee_member", "ciaa_focal", "ministry_focal"]
+    sla {
+      duration "10080m"
+      on_breach "notify"
+    }
+    page {
+      title "Committee Report"
+      layout wizard
+      group "transaction_block" {
+        title "transaction_block"
+        forms ["transaction_record_form"]
+      }
+      group "red_flag_block" {
+        title "red_flag_block"
+        forms ["red_flag_analysis_form"]
+      }
+      group "evidence_block" {
+        title "evidence_block"
+        forms ["evidence_collection_form"]
+      }
+      group "verification_block" {
+        title "verification_block"
+        forms ["verification_cross_ref_form"]
+      }
+      group "committee_block" {
+        title "committee_block"
+        forms ["committee_report_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 2
+      distinct_from ["applicant"]
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "verification_complete"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "legal_review" {
+    title "Legal Action"
+    kind approval
+    roles ["legal_officer", "ciaa_focal", "ciaa_commissioner"]
+    sla {
+      duration "43200m"
+      on_breach "notify"
+    }
+    page {
+      title "Legal Action"
+      layout wizard
+      group "committee_block" {
+        title "committee_block"
+        forms ["committee_report_form"]
+      }
+      group "legal_action_block" {
+        title "legal_action_block"
+        forms ["legal_action_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "report_drafted"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

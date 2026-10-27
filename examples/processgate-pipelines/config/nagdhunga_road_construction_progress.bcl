@@ -1,0 +1,345 @@
+pipeline "nagdhunga_road_construction_progress" {
+  title "Nagdhunga Road Construction Progress"
+  description "Track daily construction progress, inspections, blockers, contractor response, milestone verification, and payment readiness for the Nagdhunga road corridor."
+  form "nagdhunga_road_construction_progress_activity_form" {
+    title "nagdhunga-road-construction-progress_activity_form"
+    input "activity_date" {
+      label "Activity Date"
+      kind date
+      required true
+    }
+    input "activity_type" {
+      label "Activity Type"
+      kind select
+      required true
+      options ["daily_log", "inspection", "meeting", "milestone", "follow_up"]
+    }
+    input "progress_percent" {
+      label "Progress Percent"
+      kind number
+    }
+    input "location" {
+      label "Location / GPS"
+      kind text
+    }
+    input "activity_summary" {
+      label "Activity Summary"
+      kind textarea
+      required true
+    }
+    input "evidence_file" {
+      label "Evidence File"
+      kind file
+    }
+    input "next_due_date" {
+      label "Next Due Date"
+      kind date
+    }
+  }
+  form "nagdhunga_road_construction_progress_approval_form" {
+    title "nagdhunga-road-construction-progress_approval_form"
+    input "decision" {
+      label "Decision"
+      kind select
+      required true
+      options ["approved", "rejected", "clarification"]
+    }
+    input "approved_amount" {
+      label "Approved Amount"
+      kind number
+    }
+    input "decision_date" {
+      label "Decision Date"
+      kind date
+      required true
+    }
+    input "decision_notes" {
+      label "Decision Notes"
+      kind textarea
+    }
+    input "signed_decision" {
+      label "Signed Decision"
+      kind file
+    }
+  }
+  form "nagdhunga_road_construction_progress_intake_form" {
+    title "nagdhunga-road-construction-progress_intake_form"
+    input "subject" {
+      label "Case Title"
+      kind text
+      required true
+    }
+    input "applicant_name" {
+      label "Applicant / Office Name"
+      kind text
+      required true
+    }
+    input "province" {
+      label "Province"
+      kind select
+      options ["koshi", "madhesh", "bagmati", "gandaki", "lumbini", "karnali", "sudurpashchim"]
+    }
+    input "district" {
+      label "District"
+      kind text
+      required true
+    }
+    input "municipality" {
+      label "Municipality / Office"
+      kind text
+    }
+    input "ward" {
+      label "Ward / Unit"
+      kind text
+    }
+    input "priority" {
+      label "Priority"
+      kind select
+      required true
+      options ["normal", "high", "urgent"]
+    }
+    input "description" {
+      label "Request Description"
+      kind textarea
+      required true
+    }
+    input "supporting_document" {
+      label "Supporting Document"
+      kind file
+    }
+    input "chainage" {
+      label "Chainage"
+      kind text
+    }
+    input "lab_report" {
+      label "Lab_report"
+      kind text
+    }
+    input "equipment_log" {
+      label "Equipment_log"
+      kind text
+    }
+    input "payment_certificate" {
+      label "Payment_certificate"
+      kind text
+    }
+  }
+  form "nagdhunga_road_construction_progress_review_form" {
+    title "nagdhunga-road-construction-progress_review_form"
+    input "documents_complete" {
+      label "Documents Complete"
+      kind boolean
+      required true
+    }
+    input "field_verification_required" {
+      label "Field Verification Required"
+      kind boolean
+    }
+    input "risk_level" {
+      label "Risk Level"
+      kind select
+      required true
+      options ["low", "medium", "high"]
+    }
+    input "review_notes" {
+      label "Review Notes"
+      kind textarea
+    }
+    input "review_evidence" {
+      label "Review Evidence"
+      kind file
+    }
+  }
+  form "nagdhunga_road_construction_progress_rfi_form" {
+    title "nagdhunga-road-construction-progress_rfi_form"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "clarification_file" {
+      label "Clarification Attachment"
+      kind file
+    }
+  }
+  allow_rfi true
+  stage "submitted" {
+    title "Submitted / Intake"
+    kind submission
+    public true
+    require_account true
+    roles ["nagdhunga_road_construction_progress_applicant", "nagdhunga_road_construction_progress_field_submitter"]
+    sla {
+      duration "480m"
+      on_breach "notify"
+      escalate "manager" {
+        after "120m"
+        notify ["manager"]
+      }
+    }
+    page {
+      title "Submitted / Intake"
+      layout wizard
+      group "submitted_group" {
+        title "submitted_group"
+        forms ["nagdhunga_road_construction_progress_intake_form"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "activity_update" {
+    title "Daily Activity and Multi-Date Update"
+    kind processing
+    multi_date true
+    roles ["nagdhunga_road_construction_progress_field_submitter", "nagdhunga_road_construction_progress_technical_officer", "nagdhunga_road_construction_progress_monitoring_officer"]
+    claimable true
+    assign_roles ["nagdhunga_road_construction_progress_field_submitter", "nagdhunga_road_construction_progress_technical_officer", "nagdhunga_road_construction_progress_monitoring_officer"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+      pickup_timeout "480m"
+      on_pickup_timeout "notify"
+      escalate "manager" {
+        after "360m"
+        notify ["manager"]
+      }
+    }
+    page {
+      title "Daily Activity and Multi-Date Update"
+      layout wizard
+      group "activity_update_group" {
+        title "activity_update_group"
+        forms ["nagdhunga_road_construction_progress_activity_form"]
+      }
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "submitted"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "verification" {
+    title "Technical Verification"
+    kind review
+    roles ["nagdhunga_road_construction_progress_technical_officer", "nagdhunga_road_construction_progress_monitoring_officer"]
+    claimable true
+    assign_roles ["nagdhunga_road_construction_progress_technical_officer", "nagdhunga_road_construction_progress_monitoring_officer"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+      pickup_timeout "480m"
+      on_pickup_timeout "notify"
+      escalate "manager" {
+        after "720m"
+        notify ["manager"]
+      }
+    }
+    page {
+      title "Technical Verification"
+      layout wizard
+      group "verification_group" {
+        title "verification_group"
+        forms ["nagdhunga_road_construction_progress_review_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["nagdhunga_road_construction_progress_review_form"]
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "activity_update"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "approval" {
+    title "Decision and Approval"
+    kind approval
+    roles ["nagdhunga_road_construction_progress_approval_officer", "nagdhunga_road_construction_progress_admin"]
+    claimable true
+    assign_roles ["nagdhunga_road_construction_progress_approval_officer", "nagdhunga_road_construction_progress_admin"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+      pickup_timeout "480m"
+      on_pickup_timeout "notify"
+      escalate "manager" {
+        after "720m"
+        notify ["manager"]
+      }
+    }
+    page {
+      title "Decision and Approval"
+      layout wizard
+      group "approval_group" {
+        title "approval_group"
+        forms ["nagdhunga_road_construction_progress_approval_form"]
+      }
+    }
+    node "approval" {
+      title "Approve stage"
+      kind approval
+      approvals 1
+      distinct_from ["applicant"]
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "verification"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "closed" {
+    title "Closure and Reporting"
+    kind processing
+    roles ["nagdhunga_road_construction_progress_monitoring_officer", "nagdhunga_road_construction_progress_admin"]
+    claimable true
+    assign_roles ["nagdhunga_road_construction_progress_monitoring_officer", "nagdhunga_road_construction_progress_admin"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+      pickup_timeout "480m"
+      on_pickup_timeout "notify"
+      escalate "manager" {
+        after "360m"
+        notify ["manager"]
+      }
+    }
+    page {
+      title "Closure and Reporting"
+      layout wizard
+      group "closed_group" {
+        title "closed_group"
+        forms ["nagdhunga_road_construction_progress_approval_form"]
+      }
+    }
+    action "rollback" {
+      label "Return to previous stage"
+      outcome return
+      return_to "approval"
+      comment_required true
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}

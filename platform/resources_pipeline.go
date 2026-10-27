@@ -46,6 +46,7 @@ type PipelineCases struct {
 	engines     map[string]*pipeline.Engine
 	order       []string
 	org         *OrgHierarchy
+	lookups     *LookupSources
 	// rolesClaim names the principal claim listing workspace roles as
 	// "unit:role" entries; a role counts for every case at or below its unit.
 	rolesClaim     string
@@ -89,6 +90,7 @@ func registerPipelineResources(r *Registry) {
 			{Name: "signing_secret", Type: "string", Summary: "HMAC key that signs issued certificates and external links (use env.required(...)); without it certificates carry a content hash only"},
 			{Name: "signer", Type: "resource", Summary: "crypto.signer that also signs certificates asymmetrically (Ed25519/RSA), verifiable offline against its JWKS"},
 			{Name: "seal_secret", Type: "string", Summary: "Key that encrypts sealed inputs (AES-256-GCM); required when a pipeline declares sealed inputs"},
+			{Name: "lookup_resource", Type: "string", Summary: "lookup.sources resource: serves `lookup` inputs from static lists, SQL queries or HTTP APIs; sets it does not define fall back to org_resource"},
 			{Name: "org_resource", Type: "string", Summary: "org.hierarchy resource: resolves `lookup` inputs and scopes work queues to the caller's jurisdiction"},
 			{Name: "allow_anonymous", Type: "bool", Default: "false", Summary: "Let anonymous callers start public pipelines; they get an access key to return to their case"},
 			{Name: "event_max_attempts", Type: "int", Default: "10", Summary: "Attempts before an event hook is dead-lettered"},
@@ -105,7 +107,7 @@ func registerPipelineResources(r *Registry) {
 
 func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("pipeline.cases", spec.Config,
-		"pipelines", "database", "table_prefix", "migrate", "signing_secret", "signer", "seal_secret", "org_resource", "allow_anonymous",
+		"pipelines", "database", "table_prefix", "migrate", "signing_secret", "signer", "seal_secret", "org_resource", "lookup_resource", "allow_anonymous",
 		"event_max_attempts", "event_retry_base", "notify_channels", "storage", "storage_prefix", "max_upload_bytes", "confirm_ttl", "workspace_roles_claim",
 		pipelineDefinitionsKey, scriptIDsKey); err != nil {
 		return nil, nil, err
@@ -146,6 +148,13 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 			return nil, nil, fmt.Errorf("pipeline.cases %q: org_resource %q is not an org.hierarchy resource", spec.Name, orgName)
 		}
 		p.org = org
+	}
+	if lookupName := configString(spec.Config, "lookup_resource", ""); lookupName != "" {
+		src, ok := spec.resolved[lookupName].(*LookupSources)
+		if !ok {
+			return nil, nil, fmt.Errorf("pipeline.cases %q: lookup_resource %q is not a lookup.sources resource", spec.Name, lookupName)
+		}
+		p.lookups = src
 	}
 	if storeName := configString(spec.Config, "storage", ""); storeName != "" {
 		files, ok := spec.resolved[storeName].(spi.ObjectStore)
@@ -213,9 +222,11 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 				return nil, nil, fmt.Errorf("pipeline.cases %q: pipeline %q: form %q is repeatable and has file input %q; uploads need a non-repeatable form", spec.Name, name, form, input)
 			}
 		}
-		if p.org != nil {
+		if p.org != nil || p.lookups != nil {
 			engine.Lookup = p.lookup
 			engine.LookupFor = p.lookupFor
+		}
+		if p.org != nil {
 			name := name
 			engine.Overrides = func(c *pipeline.Case) *pipeline.Overrides { return p.workspaceOverrides(name, c) }
 			engine.OrgCovers = p.orgCovers
@@ -416,8 +427,15 @@ func (p *PipelineCases) Store() pipeline.Store { return p.store }
 // Pipelines lists the pipelines this resource runs.
 func (p *PipelineCases) Pipelines() []string { return slices.Clone(p.order) }
 
-// lookup resolves an input's lookup set against the case's org unit.
+// lookup resolves an input's lookup set: from the lookup.sources resource when
+// it defines the set, else against the case's org unit.
 func (p *PipelineCases) lookup(set string, c *pipeline.Case) []pipeline.Option {
+	if opts, ok := p.sourceLookup(set, nil); ok {
+		return opts
+	}
+	if p.org == nil {
+		return nil
+	}
 	snap := p.org.Snapshot(c.TenantID)
 	items := snap.Lookups.Resolve(snap.Tree, hierarchy.LookupQuery{Set: set, NodeID: c.OrgUnit})
 	out := make([]pipeline.Option, len(items))
@@ -425,6 +443,19 @@ func (p *PipelineCases) lookup(set string, c *pipeline.Case) []pipeline.Option {
 		out[i] = pipeline.Option{Value: it.Code, Label: orDefaultString(it.Label, it.Code)}
 	}
 	return out
+}
+
+// sourceLookup asks the lookup.sources resource, if it defines the set.
+func (p *PipelineCases) sourceLookup(set string, deps map[string]any) ([]pipeline.Option, bool) {
+	if p.lookups == nil || !p.lookups.Has(set) {
+		return nil, false
+	}
+	opts, err := p.lookups.Resolve(context.Background(), set, deps)
+	if err != nil {
+		slog.Warn("lookup failed", "resource", p.name, "set", set, "error", err)
+		return nil, true
+	}
+	return opts, true
 }
 
 // actorAt is the caller as a case at orgUnit sees it: the principal's own
@@ -479,6 +510,12 @@ func (p *PipelineCases) actorAnywhere(principal Principal) pipeline.Actor {
 // attribute may also list several accepted values). An entry without the
 // attribute is excluded: a dependent choice must say what it depends on.
 func (p *PipelineCases) lookupFor(set string, c *pipeline.Case, deps map[string]any) []pipeline.Option {
+	if opts, ok := p.sourceLookup(set, deps); ok {
+		return opts
+	}
+	if p.org == nil {
+		return nil
+	}
 	snap := p.org.Snapshot(c.TenantID)
 	items := snap.Lookups.Resolve(snap.Tree, hierarchy.LookupQuery{Set: set, NodeID: c.OrgUnit})
 	out := make([]pipeline.Option, 0, len(items))

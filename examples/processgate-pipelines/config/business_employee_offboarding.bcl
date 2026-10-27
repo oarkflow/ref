@@ -1,0 +1,348 @@
+pipeline "business_employee_offboarding" {
+  title "Employee Offboarding"
+  description "Employee offboarding process including exit interview, clearance, and documentation"
+  form "employee_info" {
+    title "Employee Information"
+    input "employee_name" {
+      label "Employee Name"
+      kind text
+      required true
+    }
+    input "employee_id" {
+      label "Employee ID"
+      kind text
+      required true
+    }
+    input "department" {
+      label "Department"
+      kind text
+      required true
+    }
+    input "position" {
+      label "Position"
+      kind text
+      required true
+    }
+    input "join_date" {
+      label "Join Date"
+      kind date
+      required true
+    }
+    input "last_working_day" {
+      label "Last Working Day"
+      kind date
+      required true
+    }
+    input "termination_type" {
+      label "Termination Type"
+      kind select
+      required true
+      options ["resignation", "retirement", "termination", "contract_end"]
+    }
+    input "reason" {
+      label "Reason"
+      kind textarea
+    }
+  }
+  form "clearance_form" {
+    title "Clearance Form"
+    input "assets_returned" {
+      label "Assets Returned"
+      kind boolean
+      required true
+    }
+    input "assets_list" {
+      label "Assets List"
+      kind textarea
+    }
+    input "documents_signed" {
+      label "Documents Signed"
+      kind boolean
+      required true
+    }
+    input "handover_complete" {
+      label "Handover Complete"
+      kind boolean
+      required true
+    }
+    input "clearance_notes" {
+      label "Clearance Notes"
+      kind textarea
+    }
+  }
+  form "it_clearance_form" {
+    title "IT Clearance"
+    input "email_revoked" {
+      label "Email Revoked"
+      kind boolean
+      required true
+    }
+    input "system_access_removed" {
+      label "System Access Removed"
+      kind boolean
+      required true
+    }
+    input "laptop_returned" {
+      label "Laptop Returned"
+      kind boolean
+      required true
+    }
+    input "data_transferred" {
+      label "Data Transferred"
+      kind boolean
+      required true
+    }
+    input "it_notes" {
+      label "IT Notes"
+      kind textarea
+    }
+  }
+  form "finance_clearance_form" {
+    title "Finance Clearance"
+    input "salary_cleared" {
+      label "Salary Cleared"
+      kind boolean
+      required true
+    }
+    input "leaves_encashed" {
+      label "Leaves Encashed"
+      kind boolean
+      required true
+    }
+    input "expenses_settled" {
+      label "Expenses Settled"
+      kind boolean
+      required true
+    }
+    input "provident_fund" {
+      label "Provident Fund Processed"
+      kind boolean
+      required true
+    }
+    input "finance_notes" {
+      label "Finance Notes"
+      kind textarea
+    }
+  }
+  form "exit_interview_form" {
+    title "Exit Interview"
+    input "interview_date" {
+      label "Interview Date"
+      kind date
+      required true
+    }
+    input "interviewer" {
+      label "Interviewer"
+      kind text
+      required true
+    }
+    input "feedback" {
+      label "Feedback"
+      kind textarea
+      required true
+    }
+    input "suggestions" {
+      label "Suggestions"
+      kind textarea
+    }
+    input "would_recommend" {
+      label "Would Recommend Company"
+      kind select
+      required true
+      options ["yes", "no", "maybe"]
+    }
+  }
+  form "completion_form" {
+    title "Completion"
+    input "offboarding_complete" {
+      label "Offboarding Complete"
+      kind boolean
+      required true
+    }
+    input "completion_date" {
+      label "Completion Date"
+      kind date
+      required true
+    }
+    input "completion_notes" {
+      label "Completion Notes"
+      kind textarea
+    }
+  }
+  form "offboarding_rfi_response" {
+    title "Response to Information Request"
+    input "clarification_note" {
+      label "Clarification Note"
+      kind textarea
+      required true
+    }
+    input "additional_documents" {
+      label "Additional Documents"
+      kind file
+      accept ["image/*,application/pdf"]
+    }
+  }
+  allow_rfi true
+  notify "case.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.completed"
+    body "Case {case.number} has event case.completed"
+  }
+  notify "case.started" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: case.started"
+    body "Case {case.number} has event case.started"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+  }
+  notify "stage.completed" {
+    to ["applicant", "assignee"]
+    channels ["in_app"]
+    subject "ProcessGate case {case.number}: stage.completed"
+    body "Case {case.number} has event stage.completed"
+    stage "exit_interview"
+  }
+  stage "initiation" {
+    title "Initiation"
+    kind submission
+    roles ["hr_manager"]
+    page {
+      title "Initiation"
+      layout wizard
+      group "initiation_block" {
+        title "initiation_block"
+        forms ["employee_info"]
+      }
+    }
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+  stage "clearance_process" {
+    title "Clearance Process"
+    kind review
+    roles ["department_head"]
+    sla {
+      duration "4320m"
+      on_breach "notify"
+    }
+    page {
+      title "Clearance Process"
+      layout wizard
+      group "clearance_block" {
+        title "clearance_block"
+        forms ["clearance_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["clearance_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "it_clearance" {
+    title "IT Clearance"
+    kind review
+    roles ["it_team"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "IT Clearance"
+      layout wizard
+      group "it_block" {
+        title "it_block"
+        forms ["it_clearance_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["it_clearance_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "finance_clearance" {
+    title "Finance Clearance"
+    kind review
+    roles ["finance_team"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Finance Clearance"
+      layout wizard
+      group "finance_block" {
+        title "finance_block"
+        forms ["finance_clearance_form"]
+      }
+    }
+    node "verification" {
+      title "Verify submitted forms"
+      kind review
+      forms ["finance_clearance_form"]
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "exit_interview" {
+    title "Exit Interview"
+    kind processing
+    roles ["hr_manager"]
+    sla {
+      duration "2880m"
+      on_breach "notify"
+    }
+    page {
+      title "Exit Interview"
+      layout wizard
+      group "interview_block" {
+        title "interview_block"
+        forms ["exit_interview_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+  stage "completion" {
+    title "Completion"
+    kind processing
+    roles ["admin"]
+    sla {
+      duration "1440m"
+      on_breach "notify"
+    }
+    page {
+      title "Completion"
+      layout wizard
+      group "completion_block" {
+        title "completion_block"
+        forms ["completion_form"]
+      }
+    }
+    action "complete" {
+      label "Complete stage"
+      outcome advance
+    }
+  }
+}
