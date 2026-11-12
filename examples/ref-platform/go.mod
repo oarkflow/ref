@@ -3,8 +3,8 @@ module github.com/oarkflow/fh/examples/ref-platform-todo
 go 1.27.3
 
 require (
-	github.com/jackc/pgx/v5 v5.11.0
-	github.com/oarkflow/fh v0.0.27
+	github.com/jackc/pgx/v5 v5.13.0
+	github.com/oarkflow/fh v0.0.31
 	github.com/oarkflow/ref v0.0.0
 )
 
@@ -23,11 +23,11 @@ require (
 	github.com/oarkflow/wuid v0.0.1 // indirect
 	github.com/redis/go-redis/v9 v9.23.0 // indirect
 	go.uber.org/atomic v1.12.0 // indirect
-	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/net v0.61.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/crypto v0.59.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 )
 
 replace github.com/oarkflow/ref => ../../

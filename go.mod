@@ -5,11 +5,11 @@ go 1.27.3
 require (
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/go-sql-driver/mysql v1.10.1
-	github.com/jackc/pgx/v5 v5.11.0
+	github.com/jackc/pgx/v5 v5.13.0
 	github.com/oarkflow/authz v0.0.6
 	github.com/oarkflow/bcl v0.0.37
 	github.com/oarkflow/config v0.0.1
-	github.com/oarkflow/fh v0.0.27
+	github.com/oarkflow/fh v0.0.31
 	github.com/oarkflow/interpreter v0.0.15
 	github.com/oarkflow/migrate v0.0.30
 	github.com/oarkflow/rules v0.0.5
@@ -22,11 +22,11 @@ require (
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/sdk v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
-	golang.org/x/crypto v0.58.0
-	golang.org/x/net v0.61.0
-	golang.org/x/sys v0.49.0
-	golang.org/x/text v0.43.0
-	modernc.org/sqlite v1.61.0
+	golang.org/x/crypto v0.59.0
+	golang.org/x/net v0.62.0
+	golang.org/x/sys v0.50.0
+	golang.org/x/text v0.44.0
+	modernc.org/sqlite v1.62.0
 )
 
 require (
@@ -54,26 +54,27 @@ require (
 	github.com/oarkflow/ip v0.0.11 // indirect
 	github.com/oarkflow/jet v0.0.4 // indirect
 	github.com/oarkflow/json v0.0.28 // indirect
-	github.com/oarkflow/squealx v0.0.81 // indirect
-	github.com/oarkflow/squealx/drivers/mysql v0.0.81 // indirect
-	github.com/oarkflow/squealx/drivers/postgres v0.0.81 // indirect
-	github.com/oarkflow/squealx/drivers/sqlite v0.0.81 // indirect
+	github.com/oarkflow/squealx v0.0.82 // indirect
+	github.com/oarkflow/squealx/drivers/mysql v0.0.82 // indirect
+	github.com/oarkflow/squealx/drivers/postgres v0.0.82 // indirect
+	github.com/oarkflow/squealx/drivers/sqlite v0.0.82 // indirect
 	github.com/oarkflow/wuid v0.0.1 // indirect
+	github.com/pandatix/go-abnf v0.5.5 // indirect
 	github.com/prometheus/client_model v0.6.3 // indirect
-	github.com/prometheus/common v0.72.1 // indirect
-	github.com/prometheus/procfs v0.22.0 // indirect
+	github.com/prometheus/common v0.74.0 // indirect
+	github.com/prometheus/procfs v0.23.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
 	github.com/urfave/cli/v3 v3.14.0 // indirect
-	github.com/xo/terminfo v1.2.0 // indirect
+	github.com/xo/terminfo v1.3.1 // indirect
 	github.com/yuin/gopher-lua v1.1.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
 	go.opentelemetry.io/otel/metric v1.47.0 // indirect
 	go.uber.org/atomic v1.12.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
-	modernc.org/libc v1.79.0 // indirect
+	modernc.org/libc v1.81.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
