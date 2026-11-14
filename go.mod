@@ -6,7 +6,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/jackc/pgx/v5 v5.13.0
-	github.com/oarkflow/authz v0.0.6
+	github.com/oarkflow/authz v0.0.7
 	github.com/oarkflow/bcl v0.0.37
 	github.com/oarkflow/config v0.0.1
 	github.com/oarkflow/fh v0.0.31
