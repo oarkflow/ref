@@ -1,6 +1,6 @@
 module github.com/oarkflow/ref
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/alicebob/miniredis/v2 v2.40.0
@@ -9,7 +9,7 @@ require (
 	github.com/oarkflow/authz v0.0.7
 	github.com/oarkflow/bcl v0.0.37
 	github.com/oarkflow/config v0.0.1
-	github.com/oarkflow/fh v0.0.31
+	github.com/oarkflow/fh v0.0.32
 	github.com/oarkflow/interpreter v0.0.15
 	github.com/oarkflow/migrate v0.0.30
 	github.com/oarkflow/rules v0.0.5
