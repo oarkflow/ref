@@ -52,7 +52,7 @@ type Engine struct {
 	Workload func(ctx context.Context, pipeline string) (map[string]Load, error)
 	// OrgCovers reports whether a worker assigned to units covers unit (for
 	// routing same_org_unit); default: exact membership.
-	OrgCovers func(units []string, unit string) bool
+	OrgCovers func(tenant string, units []string, unit string) bool
 	// SealKey encrypts sealed inputs (AES-256-GCM). Required when the
 	// pipeline declares sealed inputs.
 	SealKey []byte
@@ -85,18 +85,28 @@ func (e *Engine) lookupOptions(c *Case, form string, in Input) []Option {
 	if in.Lookup == "" {
 		return nil
 	}
-	if len(in.DependsOn) > 0 && e.LookupFor != nil {
-		deps := make(map[string]any, len(in.DependsOn))
+	if (len(in.DependsOn) > 0 || len(in.LookupWhere) > 0) && e.LookupFor != nil {
+		deps := make(map[string]any, len(in.DependsOn)+len(in.LookupWhere))
 		for _, d := range in.DependsOn {
 			v, _ := c.Get(depPath(form, d))
 			deps[d] = v
 		}
+		addLookupWhere(deps, in)
 		return e.LookupFor(in.Lookup, c, deps)
 	}
 	if e.Lookup != nil {
 		return e.Lookup(in.Lookup, c)
 	}
 	return nil
+}
+
+// addLookupWhere adds an input's fixed attribute matches to the dependency map.
+func addLookupWhere(deps map[string]any, in Input) {
+	for _, w := range in.LookupWhere {
+		if k, v, ok := strings.Cut(w, "="); ok {
+			deps[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
+	}
 }
 
 // depPath is the case path a depends_on entry names: a bare name is an input
@@ -110,7 +120,7 @@ func depPath(form, dep string) string {
 
 // checkLookup validates a coerced value against the input's lookup set.
 func (e *Engine) checkLookup(c *Case, form string, in Input, v any) (string, string) {
-	if in.Lookup == "" || (e.Lookup == nil && e.LookupFor == nil) || v == nil {
+	if in.Lookup == "" || (e.Lookup == nil && e.LookupFor == nil) || v == nil || in.Taggable {
 		return "", ""
 	}
 	valid := map[string]bool{}
@@ -143,13 +153,18 @@ func (e *Engine) Choices(c *Case, actor Actor, form, input string, deps map[stri
 	if !e.visibleTo(cf, in, e.Env(c, actor), actor) {
 		return nil, forbidden("you may not view input %s.%s", form, input)
 	}
-	if len(in.DependsOn) == 0 || e.LookupFor == nil {
+	query, searching := deps["@q"]
+	if (len(in.DependsOn) == 0 && len(in.LookupWhere) == 0 && !searching) || e.LookupFor == nil {
 		return e.lookupOptions(c, form, in), nil
 	}
-	clean := make(map[string]any, len(in.DependsOn))
+	clean := make(map[string]any, len(in.DependsOn)+len(in.LookupWhere)+1)
+	if searching {
+		clean["@q"] = query // type-ahead text, for the host to narrow a large set by
+	}
 	for _, d := range in.DependsOn {
 		clean[d] = deps[d]
 	}
+	addLookupWhere(clean, in)
 	return e.LookupFor(in.Lookup, c, clean), nil
 }
 
@@ -204,7 +219,7 @@ func (e *Engine) Start(ctx context.Context, actor Actor, opts StartOptions) (*Ca
 		c.Stages[st.Name] = &StageState{Status: StagePending}
 	}
 	if !first.Public && !actor.HasAnyRole(first.Roles) {
-		return nil, forbidden("you may not start a %s", e.C.Def.Name)
+		return nil, notYours("You cannot start "+orDefault(e.C.Def.Title, e.C.Def.Name), *first, actor)
 	}
 	c.History = append(c.History, Entry{At: now, Actor: actor.ID, Action: "start", To: first.Name})
 	c.emit("case.started", first.Name, actor.ID, now, nil)
@@ -213,6 +228,11 @@ func (e *Engine) Start(ctx context.Context, actor Actor, opts StartOptions) (*Ca
 	}
 	if c.Stage == first.Name {
 		c.Status = CaseDraft
+		// Whoever creates the data has started it: they are not asked to press Start again on the
+		// stage they just created it in. (A public applicant has no start to press.)
+		if ss := c.Stages[first.Name]; first.RequireStart && e.startPolicy(first).OnCreate == "auto" && !first.Public && actor.ID != "" && ss != nil && ss.StartedAt == nil && e.CanAct(c, first, actor) {
+			e.markStarted(c, first, ss, actor, now)
+		}
 	}
 	if len(opts.Data) > 0 && c.Stage == first.Name {
 		if _, err := e.saveInto(c, actor, first.Name, opts.Data); err != nil {
@@ -403,7 +423,16 @@ func (e *Engine) enterStage(ctx context.Context, c *Case, name string, actor Act
 		ss.PreviousAssignee = ss.Assignee
 	}
 	ss.Assignee, ss.AssignedAt, ss.Routing, ss.Suspended, ss.SLA, ss.Review = "", nil, nil, nil, nil, nil
+	// Data that was already started in this stage stays started when it comes back; only new data
+	// waits for someone to press Start.
+	startedBefore, startedBy := ss.StartedAt != nil && st.RequireStart && !c.freshEntry && e.startPolicy(st).OnReturn == "keep", ss.StartedBy
 	ss.StartedAt, ss.StartedBy = nil, ""
+	if startedBefore {
+		ss.StartedAt, ss.StartedBy = &now, startedBy
+		if v := c.openVisit(name); v != nil {
+			v.StartedAt, v.StartedBy = &now, startedBy
+		}
+	}
 	ss.EntryData = cloneData(c.Data) // what a reset restores
 	e.startSLA(eff, ss, now)
 	if v := c.openVisit(name); v != nil && ss.SLA != nil {
@@ -428,6 +457,9 @@ func (e *Engine) enterStage(ctx context.Context, c *Case, name string, actor Act
 		if err := e.route(ctx, c, st, ss, routeRoles, nil, reason); err != nil {
 			return err
 		}
+	}
+	if c.freshEntry {
+		ss.Nodes = nil // nothing from the earlier visit is kept: every check and verdict is made again
 	}
 	e.initNodes(c, st, ss, env)
 	if err := e.runAutomated(ctx, c, st, ss); err != nil {
@@ -742,7 +774,8 @@ func (e *Engine) editable(c *Case, st *Stage, ss *StageState, actor Actor) map[s
 	correcting := ss.Status == StageReturned && len(ss.Flags) > 0
 	env := e.Env(c, actor)
 	for _, g := range st.Page.Groups {
-		if g.Mode != "" && g.Mode != ModeEditable {
+		// A read-only group still lets a stage rule switch single fields on.
+		if g.Mode != "" && g.Mode != ModeEditable && !(g.Mode == ModeReadonly && g.enablesFields()) {
 			continue
 		}
 		if len(g.Roles) > 0 && !actor.HasAnyRole(g.Roles) && !(st.Public && isApplicant(c, actor)) {
@@ -760,6 +793,9 @@ func (e *Engine) editable(c *Case, st *Stage, ss *StageState, actor Actor) map[s
 					continue
 				}
 				if !e.visibleTo(cf, in, env, actor) || !mayEditInput(actor, &g, cf, in) || e.disabledBy(&g, cf, in, env) {
+					continue
+				}
+				if vis, mode, off := e.fieldAccess(&g, form, in.Name, env, actor); !vis || mode != ModeEditable || off {
 					continue
 				}
 				if correcting {
@@ -842,7 +878,7 @@ func (e *Engine) saveInto(c *Case, actor Actor, stage string, data map[string]an
 		return nil, err
 	}
 	if !e.CanAct(c, st, actor) {
-		return nil, forbidden("you may not edit stage %q", stage)
+		return nil, notYours("You cannot edit this step", *st, actor)
 	}
 	if st.Entries != nil && !c.entryShadow {
 		return nil, badState("stage %q collects entries: add or change an entry instead of the case data", stage)
@@ -1060,7 +1096,7 @@ func (e *Engine) missingRequired(c *Case, st *Stage, ss *StageState, actor Actor
 					if _, editable := inputs[in.Name]; !editable {
 						continue
 					}
-					if e.required(form, in, env) && missingValue(in, entry[in.Name]) {
+					if (e.required(form, in, env) || e.stageRequired(st, form, in.Name, env)) && missingValue(in, entry[in.Name]) {
 						errs = append(errs, FieldError{Path: fmt.Sprintf("%s.%d.%s", form, i, in.Name), Rule: "required", Message: titleOr(in.Label, in.Name) + " is required"})
 					}
 				}
@@ -1072,7 +1108,7 @@ func (e *Engine) missingRequired(c *Case, st *Stage, ss *StageState, actor Actor
 				continue
 			}
 			v, _ := c.Get(form + "." + in.Name)
-			if e.required(form, in, env) && missingValue(in, v) {
+			if (e.required(form, in, env) || e.stageRequired(st, form, in.Name, env)) && missingValue(in, v) {
 				errs = append(errs, FieldError{Path: form + "." + in.Name, Rule: "required", Message: titleOr(in.Label, in.Name) + " is required"})
 			}
 		}
@@ -1255,7 +1291,7 @@ func (e *Engine) beginAct(c *Case, actor Actor, stage string, spec ActionSpec, i
 	action := spec.Name
 	if !system {
 		if actor.Link != nil || !e.mayTakeAction(c, st, ss, spec, actor, e.Env(c, actor)) {
-			return nil, nil, nil, forbidden("you may not %s at stage %q", action, stage)
+			return nil, nil, nil, notYours("You cannot "+orDefault(spec.Label, action), *st, actor)
 		}
 		if spec.Outcome != OutcomeWithdraw || !isApplicant(c, actor) {
 			if err := e.guardClaim(c, st, ss, actor); err != nil {
@@ -1344,8 +1380,16 @@ func (e *Engine) returnTo(c *Case, st *Stage, ss *StageState, target string, act
 	ts.ReturnedFrom = st.Name
 	ts.Visits++
 	ts.EnteredAt = &now
-	ts.StartedAt, ts.StartedBy = nil, ""
-	c.Timeline = append(c.Timeline, Visit{Stage: target, EnteredAt: now})
+	visit := Visit{Stage: target, EnteredAt: now}
+	if tst, _ := e.C.Stage(target); tst != nil && tst.RequireStart && ts.StartedAt != nil && e.startPolicy(tst).OnReturn == "keep" {
+		// Returned for correction: it was started already, so the person fixing it just carries on.
+		by := ts.StartedBy
+		ts.StartedAt = &now
+		visit.StartedAt, visit.StartedBy = &now, by
+	} else {
+		ts.StartedAt, ts.StartedBy = nil, ""
+	}
+	c.Timeline = append(c.Timeline, visit)
 	c.Stage = target
 	c.Status = CaseReturned
 	entry := Entry{At: now, Actor: actor.ID, Stage: st.Name, Action: "return", Comment: comment, From: st.Name, To: target}
@@ -1501,7 +1545,7 @@ func (e *Engine) NodeAct(ctx context.Context, in *Case, actor Actor, stage, node
 		ns.Status = NodeWaived
 		markActor()
 	case n.Kind == NodeReview && verb == "verify":
-		paths := e.reviewPaths(c, n)
+		paths := e.reviewPaths(c, st, n)
 		if ns.Verdicts == nil {
 			ns.Verdicts = map[string]Verdict{}
 		}
@@ -1531,7 +1575,7 @@ func (e *Engine) NodeAct(ctx context.Context, in *Case, actor Actor, stage, node
 	case n.Kind == NodeReview && verb == "complete":
 		var missing []FieldError
 		flagged := false
-		for _, path := range e.reviewPaths(c, n) {
+		for _, path := range e.reviewPaths(c, st, n) {
 			v, ok := ns.Verdicts[path]
 			if !ok {
 				missing = append(missing, FieldError{Path: path, Rule: "unreviewed", Message: path + " has not been reviewed"})
@@ -1732,7 +1776,7 @@ func tallyVotes(n *Node, votes []Approval) (string, map[string]any) {
 
 // reviewPaths lists the "form.input" paths a review node must decide on: the
 // visible inputs of its forms that hold a value.
-func (e *Engine) reviewPaths(c *Case, n *Node) []string {
+func (e *Engine) reviewPaths(c *Case, st *Stage, n *Node) []string {
 	env := e.Env(c, Actor{})
 	var paths []string
 	for _, form := range n.Forms {
@@ -1742,7 +1786,7 @@ func (e *Engine) reviewPaths(c *Case, n *Node) []string {
 			if in.Compute != "" {
 				continue // derived, not submitted: nothing to verify
 			}
-			if !e.formShown(cf, env) || !e.inputShown(form, in, env) {
+			if !e.formShown(cf, env) || !e.inputShown(form, in, env) || stageHides(st, form, in.Name) {
 				continue
 			}
 			path := form + "." + in.Name

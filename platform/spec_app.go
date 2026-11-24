@@ -133,6 +133,9 @@ type ResourceSpec struct {
 
 	// FS is the virtual filesystem, if any, backing the platform generation.
 	FS fs.FS
+	// BaseDir is the directory the application was compiled from; files a
+	// resource names (SQL migrations) are relative to it.
+	BaseDir string
 }
 
 // Dependency returns the already-open resource named by the given config key.

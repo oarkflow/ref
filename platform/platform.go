@@ -116,6 +116,8 @@ type Platform struct {
 
 	// FS is the virtual filesystem backing this platform generation, if any.
 	FS fs.FS
+	// baseDir is the directory the application was compiled from.
+	baseDir string
 
 	// scripts are the compiled script blocks, by id.
 	scripts map[string]*Script
@@ -539,6 +541,7 @@ func Compile(ctx context.Context, src []byte, baseDir string, opts LoadOptions) 
 		Engine:            runtime.NewEngine(engineOpts...),
 		registry:          opts.Registry,
 		FS:                opts.FS,
+		baseDir:           baseDir,
 		resources:         make(map[string]Resource, len(doc.Resources)),
 		schemas:           map[string]*CompiledSchema{},
 		secrets:           map[string]string{},
@@ -783,7 +786,7 @@ func (p *Platform) Secret(name string) (string, bool) {
 var resourceDependencyKeys = []string{
 	"database", "cache", "queue", "store", "lock", "rate_limit", "limiter",
 	"authorizer", "mailer", "index", "outbox", "session", "circuit_breaker", "service",
-	"org_resource", "lookup_resource", "signer", "token_issuer", "storage", "overrides", "authenticator", "hub", "calls",
+	"org_resource", "lookup_resource", "directory_resource", "signer", "token_issuer", "storage", "overrides", "authenticator", "hub", "calls",
 }
 
 // openResources opens every resource in dependency order.
@@ -840,6 +843,7 @@ func (p *Platform) openResources(ctx context.Context, doc Document, registry *Re
 		}
 
 		spec.FS = p.FS
+		spec.BaseDir = p.baseDir
 		resource, closer, err := factory.Open(ctx, spec)
 		if err != nil {
 			return fmt.Errorf("ref/platform: open resource %q (%s): %w", spec.Name, spec.Kind, err)

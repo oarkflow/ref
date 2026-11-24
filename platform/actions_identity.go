@@ -63,6 +63,7 @@ func registerIdentityActions(r *Registry) {
 			{Name: "tenant_fact", Type: "fact", Summary: "Target tenant (default: input.tenant_id, then the request's tenant)"},
 			{Name: "user_fact", Type: "fact", Summary: "Target user id (default: path :id or :user_id, then input.user_id)"},
 			{Name: "input_fact", Type: "fact", Default: "input", Summary: "Object carrying email, name, roles, org_unit"},
+			{Name: "org_resource", Type: "resource", Summary: "org.hierarchy resource: with it, an administrator may place people (invite, add or change a membership) only in units inside their own org scope"},
 		},
 	})
 }
@@ -198,8 +199,16 @@ func buildIdentityAdmin(build BuildContext, spec NodeSpec) (Action, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := rejectUnknownConfig("identity.admin", spec.Config, "operation", "tenant_fact", "user_fact", "input_fact"); err != nil {
+	if err := rejectUnknownConfig("identity.admin", spec.Config, "operation", "tenant_fact", "user_fact", "input_fact", "org_resource"); err != nil {
 		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+	}
+	var org *OrgHierarchy
+	if name := configString(spec.Config, "org_resource", ""); name != "" {
+		r, ok := build.Resource(name)
+		org, _ = r.(*OrgHierarchy)
+		if !ok || org == nil {
+			return nil, fmt.Errorf("node %q: org_resource %q is not an org.hierarchy resource", spec.Name, name)
+		}
 	}
 	operation := strings.ToLower(configString(spec.Config, "operation", ""))
 	known := false
@@ -251,6 +260,20 @@ func buildIdentityAdmin(build BuildContext, spec NodeSpec) (Action, error) {
 			operation != "audit" && operation != "add_membership"
 		if needsUser && userID == "" {
 			return ActionResult{}, invalidInput("a user id is required")
+		}
+		if org != nil && (operation == "invite" || operation == "add_membership" || operation == "change_membership") {
+			if unit := strings.TrimSpace(Stringify(input["org_unit"])); unit != "" || operation == "invite" {
+				snap := org.Snapshot(ctx.TenantID)
+				scope := org.ScopeFor(ctx.Principal, snap.Tree)
+				switch {
+				case unit == "" && !scope.Global:
+					return ActionResult{}, invalidInput("choose the workspace this person works in")
+				case unit != "" && !snap.Tree.Has(unit):
+					return ActionResult{}, invalidInput("unknown workspace %q", unit)
+				case unit != "" && !scope.Covers(snap.Tree, unit):
+					return ActionResult{}, outOfScope(unit)
+				}
+			}
 		}
 		var out any
 		switch operation {

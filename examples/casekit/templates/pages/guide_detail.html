@@ -1,9 +1,15 @@
 @extends("layouts/base.html")
 
 @define("content") {
-  <p><a href="/guide">&larr; All workflows</a></p>
-  <h1>${title}</h1>
-  <p class="muted">${description}</p>
+  <div class="pagebar">
+    <div class="titles">
+      <a class="crumb" href="/guide">&larr; Guide</a>
+      <h1>${title}</h1>
+      <div class="sub">${description}</div>
+    </div>
+    <div class="actions"><a class="btn" href="/guide/${name}/fields">Field access by stage</a><a class="btn primary" href="/start/${name}">Start one</a></div>
+  </div>
+  <div class="body"><section class="panel"><div class="ph"><h2>Stages in order</h2></div><div class="pb">
   <ol class="gflow">
     @for(st in stages) {
       <li class="gstage">
@@ -61,4 +67,5 @@
       </li>
     }
   </ol>
+  </div></section></div>
 }

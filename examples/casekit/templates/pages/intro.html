@@ -1,27 +1,41 @@
 @extends("layouts/base.html")
 
 @define("content") {
-  <div class="card stack">
-    <h1>${intro.title}</h1>
-    @if(intro.image != "") {
-      <img class="intro-img" src="${intro.image}" alt="${intro.image_alt}">
-    }
-    @if(intro.content != "") {
-      <iframe class="intro-html" sandbox="" title="About this workflow" srcdoc="<style>body{font:16px/1.5 system-ui,sans-serif;margin:0;color:#1d2330}</style>${intro.content}"></iframe>
-    }
-    @if(length(intro.documents) > 0) {
-      <div>
-        <h3>Read before you start</h3>
-        <ul>
-          @for(d in intro.documents) {
-            <li><a href="${d.url}" target="_blank" rel="noopener">${d.title}</a></li>
+  <div id="ui-conf" hidden data-accent="${ui.accent}" data-density="${ui.density}" data-brand="${ui.brand}" data-ws-level="${workspace.level}" data-ws-label="${workspace.label}" data-ws-required="${workspace.required}"></div>
+  <div class="pagebar">
+    <div class="titles">
+      <a class="crumb" href="/">&larr; All workflows</a>
+      <h1>${intro.title}</h1>
+    </div>
+  </div>
+  <div class="body">
+    <div class="intro">
+      <section class="panel">
+        <div class="ph"><h2>Before you start</h2></div>
+        <div class="pb stack">
+          @if(intro.content != "") {
+            <iframe class="intro-html" sandbox="allow-same-origin" title="About this workflow" srcdoc="<style>:root{color-scheme:light dark}body{font:15px/1.55 system-ui,sans-serif;margin:0;color:CanvasText;background:transparent}a{color:LinkText}</style>${intro.content}"></iframe>
           }
-        </ul>
-      </div>
-    }
-    <div class="row">
-      <button type="button" class="primary big" data-start="${name}">${intro.button}</button>
-      <a class="btn" href="/">Back</a>
+          @if(length(intro.documents) > 0) {
+            <div>
+              <div class="group-title">Read first</div>
+              <ul style="margin:0;padding-left:18px">
+                @for(d in intro.documents) {
+                  <li><a href="${d.url}" target="_blank" rel="noopener">${d.title}</a></li>
+                }
+              </ul>
+            </div>
+          }
+          <div id="ws-pick"></div>
+          <div class="row">
+            <button type="button" class="primary big" data-start="${name}">${intro.button}</button>
+            <a class="btn" href="/">Back</a>
+          </div>
+        </div>
+      </section>
+      @if(intro.image != "") {
+        <img class="intro-img" src="${intro.image}" alt="${intro.image_alt}">
+      }
     </div>
   </div>
 }

@@ -1,31 +1,33 @@
 @extends("layouts/base.html")
 
 @define("content") {
-  <section class="hero">
-    <h1>Get things done, step by step</h1>
-    <p>Pick a workflow to begin. Every step is tracked: who started it, how long it took, and what happens next.</p>
+  <section class="lead">
+    <h1>Start a request</h1>
+    <p>Choose a workflow. Every step is tracked: who started it, how long it took, and what happens next.</p>
   </section>
-  <div class="cards">
-    @for(p in data) {
-      <a class="card tile" href="/start/${p.name}">
-        <h2>${p.title}</h2>
-        <p class="muted">${p.description}</p>
-        <span class="muted">${p.stages} stages</span>
-        <span class="btn primary">Open</span>
-      </a>
-    }
+  <div class="body">
+    <div class="wf-grid">
+      @for(p in data) {
+        <a class="wf" href="/start/${p.name}">
+          <h2>${p.title}</h2>
+          <p class="muted" style="margin:0">${p.description}</p>
+          <span class="meta">${p.stages} stages</span>
+          <span class="go">Open &rarr;</span>
+        </a>
+      }
+    </div>
+    <section class="panel" id="mine" hidden>
+      <div class="ph"><h2>Your requests on this device</h2></div>
+      <div class="pb"><ul style="margin:0;padding-left:18px"></ul></div>
+    </section>
+    <details class="panel">
+      <summary class="ph" style="cursor:pointer"><h2>Resume a request from another device</h2></summary>
+      <form id="resume" class="pb row">
+        <input type="text" name="id" autocomplete="off" placeholder="Case ID" aria-label="Case ID" style="max-width:340px">
+        <input type="text" name="key" autocomplete="off" placeholder="Access key" aria-label="Access key" style="max-width:340px">
+        <button type="submit" class="primary">Open</button>
+      </form>
+    </details>
+    <p class="muted">Staff: sign in from the sidebar, then open <a href="/work">My work</a>. New here? Read the <a href="/guide">guide</a>.</p>
   </div>
-  <section class="card" id="mine" hidden>
-    <h2>Your applications on this device</h2>
-    <ul></ul>
-  </section>
-  <details class="card more">
-    <summary>Resume an application from another device</summary>
-    <form id="resume" class="stack" style="margin-top:14px">
-      <input type="text" name="id" autocomplete="off" placeholder="Case ID" aria-label="Case ID">
-      <input type="text" name="key" autocomplete="off" placeholder="Access key" aria-label="Access key">
-      <button type="submit" class="primary">Open</button>
-    </form>
-  </details>
-  <p class="muted">Staff: sign in at the top, then open <a href="/work">My work</a>. New here? Read the <a href="/guide">guide</a>.</p>
 }

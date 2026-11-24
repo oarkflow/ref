@@ -364,10 +364,16 @@ func (e *Engine) recipients(ctx context.Context, c *Case, ev Event, to []string)
 	byRole := func(role string) bool {
 		found := false
 		for _, w := range e.workers(ctx) {
-			if !w.Inactive && slices.Contains(w.Roles, role) {
-				add(w.ID)
-				found = true
+			if w.Inactive || !slices.Contains(w.Roles, role) {
+				continue
 			}
+			// A role means the people of that role who work where the case is: a nurse of another
+			// facility is not told about this facility's case.
+			if c.OrgUnit != "" && len(w.OrgUnits) > 0 && !e.inOrg(c, w, c.OrgUnit) {
+				continue
+			}
+			add(w.ID)
+			found = true
 		}
 		return found
 	}
@@ -385,6 +391,23 @@ func (e *Engine) recipients(ctx context.Context, c *Case, ev Event, to []string)
 			}
 		case r == "applicant":
 			add(c.CreatedBy)
+		case r == "asked" || r == "asker":
+			// The people the latest information request was put to, or the person who asked.
+			if n := len(c.InformationRequests); n > 0 {
+				req := c.InformationRequests[n-1]
+				switch {
+				case r == "asker":
+					add(req.RequestedBy)
+				case req.To == "user":
+					add(req.Assignee)
+				case req.To == "previous":
+					for _, role := range req.AnswerRoles {
+						byRole(role)
+					}
+				default:
+					add(c.CreatedBy)
+				}
+			}
 		case r == "actor":
 			add(ev.Actor)
 		case r == "escalation":
@@ -430,6 +453,11 @@ func renderNotice(tmpl string, c *Case, ev Event) string {
 			return c.Status
 		case "case.stage":
 			return c.Stage
+		case "question", "info.reason": // (a bare {question} is eaten by the BCL parser; use {info.reason} there)
+			if n := len(c.InformationRequests); n > 0 {
+				return c.InformationRequests[n-1].Reason
+			}
+			return ""
 		}
 		if path, ok := strings.CutPrefix(key, "data."); ok {
 			if v, ok := c.Get(path); ok && v != nil {

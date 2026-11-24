@@ -101,6 +101,9 @@ type Case struct {
 
 	// entryShadow marks a scratch copy used to validate one data entry.
 	entryShadow bool
+	// freshEntry makes the stage being entered start from nothing: no earlier start,
+	// no verdicts kept from an earlier visit (used when work is sent back).
+	freshEntry bool
 
 	// events are emitted by the last operation, for the host to dispatch
 	// after the case is saved. They are not persisted.
@@ -118,6 +121,17 @@ type InformationRequest struct {
 	Response       map[string]any `json:"response,omitempty"`
 	RespondedBy    string         `json:"responded_by,omitempty"`
 	RespondedAt    *time.Time     `json:"responded_at,omitempty"`
+	// To is who was asked: creator, previous (anyone with AnswerRoles) or user (Assignee).
+	To       string `json:"to,omitempty"`
+	Assignee string `json:"assignee,omitempty"`
+	// Fields are the inputs (form.input) the person asked must fill in.
+	Fields      []string `json:"fields,omitempty"`
+	AnswerRoles []string `json:"answer_roles,omitempty"`
+	// DueAt is when the answer is due; Overdue is set once that was noticed.
+	DueAt   *time.Time `json:"due_at,omitempty"`
+	Overdue bool       `json:"overdue,omitempty"`
+	// PausedAt is when the stage's deadline clock was stopped for this request.
+	PausedAt *time.Time `json:"paused_at,omitempty"`
 }
 
 // PaymentRecord is a settlement attested by a trusted payment verifier.
@@ -502,6 +516,27 @@ func (e *ValidationError) Error() string {
 
 func forbidden(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrForbidden, fmt.Sprintf(format, args...))
+}
+
+// notYours explains a refusal in terms a person can act on: what they tried,
+// which step it belongs to, who handles that step and what the caller has.
+func notYours(what string, st Stage, actor Actor) error {
+	step := st.Title
+	if step == "" {
+		step = st.Name
+	}
+	who := "the people assigned to it"
+	if len(st.Roles) > 0 {
+		who = "the " + strings.Join(st.Roles, " or ") + " role"
+	}
+	have := "no role"
+	if len(actor.Roles) > 0 {
+		have = "the " + strings.Join(actor.Roles, ", ") + " role"
+	}
+	if actor.ID == "" && len(actor.Roles) == 0 {
+		return forbidden("%s: %q is handled by %s. Sign in with that role to continue", what, step, who)
+	}
+	return forbidden("%s: %q is handled by %s, and you are signed in with %s. Switch to an account with the right role, or ask an administrator to add it", what, step, who, have)
 }
 
 func badState(format string, args ...any) error {

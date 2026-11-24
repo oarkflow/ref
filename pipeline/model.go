@@ -63,20 +63,82 @@ type Definition struct {
 	Notes *NotesPolicy `bcl:"notes" json:"notes,omitempty"`
 	// Notify turns pipeline events into notifications for people, delivered
 	// over the host's channels under each recipient's preferences.
-	Notify   []NotifyRule `bcl:"notify,block" json:"notify,omitempty"`
-	Payment  *PaymentSpec `bcl:"payment" json:"payment,omitempty"`
-	AllowRFI bool         `bcl:"allow_rfi" json:"allow_rfi,omitempty"`
+	Notify  []NotifyRule `bcl:"notify,block" json:"notify,omitempty"`
+	Payment *PaymentSpec `bcl:"payment" json:"payment,omitempty"`
+	// Limits caps how much data a person may create in this workflow.
+	Limits   *Limits `bcl:"limits" json:"limits,omitempty"`
+	AllowRFI bool    `bcl:"allow_rfi" json:"allow_rfi,omitempty"`
 	// AdminRoles are the default for stages that set none: who may take a
 	// stand on a stage whose SLA was missed (reset, reassign, extend, waive).
 	AdminRoles []string `bcl:"admin_roles" json:"admin_roles,omitempty"`
 	// Intro is the information page shown before anyone starts a case.
 	Intro *Intro `bcl:"intro" json:"intro,omitempty"`
+	// UI is how the workflow looks and how its screens are laid out.
+	UI *UISpec `bcl:"ui" json:"ui,omitempty"`
+	// Workspace says a case belongs to a workspace (a unit of the host's org
+	// hierarchy): its lookups, settings and roles follow that unit.
+	Workspace *WorkspaceSpec `bcl:"workspace" json:"workspace,omitempty"`
 	// SuspendRoles, ResumeRoles and InfoRoles are workflow-wide defaults for
 	// every stage that does not set its own: who may put a case on hold, who
 	// may lift the hold, and who may ask the applicant for more information.
 	SuspendRoles []string `bcl:"suspend_roles" json:"suspend_roles,omitempty"`
 	ResumeRoles  []string `bcl:"resume_roles" json:"resume_roles,omitempty"`
 	InfoRoles    []string `bcl:"info_roles" json:"info_roles,omitempty"`
+	// Information, Release and Start are workflow-wide defaults for how information
+	// requests, released holds and starting behave; a stage may override each.
+	Information *InfoPolicy    `bcl:"information" json:"information,omitempty"`
+	Release     *ReleasePolicy `bcl:"release" json:"release,omitempty"`
+	Start       *StartPolicy   `bcl:"start" json:"start,omitempty"`
+}
+
+// InfoPolicy configures information requests. Roles may ask (as info_roles).
+// To lists who may be asked: "creator" (the person who created the case, the
+// default), "previous" (the roles of the stage the case came from) and "user"
+// (a named person). SLA is "pause" (the default: the stage's deadline clock stops
+// while the question is open) or "run". Due is how long they have to answer
+// (empty: no limit); OnTimeout is what happens when that passes: "notify" (the
+// default: record it and tell people) or "withdraw" (close the case as withdrawn).
+type InfoPolicy struct {
+	Roles     []string `bcl:"roles" json:"roles,omitempty"`
+	To        []string `bcl:"to" json:"to,omitempty"`
+	SLA       string   `bcl:"sla" json:"sla,omitempty"`
+	Due       string   `bcl:"due" json:"due,omitempty"`
+	OnTimeout string   `bcl:"on_timeout" json:"on_timeout,omitempty"`
+	// Fields lets a question ask for specific inputs: the person asked fills
+	// them in, they are validated like any entry, written into the case data
+	// and listed in the history. Off by default (a question is free text).
+	Fields bool `bcl:"fields" json:"fields,omitempty"`
+}
+
+// ReleasePolicy configures what lifting a hold may do. Targets lists where the
+// work may go: "same" and "previous" (default: both). Assignee says whether a
+// person may be named: "optional" (default), "required" or "none". RestoreData
+// makes a release to the previous stage also put the case data back to how that
+// stage found it (off by default: the data stays and only the history records it).
+type ReleasePolicy struct {
+	Targets     []string `bcl:"targets" json:"targets,omitempty"`
+	Assignee    string   `bcl:"assignee" json:"assignee,omitempty"`
+	RestoreData bool     `bcl:"restore_data" json:"restore_data,omitempty"`
+}
+
+// StartPolicy configures starting a stage that has require_start. OnCreate is
+// "auto" (default: whoever creates the case has started its first stage) or
+// "manual" (they press Start like everyone else). OnReturn is "keep" (default:
+// a stage that was started stays started when the case comes back to it) or
+// "restart" (it must be started again).
+type StartPolicy struct {
+	OnCreate string `bcl:"on_create" json:"on_create,omitempty"`
+	OnReturn string `bcl:"on_return" json:"on_return,omitempty"`
+}
+
+// WorkspaceSpec makes a workflow run inside a workspace.
+type WorkspaceSpec struct {
+	// Level is the kind of unit a case belongs to (e.g. facility); Required
+	// makes a case start refuse to open without one. Label names it for people
+	// ("Facility").
+	Level    string `bcl:"level" json:"level,omitempty"`
+	Required bool   `bcl:"required" json:"required,omitempty"`
+	Label    string `bcl:"label" json:"label,omitempty"`
 }
 
 // Intro is the page shown before a case is started: a title, an image, rich
@@ -237,6 +299,9 @@ type SLA struct {
 	OnBreach string `bcl:"on_breach" json:"on_breach,omitempty"`
 	// PickupTimeout is how long work may sit unclaimed; then
 	// OnPickupTimeout (notify, the default, or reassign) applies.
+	// OnHold: "pause" (default) stops the clock while the stage is on hold or
+	// waiting for information; "run" keeps it running.
+	OnHold          string `bcl:"on_hold" json:"on_hold,omitempty"`
 	PickupTimeout   string `bcl:"pickup_timeout" json:"pickup_timeout,omitempty"`
 	OnPickupTimeout string `bcl:"on_pickup_timeout" json:"on_pickup_timeout,omitempty"`
 	ReturnTo        string `bcl:"return_to" json:"return_to,omitempty"`
@@ -362,8 +427,20 @@ type Input struct {
 	Max       string   `bcl:"max" json:"max,omitempty"`
 	Options   []string `bcl:"options" json:"options,omitempty"`
 	// Lookup names a reference-data set the host resolves into options.
-	Lookup  string `bcl:"lookup" json:"lookup,omitempty"`
-	Default string `bcl:"default" json:"default,omitempty"`
+	Lookup string `bcl:"lookup" json:"lookup,omitempty"`
+	// LookupWhere fixes attribute matches ("provider_type=physician") that an
+	// entry of the lookup set must carry to be offered, whatever other inputs say.
+	LookupWhere []string `bcl:"lookup_where" json:"lookup_where,omitempty"`
+	// Searchable, Clearable and Taggable shape the control a select or
+	// multiselect is shown as: type to filter the choices (a lookup input with
+	// many choices is searchable anyway, and asks the host as the user types),
+	// a button that empties it (offered by default when the input is optional),
+	// and free-text tags beside the listed choices (a taggable input accepts
+	// values that are not in its lookup set).
+	Searchable bool   `bcl:"searchable" json:"searchable,omitempty"`
+	Clearable  bool   `bcl:"clearable" json:"clearable,omitempty"`
+	Taggable   bool   `bcl:"taggable" json:"taggable,omitempty"`
+	Default    string `bcl:"default" json:"default,omitempty"`
 	// Sensitive values are masked for everyone without a reveal role.
 	Sensitive bool `bcl:"sensitive" json:"sensitive,omitempty"`
 	// Accept lists the content types a file input takes ("image/png",
@@ -496,6 +573,36 @@ type Group struct {
 	EditRoles  []string `bcl:"edit_roles" json:"edit_roles,omitempty"`
 	DisabledIf string   `bcl:"disabled_if" json:"disabled_if,omitempty"`
 	Collapsed  bool     `bcl:"collapsed" json:"collapsed,omitempty"`
+	// Fields are `access` blocks: they adjust single inputs (or a whole form)
+	// for this group on this stage: enable, disable, hide or show them, by role
+	// or condition. (The block is not called `field`: BCL does not bind that name.)
+	Fields []FieldRule `bcl:"access,block" json:"fields,omitempty"`
+}
+
+// FieldRule changes how one input (path "form.input") or every input of a form
+// (path "form") behaves inside a stage's page group. The input and form keep
+// their own rules everywhere else, so the same form can be editable at one
+// stage, read-only at the next and hidden from some roles at a third, while
+// its data moves along with the case.
+type FieldRule struct {
+	Path string `bcl:",id" json:"path"`
+	// Mode: editable (enables a field in a read-only group), readonly (disables
+	// it in an editable one) or hidden. Empty keeps the group's mode.
+	Mode string `bcl:"mode,ident" json:"mode,omitempty"`
+	// Roles limits who sees the field here (others do not see it at all);
+	// EditRoles who may change it (others see it read-only).
+	Roles     []string `bcl:"roles" json:"roles,omitempty"`
+	EditRoles []string `bcl:"edit_roles" json:"edit_roles,omitempty"`
+	// VisibleIf shows the field only while it holds; DisabledIf shows it
+	// read-only while it holds; RequiredIf makes it required at this stage
+	// while it holds (write "true" for always).
+	VisibleIf  string `bcl:"visible_if" json:"visible_if,omitempty"`
+	DisabledIf string `bcl:"disabled_if" json:"disabled_if,omitempty"`
+	RequiredIf string `bcl:"required_if" json:"required_if,omitempty"`
+	// Label, Help and Placeholder reword the field for this stage.
+	Label       string `bcl:"label" json:"label,omitempty"`
+	Help        string `bcl:"help" json:"help,omitempty"`
+	Placeholder string `bcl:"placeholder" json:"placeholder,omitempty"`
 }
 
 // Stage is one step of the pipeline.
@@ -576,8 +683,14 @@ type Stage struct {
 	// InfoRoles may ask the applicant for more information at this stage;
 	// without it anyone who may act here may.
 	InfoRoles []string `bcl:"info_roles" json:"info_roles,omitempty"`
+	// Information, Release and Start override the workflow's policies for this stage.
+	Information *InfoPolicy    `bcl:"information" json:"information,omitempty"`
+	Release     *ReleasePolicy `bcl:"release" json:"release,omitempty"`
+	Start       *StartPolicy   `bcl:"start" json:"start,omitempty"`
 	// Summary is the page shown before submitting this stage.
 	Summary *SummarySpec `bcl:"summary" json:"summary,omitempty"`
+	// UI arranges this stage's task screen, replacing the workflow's task layout.
+	UI *LayoutSpec `bcl:"ui" json:"ui,omitempty"`
 	// Entries turns the stage into a data-entry stage: each person who may
 	// act enters their own record(s) instead of editing one shared document.
 	Entries *EntriesSpec `bcl:"entries" json:"entries,omitempty"`
@@ -670,7 +783,8 @@ const (
 type NotifyRule struct {
 	// Event is an event name, a prefix pattern ("sla.*") or "*".
 	Event string `bcl:",id" json:"event"`
-	// To names recipients: assignee, previous_assignee, applicant, actor,
+	// To names recipients: assignee, previous_assignee, applicant, actor, asked
+	// (who the latest information request was put to), asker (who made it),
 	// role:<role> (every directory worker holding it) or a user id.
 	To []string `bcl:"to" json:"to"`
 	// Channels are delivered by default; a recipient may opt out of them, or
@@ -679,9 +793,12 @@ type NotifyRule struct {
 	// Severity: info (default), warning, urgent or critical.
 	Severity string `bcl:"severity,ident" json:"severity,omitempty"`
 	// Subject and Body are templates: {event}, {stage}, {actor},
-	// {case.number}, {case.id}, {case.status} and {data.<form>.<input>}.
+	// {case.number}, {case.id}, {case.status}, {info.reason} (the latest information
+	// request; also {question} where the host document allows it) and {data.<form>.<input>}.
 	Subject string `bcl:"subject" json:"subject,omitempty"`
 	Body    string `bcl:"body" json:"body,omitempty"`
+	// Message is Body under a name the BCL parser binds (it never binds `body`).
+	Message string `bcl:"message" json:"-"`
 	Stage   string `bcl:"stage" json:"stage,omitempty"`
 	// Condition must hold for the rule to fire; the environment is the case
 	// plus event {name, stage, actor, detail}. When is an alias of it.
@@ -817,4 +934,15 @@ type Route struct {
 	When string `bcl:"when" json:"when,omitempty"`
 	// To is the next stage, or "end" to complete the case.
 	To string `bcl:"to" json:"to"`
+}
+
+// Limits caps what one person may create. PerUser is how many cases a person
+// may have created (0 = no limit); Count says which cases count against it:
+// "all" (every case they created, the default) or "open" (only unfinished ones,
+// so finishing or withdrawing a case frees a place). Message replaces the default
+// wording of the refusal.
+type Limits struct {
+	PerUser int    `bcl:"per_user" json:"per_user,omitempty"`
+	Count   string `bcl:"count" json:"count,omitempty"`
+	Message string `bcl:"message" json:"message,omitempty"`
 }

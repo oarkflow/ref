@@ -50,6 +50,7 @@ func registerOrgActions(r *Registry) {
 			{Name: "operation", Type: "string", Required: true, Summary: "upsert | move | delete"},
 			{Name: "input_fact", Type: "string", Default: "input", Summary: "Fact holding { id parent_id level code name attrs }"},
 			{Name: "cascade", Type: "bool", Default: "false", Summary: "delete: remove the whole subtree instead of refusing"},
+			{Name: "roles", Type: "[]string", Summary: "Only principals holding one of these roles may change units (their org scope still applies)"},
 		},
 		Kind: "effect",
 	})
@@ -74,6 +75,7 @@ func registerOrgActions(r *Registry) {
 		Config: []ConfigField{
 			{Name: "operation", Type: "string", Required: true, Summary: "upsert | delete"},
 			{Name: "input_fact", Type: "string", Default: "input", Summary: "Fact holding { set code label node_id workspace department sort disabled attrs }"},
+			{Name: "roles", Type: "[]string", Summary: "Only principals holding one of these roles may write reference data (their org scope still applies)"},
 		},
 		Kind: "effect",
 	})
@@ -300,7 +302,7 @@ func buildOrgWrite(build BuildContext, spec NodeSpec) (Action, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := rejectUnknownConfig("org.write", spec.Config, "operation", "input_fact", "cascade"); err != nil {
+	if err := rejectUnknownConfig("org.write", spec.Config, "operation", "input_fact", "cascade", "roles"); err != nil {
 		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
 	}
 	operation := strings.ToLower(configString(spec.Config, "operation", ""))
@@ -309,8 +311,12 @@ func buildOrgWrite(build BuildContext, spec NodeSpec) (Action, error) {
 	}
 	inputFact := configString(spec.Config, "input_fact", "input")
 	cascade := configBool(spec.Config, "cascade", false)
+	roles := configStrings(spec.Config, "roles")
 
 	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
+		if err := requireOperator(ctx, roles, "org.write"); err != nil {
+			return ActionResult{}, err
+		}
 		raw, ok := resolvePath(ctx.Inputs, inputFact)
 		record, isMap := raw.(map[string]any)
 		if !ok || !isMap {
@@ -490,7 +496,7 @@ func buildLookupWrite(build BuildContext, spec NodeSpec) (Action, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := rejectUnknownConfig("lookup.write", spec.Config, "operation", "input_fact"); err != nil {
+	if err := rejectUnknownConfig("lookup.write", spec.Config, "operation", "input_fact", "roles"); err != nil {
 		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
 	}
 	operation := strings.ToLower(configString(spec.Config, "operation", ""))
@@ -498,7 +504,11 @@ func buildLookupWrite(build BuildContext, spec NodeSpec) (Action, error) {
 		return nil, fmt.Errorf("node %q: lookup.write operation must be upsert or delete", spec.Name)
 	}
 	inputFact := configString(spec.Config, "input_fact", "input")
+	roles := configStrings(spec.Config, "roles")
 	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
+		if err := requireOperator(ctx, roles, "lookup.write"); err != nil {
+			return ActionResult{}, err
+		}
 		raw, _ := resolvePath(ctx.Inputs, inputFact)
 		record, ok := raw.(map[string]any)
 		if !ok {

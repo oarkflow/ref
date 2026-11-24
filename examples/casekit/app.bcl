@@ -22,7 +22,11 @@ resource "db" {
   config {
     driver env("CASEKIT_DB_DRIVER", "sqlite")
     dsn env("CASEKIT_DSN", "file:.data/casekit.db?_pragma=busy_timeout(5000)")
+    # Reference data (providers, nurses, locations, CPT codes...) lives in these tables, not in this file.
+    migration_files ["seed/reference.sql"]
     migrations [
+      "CREATE TABLE IF NOT EXISTS inbox (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', case_id TEXT NOT NULL DEFAULT '', case_number TEXT NOT NULL DEFAULT '', event TEXT NOT NULL DEFAULT '', severity TEXT NOT NULL DEFAULT 'info', at TEXT NOT NULL DEFAULT '', read INTEGER NOT NULL DEFAULT 0)",
+      "CREATE INDEX IF NOT EXISTS inbox_user ON inbox (user_id, read, id)",
       "CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, case_number TEXT NOT NULL, stage TEXT NOT NULL DEFAULT '', actor TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '', at TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
     ]
   }
@@ -50,9 +54,147 @@ resource "jwt" {
   }
 }
 
+# Workspaces: a health group, its facilities, and their departments. Their
+# reference data (providers, nurses, CPT codes, locations, claim types) is not
+# here: it comes from database tables through the "catalog" data source below.
+resource "org" {
+  kind "org.hierarchy"
+  description "Health group > facility > department workspaces, with inherited reference data"
+  config {
+    levels ["organization", "facility", "department"]
+    database "db"
+    refresh_interval 5s
+    # Units a person works in (and, with the admin role, administers) come from their token.
+    assignment_claim "org_units"
+    global_roles ["super_admin"]
+
+    nodes [
+      { id "himal" level "organization" name "Himal Health Group" },
+      { id "city" parent "himal" level "facility" name "City General Hospital" },
+      { id "city_er" parent "city" level "department" name "Emergency" },
+      { id "city_card" parent "city" level "department" name "Cardiology" },
+      { id "river" parent "himal" level "facility" name "Riverside Clinic" },
+      { id "river_opd" parent "river" level "department" name "Outpatient" }
+    ]
+
+  }
+}
+
+# Reference data from data sources, mapped and filtered per workspace. Every
+# set is a table in `db` (seed/reference.sql); point `db` at MySQL or Postgres, or
+# a set at an HTTP API, and nothing else changes. A row's facility_id says which
+# workspace owns it: the group's rows reach every facility, a facility's rows only
+# that facility. In a filter {organization}, {facility} and {workspace} are the
+# units of the case being filled in ({x?} may be missing), and any depends_on
+# field is {its_name}. `attrs` exposes a column to depends_on/lookup_where,
+# `upsert`/`remove` let a workspace admin change rows from the Workspace page.
+resource "catalog" {
+  kind "lookup.sources"
+  config {
+    database "db"
+    sets [
+      { name "specialties" type "sql"
+        query "SELECT facility_id, code, label, sort FROM tbl_specialties"
+        value_field "code" label_field "label" owner_field "facility_id" sort "sort"
+        filters [ { on "facility_id" op "in" value "{organization?},{facility?},{workspace}" } ]
+        upsert "INSERT OR REPLACE INTO tbl_specialties (facility_id, code, label, sort) VALUES (?, ?, ?, ?)"
+        upsert_args ["workspace", "code", "label", "sort"]
+        remove "DELETE FROM tbl_specialties WHERE facility_id = ? AND code = ?"
+        remove_args ["workspace", "code"] },
+
+      { name "provider_types" type "sql"
+        query "SELECT facility_id, code, label, sort FROM tbl_provider_types"
+        value_field "code" label_field "label" owner_field "facility_id" sort "sort"
+        filters [ { on "facility_id" op "in" value "{organization?},{facility?},{workspace}" } ]
+        upsert "INSERT OR REPLACE INTO tbl_provider_types (facility_id, code, label, sort) VALUES (?, ?, ?, ?)"
+        upsert_args ["workspace", "code", "label", "sort"]
+        remove "DELETE FROM tbl_provider_types WHERE facility_id = ? AND code = ?"
+        remove_args ["workspace", "code"] },
+
+      { name "facility_types" type "sql"
+        query "SELECT facility_id, code, label, sort FROM tbl_facility_types"
+        value_field "code" label_field "label" owner_field "facility_id" sort "sort"
+        filters [ { on "facility_id" op "in" value "{organization?},{facility?},{workspace}" } ]
+        upsert "INSERT OR REPLACE INTO tbl_facility_types (facility_id, code, label, sort) VALUES (?, ?, ?, ?)"
+        upsert_args ["workspace", "code", "label", "sort"]
+        remove "DELETE FROM tbl_facility_types WHERE facility_id = ? AND code = ?"
+        remove_args ["workspace", "code"] },
+
+      { name "cpt_codes" type "sql"
+        query "SELECT facility_id, code, label, sort, specialties FROM tbl_cpt_codes"
+        value_field "code" label_field "label" owner_field "facility_id" sort "sort"
+        attrs { specialty "specialties" }
+        filters [ { on "facility_id" op "in" value "{organization?},{facility?},{workspace}" } ]
+        upsert "INSERT OR REPLACE INTO tbl_cpt_codes (facility_id, code, label, sort, specialties) VALUES (?, ?, ?, ?, ?)"
+        upsert_args ["workspace", "code", "label", "sort", "attrs.specialty"]
+        remove "DELETE FROM tbl_cpt_codes WHERE facility_id = ? AND code = ?"
+        remove_args ["workspace", "code"] },
+
+      { name "providers" type "sql"
+        query "SELECT facility_id, code, label, sort, specialties, provider_type FROM tbl_providers"
+        value_field "code" label_field "label" owner_field "facility_id" sort "sort"
+        attrs { specialty "specialties" provider_type "provider_type" }
+        filters [ { on "facility_id" op "in" value "{organization?},{facility?},{workspace}" } ]
+        upsert "INSERT OR REPLACE INTO tbl_providers (facility_id, code, label, sort, specialties, provider_type) VALUES (?, ?, ?, ?, ?, ?)"
+        upsert_args ["workspace", "code", "label", "sort", "attrs.specialty", "attrs.provider_type"]
+        remove "DELETE FROM tbl_providers WHERE facility_id = ? AND code = ?"
+        remove_args ["workspace", "code"] },
+
+      { name "nurses" type "sql"
+        query "SELECT facility_id, code, label, sort FROM tbl_nurses"
+        value_field "code" label_field "label" owner_field "facility_id" sort "sort"
+        filters [ { on "facility_id" op "in" value "{organization?},{facility?},{workspace}" } ]
+        upsert "INSERT OR REPLACE INTO tbl_nurses (facility_id, code, label, sort) VALUES (?, ?, ?, ?)"
+        upsert_args ["workspace", "code", "label", "sort"]
+        remove "DELETE FROM tbl_nurses WHERE facility_id = ? AND code = ?"
+        remove_args ["workspace", "code"] },
+
+      { name "locations" type "sql"
+        query "SELECT facility_id, code, label, sort FROM tbl_locations"
+        value_field "code" label_field "label" owner_field "facility_id" sort "sort"
+        filters [ { on "facility_id" op "in" value "{organization?},{facility?},{workspace}" } ]
+        upsert "INSERT OR REPLACE INTO tbl_locations (facility_id, code, label, sort) VALUES (?, ?, ?, ?)"
+        upsert_args ["workspace", "code", "label", "sort"]
+        remove "DELETE FROM tbl_locations WHERE facility_id = ? AND code = ?"
+        remove_args ["workspace", "code"] }
+    ]
+  }
+}
+
+# People who sign in with an email and password. An administrator invites each
+# person into a workspace with the roles they play (nurse, coder, supervisor...);
+# the invitation link lets them choose their password. The first administrator is
+# created on an empty directory (CASEKIT_ADMIN_EMAIL / CASEKIT_ADMIN_PASSWORD).
+resource "people" {
+  kind "identity.users"
+  config {
+    database "db"
+    token_issuer "jwt"
+    admin_roles ["admin"]
+    global_roles ["super_admin"]
+    password_min_length 10
+    bootstrap {
+      email env("CASEKIT_ADMIN_EMAIL", "admin@casekit.local")
+      password env("CASEKIT_ADMIN_PASSWORD", "")
+      tenant "casekit"
+      name "Group administrator"
+      roles ["admin", "super_admin"]
+      org_unit "himal"
+    }
+  }
+}
+
 resource "cases" {
   kind "pipeline.cases"
   config {
+    lookup_resource "catalog"
+    directory_resource "people"
+    # Notifications land in each person's inbox (the bell in the sidebar).
+    notify_channels {
+      inbox "casekit.deliver"
+    }
+    org_resource "org"
+    workspace_roles_claim "workspace_roles"
     database "db"
     allow_anonymous true
     signing_secret env.required("CASEKIT_SIGNING_SECRET")
@@ -212,6 +354,35 @@ pipeline "certificate" {
   title "Residence certificate"
   description "Request a certificate. An outside agent verifies your identity, an officer reviews, and you may be asked for more information before it is issued."
   number_format "CERT-{year}-{seq:5}"
+
+  # How this workflow looks. Everything here is optional: leave `ui` out and
+  # the host's basic layout is used. One flat brand colour, never a gradient.
+  ui {
+    brand "Civil Registry"
+    accent "#0f766e"
+    overview {
+      mode console
+      # three columns, left to right; a panel left out of every column is not shown
+      column "facts" {
+        width "280px"
+        panels ["case", "stage", "actions"]
+      }
+      column "work" {
+        width "1fr"
+        panels ["stand", "next", "party", "certificate", "entries", "summary"]
+      }
+      column "record" {
+        width "340px"
+        panels ["log", "missed"]
+      }
+      panel "log" {
+        title "Who did what, and how long it took"
+      }
+    }
+    task {
+      mode split
+    }
+  }
 
   suspend_roles ["officer", "manager"]
   resume_roles  ["manager"]
@@ -381,6 +552,16 @@ pipeline "certificate" {
         title "Request"
         mode readonly
         forms ["request"]
+        # the same form, rules for this stage: officers may correct the address,
+        # the email is only shown to staff, and the label is reworded here
+        access "request.address" {
+          mode editable
+          edit_roles ["officer"]
+          label "Address to certify (officers may correct it)"
+        }
+        access "request.email" {
+          roles ["officer", "manager", "admin"]
+        }
       }
       group "kyc" {
         title "Verification result"
@@ -390,6 +571,17 @@ pipeline "certificate" {
       group "review" {
         title "Decision"
         forms ["review"]
+      }
+    }
+    # this stage's task screen: decision form with checks, and a narrow rail on the right
+    ui {
+      column "main" {
+        width "1fr"
+        panels ["form", "checks"]
+      }
+      column "rail" {
+        width "300px"
+        panels ["stage"]
       }
     }
     route "needs_info" {
@@ -425,6 +617,10 @@ pipeline "certificate" {
         title "What we need"
         mode readonly
         forms ["review"]
+        # the applicant sees the question, not the officer's tick box
+        access "review.needs_info" {
+          mode hidden
+        }
       }
       group "more" {
         title "Your answer"
@@ -463,6 +659,10 @@ pipeline "certificate" {
         title "Verification result"
         mode readonly
         forms ["kyc"]
+        # the verifier's private notes are for managers and admins only
+        access "kyc.agent_notes" {
+          roles ["manager", "admin"]
+        }
       }
     }
     sla {
@@ -503,10 +703,294 @@ pipeline "certificate" {
   }
 }
 
+pipeline "encounter" {
+  title "Encounter coding"
+  description "A hospital or clinic records an encounter with its own providers, nurses and locations, then a coder picks the CPT codes that workspace allows."
+  number_format "ENC-{year}-{seq:5}"
+
+  # Runs inside a workspace: the facility the encounter belongs to decides which
+  # providers, nurses, locations and CPT codes every form and field offers.
+  workspace {
+    level "facility"
+    required true
+    label "Facility"
+  }
+
+  suspend_roles ["coder", "supervisor"]
+  resume_roles  ["supervisor"]
+  info_roles    ["coder", "supervisor"]
+  admin_roles   ["admin"]
+
+  # How much data one person may create: at most 50 unfinished encounters at a time.
+  limits {
+    per_user 50
+    count "open"
+  }
+
+  # Questions: a coder or supervisor may ask the nurse who recorded it, or anyone holding the
+  # earlier step's role. The deadline clock stops until it is answered, which is due within a day.
+  information {
+    to ["creator", "previous"]
+    sla "pause"
+    due "24h"
+    on_timeout "notify"
+    fields true      # a question may ask for specific inputs, which are filled in and written into the case
+  }
+
+  # Releasing a hold: carry on, or send it back to the earlier step as new work, optionally to a named person.
+  release {
+    targets ["same", "previous"]
+    assignee "optional"
+    restore_data false
+  }
+
+  # Whoever records an encounter has started it; a step it returns to stays started.
+  start {
+    on_create "auto"
+    on_return "keep"
+  }
+
+  # Tell people what is waiting for them, in their inbox.
+  notify "case.information_requested" {
+    to ["asked"]
+    channels ["inbox"]
+    severity warning
+    subject "{case.number}: a question for you"
+    message "Question: {info.reason}"
+  }
+  notify "case.information_submitted" {
+    to ["asker"]
+    channels ["inbox"]
+    subject "{case.number}: your question was answered"
+  }
+  notify "case.information_overdue" {
+    to ["asker", "asked"]
+    channels ["inbox"]
+    severity urgent
+    subject "{case.number}: the answer is overdue"
+    message "Still waiting on: {info.reason}"
+  }
+  notify "assigned" {
+    to ["assignee"]
+    channels ["inbox"]
+    subject "{case.number}: assigned to you"
+  }
+
+  intro {
+    title "Record an encounter"
+    image "/static/img/encounter.svg"
+    image_alt "A clinical record"
+    content "<h3>Pick your facility first</h3><p>The providers, nurses, locations and billing codes you can choose are your own facility's. A coder then assigns CPT codes from the list that facility uses, and a supervisor signs off.</p>"
+    button "Record an encounter"
+  }
+
+  on "stage.*" { hook "casekit.record" }
+  on "case.*"  { hook "casekit.record" }
+  on "sla.breached" { hook "casekit.record_why" }
+
+  form "encounter" {
+    input "patient_name" {
+      label "Patient name"
+      kind text
+      required true
+    }
+    input "mrn" {
+      label "Medical record number"
+      kind text
+      required true
+    }
+    input "service_date" {
+      label "Date of service"
+      kind date
+      required true
+    }
+    input "facility_type" {
+      label "Claim type"
+      kind select
+      lookup "facility_types"
+      required true
+      help "The kinds of claim this facility codes."
+    }
+    input "specialty" {
+      label "Specialty"
+      kind select
+      lookup "specialties"
+      required true
+    }
+    input "provider" {
+      label "Attending physician"
+      kind select
+      lookup "providers"
+      lookup_where ["provider_type=physician"]
+      depends_on ["specialty"]
+      required true
+      help "This facility's physicians for the chosen specialty."
+    }
+    input "resident" {
+      label "Resident"
+      kind select
+      lookup "providers"
+      lookup_where ["provider_type=resident"]
+      depends_on ["specialty"]
+    }
+    input "secondary_provider" {
+      label "Secondary provider"
+      kind select
+      lookup "providers"
+      lookup_where ["provider_type=secondary"]
+      depends_on ["specialty"]
+    }
+    input "billing_provider" {
+      label "Billing provider"
+      kind select
+      lookup "providers"
+      lookup_where ["provider_type=billing"]
+      required true
+    }
+    input "nurse" {
+      label "Nurse"
+      kind select
+      lookup "nurses"
+      required true
+    }
+    input "location" {
+      label "Location"
+      kind select
+      lookup "locations"
+      required true
+    }
+  }
+  form "coding" {
+    input "cpt_codes" {
+      label "CPT codes"
+      kind multiselect
+      lookup "cpt_codes"
+      depends_on ["encounter.specialty"]
+      required true
+      help "The codes this facility bills for the encounter's specialty."
+    }
+    input "diagnosis" {
+      label "Diagnosis"
+      kind textarea
+      required true
+    }
+    input "tags" {
+      label "Tags"
+      kind multiselect
+      options ["urgent", "needs review", "audit", "denial risk"]
+      taggable true
+      help "Pick a tag or type your own and press Enter."
+    }
+    input "coder_notes" {
+      label "Notes"
+      kind textarea
+    }
+  }
+
+  stage "intake" {
+    title "Encounter intake"
+    roles ["nurse"]
+    require_start true
+    page {
+      group "encounter" {
+        title "Encounter"
+        forms ["encounter"]
+      }
+    }
+    sla {
+      duration "2h"
+      warn_before "30m"
+      on_breach "notify"
+      notify ["role:admin"]
+    }
+    action "submit" {
+      label "Send to coding"
+      outcome advance
+    }
+  }
+
+  stage "coding" {
+    title "Coding"
+    roles ["coder"]
+    claimable true
+    require_start true
+    page {
+      group "encounter" {
+        title "Encounter"
+        mode readonly
+        forms ["encounter"]
+      }
+      group "coding" {
+        title "Codes"
+        forms ["coding"]
+      }
+    }
+    sla {
+      duration "8h"
+      warn_before "2h"
+      on_breach "notify"
+      notify ["role:admin"]
+    }
+    action "submit" {
+      label "Send for review"
+      outcome advance
+    }
+  }
+
+  stage "review" {
+    title "Supervisor review"
+    roles ["supervisor"]
+    claimable true
+    require_start true
+    page {
+      group "encounter" {
+        title "Encounter"
+        mode readonly
+        forms ["encounter"]
+      }
+      group "coding" {
+        title "Codes"
+        mode readonly
+        forms ["coding"]
+      }
+    }
+    sla {
+      duration "4h"
+      warn_before "1h"
+      on_breach "notify"
+      notify ["role:admin"]
+    }
+    action "approve" {
+      label "Approve"
+      outcome approve
+    }
+    action "reject" {
+      label "Return to coder"
+      outcome return
+      return_to "coding"
+      comment_required true
+    }
+  }
+}
+
 pipeline "expense" {
   title "Expense approval"
   description "Small claims are approved automatically; larger ones need a manager or a director."
   number_format "EXP-{year}-{seq:5}"
+
+  # A tighter workflow: compact density, a main column with a rail, no stage strip,
+  # and the history folded away until someone opens it.
+  ui {
+    density compact
+    accent "#8a4b00"
+    overview {
+      mode split
+      flow hide
+      panel "log" {
+        collapsed true
+      }
+    }
+  }
 
   suspend_roles ["manager", "director"]
   resume_roles  ["director"]
@@ -747,6 +1231,307 @@ intent "cases.node" {
     resource "cases"
     kind effect
     requires [input]
+    provides [r]
+  }
+}
+
+# The workspaces of a level the caller may open cases in (their scope).
+intent "casekit.workspaces" {
+  response "r"
+  node "r" {
+    uses "org.query"
+    resource "org"
+    requires [input]
+    provides [r]
+    config {
+      operation "level"
+      level_fact "input.level"
+    }
+  }
+}
+
+# Add or change a facility (or department): admins only, inside their scope.
+intent "casekit.org_save" {
+  response "r"
+  node "r" {
+    uses "org.write"
+    resource "org"
+    kind effect
+    requires [input]
+    provides [r]
+    config {
+      operation "upsert"
+      roles ["admin", "super_admin"]
+    }
+  }
+}
+
+intent "casekit.org_delete" {
+  response "r"
+  node "r" {
+    uses "org.write"
+    resource "org"
+    kind effect
+    requires [input]
+    provides [r]
+    config {
+      operation "delete"
+      roles ["admin", "super_admin"]
+    }
+  }
+}
+
+# The workspace tree the caller may see.
+intent "casekit.workspace_tree" {
+  response "r"
+  node "r" {
+    uses "org.query"
+    resource "org"
+    provides [r]
+    config {
+      operation "tree"
+    }
+  }
+}
+
+# Reference data of a workspace: every entry the workspace sees for a set, with where it comes from.
+intent "casekit.lookup" {
+  response "r"
+  node "r" {
+    uses "lookup.resolve"
+    resource "org"
+    requires [input]
+    provides [r]
+    config {
+      set_fact "input.set"
+      node_fact "input.node"
+      include_disabled true
+    }
+  }
+}
+
+intent "casekit.lookup_write" {
+  response "r"
+  node "r" {
+    uses "lookup.write"
+    resource "org"
+    kind effect
+    requires [input]
+    provides [r]
+    config {
+      operation "upsert"
+      roles ["admin", "super_admin"]
+    }
+  }
+}
+
+intent "casekit.lookup_delete" {
+  response "r"
+  node "r" {
+    uses "lookup.write"
+    resource "org"
+    kind effect
+    requires [input]
+    provides [r]
+    config {
+      operation "delete"
+      roles ["admin", "super_admin"]
+    }
+  }
+}
+
+# What the data source behind lookup_resource yields for a workspace (read-only).
+intent "casekit.lookup_sources" {
+  response "r"
+  node "r" {
+    uses "pipeline.lookup_sources"
+    resource "cases"
+    requires [input]
+    provides [r]
+  }
+}
+
+# Messages for one person on the inbox channel: one row per item, so a digest of several cases
+# becomes several inbox entries, each linking to its own case.
+intent "casekit.deliver" {
+  response "r"
+  node "r" {
+    uses "database.insert_many"
+    resource "db"
+    kind effect
+    requires [input]
+    provides [r]
+    config {
+      table "inbox"
+      columns ["subject", "body", "case_id", "case_number", "event", "severity", "at"]
+      rows "input.items"
+      set { user_id "input.user" }
+    }
+  }
+}
+
+# The signed-in person's own inbox: every operation is scoped to them.
+intent "casekit.inbox" {
+  response "r"
+  node "r" {
+    uses "database.crud"
+    resource "db"
+    provides [r]
+    config {
+      operation "list"
+      table "inbox"
+      columns ["id", "subject", "body", "case_id", "case_number", "event", "severity", "at", "read"]
+      owner_column "user_id"
+      order_by "id"
+      descending true
+      limit 30
+    }
+  }
+}
+
+intent "casekit.inbox_read" {
+  response "r"
+  node "id" {
+    uses "request.param"
+    provides [id]
+    config { name "id" }
+  }
+  node "r" {
+    uses "database.crud"
+    resource "db"
+    kind effect
+    requires [input, id]
+    provides [r]
+    config {
+      operation "update"
+      table "inbox"
+      columns ["id", "read"]
+      writable ["read"]
+      owner_column "user_id"
+      id_fact "id"
+    }
+  }
+}
+
+intent "casekit.login" {
+  response "r"
+  node "r" {
+    uses "identity.login"
+    resource "people"
+    kind effect
+    requires [input]
+    provides [r]
+  }
+}
+
+intent "casekit.people" {
+  response "r"
+  node "r" {
+    uses "identity.admin"
+    resource "people"
+    requires [input]
+    provides [r]
+    config {
+      operation "list_users"
+    }
+  }
+}
+
+intent "casekit.invite" {
+  response "r"
+  node "r" {
+    uses "identity.admin"
+    resource "people"
+    kind effect
+    requires [input]
+    provides [r]
+    config {
+      operation "invite"
+      org_resource "org"
+    }
+  }
+}
+
+intent "casekit.accept" {
+  response "r"
+  node "r" {
+    uses "identity.accept_invite"
+    resource "people"
+    kind effect
+    requires [input]
+    provides [r]
+  }
+}
+
+intent "casekit.source_save" {
+  response "r"
+  node "r" {
+    uses "pipeline.lookup_source_write"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [r]
+    config {
+      operation "upsert"
+      roles ["admin", "super_admin"]
+    }
+  }
+}
+
+intent "casekit.source_delete" {
+  response "r"
+  node "r" {
+    uses "pipeline.lookup_source_write"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [r]
+    config {
+      operation "delete"
+      roles ["admin", "super_admin"]
+    }
+  }
+}
+
+intent "casekit.ws_get" {
+  response "r"
+  node "r" {
+    uses "pipeline.workspace_get"
+    resource "cases"
+    requires [input]
+    provides [r]
+  }
+}
+
+intent "casekit.ws_set" {
+  response "r"
+  node "r" {
+    uses "pipeline.workspace_set"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [r]
+    config {
+      roles ["admin", "super_admin"]
+    }
+  }
+}
+
+intent "cases.choices" {
+  response "r"
+  node "r" {
+    uses "pipeline.choices"
+    resource "cases"
+    requires [input]
+    provides [r]
+  }
+}
+
+intent "cases.matrix" {
+  response "r"
+  node "r" {
+    uses "pipeline.matrix"
+    resource "cases"
     provides [r]
   }
 }
@@ -1062,6 +1847,92 @@ route "page.link" {
   cache_control "no-store"
 }
 
+route "api.workspaces" {
+  method GET
+  path "/api/workspaces"
+  intent "casekit.workspaces"
+  auth "jwt"
+}
+route "api.org_save" {
+  method POST
+  path "/api/workspaces/save"
+  intent "casekit.org_save"
+  auth "jwt"
+}
+route "api.org_delete" {
+  method POST
+  path "/api/workspaces/delete"
+  intent "casekit.org_delete"
+  auth "jwt"
+}
+route "api.workspace_tree" {
+  method GET
+  path "/api/workspaces/tree"
+  intent "casekit.workspace_tree"
+  auth "jwt"
+}
+route "api.lookup" {
+  method POST
+  path "/api/workspace/lookup"
+  intent "casekit.lookup"
+  auth "jwt"
+}
+route "api.lookup_write" {
+  method POST
+  path "/api/workspace/lookup/save"
+  intent "casekit.lookup_write"
+  auth "jwt"
+}
+route "api.lookup_delete" {
+  method POST
+  path "/api/workspace/lookup/delete"
+  intent "casekit.lookup_delete"
+  auth "jwt"
+}
+route "api.lookup_sources" {
+  method POST
+  path "/api/workspace/sources"
+  intent "casekit.lookup_sources"
+  auth "jwt"
+}
+route "api.source_save" {
+  method POST
+  path "/api/workspace/source/save"
+  intent "casekit.source_save"
+  auth "jwt"
+}
+route "api.source_delete" {
+  method POST
+  path "/api/workspace/source/delete"
+  intent "casekit.source_delete"
+  auth "jwt"
+}
+route "api.ws_get" {
+  method POST
+  path "/api/workspace/settings"
+  intent "casekit.ws_get"
+  auth "jwt"
+}
+route "api.ws_set" {
+  method POST
+  path "/api/workspace/settings/save"
+  intent "casekit.ws_set"
+  auth "jwt"
+}
+route "api.choices" {
+  method POST
+  path "/api/cases/:id/choices/:form/:input_name"
+  intent "cases.choices"
+  auth "jwt"
+  allow_anonymous true
+}
+route "api.matrix" {
+  method GET
+  path "/api/pipelines/:pipeline/matrix"
+  intent "cases.matrix"
+  auth "jwt"
+  allow_anonymous true
+}
 route "api.overview" {
   method GET
   path "/api/cases/:id/overview"
@@ -1105,6 +1976,15 @@ route "page.guide" {
   layout "layouts/base"
   allow_anonymous true
 }
+route "page.guide_fields" {
+  method GET
+  path "/guide/:pipeline/fields"
+  intent "cases.matrix"
+  title "Field access"
+  template "pages/guide_fields"
+  layout "layouts/base"
+  allow_anonymous true
+}
 route "page.guide_detail" {
   method GET
   path "/guide/:pipeline"
@@ -1113,6 +1993,60 @@ route "page.guide_detail" {
   template "pages/guide_detail"
   layout "layouts/base"
   allow_anonymous true
+}
+route "page.workspace" {
+  method GET
+  path "/workspace"
+  title "Workspace"
+  template "pages/work"
+  layout "layouts/base"
+  allow_anonymous true
+  cache_control "no-store"
+}
+route "api.inbox" {
+  method GET
+  path "/api/inbox"
+  intent "casekit.inbox"
+  auth "jwt"
+}
+route "api.inbox_read" {
+  method POST
+  path "/api/inbox/:id/read"
+  intent "casekit.inbox_read"
+  auth "jwt"
+}
+route "api.login" {
+  method POST
+  path "/api/login"
+  intent "casekit.login"
+  allow_anonymous true
+}
+route "api.people" {
+  method GET
+  path "/api/people"
+  intent "casekit.people"
+  auth "jwt"
+}
+route "api.invite" {
+  method POST
+  path "/api/people/invite"
+  intent "casekit.invite"
+  auth "jwt"
+}
+route "api.accept" {
+  method POST
+  path "/api/people/accept"
+  intent "casekit.accept"
+  allow_anonymous true
+}
+route "page.accept" {
+  method GET
+  path "/accept"
+  title "Join"
+  template "pages/accept"
+  layout "layouts/base"
+  allow_anonymous true
+  cache_control "no-store"
 }
 route "page.work" {
   method GET

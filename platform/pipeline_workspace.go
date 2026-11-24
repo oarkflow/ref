@@ -100,7 +100,8 @@ func mergeOverrides(base, child *pipeline.Overrides) *pipeline.Overrides {
 // unit it is assigned to, because that is where a company or facility sets its
 // defaults; it can never reach the units above it.
 func (h *pipelineHandler) workspace(ctx *ActionContext) (ActionResult, error) {
-	e, err := h.engine("")
+	// A resource may serve several pipelines: settings belong to the one named.
+	e, err := h.engine(h.param(ctx, "pipeline"))
 	if err != nil {
 		return ActionResult{}, err
 	}
@@ -162,4 +163,87 @@ func (h *pipelineHandler) workspace(ctx *ActionContext) (ActionResult, error) {
 	}
 	saved, _ := next.Get(unit)
 	return h.out(map[string]any{"unit": unit, "own": decodeOverrides(saved.Attrs[key])})
+}
+
+// lookupSources shows what the lookup_resource data source yields for a
+// workspace, one entry per set it defines, so an administrator sees which
+// reference data is managed in a database or API rather than in the workspace.
+// A caller may look only at units inside its org scope.
+func (h *pipelineHandler) lookupSources(ctx *ActionContext) (ActionResult, error) {
+	res := h.res
+	unit, err := h.sourceUnit(ctx)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	sets := []map[string]any{}
+	if res.lookups != nil {
+		c := &pipeline.Case{TenantID: ctx.TenantID, OrgUnit: unit}
+		for _, name := range res.lookups.Sets() {
+			row := map[string]any{"set": name, "kind": res.lookups.Kind(name), "merge": res.lookups.Merges(name), "writable": res.lookups.Writable(name), "entries": []map[string]any{}}
+			entries := []map[string]any{}
+			items, err := res.lookups.Entries(ctx.Context, name, res.workspaceFacts(c))
+			if err != nil {
+				row["error"] = err.Error()
+			}
+			for _, it := range items {
+				entries = append(entries, map[string]any{"code": it.Option.Value, "label": it.Option.Label, "attrs": it.Attrs, "source": it.Source})
+			}
+			row["entries"] = entries
+			sets = append(sets, row)
+		}
+	}
+	return h.out(map[string]any{"unit": unit, "sets": sets})
+}
+
+// sourceUnit is the unit a data-source operation acts on, checked against the caller's org scope.
+func (h *pipelineHandler) sourceUnit(ctx *ActionContext) (string, error) {
+	if h.res.org == nil {
+		return "", invalidInput("this pipeline resource has no org_resource, so there are no workspaces")
+	}
+	unit := h.param(ctx, "unit")
+	if unit == "" {
+		return "", invalidInput("a unit is required")
+	}
+	snap := h.res.org.Snapshot(ctx.TenantID)
+	if !h.res.org.ScopeFor(ctx.Principal, snap.Tree).Covers(snap.Tree, unit) {
+		return "", outOfScope(unit)
+	}
+	return unit, nil
+}
+
+// lookupSourceWrite adds or removes a row of a data-source set that declares
+// upsert/remove statements, for a unit inside the caller's org scope.
+func (h *pipelineHandler) lookupSourceWrite(ctx *ActionContext) (ActionResult, error) {
+	if err := requireOperator(ctx, configStrings(h.spec.Config, "roles"), "pipeline.lookup_source_write"); err != nil {
+		return ActionResult{}, err
+	}
+	unit, err := h.sourceUnit(ctx)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	res := h.res
+	raw, _ := resolvePath(ctx.Inputs, configString(h.spec.Config, "data_fact", "input"))
+	in, _ := raw.(map[string]any)
+	set := strings.TrimSpace(Stringify(in["set"]))
+	if res.lookups == nil || !res.lookups.Has(set) {
+		return ActionResult{}, invalidInput("%q is not a data-source set", set)
+	}
+	op := strings.ToLower(configString(h.spec.Config, "operation", "upsert"))
+	code := strings.TrimSpace(Stringify(in["code"]))
+	if code == "" {
+		return ActionResult{}, invalidInput("a code is required")
+	}
+	vals := map[string]any{"code": code, "label": strings.TrimSpace(Stringify(in["label"])), "workspace": unit, "attrs": in["attrs"]}
+	if n, ok := in["sort"].(float64); ok {
+		vals["sort"] = int64(n)
+	} else {
+		vals["sort"] = int64(0)
+	}
+	if op == "upsert" && Stringify(vals["label"]) == "" {
+		return ActionResult{}, invalidInput("a label is required")
+	}
+	if err := res.lookups.Write(ctx.Context, set, op, vals); err != nil {
+		return ActionResult{}, invalidInput("%s", err.Error())
+	}
+	return h.out(map[string]any{"set": set, "unit": unit, "code": code, "operation": op})
 }

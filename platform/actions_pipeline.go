@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,6 +40,12 @@ func registerPipelineActions(r *Registry) {
 		Family: "workflow", Kind: "read",
 		Summary:  "Describe a pipeline: its stages, forms, inputs and page layout (for rendering a public start page)",
 		Provides: "The pipeline definition",
+		Config:   common,
+	})
+	mustAction(r, "pipeline.matrix", pipelineAction("matrix"), ActionInfo{
+		Family: "workflow", Kind: "read",
+		Summary:  "The field access matrix: for every stage page, each input's effective mode (editable, read-only, hidden), who sees it, who may change it and the conditions that apply",
+		Provides: "{name, title, rows}",
 		Config:   common,
 	})
 	mustAction(r, "pipeline.catalog", pipelineAction("catalog"), ActionInfo{
@@ -84,12 +91,28 @@ func registerPipelineActions(r *Registry) {
 		Config: with(ConfigField{Name: "unit", Type: "string", Summary: "Org unit id; defaults to the request's unit parameter"},
 			ConfigField{Name: "scope_claim", Type: "string", Summary: "Principal claim listing the units the caller administers; default: the org resource's assignment claim"}),
 	})
+	mustAction(r, "pipeline.lookup_sources", pipelineAction("lookup_sources"), ActionInfo{
+		Family: "workflow", Kind: "read",
+		Summary:  "List the reference sets served by the lookup_resource data source for a workspace: how each is sourced, whether it merges with the workspace's own entries, and the entries it yields there",
+		Provides: "{ unit, sets: [{set, kind, merge, entries: [{value, label}], error}] }",
+		Config:   []ConfigField{{Name: "unit", Type: "string", Summary: "Org unit id; defaults to the request's unit parameter"}},
+	})
+	mustAction(r, "pipeline.lookup_source_write", pipelineAction("lookup_source_write"), ActionInfo{
+		Family: "workflow", Kind: "effect",
+		Summary:  "Add or remove a row of a lookup_resource set that declares upsert/remove statements, for a unit inside the caller's org scope",
+		Provides: "{ set, unit, code, operation }",
+		Config: []ConfigField{{Name: "unit", Type: "string", Summary: "Org unit id; defaults to the request's unit parameter"},
+			{Name: "operation", Type: "string", Default: "upsert", Summary: "upsert | delete"},
+			{Name: "roles", Type: "[]string", Summary: "Only principals holding one of these roles may change data-source rows"},
+			{Name: "data_fact", Type: "fact", Default: "input", Summary: "Fact holding { set code label sort attrs }"}},
+	})
 	mustAction(r, "pipeline.workspace_set", pipelineAction("workspace_set"), ActionInfo{
 		Family: "workflow", Kind: "effect",
 		Summary:  "Replace a unit's workspace settings for a pipeline (stage SLAs, required/hidden/disabled/relabelled fields); validated against the pipeline and limited to the caller's org scope",
 		Provides: "{ unit, own }",
 		Config: with(ConfigField{Name: "unit", Type: "string", Summary: "Org unit id; defaults to the request's unit parameter"},
 			ConfigField{Name: "scope_claim", Type: "string", Summary: "Principal claim listing the units the caller administers; default: the org resource's assignment claim"},
+			ConfigField{Name: "roles", Type: "[]string", Summary: "Only principals holding one of these roles may change workspace settings (their org scope still applies)"},
 			ConfigField{Name: "data_fact", Type: "fact", Default: "input.overrides", Summary: "The overrides document"}),
 	})
 	mustAction(r, "pipeline.save", pipelineAction("save"), ActionInfo{
@@ -255,7 +278,7 @@ var pipelineConfigKeys = []string{
 	"number", "number_fact", "verify_url", "event_id", "event_id_fact",
 	"path", "path_fact", "file_fact", "file_id", "file_id_fact",
 	"form", "form_fact", "input_name", "input_name_fact", "deps_fact", "unit", "unit_fact", "scope_claim",
-	"verify_intent",
+	"verify_intent", "operation", "q_fact",
 }
 
 func pipelineAction(op string) ActionFactory {
@@ -403,7 +426,7 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 	// Hooks and automations invoke intents as part of this request.
 	hookCtx := context.WithValue(ctx.Context, pipelineCallKey{}, ctx)
 	switch h.op {
-	case "events", "hold", "erase", "sweep", "analytics":
+	case "events", "hold", "erase", "sweep", "analytics", "workspace_set":
 		// The operations ops: an authenticated caller always, and one of the
 		// roles when they are set.
 		if err := requireOperator(ctx, h.roles, "pipeline."+h.op); err != nil {
@@ -429,12 +452,28 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 		return h.notifyPrefs(ctx)
 	case "workspace_get", "workspace_set":
 		return h.workspace(ctx)
+	case "lookup_sources":
+		return h.lookupSources(ctx)
+	case "lookup_source_write":
+		return h.lookupSourceWrite(ctx)
 	case "describe":
 		e, err := h.engine(h.param(ctx, "pipeline"))
 		if err != nil {
 			return ActionResult{}, err
 		}
-		return h.out(e.C.Def)
+		// A signed-in caller also gets the people work can be given to (for assignment and questions).
+		if ctx.Principal.ID == "" {
+			return h.out(e.C.Def)
+		}
+		def := *e.C.Def
+		def.Workers = e.Roster(ctx.Context)
+		return h.out(&def)
+	case "matrix":
+		e, err := h.engine(h.param(ctx, "pipeline"))
+		if err != nil {
+			return ActionResult{}, err
+		}
+		return h.out(map[string]any{"name": e.C.Def.Name, "title": e.C.Def.Title, "description": e.C.Def.Description, "rows": e.FieldMatrix()})
 	case "catalog":
 		out := make([]map[string]any, 0, len(h.res.order))
 		for _, name := range h.res.order {
@@ -459,7 +498,22 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 		if err != nil {
 			return ActionResult{}, pipelineFailure(err)
 		}
-		return h.out(o)
+		m, err := toMap(o)
+		if err != nil {
+			return ActionResult{}, err
+		}
+		// Say which workspace the case belongs to: its name, level and path.
+		if c.OrgUnit != "" && h.res.org != nil {
+			tree := h.res.org.Snapshot(c.TenantID).Tree
+			if n, ok := tree.Get(c.OrgUnit); ok {
+				var path []string
+				for _, a := range tree.Ancestors(c.OrgUnit) {
+					path = append(path, a.Name)
+				}
+				m["workspace"] = map[string]any{"id": n.ID, "name": n.Name, "level": n.Level, "path": append(path, n.Name)}
+			}
+		}
+		return h.out(m)
 	}
 	if h.op == "view" {
 		v, err := e.ViewEntry(c, actor, h.param(ctx, "stage"), h.param(ctx, "entry"))
@@ -470,6 +524,13 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 	}
 	if h.op == "choices" {
 		deps, _ := h.body(ctx, "deps_fact", "input.deps").(map[string]any)
+		if q := strings.TrimSpace(Stringify(h.body(ctx, "q_fact", "input.q"))); q != "" {
+			deps = maps.Clone(deps)
+			if deps == nil {
+				deps = map[string]any{}
+			}
+			deps["@q"] = q
+		}
 		options, err := e.Choices(c, actor, h.param(ctx, "form"), h.param(ctx, "input_name"), deps)
 		if err != nil {
 			return ActionResult{}, pipelineFailure(err)
@@ -629,7 +690,7 @@ func (h *pipelineHandler) apply(ctx *ActionContext, hookCtx context.Context, c *
 		}
 	case "request_information":
 		var item *pipeline.InformationRequest
-		next, item, err = e.RequestInformation(hookCtx, c, actor, str("reason"))
+		next, item, err = e.RequestInformationTo(hookCtx, c, actor, str("reason"), pipeline.InfoOptions{To: str("to"), Assignee: str("assignee"), Fields: stringList(body["fields"])})
 		if err == nil {
 			extra = map[string]any{"information_request": item}
 		}
@@ -689,7 +750,7 @@ func (h *pipelineHandler) apply(ctx *ActionContext, hookCtx context.Context, c *
 			}
 			next, err = e.Suspend(hookCtx, c, actor, stage, reason, until)
 		case "resume":
-			next, err = e.Resume(hookCtx, c, actor, stage, comment)
+			next, err = e.ResumeTo(hookCtx, c, actor, stage, comment, pipeline.ResumeOptions{To: str("to"), Assignee: str("assignee")})
 		case "start":
 			next, err = e.StartStage(hookCtx, c, actor, stage)
 		case "reset":
@@ -763,7 +824,11 @@ func (h *pipelineHandler) start(ctx *ActionContext, hookCtx context.Context) (Ac
 	accessKey := ""
 	if actor.ID == "" {
 		if !h.res.allowAnonymous || !e.C.Def.Stages[0].Public || e.C.Def.Stages[0].RequireAccount {
-			return ActionResult{}, permissionDenied("sign in to start a " + orDefaultString(e.C.Def.Title, e.C.Def.Name))
+			title := orDefaultString(e.C.Def.Title, e.C.Def.Name)
+			if roles := e.C.Def.Stages[0].Roles; len(roles) > 0 && !e.C.Def.Stages[0].Public {
+				return ActionResult{}, permissionDenied("Sign in to start " + title + ". It is started by the " + strings.Join(roles, " or ") + " role")
+			}
+			return ActionResult{}, permissionDenied("Sign in to start " + title)
 		}
 		accessKey = randomHex(24)
 		actor.ID = "anon_" + randomHex(8)
@@ -771,6 +836,20 @@ func (h *pipelineHandler) start(ctx *ActionContext, hookCtx context.Context) (Ac
 	orgUnit := ""
 	if v, ok := resolvePath(orgRoot(ctx), configString(h.spec.Config, "org_unit_fact", "input.org_unit")); ok && v != nil {
 		orgUnit = strings.TrimSpace(Stringify(v))
+	}
+	if ws := e.C.Def.Workspace; ws != nil {
+		label := strings.ToLower(orDefaultString(ws.Label, "workspace"))
+		if h.res.org == nil {
+			return ActionResult{}, unavailable("this workflow runs inside a workspace but the resource has no org_resource")
+		}
+		if orgUnit == "" && ws.Required {
+			return ActionResult{}, pipelineFailure(&pipeline.ValidationError{Message: "choose a " + label, Fields: []pipeline.FieldError{{Path: "org_unit", Rule: "required", Message: "choose a " + label + " to start in"}}})
+		}
+		if orgUnit != "" && ws.Level != "" {
+			if n, ok := h.res.org.Snapshot(ctx.TenantID).Tree.Get(orgUnit); ok && n.Level != ws.Level {
+				return ActionResult{}, invalidInput("a case for %s starts in a %s, not a %s", e.C.Def.Name, ws.Level, n.Level)
+			}
+		}
 	}
 	if orgUnit != "" && h.res.org != nil && !h.res.org.Snapshot(ctx.TenantID).Tree.Has(orgUnit) {
 		return ActionResult{}, notFound("organisational unit", orgUnit)
@@ -786,6 +865,33 @@ func (h *pipelineHandler) start(ctx *ActionContext, hookCtx context.Context) (Ac
 	}
 	if actor.ID == ctx.Principal.ID && orgUnit != "" {
 		actor = h.res.actorAt(ctx.Principal, ctx.TenantID, orgUnit)
+	}
+	if lim := e.C.Def.Limits; lim != nil && lim.PerUser > 0 && accessKey == "" && actor.ID != "" {
+		q := pipeline.Query{Pipeline: e.C.Def.Name, TenantID: ctx.TenantID, CreatedBy: actor.ID, Limit: lim.PerUser}
+		if lim.Count == "open" {
+			q.Statuses = []string{pipeline.CaseDraft, pipeline.CaseInProgress, pipeline.CaseReturned}
+		}
+		made, err := h.res.store.List(ctx.Context, q)
+		if err != nil {
+			return ActionResult{}, pipelineFailure(err)
+		}
+		if len(made) >= lim.PerUser {
+			title := strings.ToLower(orDefaultString(e.C.Def.Title, e.C.Def.Name))
+			msg := lim.Message
+			if msg == "" {
+				kind := ""
+				if lim.Count == "open" {
+					kind = " unfinished"
+				}
+				msg = fmt.Sprintf("You have reached the limit of %d%s %s you can create. ", lim.PerUser, kind, title)
+				if lim.Count == "open" {
+					msg += "Finish or withdraw one to start another."
+				} else {
+					msg += "Ask an administrator if you need more."
+				}
+			}
+			return ActionResult{}, conflict("%s", msg)
+		}
 	}
 	data, _ := h.body(ctx, "data_fact", "input.data").(map[string]any)
 	seq, err := h.res.store.NextSeq(ctx.Context, e.C.Def.Name)
@@ -862,6 +968,13 @@ func (h *pipelineHandler) list(ctx *ActionContext) (ActionResult, error) {
 			return ActionResult{}, permissionDenied("sign in to list your cases")
 		}
 		q.CreatedBy = actor.ID
+	case "answer":
+		// Questions for me: cases waiting for an answer that was asked of me (or of my role).
+		if actor.ID == "" {
+			return ActionResult{}, permissionDenied("sign in to list your questions")
+		}
+		q.Statuses = []string{pipeline.CaseRequiresInformation}
+		q.Limit = 0
 	case "assigned":
 		// My work: cases whose current stage is assigned to me.
 		if actor.ID == "" {
@@ -915,7 +1028,7 @@ func (h *pipelineHandler) list(ctx *ActionContext) (ActionResult, error) {
 			q.Assignees = []string{h.param(ctx, "assignee")}
 		}
 	default:
-		return ActionResult{}, invalidInput("scope must be mine, assigned, queue or all")
+		return ActionResult{}, invalidInput("scope must be mine, assigned, answer, queue or all")
 	}
 	cases, err := h.res.store.List(ctx.Context, q)
 	if err != nil {
@@ -923,6 +1036,9 @@ func (h *pipelineHandler) list(ctx *ActionContext) (ActionResult, error) {
 	}
 	out := make([]any, 0, len(cases))
 	for _, c := range cases {
+		if scope == "answer" && !e.IsInfoAnswerer(c, h.res.actorAt(ctx.Principal, ctx.TenantID, c.OrgUnit)) {
+			continue
+		}
 		if (scope == "queue" || scope == "all") && h.res.org != nil {
 			if st, ok := e.C.Stage(c.Stage); ok {
 				at := h.res.actorAt(ctx.Principal, ctx.TenantID, c.OrgUnit)
@@ -938,6 +1054,11 @@ func (h *pipelineHandler) list(ctx *ActionContext) (ActionResult, error) {
 		}
 		if st, ok := e.C.Stage(c.Stage); ok {
 			row["stage_title"] = st.Title
+			row["require_start"] = st.RequireStart
+			if ss := c.Stages[c.Stage]; ss != nil && st.RequireStart && ss.StartedAt == nil && ss.Suspended == nil && !c.Terminal() && st.External == nil {
+				at := h.res.actorAt(ctx.Principal, ctx.TenantID, c.OrgUnit)
+				row["can_start"] = e.CanAct(c, st, at) && (ss.Assignee == "" || ss.Assignee == at.ID || at.HasAnyRole(st.AssignRoles))
+			}
 		}
 		if ss := c.Stages[c.Stage]; ss != nil {
 			row["stage_status"] = ss.Status
@@ -961,6 +1082,12 @@ func (h *pipelineHandler) list(ctx *ActionContext) (ActionResult, error) {
 			if ss.Suspended != nil {
 				row["on_hold"] = ss.Suspended.Reason
 			}
+			if n := len(c.InformationRequests); n > 0 && c.Status == pipeline.CaseRequiresInformation {
+				if req := c.InformationRequests[n-1]; req.RespondedAt == nil && req.DueAt != nil {
+					row["info_due_at"] = req.DueAt.Format(time.RFC3339)
+					row["info_overdue"] = time.Now().After(*req.DueAt)
+				}
+			}
 		}
 		if c.Triage != nil {
 			row["priority"], row["queue"], row["triage_bucket"] = c.Triage.Priority, c.Triage.Queue, c.Triage.Bucket
@@ -971,7 +1098,7 @@ func (h *pipelineHandler) list(ctx *ActionContext) (ActionResult, error) {
 }
 
 func (h *pipelineHandler) get(c *pipeline.Case, e *pipeline.Engine, actor pipeline.Actor) (ActionResult, error) {
-	allowed := actor.ID != "" && actor.ID == c.CreatedBy
+	allowed := actor.ID != "" && (actor.ID == c.CreatedBy || e.IsInfoAnswerer(c, actor))
 	for i := range e.C.Def.Stages {
 		allowed = allowed || e.CanView(c, &e.C.Def.Stages[i], actor)
 	}

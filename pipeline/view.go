@@ -42,8 +42,12 @@ type View struct {
 	Entries *EntriesView `json:"entries,omitempty"`
 	// Party is who a stage handled outside the workflow is waiting for.
 	Party *PartyView `json:"party,omitempty"`
+	// UI is the workflow's look and the task screen's layout.
+	UI *UIView `json:"ui,omitempty"`
 	// Information is the pending request for more information, if any.
 	Information *InformationRequest `json:"information,omitempty"`
+	// InformationCanAnswer: the viewer is who the pending request was put to.
+	InformationCanAnswer bool `json:"information_can_answer,omitempty"`
 }
 
 // WorkView is a stage's work state for the viewer.
@@ -56,6 +60,12 @@ type WorkView struct {
 	Suspended  *Suspension      `json:"suspended,omitempty"`
 	LegalHold  *LegalHold       `json:"legal_hold,omitempty"`
 	Operations []string         `json:"operations,omitempty"`
+	// ResumeTargets are the places a hold can be released to, when the viewer may release it.
+	ResumeTargets []ResumeTarget `json:"resume_targets,omitempty"`
+	// InfoTargets are who a question may be put to, when the viewer may ask one.
+	InfoTargets []InfoTarget `json:"info_targets,omitempty"`
+	// InfoFields: a question may ask for specific inputs at this stage.
+	InfoFields bool `json:"info_fields,omitempty"`
 }
 
 // SealView summarises sealed values without revealing them.
@@ -183,26 +193,29 @@ type InputView struct {
 	Editable    bool   `json:"editable"`
 	// Disabled marks an input held read-only by a disabled_if condition (as
 	// opposed to one the actor simply may not edit).
-	Disabled  bool     `json:"disabled,omitempty"`
-	DependsOn []string `json:"depends_on,omitempty"`
-	Options   []string `json:"options,omitempty"`
-	Lookup    string   `json:"lookup,omitempty"`
-	Choices   []Option `json:"choices,omitempty"`
-	Pattern   string   `json:"pattern,omitempty"`
-	MinLength int      `json:"min_length,omitempty"`
-	MaxLength int      `json:"max_length,omitempty"`
-	Min       string   `json:"min,omitempty"`
-	Max       string   `json:"max,omitempty"`
-	Accept    []string `json:"accept,omitempty"`
-	MaxBytes  int64    `json:"max_bytes,omitempty"`
-	MaxFiles  int      `json:"max_files,omitempty"`
-	Span      int      `json:"span,omitempty"`
-	Value     any      `json:"value,omitempty"`
-	Masked    bool     `json:"masked,omitempty"`
-	Sealed    bool     `json:"sealed,omitempty"`
-	Computed  bool     `json:"computed,omitempty"`
-	Flag      *Flag    `json:"flag,omitempty"`
-	Verdict   *Verdict `json:"verdict,omitempty"`
+	Disabled   bool     `json:"disabled,omitempty"`
+	DependsOn  []string `json:"depends_on,omitempty"`
+	Options    []string `json:"options,omitempty"`
+	Lookup     string   `json:"lookup,omitempty"`
+	Choices    []Option `json:"choices,omitempty"`
+	Searchable bool     `json:"searchable,omitempty"`
+	Clearable  bool     `json:"clearable,omitempty"`
+	Taggable   bool     `json:"taggable,omitempty"`
+	Pattern    string   `json:"pattern,omitempty"`
+	MinLength  int      `json:"min_length,omitempty"`
+	MaxLength  int      `json:"max_length,omitempty"`
+	Min        string   `json:"min,omitempty"`
+	Max        string   `json:"max,omitempty"`
+	Accept     []string `json:"accept,omitempty"`
+	MaxBytes   int64    `json:"max_bytes,omitempty"`
+	MaxFiles   int      `json:"max_files,omitempty"`
+	Span       int      `json:"span,omitempty"`
+	Value      any      `json:"value,omitempty"`
+	Masked     bool     `json:"masked,omitempty"`
+	Sealed     bool     `json:"sealed,omitempty"`
+	Computed   bool     `json:"computed,omitempty"`
+	Flag       *Flag    `json:"flag,omitempty"`
+	Verdict    *Verdict `json:"verdict,omitempty"`
 }
 
 // NodeView is a node with its status and the operations the actor may use.
@@ -254,8 +267,8 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 		return nil, fmt.Errorf("%w: stage %q", ErrNotFound, stage)
 	}
 	applicant := isApplicant(c, actor)
-	if !e.CanView(c, st, actor) && !(applicant && st.Public) {
-		return nil, forbidden("you may not view stage %q", stage)
+	if !e.CanView(c, st, actor) && !(applicant && st.Public) && !e.IsInfoAnswerer(c, actor) {
+		return nil, notYours("You cannot open this step", *st, actor)
 	}
 	ss := c.Stages[stage]
 	if ss == nil {
@@ -330,18 +343,29 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 					if !e.visibleTo(cf, in, env, actor) {
 						continue
 					}
+					// A stage rule may hide, show, enable or disable this field for this actor.
+					ruleVisible, fmode, ruleOff := true, mode, false
+					if actor.Link == nil {
+						ruleVisible, fmode, ruleOff = e.fieldAccess(&g, form, in.Name, env, actor)
+					}
+					if !ruleVisible {
+						continue
+					}
 					path := form + "." + in.Name
 					_, canEdit := editable[form][in.Name]
-					canEdit = canEdit && mode == ModeEditable
-					disabled := open && actor.Link == nil && mode == ModeEditable && in.Compute == "" && e.disabledBy(&g, cf, in, env)
+					canEdit = canEdit && fmode == ModeEditable && !ruleOff
+					disabled := open && actor.Link == nil && (mode == ModeEditable || fmode == ModeEditable) && in.Compute == "" && (e.disabledBy(&g, cf, in, env) || ruleOff)
 					anyEditable = anyEditable || canEdit
-					label := orDefault(in.Label, in.Name)
+					label, help, placeholder := orDefault(in.Label, in.Name), in.Help, in.Placeholder
 					if fo, ok := fieldOverride(env, path); ok && fo.Label != "" {
 						label = fo.Label
 					}
+					if r := g.ruleFor(form, in.Name); r != nil {
+						label, help, placeholder = orDefault(r.Label, label), orDefault(r.Help, help), orDefault(r.Placeholder, placeholder)
+					}
 					iv := InputView{Name: in.Name, Path: path, Label: label, Kind: orDefault(in.Kind, KindText),
-						Help: in.Help, Placeholder: in.Placeholder, Required: e.required(form, in, env), Editable: canEdit, Disabled: disabled, DependsOn: in.DependsOn,
-						Options: in.Options, Lookup: in.Lookup, Pattern: in.Pattern, MinLength: in.MinLength, MaxLength: in.MaxLength,
+						Help: help, Placeholder: placeholder, Required: e.required(form, in, env) || e.stageRequired(st, form, in.Name, env), Editable: canEdit, Disabled: disabled, DependsOn: in.DependsOn,
+						Options: in.Options, Lookup: in.Lookup, Searchable: in.Searchable, Clearable: in.Clearable, Taggable: in.Taggable, Pattern: in.Pattern, MinLength: in.MinLength, MaxLength: in.MaxLength,
 						Min: in.Min, Max: in.Max, Accept: in.Accept, Span: in.Span}
 					if in.Kind == KindFile {
 						iv.MaxBytes, iv.MaxFiles = e.maxUpload(in), max(1, in.MaxFiles)
@@ -401,7 +425,7 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 			switch {
 			case mode == ModeSummary:
 				gv.Mode = ModeSummary
-			case mode == ModeEditable && anyEditable:
+			case (mode == ModeEditable || anyEditable) && anyEditable:
 				gv.Mode = ModeEditable
 			default:
 				gv.Mode = ModeReadonly
@@ -460,6 +484,7 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 		v.Review = e.reviewView(c, st, ss, reveal)
 	}
 	v.Summary = st.Summary
+	v.UI = e.uiFor("task", st)
 	if st.Entries != nil && c.Stage == stage {
 		v.Entries = e.entriesView(st, ss, actor, "")
 	}
@@ -469,7 +494,11 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 	if c.Status == CaseRequiresInformation && len(c.InformationRequests) > 0 {
 		last := c.InformationRequests[len(c.InformationRequests)-1]
 		if last.RespondedAt == nil {
+			if last.DueAt != nil && e.now().After(*last.DueAt) {
+				last.Overdue = true // the due time has passed, whether or not the sweep has noticed yet
+			}
 			v.Information = &last
+			v.InformationCanAnswer = mayAnswer(last, c, actor)
 		}
 	}
 	if c.Stage == stage {
@@ -480,6 +509,13 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 		}
 		if open {
 			w.Operations = e.workOperations(c, st, ss, actor)
+			if slices.Contains(w.Operations, "resume") {
+				w.ResumeTargets = e.resumeTargets(c, st)
+			}
+			if slices.Contains(w.Operations, "request_information") {
+				w.InfoTargets = e.infoTargets(c, st)
+				w.InfoFields = e.infoPolicy(st).Fields
+			}
 		}
 		if staff || w.Assignee != "" || w.SLA != nil || w.Suspended != nil || len(w.Operations) > 0 {
 			v.Work = w

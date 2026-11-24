@@ -134,7 +134,7 @@ pipeline "claim" {
     channels ["email", "sms"]
     severity critical
     subject "{case.number} was rejected by a reviewer"
-    body "Reason: see your case page."
+    message "Reason: see your case page."
   }
   notify "note.added" {
     to ["applicant"]

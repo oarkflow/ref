@@ -1,25 +1,40 @@
 @extends("layouts/base.html")
 
 @define("content") {
-  <h1>How this works</h1>
-  <div class="card">
-    <h2>The idea in four lines</h2>
-    <ol>
-      <li><strong>A workflow</strong> is a list of stages. Starting one creates a <strong>case</strong> with a number.</li>
-      <li><strong>A stage</strong> is handled by one kind of person: the applicant (public) or staff with a role.</li>
-      <li><strong>Checks</strong> on a stage must pass before its Approve or Continue button works.</li>
-      <li><strong>My work</strong> lists cases waiting for the role you are signed in as.</li>
-    </ol>
-  </div>
-  <div class="card">
-    <h2>Users and roles</h2>
-    <p class="muted">There is no username and password here. A user is a signed token holding an id and roles. Without one you are an applicant: you can start cases and fill public stages. On a demo server the header has one-click sign-in buttons.</p>
-  </div>
-  @for(p in data) {
-    <div class="card">
-      <h2>${p.title}</h2>
-      <p class="muted">${p.description}</p>
-      <p><a class="btn" href="/guide/${p.name}">See every stage and who handles it</a> <a class="btn primary" href="/start/${p.name}">Start one</a></p>
+  <section class="lead">
+    <h1>How this works</h1>
+    <p>A workflow is a list of stages. Starting one opens a case. Each stage is handled by one kind of person, and checks must pass before it can move on.</p>
+  </section>
+  <div class="body">
+    <div class="wf-grid">
+      <section class="panel">
+        <div class="ph"><h2>Who handles a stage</h2></div>
+        <div class="pb">
+          <dl class="kv">
+            <dt>Applicant</dt><dd>The person who started the case, with or without an account.</dd>
+            <dt>Workflow users</dt><dd>Staff who hold a role such as officer, manager or admin.</dd>
+            <dt>Outside party</dt><dd>Someone with no account, such as a verifier, using a private single-use link.</dd>
+            <dt>System</dt><dd>Automatic checks and certificate issuing.</dd>
+          </dl>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="ph"><h2>Deadlines</h2></div>
+        <div class="pb">
+          <p style="margin:0">A stage can have a deadline. If it is missed the reason is recorded and notified, and admins can reset the stage, reassign it, extend the deadline or accept the delay.</p>
+        </div>
+      </section>
     </div>
-  }
+    <div class="wf-grid">
+      @for(p in data) {
+        <section class="panel">
+          <div class="ph"><h2>${p.title}</h2></div>
+          <div class="pb stack">
+            <p class="muted" style="margin:0">${p.description}</p>
+            <div class="row"><a class="btn" href="/guide/${p.name}">Every stage and who handles it</a> <a class="btn primary" href="/start/${p.name}">Start one</a></div>
+          </div>
+        </section>
+      }
+    </div>
+  </div>
 }

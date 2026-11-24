@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -94,6 +95,7 @@ func registerDatabaseResources(r *Registry) {
 			{Name: "connection_max_idle_time", Type: "duration"},
 			{Name: "ping", Type: "bool", Summary: "Verify connectivity before the app starts serving (default true; set false to open lazily, e.g. a throwaway in-memory SQLite)"},
 			{Name: "migrations", Type: "[]string", Summary: "Statements run in order at startup"},
+			{Name: "migration_files", Type: "[]string", Summary: "SQL files (relative to the application) run in order at startup, after migrations: schema and seed data kept out of the BCL. Statements end with ; at the end of a line; -- starts a comment. Write them to be re-runnable (CREATE TABLE IF NOT EXISTS, INSERT OR IGNORE)"},
 			{Name: "allowed_statements", Type: "[]string", Summary: "Permitted statement prefixes, e.g. [SELECT INSERT UPDATE]"},
 		},
 	})
@@ -102,7 +104,7 @@ func registerDatabaseResources(r *Registry) {
 func openDatabase(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("database.sql", spec.Config,
 		"driver", "dsn", "read_replica_dsn", "max_open_connections", "max_idle_connections",
-		"connection_max_lifetime", "connection_max_idle_time", "ping", "migrations", "allowed_statements",
+		"connection_max_lifetime", "connection_max_idle_time", "ping", "migrations", "migration_files", "allowed_statements",
 	); err != nil {
 		return nil, nil, err
 	}
@@ -178,7 +180,62 @@ func openDatabase(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, 
 			return nil, nil, fmt.Errorf("migration[%d]: %w", i, err)
 		}
 	}
+	for _, name := range configStrings(spec.Config, "migration_files") {
+		statements, err := readMigrationFile(spec, name)
+		if err != nil {
+			handle.closeAll()
+			return nil, nil, fmt.Errorf("migration file %s: %w", name, err)
+		}
+		for i, statement := range statements {
+			if _, err := db.ExecContext(ctx, statement); err != nil {
+				if indexExists(handle.Dialect, err) {
+					continue
+				}
+				handle.closeAll()
+				return nil, nil, fmt.Errorf("migration file %s: statement %d: %w", name, i+1, err)
+			}
+		}
+	}
 	return handle, closerFunc(handle.closeAll), nil
+}
+
+// readMigrationFile reads a SQL file of the application and splits it into
+// statements: a statement ends with ";" at the end of a line, and lines
+// starting with "--" are comments.
+func readMigrationFile(spec ResourceSpec, name string) ([]string, error) {
+	var data []byte
+	var err error
+	if spec.FS != nil {
+		data, err = fs.ReadFile(spec.FS, strings.TrimPrefix(filepath.ToSlash(filepath.Clean(name)), "/"))
+	} else {
+		path := name
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(spec.BaseDir, name)
+		}
+		data, err = os.ReadFile(path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	var cur strings.Builder
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+		cur.WriteString(line + "\n")
+		if strings.HasSuffix(trimmed, ";") {
+			if st := strings.TrimSpace(cur.String()); st != "" {
+				out = append(out, st)
+			}
+			cur.Reset()
+		}
+	}
+	if st := strings.TrimSpace(cur.String()); st != "" {
+		out = append(out, st)
+	}
+	return out, nil
 }
 
 func (d *Database) closeAll() error {

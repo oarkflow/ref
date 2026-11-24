@@ -194,6 +194,13 @@ func withWhenAliases(def *Definition) (*Definition, error) {
 	}
 	notifyCloned := false
 	for i, n := range def.Notify {
+		if n.Message != "" && n.Body == "" {
+			// `body` is a key the BCL parser never binds, so the text is written as `message`.
+			if !notifyCloned {
+				d.Notify, notifyCloned, changed = slices.Clone(def.Notify), true, true
+			}
+			d.Notify[i].Body, d.Notify[i].Message = n.Message, ""
+		}
 		if n.When == "" {
 			continue
 		}

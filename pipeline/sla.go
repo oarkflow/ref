@@ -65,7 +65,13 @@ func (e *Engine) Sweep(ctx context.Context, in *Case) (*Case, SweepResult, error
 		if ss.Suspended.Until != nil && !now.Before(*ss.Suspended.Until) {
 			e.resume(c, st, ss, "system", "hold period ended")
 			res.Changed = true
-		} else {
+		} else if st.SLA == nil || st.SLA.OnHold != "run" {
+			return c, res, nil
+		}
+	}
+	if e.sweepInformation(c, now) {
+		res.Changed = true
+		if c.Terminal() {
 			return c, res, nil
 		}
 	}
@@ -73,6 +79,9 @@ func (e *Engine) Sweep(ctx context.Context, in *Case) (*Case, SweepResult, error
 		return c, res, nil
 	}
 	sla := ss.SLA
+	if sla.Status == SLAPaused {
+		return c, res, nil // the clock is stopped (on hold, or waiting for an answer)
+	}
 	if sla.Status == SLAOnTrack && sla.WarnAt != nil && !now.Before(*sla.WarnAt) && now.Before(sla.DueAt) {
 		sla.Status = SLAWarning
 		c.emit("sla.warning", st.Name, "system", now, map[string]any{"due_at": sla.DueAt, "assignee": ss.Assignee})

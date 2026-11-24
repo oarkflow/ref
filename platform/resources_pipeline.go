@@ -47,6 +47,7 @@ type PipelineCases struct {
 	order       []string
 	org         *OrgHierarchy
 	lookups     *LookupSources
+	directory   *IdentityDirectory
 	// rolesClaim names the principal claim listing workspace roles as
 	// "unit:role" entries; a role counts for every case at or below its unit.
 	rolesClaim     string
@@ -90,6 +91,7 @@ func registerPipelineResources(r *Registry) {
 			{Name: "signing_secret", Type: "string", Summary: "HMAC key that signs issued certificates and external links (use env.required(...)); without it certificates carry a content hash only"},
 			{Name: "signer", Type: "resource", Summary: "crypto.signer that also signs certificates asymmetrically (Ed25519/RSA), verifiable offline against its JWKS"},
 			{Name: "seal_secret", Type: "string", Summary: "Key that encrypts sealed inputs (AES-256-GCM); required when a pipeline declares sealed inputs"},
+			{Name: "directory_resource", Type: "string", Summary: "identity.users resource whose members are the workers of every pipeline: role recipients (role:admin, asked people), assignment and routing see the people who sign in"},
 			{Name: "lookup_resource", Type: "string", Summary: "lookup.sources resource: serves `lookup` inputs from static lists, SQL queries or HTTP APIs; sets it does not define fall back to org_resource"},
 			{Name: "org_resource", Type: "string", Summary: "org.hierarchy resource: resolves `lookup` inputs and scopes work queues to the caller's jurisdiction"},
 			{Name: "allow_anonymous", Type: "bool", Default: "false", Summary: "Let anonymous callers start public pipelines; they get an access key to return to their case"},
@@ -109,7 +111,7 @@ func registerPipelineResources(r *Registry) {
 
 func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("pipeline.cases", spec.Config,
-		"pipelines", "database", "table_prefix", "migrate", "signing_secret", "signer", "seal_secret", "org_resource", "lookup_resource", "allow_anonymous",
+		"pipelines", "database", "table_prefix", "migrate", "signing_secret", "signer", "seal_secret", "org_resource", "lookup_resource", "directory_resource", "allow_anonymous",
 		"event_max_attempts", "event_retry_base", "notify_channels", "storage", "storage_prefix", "max_upload_bytes", "confirm_ttl", "workspace_roles_claim", "liveness_url", "liveness_token",
 		pipelineDefinitionsKey, scriptIDsKey); err != nil {
 		return nil, nil, err
@@ -150,6 +152,13 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 			return nil, nil, fmt.Errorf("pipeline.cases %q: org_resource %q is not an org.hierarchy resource", spec.Name, orgName)
 		}
 		p.org = org
+	}
+	if dirName := configString(spec.Config, "directory_resource", ""); dirName != "" {
+		dir, ok := spec.resolved[dirName].(*IdentityDirectory)
+		if !ok {
+			return nil, nil, fmt.Errorf("pipeline.cases %q: directory_resource %q is not an identity.users resource", spec.Name, dirName)
+		}
+		p.directory = dir
 	}
 	if lookupName := configString(spec.Config, "lookup_resource", ""); lookupName != "" {
 		src, ok := spec.resolved[lookupName].(*LookupSources)
@@ -228,6 +237,9 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 		}
 		engine.SealKey = sealKey
 		engine.Workload = p.workload
+		if p.directory != nil {
+			engine.Directory = p.directory.Workers
+		}
 		engine.MaxUploadBytes = maxUpload
 		engine.ConfirmTTL = confirmTTL
 		if p.files != nil {
@@ -444,32 +456,84 @@ func (p *PipelineCases) Pipelines() []string { return slices.Clone(p.order) }
 // lookup resolves an input's lookup set: from the lookup.sources resource when
 // it defines the set, else against the case's org unit.
 func (p *PipelineCases) lookup(set string, c *pipeline.Case) []pipeline.Option {
-	if opts, ok := p.sourceLookup(set, nil); ok {
-		return opts
+	return p.resolveSet(set, c, nil)
+}
+
+// lookupFor is lookup narrowed by the values of the inputs a field depends on.
+func (p *PipelineCases) lookupFor(set string, c *pipeline.Case, deps map[string]any) []pipeline.Option {
+	return p.resolveSet(set, c, deps)
+}
+
+// resolveSet serves a set from its datasource when lookup.sources defines it,
+// handing the datasource the case's workspace so a query or API call can be
+// scoped to it ({facility} in a filter, a SQL arg or a path). A set that asks
+// for merge also gets the workspace's own entries; a set the datasource does
+// not define comes from the org hierarchy alone.
+func (p *PipelineCases) resolveSet(set string, c *pipeline.Case, deps map[string]any) []pipeline.Option {
+	var opts []pipeline.Option
+	if p.lookups != nil && p.lookups.Has(set) {
+		all := make(map[string]any, len(deps)+4)
+		maps.Copy(all, deps)
+		maps.Copy(all, p.workspaceFacts(c))
+		var err error
+		if opts, err = p.lookups.Resolve(context.Background(), set, all); err != nil {
+			slog.Warn("lookup failed", "resource", p.name, "set", set, "error", err)
+			opts = nil
+		}
+		if !p.lookups.Merges(set) {
+			return opts
+		}
 	}
+	return mergeOptions(opts, p.orgLookup(set, c, deps))
+}
+
+// workspaceFacts are the case's workspace as datasource context: "@workspace"
+// is its unit and each level name ("@facility", "@organization"...) the
+// ancestor-or-self of that level.
+func (p *PipelineCases) workspaceFacts(c *pipeline.Case) map[string]any {
+	out := map[string]any{"@workspace": c.OrgUnit}
+	if p.org == nil || c.OrgUnit == "" {
+		return out
+	}
+	snap := p.org.Snapshot(c.TenantID)
+	for _, id := range snap.Tree.PathIDs(c.OrgUnit) {
+		if n, ok := snap.Tree.Get(id); ok {
+			out["@"+n.Level] = n.ID
+		}
+	}
+	return out
+}
+
+// orgLookup resolves a set from the org hierarchy's reference data.
+func (p *PipelineCases) orgLookup(set string, c *pipeline.Case, deps map[string]any) []pipeline.Option {
 	if p.org == nil {
 		return nil
 	}
 	snap := p.org.Snapshot(c.TenantID)
 	items := snap.Lookups.Resolve(snap.Tree, hierarchy.LookupQuery{Set: set, NodeID: c.OrgUnit})
-	out := make([]pipeline.Option, len(items))
-	for i, it := range items {
-		out[i] = pipeline.Option{Value: it.Code, Label: orDefaultString(it.Label, it.Code)}
+	form, scope := splitLookupDeps(deps)
+	q := strings.ToLower(Stringify(scope["q"]))
+	out := make([]pipeline.Option, 0, len(items))
+	for _, it := range items {
+		label := orDefaultString(it.Label, it.Code)
+		if q != "" && !strings.Contains(strings.ToLower(label+" "+it.Code), q) {
+			continue
+		}
+		if len(form) == 0 || lookupMatchesDeps(it.Attrs, form) {
+			out = append(out, pipeline.Option{Value: it.Code, Label: label})
+		}
 	}
 	return out
 }
 
-// sourceLookup asks the lookup.sources resource, if it defines the set.
-func (p *PipelineCases) sourceLookup(set string, deps map[string]any) ([]pipeline.Option, bool) {
-	if p.lookups == nil || !p.lookups.Has(set) {
-		return nil, false
+// mergeOptions appends the options of extra that base does not already have.
+func mergeOptions(base, extra []pipeline.Option) []pipeline.Option {
+	for _, o := range extra {
+		if !slices.ContainsFunc(base, func(b pipeline.Option) bool { return b.Value == o.Value }) {
+			base = append(base, o)
+		}
 	}
-	opts, err := p.lookups.Resolve(context.Background(), set, deps)
-	if err != nil {
-		slog.Warn("lookup failed", "resource", p.name, "set", set, "error", err)
-		return nil, true
-	}
-	return opts, true
+	return base
 }
 
 // actorAt is the caller as a case at orgUnit sees it: the principal's own
@@ -523,27 +587,15 @@ func (p *PipelineCases) actorAnywhere(principal Principal) pipeline.Actor {
 // attribute named after each dependency equals that dependency's value (an
 // attribute may also list several accepted values). An entry without the
 // attribute is excluded: a dependent choice must say what it depends on.
-func (p *PipelineCases) lookupFor(set string, c *pipeline.Case, deps map[string]any) []pipeline.Option {
-	if opts, ok := p.sourceLookup(set, deps); ok {
-		return opts
-	}
-	if p.org == nil {
-		return nil
-	}
-	snap := p.org.Snapshot(c.TenantID)
-	items := snap.Lookups.Resolve(snap.Tree, hierarchy.LookupQuery{Set: set, NodeID: c.OrgUnit})
-	out := make([]pipeline.Option, 0, len(items))
-	for _, it := range items {
-		if lookupMatchesDeps(it.Attrs, deps) {
-			out = append(out, pipeline.Option{Value: it.Code, Label: orDefaultString(it.Label, it.Code)})
-		}
-	}
-	return out
-}
-
 func lookupMatchesDeps(attrs map[string]any, deps map[string]any) bool {
 	for dep, want := range deps {
 		have, ok := attrs[dep]
+		if !ok {
+			// A dependency written form.input matches the attribute named after the input too.
+			if _, bare, dotted := strings.Cut(dep, "."); dotted {
+				have, ok = attrs[bare]
+			}
+		}
 		if !ok || want == nil {
 			return false
 		}
@@ -644,8 +696,8 @@ func (p *PipelineCases) workload(ctx context.Context, name string) (map[string]p
 
 // orgCovers reports whether any of a worker's units is the case's unit or
 // one of its ancestors.
-func (p *PipelineCases) orgCovers(units []string, unit string) bool {
-	return p.org.Snapshot("").Tree.Covers(units, unit)
+func (p *PipelineCases) orgCovers(tenant string, units []string, unit string) bool {
+	return p.org.Snapshot(tenant).Tree.Covers(units, unit)
 }
 
 // dispatch runs the pipeline's `on` hooks for the events a committed

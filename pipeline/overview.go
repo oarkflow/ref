@@ -43,8 +43,9 @@ type Overview struct {
 	Fields   []SummaryField  `json:"fields"`
 	Work     *WorkView       `json:"work,omitempty"`
 	// Information is the pending request for more information, if any.
-	Information *InformationRequest `json:"information,omitempty"`
-	Log         []LogEntry          `json:"log"`
+	Information          *InformationRequest `json:"information,omitempty"`
+	InformationCanAnswer bool                `json:"information_can_answer,omitempty"`
+	Log                  []LogEntry          `json:"log"`
 	// Breaches are the missed deadlines and how each was settled (staff only).
 	Breaches []BreachRecord `json:"breaches,omitempty"`
 	// CanWork: the viewer has something to do on the current stage.
@@ -56,7 +57,9 @@ type Overview struct {
 	Party *PartyView `json:"party,omitempty"`
 	// Certificates issued on the case.
 	Certificates []Certificate `json:"certificates,omitempty"`
-	CanWork bool `json:"can_work"`
+	// UI is the workflow's look and the overview's layout.
+	UI      *UIView `json:"ui,omitempty"`
+	CanWork bool    `json:"can_work"`
 	// NeedsStart: the viewer must press Start before working.
 	NeedsStart bool `json:"needs_start"`
 }
@@ -68,7 +71,7 @@ func (e *Engine) Overview(c *Case, actor Actor) (*Overview, error) {
 		return nil, err
 	}
 	staff := e.staff(actor)
-	o := &Overview{Case: v.Case, Stage: v.Stage, Progress: v.Progress, Work: v.Work, Fields: []SummaryField{}, Log: []LogEntry{}, Certificates: v.Certificates}
+	o := &Overview{UI: e.uiFor("overview", nil), Case: v.Case, Stage: v.Stage, Progress: v.Progress, Work: v.Work, Fields: []SummaryField{}, Log: []LogEntry{}, Certificates: v.Certificates}
 	if cur, ok := e.C.Stage(c.Stage); ok {
 		if ss := c.Stages[c.Stage]; ss != nil {
 			o.Stage = StageView{Name: cur.Name, Title: cur.Title, Kind: cur.Kind, Description: cur.Description, Status: ss.Status, DueAt: ss.DueAt,
@@ -79,7 +82,7 @@ func (e *Engine) Overview(c *Case, actor Actor) (*Overview, error) {
 		}
 	}
 	if c.Status == CaseRequiresInformation {
-		o.Information = v.Information
+		o.Information, o.InformationCanAnswer = v.Information, v.InformationCanAnswer
 	}
 	if cur, ok := e.C.Stage(c.Stage); ok && c.Stages[c.Stage] != nil {
 		cs := c.Stages[c.Stage]

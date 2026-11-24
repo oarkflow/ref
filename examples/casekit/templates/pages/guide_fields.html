@@ -1,0 +1,39 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <div class="pagebar">
+    <div class="titles">
+      <a class="crumb" href="/guide/${name}">&larr; ${title}</a>
+      <h1>Field access by stage</h1>
+      <div class="sub">The same forms move through the workflow with their data. This table shows what each stage does with every field: who sees it, who may change it, and when.</div>
+    </div>
+  </div>
+  <div class="body">
+    <section class="panel flush">
+      <div class="tbl-wrap">
+        <table>
+          <thead>
+            <tr><th>Stage</th><th>Group</th><th>Field</th><th>Mode</th><th>Who sees it</th><th>Who may change it</th><th>Conditions</th></tr>
+          </thead>
+          <tbody>
+            @for(r in rows) {
+              <tr>
+                <td><strong>${r.stage_title}</strong><div class="small">${r.actors}</div></td>
+                <td>${r.group}</td>
+                <td>${r.label}<div class="small mono">${r.form}.${r.field}</div></td>
+                <td>
+                  @if(r.mode == "editable") { <span class="badge b-ok">editable</span> }
+                  @if(r.mode == "readonly") { <span class="badge">read-only</span> }
+                  @if(r.mode == "hidden") { <span class="badge b-bad">hidden</span> }
+                </td>
+                <td>${r.sees}</td>
+                <td>${r.edits}</td>
+                <td>@if(length(r.notes) > 0) { ${r.notes | join "; "} }</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+}

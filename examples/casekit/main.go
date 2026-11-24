@@ -25,6 +25,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"syscall"
 	"time"
 
@@ -67,13 +68,24 @@ func main() {
 			log.Printf("casekit: DEMO stub faceworker at %s (not a real liveness model)", url)
 		}
 	}
+	// The first administrator is created on an empty user directory. Without a
+	// password in the environment, make one and say so once.
+	if os.Getenv("CASEKIT_ADMIN_PASSWORD") == "" {
+		pw := randomSecret()[:20]
+		os.Setenv("CASEKIT_ADMIN_PASSWORD", pw)
+		email := os.Getenv("CASEKIT_ADMIN_EMAIL")
+		if email == "" {
+			email = "admin@casekit.local"
+		}
+		log.Printf("casekit: first administrator %s / %s (only used while no one has an account yet; set CASEKIT_ADMIN_PASSWORD to choose it)", email, pw)
+	}
 	_ = os.MkdirAll(".data", 0o700)
 	// Pages are SPL templates under templates/, rendered by the platform's routes.
 	renderer := serve.NewRenderer(serve.RendererConfig{
 		TemplatesDir: filepath.Join(filepath.Dir(*cfgPath), "templates"),
 		Reload:       *demo,
 		Env:          map[bool]string{true: "development", false: "production"}[*demo],
-		Globals:      map[string]any{"title": "Casekit", "appName": "Casekit", "page": "", "error": "", "success": "", "intro": map[string]any{"title": "", "image": "", "image_alt": "", "content": "", "button": "Start", "documents": []any{}}, "stages": []any{}, "name": "", "description": ""},
+		Globals:      map[string]any{"title": "Casekit", "appName": "Casekit", "page": "", "error": "", "success": "", "ui": map[string]any{"accent": "", "density": "", "brand": ""}, "workspace": map[string]any{"level": "", "label": "", "required": false}, "intro": map[string]any{"title": "", "image": "", "image_alt": "", "content": "", "button": "Start", "documents": []any{}}, "stages": []any{}, "name": "", "description": ""},
 	})
 	opts := platform.DefaultLoadOptions()
 	opts.Templates = renderer
@@ -99,14 +111,71 @@ func main() {
 		log.Fatalf("casekit: mount: %v", err)
 	}
 	if *demo {
-		// Demo only: hand out signed staff tokens so the UI can sign in with a
-		// click. The secret is random per run, so tokens cannot be made offline.
-		tokens := map[string]string{}
-		for _, role := range []string{"officer", "manager", "director", "admin"} {
-			tokens[role] = issueToken(app, fmt.Sprintf(`{"sub":"demo-%s","roles":[%q]}`, role, role))
+		// Demo only: signed tokens for ready-made accounts so the UI can sign in with a click.
+		// The secret is random per run, so tokens cannot be made offline.
+		type account struct {
+			ID, Label, Group, Hint string
+			Claims                 string
+		}
+		list := []account{
+			{"officer", "Officer", "Workflow staff", "reviews onboarding and certificate cases", `{"sub":"demo-officer","roles":["officer"]}`},
+			{"manager", "Manager", "Workflow staff", "approves expenses and certificates", `{"sub":"demo-manager","roles":["manager"]}`},
+			{"director", "Director", "Workflow staff", "approves large expenses", `{"sub":"demo-director","roles":["director"]}`},
+			{"admin", "Admin", "Workflow staff", "takes a stand on missed deadlines; administers every workspace", `{"sub":"demo-admin","roles":["admin"],"org_units":["himal"]}`},
+			{"city_nurse", "Nurse", "City General Hospital", "records encounters", `{"sub":"demo-city-nurse","roles":["nurse"],"org_units":["city"]}`},
+			{"city_coder", "Coder", "City General Hospital", "assigns CPT codes", `{"sub":"demo-city-coder","roles":["coder"],"org_units":["city"]}`},
+			{"city_supervisor", "Supervisor", "City General Hospital", "signs off", `{"sub":"demo-city-supervisor","roles":["supervisor"],"org_units":["city"]}`},
+			{"city_admin", "Workspace admin", "City General Hospital", "manages this hospital's providers, nurses, codes and settings", `{"sub":"demo-city-admin","roles":["admin","supervisor"],"org_units":["city"]}`},
+			{"river_nurse", "Nurse", "Riverside Clinic", "records encounters", `{"sub":"demo-river-nurse","roles":["nurse"],"org_units":["river"]}`},
+			{"river_coder", "Coder", "Riverside Clinic", "assigns CPT codes", `{"sub":"demo-river-coder","roles":["coder"],"org_units":["river"]}`},
+			{"river_supervisor", "Supervisor", "Riverside Clinic", "signs off", `{"sub":"demo-river-supervisor","roles":["supervisor"],"org_units":["river"]}`},
+			{"river_admin", "Workspace admin", "Riverside Clinic", "manages this clinic's reference data and settings", `{"sub":"demo-river-admin","roles":["admin"],"org_units":["river"]}`},
+		}
+		// Each account is a real member of the user directory (a password nobody knows), and its token is
+		// issued for that member: role recipients, assignment and the people lists then find it like anyone else.
+		var directory *platform.IdentityDirectory
+		if r, ok := app.Resource("people"); ok {
+			directory, _ = r.(*platform.IdentityDirectory)
+		}
+		tokens, accounts := map[string]string{}, []map[string]string{}
+		for _, a := range list {
+			if directory != nil {
+				var claims map[string]any
+				if err := json.Unmarshal([]byte(a.Claims), &claims); err != nil {
+					log.Fatalf("casekit: demo account %s: %v", a.ID, err)
+				}
+				var roles []string
+				for _, r := range claims["roles"].([]any) {
+					roles = append(roles, fmt.Sprint(r))
+				}
+				unit := ""
+				if units, ok := claims["org_units"].([]any); ok && len(units) > 0 {
+					unit = fmt.Sprint(units[0])
+				}
+				email := a.ID + "@demo.local"
+				// The directory may still be seeding its first administrator: retry a busy database briefly.
+				var id string
+				var err error
+				for try := 0; try < 20; try++ {
+					if id, err = directory.EnsureMember(context.Background(), "casekit", email, a.Label+" ("+a.Group+")", roles, unit); err == nil || !strings.Contains(err.Error(), "concurrent change") {
+						break
+					}
+					time.Sleep(150 * time.Millisecond)
+				}
+				if err != nil {
+					log.Fatalf("casekit: demo account %s: %v", a.ID, err)
+				}
+				claims["sub"], claims["email"], claims["name"] = id, email, a.Label+" · "+a.Group
+				raw, _ := json.Marshal(claims)
+				a.Claims = string(raw)
+			}
+			tok := issueToken(app, a.Claims)
+			tokens[a.ID] = tok
+			accounts = append(accounts, map[string]string{"id": a.ID, "label": a.Label, "group": a.Group, "hint": a.Hint, "token": tok})
 		}
 		server.Get("/demo/tokens", func(c fh.Ctx) error { return c.JSON(tokens) })
-		log.Printf("casekit: DEMO sign-in buttons enabled (officer, manager, director)")
+		server.Get("/demo/accounts", func(c fh.Ctx) error { return c.JSON(accounts) })
+		log.Printf("casekit: DEMO sign-in buttons enabled (%d accounts)", len(list))
 	}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -148,7 +217,11 @@ func issueToken(app *platform.Platform, claimsJSON string) string {
 	if !ok {
 		log.Fatal("-token: the \"jwt\" resource cannot issue tokens")
 	}
-	principal := platform.Principal{ID: fmt.Sprint(claims["sub"])}
+	// One tenant: everyone, whether signed in by password or by token, shares the same workspaces.
+	if _, ok := claims["tenant_id"]; !ok {
+		claims["tenant_id"] = "casekit"
+	}
+	principal := platform.Principal{ID: fmt.Sprint(claims["sub"]), TenantID: fmt.Sprint(claims["tenant_id"])}
 	if roles, ok := claims["roles"].([]any); ok {
 		for _, r := range roles {
 			principal.Roles = append(principal.Roles, fmt.Sprint(r))

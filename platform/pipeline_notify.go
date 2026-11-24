@@ -126,7 +126,9 @@ func (p *PipelineCases) sendNotification(ctx context.Context, platform *Platform
 		items[i] = map[string]any{
 			"id": n.ID, "event": n.Event, "stage": n.Stage, "severity": n.Severity, "subject": n.Subject, "body": n.Body,
 			"case": map[string]any{"id": n.CaseID, "number": n.CaseNumber, "pipeline": n.Pipeline},
-			"at":   n.At.Format(time.RFC3339), "deferred": n.Deferred,
+			// The same, flat, for a channel that stores one row per item (database.insert_many reads flat keys).
+			"case_id": n.CaseID, "case_number": n.CaseNumber, "pipeline": n.Pipeline,
+			"at": n.At.Format(time.RFC3339), "deferred": n.Deferred,
 		}
 	}
 	input := map[string]any{

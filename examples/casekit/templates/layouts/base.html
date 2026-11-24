@@ -9,10 +9,14 @@
   @block("head") {}
 </head>
 <body>
-  @include("components/header.html")
-  <main class="wrap" id="app" tabindex="-1">
-    @block("content") {}
-  </main>
+  <div class="shell">
+    @include("components/header.html")
+    <div class="content">
+      <main id="app" tabindex="-1">
+        @block("content") {}
+      </main>
+    </div>
+  </div>
   <script src="/static/js/app.js"></script>
   @block("scripts") {}
 </body>

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/oarkflow/ref/pipeline"
 	"io"
 	"slices"
 	"sort"
@@ -1277,4 +1278,76 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// Workers lists everyone with an active membership as a pipeline worker (the user id,
+// their roles, their org unit), so role-based recipients and assignment screens see the
+// people who actually sign in.
+func (d *IdentityDirectory) Workers(ctx context.Context) []pipeline.Worker {
+	rows, err := queryRows(ctx, d.db.DB, d.q(`SELECT u.id, u.name, u.email, m.roles, m.org_unit
+		FROM %s m JOIN %s u ON u.id = m.user_id WHERE u.status = $1 ORDER BY u.email`, d.memberships, d.users), []any{UserActive})
+	if err != nil {
+		return nil
+	}
+	out := make([]pipeline.Worker, 0, len(rows))
+	for _, row := range rows {
+		w := pipeline.Worker{ID: Stringify(row["id"]), Name: orDefaultString(Stringify(row["name"]), Stringify(row["email"])), Roles: decodeRoles(row["roles"])}
+		if unit := Stringify(row["org_unit"]); unit != "" {
+			w.OrgUnits = []string{unit}
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+// EnsureMember makes sure email is an active account holding roles at orgUnit in
+// tenant, creating it (with a password nobody knows) or bringing its membership up
+// to date, and returns the user id. It is for hosts that mint tokens for accounts
+// they provision themselves (a demo's ready-made accounts), so that those accounts
+// are real members of the directory: role recipients and assignment find them.
+func (d *IdentityDirectory) EnsureMember(ctx context.Context, tenant, email, name string, roles []string, orgUnit string) (string, error) {
+	email = normalizeEmail(email)
+	if !validEmail(email) || tenant == "" {
+		return "", invalidInput("a valid email and a tenant are required")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", databaseFailure(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := d.clock().UnixMilli()
+	user, err := d.userBy(ctx, tx, "email", email)
+	if err != nil {
+		return "", databaseFailure(err)
+	}
+	if user == nil {
+		hash, err := HashPasswordArgon2id(newToken(24), d.params)
+		if err != nil {
+			return "", err
+		}
+		user = &IdentityUser{ID: newPrefixedID("usr")}
+		if _, err := tx.ExecContext(ctx, d.q(`INSERT INTO %s (id, email, name, password_hash, status, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`, d.users), user.ID, email, name, hash, UserActive, now, now); err != nil {
+			return "", databaseFailure(err)
+		}
+	}
+	m, err := d.membership(ctx, tx, tenant, user.ID)
+	if err != nil {
+		return "", databaseFailure(err)
+	}
+	if m == nil {
+		err = d.insertMembership(ctx, tx, IdentityMembership{TenantID: tenant, UserID: user.ID, Roles: roles, OrgUnit: orgUnit}, now)
+	} else {
+		_, err = tx.ExecContext(ctx, d.q(`UPDATE %s SET roles = $1, org_unit = $2, updated_at = $3 WHERE tenant_id = $4 AND user_id = $5`, d.memberships),
+			encodeRoles(roles), orgUnit, now, tenant, user.ID)
+	}
+	if err != nil {
+		return "", databaseFailure(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", databaseFailure(err)
+	}
+	return user.ID, nil
 }

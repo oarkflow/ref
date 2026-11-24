@@ -21,6 +21,10 @@ type Load struct {
 
 // workers merges the definition's worker blocks with the host directory
 // (host entries win), sorted by id for deterministic routing.
+// Roster is everyone who can be given work: the workflow's own workers and the
+// host's directory, as the screens offer them.
+func (e *Engine) Roster(ctx context.Context) []Worker { return e.workers(ctx) }
+
 func (e *Engine) workers(ctx context.Context) []Worker {
 	byID := map[string]Worker{}
 	for _, w := range e.C.Def.Workers {
@@ -117,7 +121,7 @@ func (e *Engine) eligible(c *Case, st *Stage, r *Routing, w Worker, roles []stri
 				return "lacks skill " + s
 			}
 		}
-		if r.SameOrgUnit && c.OrgUnit != "" && !e.inOrg(w, c.OrgUnit) {
+		if r.SameOrgUnit && c.OrgUnit != "" && !e.inOrg(c, w, c.OrgUnit) {
 			return "outside org unit " + c.OrgUnit
 		}
 	}
@@ -131,9 +135,9 @@ func (e *Engine) eligible(c *Case, st *Stage, r *Routing, w Worker, roles []stri
 	return ""
 }
 
-func (e *Engine) inOrg(w Worker, unit string) bool {
+func (e *Engine) inOrg(c *Case, w Worker, unit string) bool {
 	if e.OrgCovers != nil {
-		return e.OrgCovers(w.OrgUnits, unit)
+		return e.OrgCovers(c.TenantID, w.OrgUnits, unit)
 	}
 	return slices.Contains(w.OrgUnits, unit)
 }
@@ -337,7 +341,7 @@ func (e *Engine) Claim(ctx context.Context, in *Case, actor Actor, stage string)
 		return nil, badState("stage %q is not claimable", stage)
 	}
 	if !e.CanAct(c, st, actor) {
-		return nil, forbidden("you may not work stage %q", stage)
+		return nil, notYours("You cannot take this step", *st, actor)
 	}
 	if ss.Assignee == actor.ID {
 		return nil, badState("you already hold this case")
@@ -471,7 +475,7 @@ func (e *Engine) Suspend(ctx context.Context, in *Case, actor Actor, stage, reas
 	}
 	now := e.now()
 	ss.Suspended = &Suspension{Reason: reason, By: actor.ID, At: now, Until: until}
-	if ss.SLA != nil && ss.SLA.Status != SLABreached {
+	if ss.SLA != nil && ss.SLA.Status != SLABreached && ss.SLA.Status != SLAPaused && holdPausesSLA(st) {
 		ss.SLA.Status = SLAPaused
 	}
 	c.History = append(c.History, Entry{At: now, Actor: actor.ID, Stage: stage, Action: "suspend", Comment: reason})
@@ -497,6 +501,170 @@ func (e *Engine) Resume(ctx context.Context, in *Case, actor Actor, stage, comme
 	return c, nil
 }
 
+// ResumeOptions say where released work goes. To is "same" (the default: carry on
+// at this stage) or "previous" (send it back to the stage it came from). Assignee
+// optionally names the person who takes it; without one it goes to the stage's
+// own routing or queue (or, staying put, stays with whoever held it).
+type ResumeOptions struct {
+	To       string `json:"to,omitempty"`
+	Assignee string `json:"assignee,omitempty"`
+}
+
+// ResumeTarget describes one place a hold can be released to, for the screen.
+type ResumeTarget struct {
+	To    string `json:"to"`
+	Stage string `json:"stage"`
+	Title string `json:"title"`
+	// Assignee says whether a person may be named: optional, required or none.
+	Assignee string `json:"assignee,omitempty"`
+}
+
+// previousStage is the stage the case was in before the current visit began.
+func (e *Engine) previousStage(c *Case, stage string) (string, bool) {
+	open := -1
+	for i := len(c.Timeline) - 1; i >= 0; i-- {
+		if c.Timeline[i].Stage == stage && c.Timeline[i].LeftAt == nil {
+			open = i
+			break
+		}
+	}
+	for i := open - 1; i >= 0; i-- {
+		v := c.Timeline[i]
+		if v.Stage != stage && v.Outcome != "skipped" {
+			return v.Stage, true
+		}
+	}
+	return "", false
+}
+
+func (e *Engine) resumeTargets(c *Case, st *Stage) []ResumeTarget {
+	pol := e.releasePolicy(st)
+	var out []ResumeTarget
+	if allows(pol.Targets, "same") {
+		out = append(out, ResumeTarget{To: "same", Stage: st.Name, Title: orDefault(st.Title, st.Name), Assignee: pol.Assignee})
+	}
+	if allows(pol.Targets, "previous") {
+		if prev, ok := e.previousStage(c, st.Name); ok {
+			if ps, found := e.C.Stage(prev); found {
+				out = append(out, ResumeTarget{To: "previous", Stage: prev, Title: orDefault(ps.Title, ps.Name), Assignee: pol.Assignee})
+			}
+		}
+	}
+	return out
+}
+
+// ResumeTo lifts a hold and says where the work goes. "same" carries on at this
+// stage, with or without handing it to a named person. "previous" releases it back
+// to the stage it came from as new work: the stage starts again from nothing (it
+// must be started, its deadline starts afresh, checks and verdicts are made again,
+// nobody holds it unless one is named), while the case data stays as it is and
+// the history records what happened here and why.
+func (e *Engine) ResumeTo(ctx context.Context, in *Case, actor Actor, stage, comment string, opts ResumeOptions) (*Case, error) {
+	to := strings.ToLower(strings.TrimSpace(opts.To))
+	if to == "" {
+		to = "same"
+	}
+	if cst, ok := e.C.Stage(stage); ok && (to == "same" || to == "previous") {
+		pol := e.releasePolicy(cst)
+		if !allows(pol.Targets, to) {
+			return nil, badState("this stage may release work to %s, not to %q", strings.Join(pol.Targets, " or "), to)
+		}
+		switch who := strings.TrimSpace(opts.Assignee); {
+		case pol.Assignee == "none" && who != "":
+			return nil, badState("this stage does not let you name a person when releasing work")
+		case pol.Assignee == "required" && who == "":
+			return nil, &ValidationError{Message: "choose who takes it", Fields: []FieldError{{Path: "assignee", Rule: "required", Message: "name the person who takes the work"}}}
+		}
+	}
+	if to == "same" {
+		c, err := e.Resume(ctx, in, actor, stage, comment)
+		if err != nil {
+			return nil, err
+		}
+		if who := strings.TrimSpace(opts.Assignee); who != "" {
+			st, ss, err := e.stageOpen(c, stage)
+			if err != nil {
+				return nil, err
+			}
+			if who != ss.Assignee {
+				if err := e.assignTo(ctx, c, st, ss, actor, who, "assign", orDefault(comment, "on resuming")); err != nil {
+					return nil, err
+				}
+			}
+		}
+		return c, nil
+	}
+	if to != "previous" {
+		return nil, badState("release to %q is not possible: use same or previous", opts.To)
+	}
+	c := in.Clone()
+	st, ss, err := e.stageOpen(c, stage)
+	if err != nil {
+		return nil, err
+	}
+	if actor.ID != "system" && !actor.HasAnyRole(resumeRoles(st)) {
+		return nil, forbidden("you may not release stage %q", stage)
+	}
+	if ss.Suspended == nil {
+		return nil, badState("stage %q is not on hold", stage)
+	}
+	target, ok := e.previousStage(c, stage)
+	if !ok {
+		return nil, badState("there is no earlier stage to send %q back to", stage)
+	}
+	tst, _ := e.C.Stage(target)
+	now := e.now()
+	held := ss.Suspended
+	if v := c.openVisit(stage); v != nil {
+		v.SuspendedSeconds += int64(now.Sub(held.At).Seconds())
+	}
+	// This stage lets go: the hold ends, the clock stops, nobody holds it, it is not started.
+	ss.Suspended = nil
+	ss.Status = StagePending
+	if ss.SLA != nil && ss.SLA.Status != SLABreached {
+		ss.SLA.Status = SLAMet
+	}
+	if ss.Assignee != "" {
+		ss.PreviousAssignee, ss.Assignee, ss.AssignedAt = ss.Assignee, "", nil
+	}
+	ss.StartedAt, ss.StartedBy = nil, ""
+	c.closeVisit(stage, "released", now)
+	c.History = append(c.History, Entry{At: now, Actor: actor.ID, Stage: stage, Action: "resume", From: stage, To: target, Comment: strings.TrimSpace(comment + " (hold ended: " + held.Reason + ")")})
+	c.emit("resumed", stage, actor.ID, now, map[string]any{"to": target})
+
+	// The earlier stage opens as new work: a fresh start, deadline, checks, flags and acknowledgements.
+	ts := c.Stages[target]
+	if ts != nil {
+		ts.Flags, ts.Review, ts.Suspended, ts.ReturnedFrom = nil, nil, nil, ""
+		kept := c.Acknowledgements[:0]
+		for _, a := range c.Acknowledgements {
+			if a.Stage != target {
+				kept = append(kept, a)
+			}
+		}
+		c.Acknowledgements = kept
+	}
+	if e.releasePolicy(st).RestoreData && ts != nil && ts.Visits > 0 {
+		// Configured to put the data back to how the earlier stage found it (possibly empty); the history keeps what was there.
+		if c.Data = cloneData(ts.EntryData); c.Data == nil {
+			c.Data = map[string]any{}
+		}
+	}
+	c.freshEntry = true
+	err = e.enterStage(ctx, c, target, actor, 0)
+	c.freshEntry = false
+	if err != nil {
+		return nil, err
+	}
+	if who := strings.TrimSpace(opts.Assignee); who != "" && c.Stage == target {
+		if err := e.assignTo(ctx, c, tst, c.Stages[target], actor, who, "assign", orDefault(comment, "released from "+stage)); err != nil {
+			return nil, err
+		}
+	}
+	c.UpdatedAt = now
+	return c, nil
+}
+
 // resumeRoles are the roles that may lift a hold: ResumeRoles, else SuspendRoles.
 func resumeRoles(st *Stage) []string {
 	if len(st.ResumeRoles) > 0 {
@@ -512,24 +680,7 @@ func (e *Engine) resume(c *Case, st *Stage, ss *StageState, actor, comment strin
 	if v := c.openVisit(st.Name); v != nil {
 		v.SuspendedSeconds += int64(now.Sub(held.At).Seconds())
 	}
-	if ss.SLA != nil && ss.SLA.Status != SLABreached {
-		var cal *WorkCalendar
-		if st.SLA != nil {
-			cal = e.calendar(st.SLA.Calendar)
-		}
-		shift := cal.Between(held.At, now)
-		ss.SLA.DueAt = cal.Add(ss.SLA.DueAt, shift)
-		if ss.SLA.WarnAt != nil {
-			w := cal.Add(*ss.SLA.WarnAt, shift)
-			ss.SLA.WarnAt = &w
-		}
-		ss.SLA.Status = SLAOnTrack
-		if ss.SLA.WarnAt != nil && !now.Before(*ss.SLA.WarnAt) {
-			ss.SLA.Status = SLAWarning
-		}
-		due := ss.SLA.DueAt
-		ss.DueAt = &due
-	}
+	e.unpauseSLA(st, ss, held.At, now)
 	c.History = append(c.History, Entry{At: now, Actor: actor, Stage: st.Name, Action: "resume", Comment: comment})
 	c.emit("resumed", st.Name, actor, now, nil)
 	c.UpdatedAt = now

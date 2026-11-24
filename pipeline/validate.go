@@ -80,7 +80,7 @@ func (c *Compiled) coerce(form string, in Input, raw any) (any, string, string) 
 		}
 		out := make([]any, 0, len(values))
 		for _, v := range values {
-			if len(in.Options) > 0 && !slices.Contains(in.Options, v) {
+			if len(in.Options) > 0 && !in.Taggable && !slices.Contains(in.Options, v) {
 				return nil, "option", fmt.Sprintf("%q is not a valid choice for %s", v, label)
 			}
 			out = append(out, v)
@@ -129,7 +129,7 @@ func (c *Compiled) coerce(form string, in Input, raw any) (any, string, string) 
 			return nil, "phone", label + " must be a phone number"
 		}
 	case KindSelect, KindRadio:
-		if len(in.Options) > 0 && !slices.Contains(in.Options, s) {
+		if len(in.Options) > 0 && !in.Taggable && !slices.Contains(in.Options, s) {
 			return nil, "option", fmt.Sprintf("%q is not a valid choice for %s", s, label)
 		}
 	case KindDate, KindDateTime:

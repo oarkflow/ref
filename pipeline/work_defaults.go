@@ -7,6 +7,10 @@ import "slices"
 // on when any role may make them. def is copied before any change.
 func withWorkDefaults(def *Definition) *Definition {
 	d := *def
+	if def.Information != nil && len(def.InfoRoles) == 0 {
+		d.InfoRoles = def.Information.Roles
+		def = &d
+	}
 	d.Stages = slices.Clone(def.Stages)
 	for i := range d.Stages {
 		st := &d.Stages[i]
@@ -16,8 +20,11 @@ func withWorkDefaults(def *Definition) *Definition {
 		if len(st.ResumeRoles) == 0 {
 			st.ResumeRoles = def.ResumeRoles
 		}
+		if len(st.InfoRoles) == 0 && st.Information != nil {
+			st.InfoRoles = st.Information.Roles
+		}
 		if len(st.InfoRoles) == 0 {
-			st.InfoRoles = def.InfoRoles
+			st.InfoRoles = d.InfoRoles
 		}
 		if len(st.AdminRoles) == 0 {
 			st.AdminRoles = def.AdminRoles

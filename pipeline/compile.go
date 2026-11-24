@@ -38,6 +38,9 @@ func Compile(def *Definition) (*Compiled, error) {
 	if def == nil || strings.TrimSpace(def.Name) == "" {
 		return nil, fmt.Errorf("pipeline: a pipeline needs a name")
 	}
+	if err := checkUI(def); err != nil {
+		return nil, fmt.Errorf("pipeline %s: %w", def.Name, err)
+	}
 	def = withWorkDefaults(def)
 	def = withGateNodes(def)
 	def, err := withWhenAliases(def)
@@ -54,6 +57,68 @@ func Compile(def *Definition) (*Compiled, error) {
 		sealed:       map[string]bool{},
 	}
 	where := "pipeline " + def.Name
+	if lim := def.Limits; lim != nil {
+		if lim.PerUser < 0 {
+			return nil, fmt.Errorf("%s: limits per_user must not be negative", where)
+		}
+		if lim.Count != "" && lim.Count != "all" && lim.Count != "open" {
+			return nil, fmt.Errorf("%s: limits count must be all or open", where)
+		}
+	}
+	check := func(where string, in *InfoPolicy, rel *ReleasePolicy, st *StartPolicy) error {
+		if in != nil {
+			for _, t := range in.To {
+				if t != "creator" && t != "previous" && t != "user" {
+					return fmt.Errorf("%s: information to %q must be creator, previous or user", where, t)
+				}
+			}
+			if in.SLA != "" && in.SLA != "pause" && in.SLA != "run" {
+				return fmt.Errorf("%s: information sla must be pause or run", where)
+			}
+			if in.OnTimeout != "" && in.OnTimeout != "notify" && in.OnTimeout != "withdraw" {
+				return fmt.Errorf("%s: information on_timeout must be notify or withdraw", where)
+			}
+			if in.Due != "" {
+				if d, err := parseDuration(in.Due); err != nil || d <= 0 {
+					return fmt.Errorf("%s: information due %q is not a duration like 72h", where, in.Due)
+				}
+			}
+			if in.OnTimeout != "" && in.Due == "" {
+				return fmt.Errorf("%s: information on_timeout needs a due time", where)
+			}
+		}
+		if rel != nil {
+			for _, t := range rel.Targets {
+				if t != "same" && t != "previous" {
+					return fmt.Errorf("%s: release targets %q must be same or previous", where, t)
+				}
+			}
+			if rel.Assignee != "" && rel.Assignee != "optional" && rel.Assignee != "required" && rel.Assignee != "none" {
+				return fmt.Errorf("%s: release assignee must be optional, required or none", where)
+			}
+		}
+		if st != nil {
+			if st.OnCreate != "" && st.OnCreate != "auto" && st.OnCreate != "manual" {
+				return fmt.Errorf("%s: start on_create must be auto or manual", where)
+			}
+			if st.OnReturn != "" && st.OnReturn != "keep" && st.OnReturn != "restart" {
+				return fmt.Errorf("%s: start on_return must be keep or restart", where)
+			}
+		}
+		return nil
+	}
+	if err := check(where, def.Information, def.Release, def.Start); err != nil {
+		return nil, err
+	}
+	for i := range def.Stages {
+		st := &def.Stages[i]
+		if err := check(where+" stage "+st.Name, st.Information, st.Release, st.Start); err != nil {
+			return nil, err
+		}
+		if st.SLA != nil && st.SLA.OnHold != "" && st.SLA.OnHold != "pause" && st.SLA.OnHold != "run" {
+			return nil, fmt.Errorf("%s stage %s: sla on_hold must be pause or run", where, st.Name)
+		}
+	}
 	if pay := def.Payment; pay != nil {
 		if pay.Currency == "" || pay.Amount < 0 || len(pay.VerifierRoles) == 0 {
 			return nil, fmt.Errorf("%s: payment needs a currency, nonnegative amount and verifier_roles", where)
@@ -325,6 +390,25 @@ func (c *Compiled) checkStage(st Stage) error {
 		if x.TTL != "" {
 			if sp, err := ParseSpan(x.TTL); err != nil || sp.Zero() {
 				return fmt.Errorf("external ttl %q must be a duration like \"7d\"", x.TTL)
+			}
+		}
+	}
+	if st.Page != nil {
+		for _, g := range st.Page.Groups {
+			for _, r := range g.Fields {
+				form, input, _ := strings.Cut(r.Path, ".")
+				if !slices.Contains(g.Forms, form) {
+					return fmt.Errorf("group %q field rule %q: form %q is not in the group", g.Name, r.Path, form)
+				}
+				if input != "" {
+					inputs, _ := c.FormInputs(form)
+					if !slices.ContainsFunc(inputs, func(in Input) bool { return in.Name == input }) {
+						return fmt.Errorf("group %q field rule %q: form %q has no input %q", g.Name, r.Path, form, input)
+					}
+				}
+				if !oneOf(r.Mode, "", ModeEditable, ModeReadonly, ModeHidden) {
+					return fmt.Errorf("group %q field rule %q: mode %q is not editable, readonly or hidden", g.Name, r.Path, r.Mode)
+				}
 			}
 		}
 	}
@@ -632,6 +716,14 @@ func checkInput(in Input) error {
 	}
 	if len(in.DependsOn) > 0 && in.Lookup == "" {
 		return fmt.Errorf("depends_on needs a lookup")
+	}
+	if len(in.LookupWhere) > 0 && in.Lookup == "" {
+		return fmt.Errorf("lookup_where needs a lookup")
+	}
+	for _, w := range in.LookupWhere {
+		if k, _, ok := strings.Cut(w, "="); !ok || strings.TrimSpace(k) == "" {
+			return fmt.Errorf("lookup_where %q must be attribute=value", w)
+		}
 	}
 	for _, d := range in.DependsOn {
 		if strings.TrimSpace(d) == "" {

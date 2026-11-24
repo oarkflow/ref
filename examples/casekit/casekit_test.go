@@ -30,6 +30,7 @@ func TestApplicationCompilesAndServesEveryPipeline(t *testing.T) {
 	defer stop()
 	t.Setenv("CASEKIT_JWT_SECRET", "test-jwt-secret-0123456789abcdef-xyz")
 	t.Setenv("CASEKIT_SIGNING_SECRET", "test-signing-secret-0123456789abcdef")
+	t.Setenv("CASEKIT_ADMIN_PASSWORD", "test-admin-password-123")
 	t.Setenv("CASEKIT_LIVENESS_URL", url)
 	t.Setenv("CASEKIT_LIVENESS_TOKEN", "demo-token")
 	t.Setenv("CASEKIT_DSN", "file:"+filepath.Join(t.TempDir(), "c.db")+"?_pragma=busy_timeout(5000)")
@@ -45,7 +46,7 @@ func TestApplicationCompilesAndServesEveryPipeline(t *testing.T) {
 func TestPagesRenderThroughSPL(t *testing.T) {
 	r := serve.NewRenderer(serve.RendererConfig{TemplatesDir: "templates", Reload: true, Env: "development",
 		Globals: map[string]any{"title": "Casekit", "appName": "Casekit", "error": "", "success": "",
-			"intro": map[string]any{"title": "", "image": "", "image_alt": "", "content": "", "button": "Start", "documents": []any{}}, "stages": []any{}, "name": "", "description": ""}})
+			"ui": map[string]any{"accent": "", "density": "", "brand": ""}, "workspace": map[string]any{"level": "", "label": "", "required": false}, "intro": map[string]any{"title": "", "image": "", "image_alt": "", "content": "", "button": "Start", "documents": []any{}}, "stages": []any{}, "name": "", "description": ""}})
 	catalog := []any{map[string]any{"name": "onboarding", "title": "Identity onboarding", "description": "d", "stages": 3}}
 	def := map[string]any{"name": "onboarding", "title": "Identity onboarding", "description": "d",
 		"intro": map[string]any{"title": "Verify your identity", "image": "/static/img/onboarding.svg", "image_alt": "id", "content": "<p>hi</p>", "button": "Start verification",
@@ -61,6 +62,8 @@ func TestPagesRenderThroughSPL(t *testing.T) {
 		{"pages/guide", map[string]any{"data": catalog}, []string{"/guide/onboarding"}},
 		{"pages/intro", def, []string{"Verify your identity", "Start verification", "Privacy notice", `data-start="onboarding"`}},
 		{"pages/guide_detail", def, []string{"Staff: officer", "resumed by manager", "Approve", "Deadline", "Must be started first", "reset the stage", "outside the workflow", "Data entry"}},
+		{"pages/guide_fields", map[string]any{"name": "onboarding", "title": "Identity onboarding", "rows": []any{map[string]any{"stage": "review", "stage_title": "Review", "actors": "officer", "group": "Request", "form": "request", "field": "address", "label": "Address", "mode": "editable", "sees": "anyone who can open the stage", "edits": "officer", "notes": []any{"stage: required if true"}}}},
+			[]string{"Field access by stage", "request.address", "editable", "stage: required if true"}},
 		{"pages/work", map[string]any{}, []string{"Loading"}},
 		{"pages/case", map[string]any{}, []string{"Loading"}},
 	}

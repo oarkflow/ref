@@ -258,6 +258,15 @@ func (h *OrgHierarchy) reload(ctx context.Context) error {
 	for t := range lookups {
 		tenants[t] = true
 	}
+	// A tenant that has only written reference data (no units of its own) still
+	// works inside the shared tree, with the shared reference data beneath its own.
+	for tenant := range tenants {
+		if tenant == "" || len(nodes[tenant]) > 0 {
+			continue
+		}
+		nodes[tenant] = slices.Clone(nodes[""])
+		lookups[tenant] = append(slices.Clone(lookups[""]), lookups[tenant]...)
+	}
 	for tenant := range tenants {
 		tree, err := hierarchy.Build(nodes[tenant], h.opts)
 		if err != nil {

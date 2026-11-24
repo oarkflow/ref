@@ -131,6 +131,24 @@ With an `org.hierarchy` (for example company > facility > work item) a case belo
 
 Staff may start a case only in a unit inside their org scope (a public first stage is open to applicants anywhere).
 
+**Running a workflow inside a workspace.** A pipeline can declare that its cases belong to a workspace:
+
+```bcl
+pipeline "encounter" {
+  workspace { level "facility"  required true  label "Facility" }
+  form "encounter" {
+    input "specialty" { kind select  lookup "specialties" }
+    input "provider"  { kind select  lookup "providers"  depends_on ["specialty"] }   # that facility's providers for the specialty
+    input "nurse"     { kind select  lookup "nurses" }
+    input "location"  { kind select  lookup "locations" }
+  }
+}
+```
+
+`pipeline.describe` returns the `workspace` block so a client can ask where to start; `pipeline.start` then takes `org_unit`, refuses a missing one when `required`, refuses a unit of another `level`, and (for staff) refuses a unit outside the caller's scope. Every `lookup` input renders the choices of the case's workspace (inherited from its group, overridden by the facility, switched off with `disabled`), forms refresh a dependent lookup through `pipeline.choices`, and a saved value outside the workspace's list is refused. A dependency written `form.input` matches a lookup attribute named after the input (`attrs { specialty [...] }`). Workspace settings (`pipeline.workspace_get` / `workspace_set`) name their workflow with `pipeline`, so one resource can serve several.
+
+**Who may change workspace data.** `lookup.write` and `pipeline.workspace_set` accept `roles`: only principals holding one of them may write, and their org scope still limits which units they may touch (a facility's admin cannot edit another facility). Without `roles`, scope alone decides. A tenant that has written only reference data of its own keeps the shared workspace tree and the shared reference data beneath its own.
+
 ### File uploads
 
 ```bcl
@@ -222,6 +240,66 @@ A stage is handled by one of four kinds of actor:
 Entries use `pipeline.entry` (`{entry, data, submit}`; op `delete` removes one) and `pipeline.view` with `entry` to render one. Each entry is validated like an ordinary stage (types, required inputs, rules), and drafts are private to their maker; staff of the stage read everyone's submitted entries in the overview (`entry_rows`). A stage with entries cannot also be `multi_date` or `external`, and its case data is not edited directly.
 
 **Deadlines apply to every kind of stage.** The SLA of an applicant stage or an outside-party stage explains itself (`applicant_no_response`, `external_no_response`) and an entries stage reports how many entries came in. `on_breach "expire"` closes the case as withdrawn when nobody answers in time (event `case.expired`).
+
+### Forms across stages: access per stage, role and condition
+
+A form is defined once and listed in the page groups of any stages. Its data lives in the case, so it moves with the case from stage to stage; what changes is how each stage presents it. Beyond the input, form and group settings above (`view_roles`, `edit_roles`, `visible_if`, `disabled_if`, group `mode`), a group can carry `access` blocks that adjust single inputs, or a whole form, for that stage only:
+
+```bcl
+group "request" {
+  mode readonly                       # read-only at this stage...
+  forms ["request"]
+  access "request.address" {          # ...except one field, which officers may correct
+    mode editable
+    edit_roles ["officer"]
+    label "Address to certify (officers may correct it)"
+  }
+  access "request.email"   { roles ["officer", "manager", "admin"] }   # only these roles see it here
+  access "request.id_no"   { mode hidden }                              # not shown at this stage
+  access "request.notes"   { disabled_if "case.status == 'returned'"  required_if "true" }
+  access "request"         { mode readonly }                            # a bare form name covers every input of the form
+}
+```
+
+| Setting | Meaning |
+|---|---|
+| `mode` | `editable` switches a field on inside a read-only group; `readonly` switches it off inside an editable one; `hidden` removes it for everyone. Empty keeps the group's mode. |
+| `roles` / `edit_roles` | Who sees the field at this stage (others do not see it at all) and who may change it (others see it read-only). |
+| `visible_if`, `disabled_if`, `required_if` | Show it only while true; show it read-only while true; make it required at this stage while true (`"true"` for always). |
+| `label`, `help`, `placeholder` | Reword it for this stage. |
+
+Hidden, read-only and disabled fields are never accepted on save, hidden fields are not required or validated, and their data is kept as is for the stages that do show them. The more specific `form.input` rule wins over a bare `form` rule. The rules narrow what a person who may act at the stage can touch; they never grant access to a stage. The compiler rejects a rule for a form that is not in the group, an input that does not exist, or an unknown mode. **The block is `access`, not `field`: BCL does not bind a block called `field`.**
+
+`pipeline.matrix` (`GET /api/pipelines/:pipeline/matrix`) returns the **field access matrix**: for every stage page, each input's effective mode, who sees it, who may change it and the conditions that apply. casekit renders it at `/guide/:workflow/fields`.
+
+### Layout and look (`ui`)
+
+A workflow declares how it looks and how its screens are laid out. Everything is optional: with no `ui` block the host renders its basic layout (a stage strip, then three columns on the overview and a main column with a rail on the task screen). `pipeline.describe`, `pipeline.overview` and `pipeline.view` carry the resolved `ui`, so any client can render it.
+
+```bcl
+ui {
+  brand   "Civil Registry"      # replaces the product name in the sidebar
+  accent  "#0f766e"             # one flat brand colour (hex); tints and text colour are derived
+  density compact               # comfortable (default) or compact
+  overview {
+    mode console                # console | split | stacked
+    flow hide                   # hide the strip of stages
+    column "facts" { width "280px"  panels ["case", "stage", "actions"] }
+    column "work"  { width "1fr"    panels ["stand", "next", "summary"] }
+    panel "log" { title "History"  collapsed true }
+  }
+  task { mode split }
+}
+stage "review" {
+  ui { column "main" { width "1fr" panels ["form", "checks"] }  column "rail" { width "300px" panels ["stage"] } }
+}
+```
+
+- **Panels.** Overview: `case`, `stage`, `actions`, `stand`, `next`, `certificate`, `party`, `entries`, `summary`, `log`, `missed`. Task: `form`, `checks`, `stage`, `case`.
+- **Columns** place panels left to right; a panel left out of every column is not shown, and a panel may appear once. `width` is a CSS length (`320px`, `30%`, `24rem`) or a share (`1fr`). Without `column` blocks each `mode` uses the basic arrangement: `console` three columns, `split` a main column and a rail, `stacked` one column.
+- **`panel "id"`** adjusts one panel: `title`, `hidden`, `collapsed`.
+- **A stage's own `ui`** replaces the workflow's `task` layout for that stage.
+- The compiler rejects an unknown panel, a panel used twice, a bad width, mode, density or colour.
 
 ### Stages
 
@@ -335,6 +413,89 @@ Queues:
 - `scope=queue&assignee=unassigned|me|<id>` filters a stage queue.
 - Queue rows carry `assignee`, `sla_status` and `on_hold`.
 
+### Where a stage is in its life, and releasing a hold
+
+| State | How it is held |
+|---|---|
+| Not started | stage `active`, no `started_at` (with `require_start`, nothing can be edited, saved or acted on) |
+| In progress | stage `active`, `started_at` and `started_by` set |
+| Complete | an `advance` action ends the visit and moves the case on; a terminal outcome closes the case |
+| On hold | `suspended` on the stage (reason, who, when, optional `until`); the SLA clock stops; every write is refused |
+| Needs information | case status `requires_information`; advancing is blocked until the applicant answers |
+
+The case data is one map; each stage keeps a snapshot of it from when the stage was entered, and the history records every start, hold, release and assignment.
+
+A hold is lifted with `work/resume`, and the person lifting it chooses where the work goes (`to`, and optionally `assignee`):
+
+- **`same`** (default): the hold ends and work carries on at this stage; the deadline moves by the time on hold. `assignee` hands it to a named person who can work the stage (otherwise whoever holds it keeps it).
+- **`previous`**: the work goes back to the stage the case came from, as new work. That stage starts from nothing: it must be started again, its deadline starts afresh, checks, verdicts, flags and acknowledgements are made again, and nobody holds it unless `assignee` names someone who can work it (otherwise it takes its own routing or queue). This stage lets go completely: its visit ends as `released`, it is not started and has no holder. The case data is **not** rolled back; the history records who released it, from where to where, and why.
+
+Only the roles in `resume_roles` (else `suspend_roles`) may do either. The overview lists the places a hold can go in `work.resume_targets`.
+
+### Configuring holds, releases, starts and questions
+
+Each of these has a workflow-wide block and the same block on a stage to override it; every setting has a default that keeps the behaviour described above.
+
+```bcl
+pipeline "encounter" {
+  information {                      # questions put to people
+    roles ["coder", "supervisor"]    # who may ask (same as info_roles)
+    to ["creator", "previous", "user"]  # who may be asked: whoever created the case (default), the roles of the
+                                        # stage the case came from, or a named person
+    sla "pause"                      # pause (default): the stage's deadline clock stops until answered; run: it keeps going
+    due "24h"                        # how long they have (empty: no limit)
+    on_timeout "notify"              # notify (default): record it once and tell people; withdraw: close the case as withdrawn
+  }
+  release {                          # lifting a hold
+    targets ["same", "previous"]     # where work may go (default: both)
+    assignee "optional"              # may a person be named: optional (default), required, none
+    restore_data false               # true: a release to the previous stage also puts the case data back to how that stage found it
+  }
+  start {                            # stages with require_start
+    on_create "auto"                 # auto (default): whoever creates the case has started its first stage; manual: they press Start
+    on_return "keep"                 # keep (default): a stage already started stays started when the case returns; restart: start again
+  }
+  stage "coding" {
+    sla { duration "2h"  on_hold "pause" }   # on_hold: pause (default) stops the clock for holds and open questions; run keeps it going
+    information { to ["creator"] }           # a stage may override any block
+  }
+}
+```
+
+**Asking for inputs.** With `information { fields true }` a question may also name inputs (`fields ["encounter.mrn"]`, plain inputs only: not repeatable, file, calculated or sealed). The person asked must fill in each one; the values are checked like any entry (type, pattern, lookup), written into the case data whatever their rights on the stage, and the history entry lists the paths they changed. The overview's `information.fields` says what was asked and `work.info_fields` whether the viewer may ask.
+
+**Notifying people.** Notify rules accept the recipients `asked` (whoever the latest question was put to: the creator, everyone holding the previous stage's roles, or the named person) and `asker`, next to `assignee`, `applicant`, `role:<role>` and user ids, and the text token `{info.reason}` (the latest question). `info.reason` is a dotted token because the BCL parser drops a bare `{name}`. Write the text of a rule as `message` (the BCL parser never binds a key named `body`; `message` is the same field). Events: `case.information_requested`, `case.information_submitted`, `case.information_overdue`, `assigned`. A rule's channels are delivered by `notify_channels` on `pipeline.cases` (channel name to an intent); casekit maps `inbox` to a table, a per-person list scoped with `database.crud owner_column`, and a bell in the sidebar.
+
+**Who the workers are.** `directory_resource "<identity.users resource>"` on `pipeline.cases` makes the directory's members the workers of every pipeline, so `role:<role>` recipients, assignment and routing find the people who actually sign in (without it only the workflow's own `worker` blocks count). A signed-in caller's workflow description lists them as `workers`. A role recipient is limited to the people of that role who work where the case is: workers tied to org units (an identity member's org unit) are skipped when those units do not cover the case's unit, so a nurse of another facility is not told about this facility's case; workers with no unit work anywhere. A host that provisions accounts itself (casekit's `-demo` accounts) can call `IdentityDirectory.EnsureMember(tenant, email, name, roles, orgUnit)` to make them real, idempotent directory members and issue their tokens for the returned user id.
+
+A channel that stores one row per message (`database.insert_many` over `input.items`, with `set { user_id "input.user" }`) turns a digest of several cases into one row each; items carry flat `case_id`, `case_number` and `pipeline` keys for that.
+
+An unanswered question shows as overdue in the overview and the work list as soon as its due time passes; the sweep adds the `information.overdue` history entry and `on_timeout` action.
+
+Questions: `POST .../information-request` takes `reason`, `to`, `fields` and (for `user`) `assignee`; the case waits at its stage with status `requires_information` and the request records who was asked and when the answer is due. Only the person asked may answer (`.../information-response`): for `previous` anyone holding one of that stage's roles, for `user` the named person, for `creator` the creator. They can open the case and find it under `scope=answer` ("Questions for me"). An answer restarts the clock by the working time spent waiting. If the answer is not in by `due`, the sweep records `information.overdue` once and applies `on_timeout`. The overview carries `information`, `information_can_answer` and, for those who may ask, `work.info_targets`.
+
+### Start, and limits on what a person creates
+
+`require_start true` on a stage makes Start mandatory: nothing on the stage can be edited, saved, uploaded or acted on until someone presses Start (the platform refuses it, whatever the UI shows). Data is started **once**:
+
+- Creating a case starts its first stage for the person who created it (no second Start on the stage they just created it in). A public applicant has no Start to press.
+- A stage the data comes back to (returned for correction, or sent again) is still started; only a reset (`reset` on an SLA breach, or an administrator's reset) asks for a new Start.
+- A stage that follows is different work for a different person, so it waits for its own Start.
+
+The work list (`pipeline.list`) marks each row with `require_start` and `can_start`. The casekit "My work" page uses them to offer Start on a row, on the ticked rows, or on every row of a step ("Start all"), each through `POST .../stages/:stage/work/start`; the case's own page offers Start too.
+
+```bcl
+pipeline "encounter" {
+  limits {
+    per_user 50          # how many cases one person may create (0 = no limit)
+    count "open"         # "open": only unfinished cases count, so finishing one frees a place; "all" (default)
+    message "..."        # optional wording of the refusal
+  }
+}
+```
+
+A person at the limit is refused (409) with the limit in the message. The workflow description carries `limits`, so a start page can show "12 of 50 used". Applicants without an account are not counted.
+
 ### Lookups from any data source
 
 A `lookup "name"` input takes its choices from a `lookup.sources` resource (named by `lookup_resource` on `pipeline.cases`), then from the `org.hierarchy` lookups for any set the source does not define.
@@ -358,7 +519,16 @@ resource "catalog" {
 - **static**: `entries` of `{value label attrs{}}`; `attrs` lists the values of a `depends_on` field an entry applies to.
 - **sql**: one `SELECT` returning `value` and `label`. `args` names the `depends_on` fields passed as positional parameters; with a parameter unset there are no choices yet.
 - **http**: calls the `service` (so its host allowlist and private-network block apply). `params` may use `{field}` placeholders for dependencies; `items_path` is the dotted path to the list; each item is an object (`value_field`, `label_field`) or a plain value.
+- **mapping** (every kind): `value_field` and `label_field` name the source columns or JSON fields for an option's value and label (SQL defaults to columns called `value`/`code` and `label`/`name`). `attrs { specialty "specialties" }` exposes a source field as an attribute, so `depends_on` and `lookup_where` can narrow a datasource set the way they narrow a static one; a text value such as `CARD|EM` becomes a list.
+- **filters** (every kind): `filters [ { on "facility_id" op "eq" value "{facility}" } ]` keeps matching rows (`op`: eq, ne, in, not_in, contains, prefix, gt, ge, lt, le; a list-valued field matches if any element does). `sort "full_name"` orders the rows. `merge true` offers the datasource rows together with the workspace's own `org.hierarchy` entries instead of replacing them.
+- **workspace context**: a case that runs in a workspace passes its unit to the datasource. `{workspace}` is that unit and there is one placeholder per hierarchy level, such as `{facility}` or `{organization}`. They work in filter values, `args`, `params` and `path`, next to `depends_on` values (`{specialty}`). A hospital that keeps its providers in a MySQL `tbl_providers` table with a `facility_id` column maps the columns and filters on `{facility}`; nothing about the rows lives in BCL. A placeholder that is not set yet (a dependency not chosen) means no choices yet.
+- **ownership and writes** (sql): `owner_field "facility_id"` tells administrators which workspace a row belongs to. `upsert` and `remove` are single INSERT/REPLACE/UPDATE/DELETE statements with `upsert_args`/`remove_args` naming their values (`code`, `label`, `sort`, `workspace`, `attrs.<name>`), which lets a workspace admin maintain the rows from the Workspace page (`pipeline.lookup_source_write`, admin roles and org scope enforced). Placeholders written `{facility?}` are optional: unset, they expand to nothing, so `value "{organization?},{facility?},{workspace}"` with `op "in"` means "the group's rows, the facility's rows and this unit's".
+- **seed files**: a `database.sql` resource takes `migration_files ["seed/reference.sql"]`, SQL files relative to the application, so tables and their starting data stay out of the BCL (casekit keeps all its reference data in `examples/casekit/seed/reference.sql`).
 - **cache**: `ttl` (default 5m); when a refresh fails the last good list is served instead of nothing. `timeout` defaults to 3s.
+
+**Searchable, clearable, taggable.** A `select` or `multiselect` backed by a lookup (or with many options) is rendered as a combobox: type to filter, a clear button (on by default unless the input is `required`, forced with `clearable true`), chips for several values, and keyboard and screen-reader support. `searchable true` and `taggable true` are the other switches. With `taggable true` free text becomes a value, so the input accepts values outside its lookup set or `options`. When a set is large the control asks the server as the user types: `choices` takes `q` (`input.q`, or `q_fact`), which a `lookup.sources` set applies to value and label before its `max_rows` cap, and the org lookups apply the same way.
+
+An input can also fix an attribute with `lookup_where ["provider_type=physician"]`, so several inputs (attending, resident, billing, secondary provider) draw different kinds from one `providers` set. `pipeline.lookup_sources` shows an administrator what the datasource yields for a workspace.
 
 ### SLAs, business calendars and escalation
 
