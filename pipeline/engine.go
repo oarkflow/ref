@@ -306,7 +306,9 @@ func (e *Engine) CanAct(c *Case, st *Stage, actor Actor) bool {
 
 // CanView reports whether the actor may see a stage's page.
 func (e *Engine) CanView(c *Case, st *Stage, actor Actor) bool {
-	return e.CanAct(c, st, actor) || actor.HasAnyRole(st.ViewRoles) || actor.HasAnyRole(e.C.Def.RevealRoles)
+	// Whoever may hold, resume or query a stage's case must be able to see it.
+	return e.CanAct(c, st, actor) || actor.HasAnyRole(st.ViewRoles) || actor.HasAnyRole(e.C.Def.RevealRoles) ||
+		actor.HasAnyRole(st.SuspendRoles) || actor.HasAnyRole(st.ResumeRoles) || actor.HasAnyRole(st.InfoRoles) || actor.HasAnyRole(st.AdminRoles)
 }
 
 func (e *Engine) canActNode(c *Case, st *Stage, n *Node, actor Actor) bool {
@@ -401,8 +403,19 @@ func (e *Engine) enterStage(ctx context.Context, c *Case, name string, actor Act
 		ss.PreviousAssignee = ss.Assignee
 	}
 	ss.Assignee, ss.AssignedAt, ss.Routing, ss.Suspended, ss.SLA, ss.Review = "", nil, nil, nil, nil, nil
+	ss.StartedAt, ss.StartedBy = nil, ""
+	ss.EntryData = cloneData(c.Data) // what a reset restores
 	e.startSLA(eff, ss, now)
+	if v := c.openVisit(name); v != nil && ss.SLA != nil {
+		due := ss.SLA.DueAt
+		v.DueAt = &due
+	}
 	c.emit("stage.entered", name, actor.ID, now, nil)
+	if st.External != nil {
+		if err := e.issueExternal(c, st, ss, "system", now); err != nil {
+			return err
+		}
+	}
 	routeRoles, passed, err := e.enterReviews(ctx, c, st, ss, actor, env, depth)
 	if err != nil || passed {
 		return err
@@ -618,6 +631,8 @@ func (e *Engine) completeStage(ctx context.Context, c *Case, name string, actor 
 	ss.Status = StageCompleted
 	ss.CompletedAt = &now
 	ss.CompletedBy = actor.ID
+	ss.EntryData = nil
+	e.mergeEntries(c, st, ss, now)
 	if ss.SLA != nil && ss.SLA.Status != SLABreached {
 		ss.SLA.Status = SLAMet
 	}
@@ -660,12 +675,33 @@ func (e *Engine) completeStage(ctx context.Context, c *Case, name string, actor 
 			return err
 		}
 	}
+	e.markBypassed(c, name, next, actor, now)
 	if next == "" {
 		c.Status = CaseCompleted
 		return nil
 	}
 	c.History = append(c.History, Entry{At: now, Actor: actor.ID, Action: "transition", From: name, To: next})
 	return e.enterStage(ctx, c, next, actor, depth)
+}
+
+// markBypassed marks the stages a route jumped over as skipped, so a finished
+// case does not show them as pending forever. Only stages that were never
+// entered are touched; a jump backwards (a return) bypasses nothing.
+func (e *Engine) markBypassed(c *Case, from, to string, actor Actor, at time.Time) {
+	i := e.C.stageIndex(from)
+	end := len(e.C.Def.Stages)
+	if to != "" {
+		if end = e.C.stageIndex(to); end < 0 {
+			return
+		}
+	}
+	for j := i + 1; j < end; j++ {
+		name := e.C.Def.Stages[j].Name
+		if ss := c.Stages[name]; ss != nil && ss.Status == StagePending {
+			ss.Status = StageSkipped
+			c.emit("stage.skipped", name, actor.ID, at, nil)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -807,6 +843,9 @@ func (e *Engine) saveInto(c *Case, actor Actor, stage string, data map[string]an
 	}
 	if !e.CanAct(c, st, actor) {
 		return nil, forbidden("you may not edit stage %q", stage)
+	}
+	if st.Entries != nil && !c.entryShadow {
+		return nil, badState("stage %q collects entries: add or change an entry instead of the case data", stage)
 	}
 	if err := e.guardClaim(c, st, ss, actor); err != nil {
 		return nil, err
@@ -1247,15 +1286,22 @@ func (e *Engine) checkAdvance(c *Case, st *Stage, ss *StageState, spec ActionSpe
 	if pay := e.C.Def.Payment; pay != nil && (spec.Outcome == OutcomeApprove || (spec.Next == "" && e.terminalAfter(c, st, actor))) && c.Payment == nil {
 		return badState("payment must be verified before completion")
 	}
-	missing := e.missingRequired(c, st, ss, actor)
+	var missing []FieldError
+	if st.Entries == nil {
+		missing = e.missingRequired(c, st, ss, actor)
+	} else if _, submitted, _ := ss.countEntries(""); submitted < st.Entries.need() {
+		missing = append(missing, FieldError{Path: "entries", Rule: "min_entries", Message: fmt.Sprintf("%d submitted %s needed, %d in", st.Entries.need(), plural(st.Entries.need(), "entry is", "entries are"), submitted)})
+	}
 	if !system {
 		missing = append(missing, e.checkAcks(c, st, actor, input.Acknowledgements)...)
 	}
 	if len(missing) > 0 {
 		return &ValidationError{Message: "the stage is incomplete", Fields: missing}
 	}
-	if broken := e.brokenRules(c, st, ss, actor); len(broken) > 0 {
-		return &ValidationError{Message: "the stage does not pass its checks", Fields: broken}
+	if st.Entries == nil {
+		if broken := e.brokenRules(c, st, ss, actor); len(broken) > 0 {
+			return &ValidationError{Message: "the stage does not pass its checks", Fields: broken}
+		}
 	}
 	// A review gate is hard: no action, not even skip_nodes, passes it.
 	if why, closed := e.closedGate(st, ss); closed {
@@ -1298,6 +1344,7 @@ func (e *Engine) returnTo(c *Case, st *Stage, ss *StageState, target string, act
 	ts.ReturnedFrom = st.Name
 	ts.Visits++
 	ts.EnteredAt = &now
+	ts.StartedAt, ts.StartedBy = nil, ""
 	c.Timeline = append(c.Timeline, Visit{Stage: target, EnteredAt: now})
 	c.Stage = target
 	c.Status = CaseReturned
@@ -1406,6 +1453,10 @@ func (e *Engine) NodeAct(ctx context.Context, in *Case, actor Actor, stage, node
 		return nil, fmt.Errorf("%w: node %q at stage %q", ErrNotFound, node, stage)
 	}
 	ns := ss.Nodes[node]
+	if ns == nil { // a stage restored without node states: start them as on entry
+		e.initNodes(c, st, ss, e.Env(c, actor))
+		ns = ss.Nodes[node]
+	}
 	if ns.Status == NodeSkipped {
 		return nil, badState("node %q does not apply to this case", node)
 	}

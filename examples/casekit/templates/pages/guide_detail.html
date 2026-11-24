@@ -1,0 +1,64 @@
+@extends("layouts/base.html")
+
+@define("content") {
+  <p><a href="/guide">&larr; All workflows</a></p>
+  <h1>${title}</h1>
+  <p class="muted">${description}</p>
+  <ol class="gflow">
+    @for(st in stages) {
+      <li class="gstage">
+        <div class="row">
+          <strong>${st.title}</strong>
+          @if(st.public == true) {
+            <span class="badge gw-public">The applicant (no login)</span>
+          }
+          @if(length(st.roles) > 0) {
+            <span class="badge gw-staff">Staff: ${st.roles | join ", "}</span>
+          }
+        </div>
+        @if(st.external != null) {
+          <div class="muted">Handled by someone <strong>outside the workflow</strong> (${st.external.party}). A private single-use link is issued automatically; no account is needed, and the stage moves on when they submit.</div>
+        }
+        @if(st["entries"] != null) {
+          <div class="muted">Data entry: <strong>${st["entries"]["per_user"]}</strong> per person (0 means no limit), at least <strong>${st["entries"]["min"]}</strong> submitted; drafts allowed: ${st["entries"]["allow_draft"]}; editing allowed: ${st["entries"]["allow_edit"]}.</div>
+        }
+        @if(st.require_start == true) {
+          <div class="muted">Must be started first: the person starting is recorded with the time.</div>
+        }
+        @if(st.sla != null) {
+          <div class="muted">Deadline <strong>${st.sla.duration}</strong>. If it is missed (${st.sla.on_breach}): the reason is recorded and notified; admins (${st.admin_roles | join ", "}) can reset the stage, reassign it, extend the deadline or accept the delay.</div>
+        }
+        @if(length(st.nodes) > 0) {
+          <div><strong>Checks that must pass:</strong>
+            <ul>
+              @for(n in st.nodes) {
+                <li>${n.title} <span class="muted">(${n.kind})</span></li>
+              }
+            </ul>
+          </div>
+        }
+        @if(length(st.actions) > 0) {
+          <div><strong>Buttons:</strong>
+            <ul>
+              @for(a in st.actions) {
+                <li>${a.label} <span class="muted">(${a.outcome})</span></li>
+              }
+            </ul>
+          </div>
+        }
+        @if(length(st.routes) > 0) {
+          <div><strong>Routing:</strong>
+            <ul>
+              @for(r in st.routes) {
+                <li>If <code>${r.when}</code> then go to ${r.to}</li>
+              }
+            </ul>
+          </div>
+        }
+        @if(length(st.suspend_roles) > 0) {
+          <div class="muted">Can be put on hold by ${st.suspend_roles | join ", "}; resumed by ${st.resume_roles | join ", "}; more information can be requested by ${st.info_roles | join ", "}.</div>
+        }
+      </li>
+    }
+  </ol>
+}

@@ -66,6 +66,81 @@ type Definition struct {
 	Notify   []NotifyRule `bcl:"notify,block" json:"notify,omitempty"`
 	Payment  *PaymentSpec `bcl:"payment" json:"payment,omitempty"`
 	AllowRFI bool         `bcl:"allow_rfi" json:"allow_rfi,omitempty"`
+	// AdminRoles are the default for stages that set none: who may take a
+	// stand on a stage whose SLA was missed (reset, reassign, extend, waive).
+	AdminRoles []string `bcl:"admin_roles" json:"admin_roles,omitempty"`
+	// Intro is the information page shown before anyone starts a case.
+	Intro *Intro `bcl:"intro" json:"intro,omitempty"`
+	// SuspendRoles, ResumeRoles and InfoRoles are workflow-wide defaults for
+	// every stage that does not set its own: who may put a case on hold, who
+	// may lift the hold, and who may ask the applicant for more information.
+	SuspendRoles []string `bcl:"suspend_roles" json:"suspend_roles,omitempty"`
+	ResumeRoles  []string `bcl:"resume_roles" json:"resume_roles,omitempty"`
+	InfoRoles    []string `bcl:"info_roles" json:"info_roles,omitempty"`
+}
+
+// Intro is the page shown before a case is started: a title, an image, rich
+// text, documents to read and the button that begins the application.
+type Intro struct {
+	Title string `bcl:"title" json:"title,omitempty"`
+	// Content is HTML written by the pipeline's author. Clients must render it
+	// sandboxed (an iframe with sandbox and srcdoc), never into the page.
+	Content   string     `bcl:"content" json:"content,omitempty"`
+	Image     string     `bcl:"image" json:"image,omitempty"`
+	ImageAlt  string     `bcl:"image_alt" json:"image_alt,omitempty"`
+	Button    string     `bcl:"button" json:"button,omitempty"`
+	Documents []IntroDoc `bcl:"document,block" json:"documents,omitempty"`
+}
+
+// IntroDoc is a document attached to the intro page.
+type IntroDoc struct {
+	Name  string `bcl:",id" json:"name"`
+	Title string `bcl:"title" json:"title,omitempty"`
+	URL   string `bcl:"url" json:"url"`
+}
+
+// EntriesSpec says how a stage collects data entries.
+type EntriesSpec struct {
+	// PerUser is how many entries one person may make: 1 is a single entry,
+	// N a specific number, 0 (or unset) no limit.
+	PerUser int `bcl:"per_user" json:"per_user,omitempty"`
+	// Min is how many submitted entries (from anyone) the stage needs before
+	// it can be completed (default 1). Max caps all entries, drafts included;
+	// 0 means no cap.
+	Min int `bcl:"min" json:"min,omitempty"`
+	Max int `bcl:"max" json:"max,omitempty"`
+	// AllowEdit lets a person change their submitted entries until the stage
+	// is completed. AllowDraft lets entries be kept unsubmitted.
+	AllowEdit  bool `bcl:"allow_edit" json:"allow_edit,omitempty"`
+	AllowDraft bool `bcl:"allow_draft" json:"allow_draft,omitempty"`
+	// Merge picks which submitted entry becomes the case's data when the stage
+	// completes: last (default), first or none.
+	Merge string `bcl:"merge,ident" json:"merge,omitempty"`
+}
+
+// ExternalSpec configures a stage handled by someone outside the workflow.
+type ExternalSpec struct {
+	// Party names who is expected, e.g. "KYC agent". AssigneeFrom is a data
+	// path holding the actual person (a name or email); it wins when set.
+	Party        string `bcl:"party" json:"party,omitempty"`
+	AssigneeFrom string `bcl:"assignee_from" json:"assignee_from,omitempty"`
+	// Scope lists the forms (or form.input paths) they may fill; default is
+	// every form on the stage's page. TTL is how long the link lasts.
+	Scope []string `bcl:"scope" json:"scope,omitempty"`
+	TTL   string   `bcl:"ttl" json:"ttl,omitempty"`
+}
+
+// SummarySpec configures the page shown before a stage is submitted. Having
+// one makes the stage's advance and approve actions two-step.
+type SummarySpec struct {
+	Title       string `bcl:"title" json:"title,omitempty"`
+	Description string `bcl:"description" json:"description,omitempty"`
+	// Groups and Fields narrow what the summary lists: page groups by name and
+	// inputs by path (form.input). Both empty lists every answered field.
+	Groups []string `bcl:"groups" json:"groups,omitempty"`
+	Fields []string `bcl:"fields" json:"fields,omitempty"`
+	// Button labels the final confirm button.
+	Button string `bcl:"button" json:"button,omitempty"`
 }
 
 // PaymentSpec gates terminal completion until a trusted verifier records a
@@ -153,15 +228,25 @@ type SLA struct {
 	Duration   string `bcl:"duration" json:"duration"`
 	WarnBefore string `bcl:"warn_before" json:"warn_before,omitempty"`
 	Calendar   string `bcl:"calendar" json:"calendar,omitempty"`
-	// OnBreach: notify (default), reassign, release (back to the queue),
-	// return (to ReturnTo) or an action name of the stage to take
-	// automatically.
+	// OnBreach: notify (default: record it and tell people, leave the stand to
+	// an admin), reassign (to ReassignRoles, else the stage's roles, never the
+	// current holder), release (back to the queue), reset (restore the data and
+	// start state of the stage as on entry, with a fresh SLA), extend (push the
+	// deadline out by ExtendBy), return (to ReturnTo) or an action name of the
+	// stage to take automatically.
 	OnBreach string `bcl:"on_breach" json:"on_breach,omitempty"`
 	// PickupTimeout is how long work may sit unclaimed; then
 	// OnPickupTimeout (notify, the default, or reassign) applies.
 	PickupTimeout   string `bcl:"pickup_timeout" json:"pickup_timeout,omitempty"`
 	OnPickupTimeout string `bcl:"on_pickup_timeout" json:"on_pickup_timeout,omitempty"`
 	ReturnTo        string `bcl:"return_to" json:"return_to,omitempty"`
+	// ReassignRoles are who a breach (or pickup timeout) reassigns to.
+	ReassignRoles []string `bcl:"reassign_roles" json:"reassign_roles,omitempty"`
+	// ExtendBy is how much time an extend adds, e.g. "24h".
+	ExtendBy string `bcl:"extend_by" json:"extend_by,omitempty"`
+	// Notify names who is told of a breach besides the stage's admins
+	// (event hook recipients: user ids or role:<role>).
+	Notify []string `bcl:"notify" json:"notify,omitempty"`
 	// Escalate lists escalation levels after the breach.
 	Escalate []Escalation `bcl:"escalate,block" json:"escalate,omitempty"`
 }
@@ -191,7 +276,8 @@ type EventHook struct {
 	// Event: case.started, stage.entered, stage.completed, stage.skipped,
 	// case.returned, case.rejected, case.withdrawn, case.completed,
 	// case.approved, assigned, claimed, released, delegated, queued,
-	// sla.warning, sla.breached, sla.escalated, suspended, resumed,
+	// stage.started, stage.reset, sla.warning, sla.breached, sla.escalated,
+	// sla.resolved, suspended, resumed,
 	// note.added, file.uploaded, sealed.opened, erased, retention.applied —
 	// or "*".
 	Event string `bcl:",id" json:"event"`
@@ -478,6 +564,27 @@ type Stage struct {
 	// SuspendRoles may put the case on hold at this stage (awaiting
 	// documents, an inspection) and resume it.
 	SuspendRoles []string `bcl:"suspend_roles" json:"suspend_roles,omitempty"`
+	// RequireStart makes people press Start before they can edit, save or act
+	// on this stage. Starting records who began and when, and claims the work.
+	RequireStart bool `bcl:"require_start" json:"require_start,omitempty"`
+	// AdminRoles may take a stand on the stage: reset it to how it was on
+	// entry, reassign it, extend or waive its SLA, release it. They may also
+	// view it.
+	AdminRoles []string `bcl:"admin_roles" json:"admin_roles,omitempty"`
+	// ResumeRoles may lift the hold; without it SuspendRoles may.
+	ResumeRoles []string `bcl:"resume_roles" json:"resume_roles,omitempty"`
+	// InfoRoles may ask the applicant for more information at this stage;
+	// without it anyone who may act here may.
+	InfoRoles []string `bcl:"info_roles" json:"info_roles,omitempty"`
+	// Summary is the page shown before submitting this stage.
+	Summary *SummarySpec `bcl:"summary" json:"summary,omitempty"`
+	// Entries turns the stage into a data-entry stage: each person who may
+	// act enters their own record(s) instead of editing one shared document.
+	Entries *EntriesSpec `bcl:"entries" json:"entries,omitempty"`
+	// External hands the stage to someone outside the workflow's users (a KYC
+	// agent, a referee): a single-use link is issued on entry and the stage
+	// completes when they submit.
+	External *ExternalSpec `bcl:"external" json:"external,omitempty"`
 	// ExternalRoles may issue signed links that let an outside party
 	// (a referee, an employer) fill selected inputs of this stage.
 	ExternalRoles []string `bcl:"external_roles" json:"external_roles,omitempty"`

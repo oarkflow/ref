@@ -283,6 +283,23 @@ func (e *Engine) setAssignee(c *Case, stage string, ss *StageState, who string, 
 // guardClaim enforces claims: on a claimable stage only the assignee (or an
 // assigner) acts; an unassigned case is claimed by whoever acts first.
 func (e *Engine) guardClaim(c *Case, st *Stage, ss *StageState, actor Actor) error {
+	if err := e.guardAssignee(c, st, ss, actor); err != nil {
+		return err
+	}
+	if actor.Link != nil || actor.ID == "system" || actor.ID == "" {
+		return nil
+	}
+	if ss.StartedAt == nil {
+		if st.RequireStart {
+			return badState("start stage %q first", st.Name)
+		}
+		e.markStarted(c, st, ss, actor, e.now()) // the first thing done is the start
+	}
+	return nil
+}
+
+// guardAssignee is guardClaim without the start rule: holds and claims only.
+func (e *Engine) guardAssignee(c *Case, st *Stage, ss *StageState, actor Actor) error {
 	if ss.Suspended != nil {
 		return badState("stage %q is on hold: %s", st.Name, ss.Suspended.Reason)
 	}
@@ -377,6 +394,7 @@ func (e *Engine) Assign(ctx context.Context, in *Case, actor Actor, stage, to, c
 	if err := e.assignTo(ctx, c, st, ss, actor, to, "assign", comment); err != nil {
 		return nil, err
 	}
+	e.resolveBreach(c, stage, actor.ID, "reassign", strings.TrimSpace(comment+" -> "+to), e.now())
 	return c, nil
 }
 
@@ -469,7 +487,7 @@ func (e *Engine) Resume(ctx context.Context, in *Case, actor Actor, stage, comme
 	if err != nil {
 		return nil, err
 	}
-	if actor.ID != "system" && !actor.HasAnyRole(st.SuspendRoles) {
+	if actor.ID != "system" && !actor.HasAnyRole(resumeRoles(st)) {
 		return nil, forbidden("you may not resume stage %q", stage)
 	}
 	if ss.Suspended == nil {
@@ -477,6 +495,14 @@ func (e *Engine) Resume(ctx context.Context, in *Case, actor Actor, stage, comme
 	}
 	e.resume(c, st, ss, actor.ID, comment)
 	return c, nil
+}
+
+// resumeRoles are the roles that may lift a hold: ResumeRoles, else SuspendRoles.
+func resumeRoles(st *Stage) []string {
+	if len(st.ResumeRoles) > 0 {
+		return st.ResumeRoles
+	}
+	return st.SuspendRoles
 }
 
 func (e *Engine) resume(c *Case, st *Stage, ss *StageState, actor, comment string) {
@@ -522,7 +548,7 @@ func (e *Engine) staff(actor Actor) bool {
 		return true
 	}
 	for _, st := range e.C.Def.Stages {
-		if actor.HasAnyRole(st.Roles) || actor.HasAnyRole(st.ViewRoles) || actor.HasAnyRole(st.AssignRoles) || actor.HasAnyRole(st.SuspendRoles) {
+		if actor.HasAnyRole(st.Roles) || actor.HasAnyRole(st.ViewRoles) || actor.HasAnyRole(st.AssignRoles) || actor.HasAnyRole(st.SuspendRoles) || actor.HasAnyRole(st.ResumeRoles) || actor.HasAnyRole(st.InfoRoles) || actor.HasAnyRole(st.AdminRoles) {
 			return true
 		}
 		for _, n := range st.Nodes {

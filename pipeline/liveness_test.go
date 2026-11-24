@@ -249,10 +249,10 @@ func TestStageRoutesSwitchOnData(t *testing.T) {
 		}
 		return cs
 	}
-	if cs := run(50); cs.Status != CaseCompleted {
-		t.Fatalf("route to end: status %s", cs.Status)
+	if cs := run(50); cs.Status != CaseCompleted || cs.Stages["officer"].Status != StageSkipped || cs.Stages["director"].Status != StageSkipped {
+		t.Fatalf("route to end skips every later stage: status %s officer=%s director=%s", cs.Status, cs.Stages["officer"].Status, cs.Stages["director"].Status)
 	}
-	if cs := run(20000); cs.Stages["director"].Status != StageActive || cs.Stages["officer"].Status == StageActive {
+	if cs := run(20000); cs.Stages["director"].Status != StageActive || cs.Stages["officer"].Status != StageSkipped {
 		t.Fatalf("big amounts skip the officer: director=%s officer=%s", cs.Stages["director"].Status, cs.Stages["officer"].Status)
 	}
 	if cs := run(500); cs.Stages["officer"].Status != StageActive {

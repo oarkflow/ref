@@ -105,6 +105,10 @@ func (e *Engine) anonymize(c *Case, actor, reason string, now time.Time) {
 			}
 		}
 	}
+	// The copies kept to reset a stage hold the same personal data.
+	for _, ss := range c.Stages {
+		ss.EntryData = nil
+	}
 	// Snapshots kept for diff reviews hold the same personal data.
 	for i := range c.Snapshots {
 		snap := &Case{Data: c.Snapshots[i].Data}

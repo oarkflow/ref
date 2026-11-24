@@ -36,6 +36,14 @@ type View struct {
 	// the baseline, the gate's decisions, the triage class and the sampling
 	// decision.
 	Review *ReviewView `json:"review,omitempty"`
+	// Summary configures the page shown before this stage is submitted.
+	Summary *SummarySpec `json:"summary,omitempty"`
+	// Entries is how a data-entry stage's entries stand for the viewer.
+	Entries *EntriesView `json:"entries,omitempty"`
+	// Party is who a stage handled outside the workflow is waiting for.
+	Party *PartyView `json:"party,omitempty"`
+	// Information is the pending request for more information, if any.
+	Information *InformationRequest `json:"information,omitempty"`
 }
 
 // WorkView is a stage's work state for the viewer.
@@ -90,6 +98,11 @@ type StageView struct {
 	Status      string     `json:"status"`
 	DueAt       *time.Time `json:"due_at,omitempty"`
 	Current     bool       `json:"current"`
+	// RequireStart: the stage must be started before it can be worked.
+	// StartedAt and StartedBy say who began it and when.
+	RequireStart bool       `json:"require_start,omitempty"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	StartedBy    string     `json:"started_by,omitempty"`
 }
 
 // StageProgress is one step of the progress indicator.
@@ -252,7 +265,10 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 		Case: CaseSummary{ID: c.ID, Number: c.Number, Pipeline: c.Pipeline, Title: e.C.Def.Title, Status: c.Status,
 			Stage: c.Stage, Revision: c.Revision, CreatedBy: c.CreatedBy, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Payment: c.Payment},
 		Stage: StageView{Name: st.Name, Title: st.Title, Kind: st.Kind, Description: st.Description, Status: ss.Status,
-			DueAt: ss.DueAt, Current: c.Stage == stage},
+			DueAt: ss.DueAt, Current: c.Stage == stage, RequireStart: st.RequireStart, StartedAt: ss.StartedAt},
+	}
+	if ss.StartedBy != "" && (e.staff(actor) || actor.ID == ss.StartedBy) {
+		v.Stage.StartedBy = ss.StartedBy
 	}
 	for _, s := range e.C.Def.Stages {
 		status := StagePending
@@ -262,8 +278,10 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 		v.Progress = append(v.Progress, StageProgress{Name: s.Name, Title: s.Title, Status: status})
 	}
 	open := c.Stage == stage && !c.Terminal() && (ss.Status == StageActive || ss.Status == StageReturned)
+	// A stage that must be started is read-only, with no actions, until it is.
+	locked := open && st.RequireStart && ss.StartedAt == nil && actor.Link == nil && ss.Suspended == nil
 	editable := map[string]map[string]Input{}
-	if open {
+	if open && !locked {
 		editable = e.editable(c, st, ss, actor)
 	}
 	v.CanEdit = len(editable) > 0
@@ -417,12 +435,12 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 		if ns.Result != nil {
 			nv.Result = ns.Result
 		}
-		if open && ns.Status != NodeSkipped {
+		if open && !locked && ns.Status != NodeSkipped {
 			nv.Operations = e.nodeOperations(c, st, n, ns, actor)
 		}
 		v.Nodes = append(v.Nodes, nv)
 	}
-	if open {
+	if open && !locked {
 		for _, a := range e.Actions(c, actor) {
 			v.Actions = append(v.Actions, ActionView{Name: a.Name, Label: orDefault(a.Label, a.Name), Outcome: orDefault(a.Outcome, OutcomeAdvance),
 				CommentRequired: a.CommentRequired, Confirm: a.Confirm, ConfirmSubmit: e.confirmRequired(c, stage, a)})
@@ -440,6 +458,19 @@ func (e *Engine) View(c *Case, actor Actor, stage string) (*View, error) {
 	staff := e.staff(actor)
 	if staff {
 		v.Review = e.reviewView(c, st, ss, reveal)
+	}
+	v.Summary = st.Summary
+	if st.Entries != nil && c.Stage == stage {
+		v.Entries = e.entriesView(st, ss, actor, "")
+	}
+	if st.External != nil && c.Stage == stage && (staff || e.CanView(c, st, actor) || isApplicant(c, actor)) {
+		v.Party = e.partyView(c, st, ss, actor)
+	}
+	if c.Status == CaseRequiresInformation && len(c.InformationRequests) > 0 {
+		last := c.InformationRequests[len(c.InformationRequests)-1]
+		if last.RespondedAt == nil {
+			v.Information = &last
+		}
 	}
 	if c.Stage == stage {
 		w := &WorkView{Claimable: claimable(st), Assignee: ss.Assignee, AssignedAt: ss.AssignedAt, SLA: ss.SLA, Suspended: ss.Suspended}
@@ -501,11 +532,30 @@ func (e *Engine) workOperations(c *Case, st *Stage, ss *StageState, actor Actor)
 	if assigner && ss.Suspended == nil {
 		ops = append(ops, "assign")
 	}
-	if actor.HasAnyRole(st.SuspendRoles) {
-		if ss.Suspended == nil {
-			ops = append(ops, "suspend")
-		} else {
-			ops = append(ops, "resume")
+	if ss.Suspended == nil && actor.HasAnyRole(st.SuspendRoles) {
+		ops = append(ops, "suspend")
+	}
+	if ss.Suspended != nil && actor.HasAnyRole(resumeRoles(st)) {
+		ops = append(ops, "resume")
+	}
+	if e.mayRequestInfo(c, st, actor) {
+		ops = append(ops, "request_information")
+	}
+	if st.External != nil && ss.ExternalLink != "" && (isAdmin(st, actor) || actor.HasAnyRole(st.Roles) || actor.HasAnyRole(st.ExternalRoles)) {
+		ops = append(ops, "reissue")
+	}
+	if st.External == nil && ss.StartedAt == nil && ss.Suspended == nil && actor.Link == nil && e.CanAct(c, st, actor) {
+		ops = append(ops, "start")
+	}
+	if isAdmin(st, actor) && actor.ID != "system" {
+		if ss.EntryData != nil {
+			ops = append(ops, "reset")
+		}
+		if st.SLA != nil && ss.SLA != nil {
+			ops = append(ops, "extend")
+			if c.breachRecord(st.Name) != nil {
+				ops = append(ops, "waive")
+			}
 		}
 	}
 	if actor.HasAnyRole(st.ExternalRoles) {

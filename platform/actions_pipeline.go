@@ -62,6 +62,12 @@ func registerPipelineActions(r *Registry) {
 		Provides: "The view",
 		Config:   with(caseParam, stageParam),
 	})
+	mustAction(r, "pipeline.overview", pipelineAction("overview"), ActionInfo{
+		Family: "workflow", Kind: "read",
+		Summary:  "The case at a glance: status, current stage, the data gathered so far, the log of who started each stage and how long it took, and what the caller can do next",
+		Provides: "The overview",
+		Config:   with(caseParam),
+	})
 	mustAction(r, "pipeline.choices", pipelineAction("choices"), ActionInfo{
 		Family: "workflow", Kind: "read",
 		Summary:  "List the choices of a lookup-backed input for given values of the inputs it depends on (cascading selects)",
@@ -143,7 +149,7 @@ func registerPipelineActions(r *Registry) {
 	})
 	mustAction(r, "pipeline.work", pipelineAction("work"), ActionInfo{
 		Family: "workflow", Kind: "effect",
-		Summary:  "Work operations on a stage: claim, release, assign, delegate, suspend (put on hold) or resume",
+		Summary:  "Work operations on a stage: start, claim, release, assign, delegate, suspend (put on hold), resume, and for admins reset, extend (the SLA) or waive (a missed SLA)",
 		Provides: "The updated view",
 		Config:   with(caseParam, stageParam, ConfigField{Name: "op_fact", Type: "fact", Summary: "Fact path of the op (default: :op or input.op)"}),
 	})
@@ -228,6 +234,7 @@ func registerPipelineActions(r *Registry) {
 		Config:   with(caseParam, pathParam, ConfigField{Name: "file_id_fact", Type: "fact", Summary: "Fact path of the file id of a multi-file input (default: :file_id, ?file_id=)"}),
 	})
 	mustAction(r, "pipeline.schedule_list", pipelineAction("schedule_list"), ActionInfo{Family: "workflow", Kind: "read", Summary: "List dated instances and submissions of a multi-date stage", Provides: "The stage schedules", Config: common})
+	mustAction(r, "pipeline.entry", pipelineAction("entry"), ActionInfo{Family: "workflow", Kind: "effect", Summary: "Add, change, submit or delete a data entry on a stage that collects entries (body {entry, data, submit}; op delete removes)", Provides: "The saved entry and updated view", Config: common})
 	mustAction(r, "pipeline.schedule_create", pipelineAction("schedule_create"), ActionInfo{Family: "workflow", Kind: "effect", Summary: "Create a dated instance on a multi-date stage", Provides: "The created schedule and updated view", Config: common})
 	mustAction(r, "pipeline.schedule_submit", pipelineAction("schedule_submit"), ActionInfo{Family: "workflow", Kind: "effect", Summary: "Submit validated form data to a dated instance", Provides: "The submission and updated view", Config: common})
 	mustAction(r, "pipeline.payment_record", pipelineAction("payment_record"), ActionInfo{Family: "workflow", Kind: "effect", Summary: "Record a settled payment after a trusted verifier or provider intent confirms it", Provides: "The verified payment and updated case", Config: append(slices.Clone(common), ConfigField{Name: "verify_intent", Type: "string", Summary: "Optional gateway verification intent returning {verified, reference, amount, currency}"})})
@@ -447,8 +454,15 @@ func (h *pipelineHandler) run(ctx *ActionContext) (ActionResult, error) {
 	if err != nil {
 		return ActionResult{}, err
 	}
+	if h.op == "overview" {
+		o, err := e.Overview(c, actor)
+		if err != nil {
+			return ActionResult{}, pipelineFailure(err)
+		}
+		return h.out(o)
+	}
 	if h.op == "view" {
-		v, err := e.View(c, actor, h.param(ctx, "stage"))
+		v, err := e.ViewEntry(c, actor, h.param(ctx, "stage"), h.param(ctx, "entry"))
 		if err != nil {
 			return ActionResult{}, pipelineFailure(err)
 		}
@@ -557,6 +571,22 @@ func (h *pipelineHandler) apply(ctx *ActionContext, hookCtx context.Context, c *
 			return nil, nil, invalidInput("input.data must be an object of forms")
 		}
 		next, err = e.Save(hookCtx, c, actor, stage, data)
+	case "entry":
+		entryID := str("entry")
+		if entryID == "new" {
+			entryID = ""
+		}
+		if str("op") == "delete" {
+			next, err = e.DeleteEntry(hookCtx, c, actor, stage, entryID)
+			break
+		}
+		data, _ := body["data"].(map[string]any)
+		submit, _ := body["submit"].(bool)
+		var item *pipeline.DataEntry
+		next, item, err = e.SaveEntry(hookCtx, c, actor, stage, entryID, data, submit)
+		if err == nil {
+			extra = map[string]any{"entry": item}
+		}
 	case "schedule_create":
 		var item *pipeline.Schedule
 		next, item, err = e.AddSchedule(hookCtx, c, actor, stage, str("scheduled_date"), str("label"))
@@ -660,8 +690,18 @@ func (h *pipelineHandler) apply(ctx *ActionContext, hookCtx context.Context, c *
 			next, err = e.Suspend(hookCtx, c, actor, stage, reason, until)
 		case "resume":
 			next, err = e.Resume(hookCtx, c, actor, stage, comment)
+		case "start":
+			next, err = e.StartStage(hookCtx, c, actor, stage)
+		case "reset":
+			next, err = e.ResetStage(hookCtx, c, actor, stage, comment)
+		case "extend":
+			next, err = e.ExtendSLA(hookCtx, c, actor, stage, str("by"), comment)
+		case "waive":
+			next, err = e.WaiveSLA(hookCtx, c, actor, stage, comment)
+		case "reissue":
+			next, err = e.ReissueExternal(hookCtx, c, actor, stage)
 		default:
-			return nil, nil, invalidInput("work op must be claim, release, assign, delegate, suspend or resume")
+			return nil, nil, invalidInput("work op must be claim, release, assign, delegate, suspend, resume, start, reset, extend or waive")
 		}
 	case "note":
 		internal, _ := body["internal"].(bool)
@@ -911,6 +951,12 @@ func (h *pipelineHandler) list(ctx *ActionContext) (ActionResult, error) {
 			}
 			if ss.SLA != nil {
 				row["sla_status"] = ss.SLA.Status
+				if b := ss.SLA.Breach; b != nil {
+					row["breach_reason"], row["breach_cause"] = b.Reason, b.Cause
+				}
+			}
+			if ss.StartedAt != nil {
+				row["started_at"] = ss.StartedAt.Format(time.RFC3339)
 			}
 			if ss.Suspended != nil {
 				row["on_hold"] = ss.Suspended.Reason
@@ -934,7 +980,9 @@ func (h *pipelineHandler) get(c *pipeline.Case, e *pipeline.Engine, actor pipeli
 	}
 	stages := map[string]any{}
 	for name, ss := range c.Stages {
-		stages[name] = ss
+		view := *ss
+		view.EntryData = nil // the stage's reset point holds raw data; it is never served
+		stages[name] = &view
 	}
 	return h.out(map[string]any{
 		"id": c.ID, "number": c.Number, "pipeline": c.Pipeline, "status": c.Status, "stage": c.Stage,

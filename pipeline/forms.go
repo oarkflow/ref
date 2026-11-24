@@ -591,6 +591,9 @@ type SubmitReview struct {
 	Label            string        `json:"label,omitempty"`
 	Prompt           string        `json:"prompt,omitempty"`
 	Changes          []string      `json:"changes,omitempty"`
+	Title            string        `json:"title,omitempty"`
+	Description      string        `json:"description,omitempty"`
+	Button           string        `json:"button,omitempty"`
 	Fields           []ReviewField `json:"fields"`
 	Acknowledgements []AckView     `json:"acknowledgements,omitempty"`
 	Token            string        `json:"confirm_token"`
@@ -616,6 +619,18 @@ type confirmClaims struct {
 	Expires  int64  `json:"x"`
 }
 
+// summaryShows reports whether the summary lists a group (path empty) or an
+// input (group empty). A summary that names no groups or fields lists all.
+func summaryShows(sm *SummarySpec, group, path string) bool {
+	if sm == nil {
+		return true
+	}
+	if group != "" {
+		return len(sm.Groups) == 0 || slices.Contains(sm.Groups, group)
+	}
+	return len(sm.Fields) == 0 || slices.Contains(sm.Fields, path)
+}
+
 // NeedsConfirmation reports whether taking action at stage is two-step.
 func (e *Engine) NeedsConfirmation(c *Case, stage, action string) bool {
 	st, ok := e.C.Stage(stage)
@@ -631,7 +646,7 @@ func (e *Engine) confirmRequired(_ *Case, stage string, spec ActionSpec) bool {
 		return true
 	}
 	st, ok := e.C.Stage(stage)
-	if !ok || !st.ConfirmSubmit {
+	if !ok || !(st.ConfirmSubmit || st.Summary != nil) {
 		return false
 	}
 	return spec.Outcome == "" || spec.Outcome == OutcomeAdvance || spec.Outcome == OutcomeApprove
@@ -748,26 +763,38 @@ func (e *Engine) Preview(ctx context.Context, in *Case, actor Actor, stage, acti
 		Stage: stage, Action: action, Label: orDefault(spec.Label, action), Prompt: spec.Confirm,
 		Changes: changed, Fields: []ReviewField{}, Token: enc + "." + e.confirmMAC(enc), ExpiresAt: expires,
 	}
-	v, err := e.View(c, actor, stage)
+	viewOf := c
+	if st.Entries != nil {
+		// What would be submitted is the entry the stage will merge into the case.
+		viewOf = c.Clone()
+		e.mergeEntries(viewOf, st, viewOf.Stages[stage], e.now())
+	}
+	v, err := e.View(viewOf, actor, stage)
 	if err != nil {
 		return nil, err
 	}
 	r.Case = v.Case
 	r.Case.Revision = in.Revision
+	if sm := st.Summary; sm != nil {
+		r.Title, r.Description, r.Button = sm.Title, sm.Description, sm.Button
+	}
 	if v.Page != nil {
 		for _, g := range v.Page.Groups {
+			if !summaryShows(st.Summary, g.Name, "") {
+				continue
+			}
 			for _, f := range g.Forms {
 				if f.Repeatable {
 					if len(f.Entries) > 0 {
-						r.Fields = append(r.Fields, ReviewField{Path: f.Name, Label: titleOr(f.Title, f.Name), Group: g.Name, Value: f.Entries})
+						r.Fields = append(r.Fields, ReviewField{Path: f.Name, Label: titleOr(f.Title, f.Name), Group: titleOr(g.Title, g.Name), Value: f.Entries})
 					}
 					continue
 				}
 				for _, iv := range f.Inputs {
-					if iv.Value == nil || iv.Sealed {
+					if iv.Value == nil || iv.Sealed || !summaryShows(st.Summary, "", iv.Path) {
 						continue
 					}
-					r.Fields = append(r.Fields, ReviewField{Path: iv.Path, Label: iv.Label, Group: g.Name, Value: iv.Value, Masked: iv.Masked})
+					r.Fields = append(r.Fields, ReviewField{Path: iv.Path, Label: iv.Label, Group: titleOr(g.Title, g.Name), Value: iv.Value, Masked: iv.Masked})
 				}
 			}
 		}

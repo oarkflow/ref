@@ -23,11 +23,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"regexp"
 	"syscall"
 	"time"
 
 	"github.com/oarkflow/fh"
+	"github.com/oarkflow/ref/config"
 	"github.com/oarkflow/ref/platform"
+	"github.com/oarkflow/ref/serve"
 	_ "modernc.org/sqlite"
 )
 
@@ -36,12 +40,19 @@ type tokenIssuer interface {
 }
 
 func main() {
-	config := flag.String("config", "examples/casekit/app.bcl", "path to the application document")
+	cfgPath := flag.String("config", "examples/casekit/app.bcl", "path to the application document")
 	addr := flag.String("addr", "127.0.0.1:8097", "address to listen on")
 	token := flag.String("token", "", "print a development JWT for these JSON claims and exit")
 	demo := flag.Bool("demo", false, "use throwaway dev secrets and a stub faceworker (never in production)")
 	flag.Parse()
 
+	// Real environment variables win; then ENV_FILE or .env in the working
+	// directory; then .env next to the application document.
+	for _, path := range []string{config.DotenvPath(), filepath.Join(filepath.Dir(*cfgPath), ".env")} {
+		if err := config.LoadDotenv(path); err != nil {
+			log.Fatalf("casekit: %s: %v", path, err)
+		}
+	}
 	if *demo {
 		for _, k := range []string{"CASEKIT_JWT_SECRET", "CASEKIT_SIGNING_SECRET"} {
 			if os.Getenv(k) == "" {
@@ -57,7 +68,23 @@ func main() {
 		}
 	}
 	_ = os.MkdirAll(".data", 0o700)
-	app, err := platform.LoadFile(context.Background(), *config, platform.DefaultLoadOptions())
+	// Pages are SPL templates under templates/, rendered by the platform's routes.
+	renderer := serve.NewRenderer(serve.RendererConfig{
+		TemplatesDir: filepath.Join(filepath.Dir(*cfgPath), "templates"),
+		Reload:       *demo,
+		Env:          map[bool]string{true: "development", false: "production"}[*demo],
+		Globals:      map[string]any{"title": "Casekit", "appName": "Casekit", "page": "", "error": "", "success": "", "intro": map[string]any{"title": "", "image": "", "image_alt": "", "content": "", "button": "Start", "documents": []any{}}, "stages": []any{}, "name": "", "description": ""},
+	})
+	opts := platform.DefaultLoadOptions()
+	opts.Templates = renderer
+	src, err := os.ReadFile(*cfgPath)
+	if err != nil {
+		log.Fatalf("casekit: %v", err)
+	}
+	if *demo {
+		src = demoClocks(src)
+	}
+	app, err := platform.Compile(context.Background(), src, filepath.Dir(*cfgPath), opts)
 	if err != nil {
 		log.Fatalf("casekit: compile: %v", err)
 	}
@@ -67,9 +94,19 @@ func main() {
 		fmt.Println(issueToken(app, *token))
 		return
 	}
-	server := fh.NewFast()
+	server := fh.NewFast(fh.WithTemplateEngine(renderer))
 	if err := app.Mount(server); err != nil {
 		log.Fatalf("casekit: mount: %v", err)
+	}
+	if *demo {
+		// Demo only: hand out signed staff tokens so the UI can sign in with a
+		// click. The secret is random per run, so tokens cannot be made offline.
+		tokens := map[string]string{}
+		for _, role := range []string{"officer", "manager", "director", "admin"} {
+			tokens[role] = issueToken(app, fmt.Sprintf(`{"sub":"demo-%s","roles":[%q]}`, role, role))
+		}
+		server.Get("/demo/tokens", func(c fh.Ctx) error { return c.JSON(tokens) })
+		log.Printf("casekit: DEMO sign-in buttons enabled (officer, manager, director)")
 	}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -81,6 +118,15 @@ func main() {
 	if err := server.Listen(*addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("casekit: %v", err)
 	}
+}
+
+// demoClocks shortens every SLA and the sweep so a missed deadline can be seen
+// within a minute: deadlines given in hours become 45s, warnings 15s and the sweep
+// runs every 5s. Deadlines in days (the applicant's own stages) are left alone.
+func demoClocks(src []byte) []byte {
+	src = regexp.MustCompile(`(?m)^(\s*duration )"\d+h"`).ReplaceAll(src, []byte(`${1}"45s"`))
+	src = regexp.MustCompile(`(?m)^(\s*warn_before )"\d+h"`).ReplaceAll(src, []byte(`${1}"15s"`))
+	return regexp.MustCompile(`(?m)^(\s*every )1m`).ReplaceAll(src, []byte(`${1}5s`))
 }
 
 func randomSecret() string {

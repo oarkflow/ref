@@ -185,6 +185,44 @@ An info block's content is its `text`. BCL reserves `body` for a block's own con
 
 The token is HMAC-signed with the resource's `signing_secret` (or a per-process key without one). It is bound to the case, stage, action, caller, **case revision** and a **SHA-256 of the submission** (`data`, `comment`, `flags` and `acknowledgements`), and expires after `confirm_ttl` (default 30m). Any change to the case since the review, or different data in the commit, makes it invalid: `409` with code `CONFIRMATION_INVALID`, and the client reviews again. Once the action commits the revision moves on, so a token cannot be replayed. A confirm-submit action cannot be applied through `pipeline.bulk`.
 
+### Intro page, hold/resume and information requests
+
+- **`intro`** (on the pipeline) is the page shown before a case starts: `title`, `image`, `image_alt`, `content` (HTML, render it in a sandboxed iframe), `button`, and `document "name" { title url }` blocks. `pipeline.describe` returns it; the host renders it.
+- **`suspend_roles`, `resume_roles`, `info_roles`** on the pipeline are defaults for every stage; a stage can set its own. `suspend_roles` may put the case on hold, `resume_roles` (else `suspend_roles`) may lift it, `info_roles` may ask the applicant for more information. Setting any `info_roles` enables information requests. These roles may also view the stage.
+- **`summary`** (on a stage) is the page shown before submitting: `title`, `description`, `groups`, `fields` (form.input paths) and `button`. It makes the stage's advance and approve actions two-step (see Confirm before submit), and the review lists only the chosen groups or fields.
+
+### Starting a stage, the activity log and missed deadlines
+
+- **`require_start true`** (on a stage) makes the stage read-only, with no actions, until someone presses Start (`pipeline.work` op `start`). Starting records who began and when, and on a claimable stage it claims the work. Without `require_start`, the first save, node action or action counts as the start. Starting is also what separates *waiting* time from *working* time in the log.
+- **`pipeline.overview`** is the case at a glance (not a stage screen): the case and its status, the current stage with who started it and its deadline, the data gathered so far from every stage the caller may see (`fields`, masked where the stage masks), the `log`, and what the caller can do next (`can_work`, `needs_start`, `work.operations`). Each `log` entry is one visit of a stage: `started_by`, `started_at`, `wait_seconds` (entered to started), `work_seconds` (started to left, minus time on hold), `hold_seconds`, `total_seconds`, `outcome`, `due_at`, `breached`. People are left out for callers who are not staff.
+- **A missed deadline is explained.** When the sweep finds an SLA past due it records why (`not_picked_up`, `not_started` or `not_completed`, with a sentence, who held it, who started it, how overdue and any time on hold), keeps it permanently in the case's `breaches`, and emits `sla.breached` with `reason`, `cause`, `started_by`, `overdue_seconds` and `notify` (the SLA's `notify` list plus `role:<role>` for each admin role). `on "sla.breached" { hook "..." }` receives it in `input.event.detail`.
+- **`on_breach`** decides what happens automatically: `notify` (the default; nothing changes, admins take the stand), `reassign` (to `reassign_roles`, never the current holder), `release`, `reset`, `extend` (by `extend_by`), `return`, or an action name. `pickup_timeout` with `on_pickup_timeout` does the same for work nobody claimed.
+- **`admin_roles`** (on a stage, or on the pipeline as a default) may take a stand on a stage: `reset`, `assign` (to a listed worker), `extend` (`by`, defaulting to the SLA's `extend_by`), `waive` (a reason is required; the miss stays on record), or `release`. Each settles the open breach with who, what and why (`resolution`, `resolved_by`, `resolution_comment`) and emits `sla.resolved`. Admin roles may also view the stage.
+- **`reset`** restores the case data to what it was when the stage opened, clears the assignee, the start, holds, flags, check results and acknowledgements of that stage, closes the visit as `reset`, opens a new one and restarts the SLA. The history keeps everything that happened. The copy used for this (`entry_data`) is never served to clients and is wiped by erasure.
+- Events added: `stage.started`, `stage.reset`, `sla.resolved`. Run `pipeline.sweep` on a schedule or no deadline is ever noticed.
+
+### Who handles a stage, and data entries
+
+A stage is handled by one of four kinds of actor:
+- **The applicant** (`public true`): the person who started the case, with or without an account. A public stage may sit anywhere in the workflow, not only first, so the applicant can be asked for more later and the case moves on to the next stage when they submit.
+- **Workflow users** (`roles [...]`): staff holding a role; add `claimable`, `require_start` and a `routing` strategy to share the work.
+- **An outside party** (`external { party "KYC agent"  assignee_from "request.agent_email"  scope [...]  ttl "5d" }`): someone who is not a workflow user, such as a KYC verifier or a referee. A single-use signed link is issued automatically when the stage opens (the `link.issued` event carries `token`, so a hook can email it). They fill the stage's forms (or `scope`) with no account, and their submission completes the stage. Staff see who it waits for (`party` in the view and the overview); only the stage's roles and admins get the token, and an admin may reissue the link (`pipeline.work` op `reissue`, which kills the old one). Give the stage `view_roles` for the staff who should see it.
+- **The system**: automated nodes and `auto_advance`.
+
+**`entries`** turns a stage into a data-entry stage, where each person enters their own record instead of editing one shared document:
+
+| Setting | Meaning |
+|---|---|
+| `per_user` | Entries one person may make: `1` is a single entry, `N` a specific number, `0` (or unset) no limit. |
+| `min`, `max` | Submitted entries (from anyone) needed to complete the stage (default 1), and a cap on all entries, drafts included (`0` is no cap). |
+| `allow_draft` | An entry may be kept unsubmitted. Without it an entry is submitted or not made. |
+| `allow_edit` | The maker may change a submitted entry until the stage completes. Drafts are always editable by their maker. |
+| `merge` | Which submitted entry becomes the case data when the stage completes: `last` (default), `first` or `none`. The others stay on the stage. |
+
+Entries use `pipeline.entry` (`{entry, data, submit}`; op `delete` removes one) and `pipeline.view` with `entry` to render one. Each entry is validated like an ordinary stage (types, required inputs, rules), and drafts are private to their maker; staff of the stage read everyone's submitted entries in the overview (`entry_rows`). A stage with entries cannot also be `multi_date` or `external`, and its case data is not edited directly.
+
+**Deadlines apply to every kind of stage.** The SLA of an applicant stage or an outside-party stage explains itself (`applicant_no_response`, `external_no_response`) and an entries stage reports how many entries came in. `on_breach "expire"` closes the case as withdrawn when nobody answers in time (event `case.expired`).
+
 ### Stages
 
 | Attribute | Meaning |

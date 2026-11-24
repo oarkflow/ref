@@ -22,6 +22,20 @@ resource "db" {
   config {
     driver env("CASEKIT_DB_DRIVER", "sqlite")
     dsn env("CASEKIT_DSN", "file:.data/casekit.db?_pragma=busy_timeout(5000)")
+    migrations [
+      "CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, case_number TEXT NOT NULL, stage TEXT NOT NULL DEFAULT '', actor TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '', at TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+    ]
+  }
+}
+
+# Durable queue: fires the SLA sweep on exactly one replica.
+resource "jobs" {
+  kind "queue.sql"
+  config {
+    database "db"
+    table "casekit_jobs"
+    workers 1
+    poll_interval 1s
   }
 }
 
@@ -52,6 +66,38 @@ pipeline "onboarding" {
   description "Verify who a customer is: details, a webcam liveness check, then officer review."
   number_format "KYC-{year}-{seq:5}"
   subject ["identity.email"]
+
+  # Every stage inherits these unless it sets its own.
+  suspend_roles ["officer", "manager", "director"]
+  resume_roles  ["manager", "director"]
+  info_roles    ["officer", "manager", "director"]
+  # Admins take a stand when a deadline is missed: reset, reassign, extend, waive.
+  admin_roles   ["admin"]
+
+  worker "demo-officer"  { roles ["officer"] }
+  worker "demo-officer2" { roles ["officer"] }
+  worker "demo-admin"    { roles ["admin"] }
+
+  # Every event of interest is recorded and could be forwarded (email, chat...).
+  on "sla.breached"  { hook "casekit.record_why" }
+  on "sla.resolved"  { hook "casekit.record_why" }
+  on "sla.warning"   { hook "casekit.record" }
+  on "sla.escalated" { hook "casekit.record" }
+  on "stage.*"       { hook "casekit.record" }
+  on "case.*"        { hook "casekit.record" }
+
+  # The page shown before anyone starts.
+  intro {
+    title "Verify your identity"
+    image "/static/img/onboarding.svg"
+    image_alt "A person holding an ID card"
+    content "<h3>What you need</h3><ul><li>Your name and email</li><li>A device with a camera</li><li>About 3 minutes</li></ul><p>We check you are a real person, then an officer reviews your details.</p>"
+    button "Start verification"
+    document "privacy" {
+      title "Privacy notice"
+      url "/static/docs/privacy.html"
+    }
+  }
 
   form "identity" {
     input "full_name" {
@@ -97,6 +143,11 @@ pipeline "onboarding" {
       when "identity.returning == true"
       to "review"
     }
+    summary {
+      title "Check your details"
+      description "Make sure everything is right before we continue. You cannot change it afterwards."
+      button "Yes, continue"
+    }
     action "submit" {
       label "Continue"
       outcome advance
@@ -120,6 +171,15 @@ pipeline "onboarding" {
   stage "review" {
     title "Officer review"
     roles ["officer"]
+    claimable true
+    require_start true
+    sla {
+      duration "4h"
+      warn_before "1h"
+      # notify: record why it was missed and tell the admins; they take the stand.
+      on_breach "notify"
+      notify ["role:admin"]
+    }
     page {
       group "submitted" {
         title "Submitted"
@@ -148,10 +208,330 @@ pipeline "onboarding" {
   }
 }
 
+pipeline "certificate" {
+  title "Residence certificate"
+  description "Request a certificate. An outside agent verifies your identity, an officer reviews, and you may be asked for more information before it is issued."
+  number_format "CERT-{year}-{seq:5}"
+
+  suspend_roles ["officer", "manager"]
+  resume_roles  ["manager"]
+  info_roles    ["officer", "manager"]
+  admin_roles   ["admin"]
+
+  worker "demo-officer"  { roles ["officer"] }
+  worker "demo-officer2" { roles ["officer"] }
+  worker "demo-manager"  { roles ["manager"] }
+  worker "demo-admin"    { roles ["admin"] }
+
+  on "sla.breached"  { hook "casekit.record_why" }
+  on "sla.resolved"  { hook "casekit.record_why" }
+  on "sla.warning"   { hook "casekit.record" }
+  on "sla.escalated" { hook "casekit.record" }
+  on "stage.*"       { hook "casekit.record" }
+  on "case.*"        { hook "casekit.record" }
+  on "link.*"        { hook "casekit.record" }
+  on "entry.*"       { hook "casekit.record" }
+
+  intro {
+    title "Request a residence certificate"
+    image "/static/img/certificate.svg"
+    image_alt "A certificate with a seal"
+    content "<h3>How it works</h3><ol><li>You fill in your details and name who can verify you.</li><li>That person verifies your identity through a private link, with no account needed.</li><li>An officer reviews. If something is missing you will be asked, and you answer on this site.</li><li>A manager approves and your certificate is issued.</li></ol>"
+    button "Request a certificate"
+    document "privacy" {
+      title "Privacy notice"
+      url "/static/docs/privacy.html"
+    }
+  }
+
+  form "request" {
+    input "full_name" {
+      label "Full name"
+      kind text
+      required true
+    }
+    input "email" {
+      label "Email"
+      kind email
+      required true
+    }
+    input "address" {
+      label "Address to certify"
+      kind textarea
+      required true
+    }
+    input "purpose" {
+      label "What is it for?"
+      kind select
+      options ["Bank", "Embassy", "Employment", "Other"]
+      required true
+    }
+    input "kyc_agent" {
+      label "Who will verify your identity?"
+      kind text
+      required true
+      help "Name or email of the person (a ward officer, a notary) who knows you."
+    }
+  }
+  form "kyc" {
+    input "verified" {
+      label "Is the applicant who they say they are?"
+      kind select
+      options ["Yes", "No"]
+      required true
+    }
+    input "id_seen" {
+      label "ID document seen"
+      kind select
+      options ["Citizenship card", "Passport", "Driving licence"]
+      required true
+    }
+    input "agent_notes" {
+      label "Notes"
+      kind textarea
+    }
+  }
+  form "review" {
+    input "needs_info" {
+      label "More information is needed from the applicant"
+      kind boolean
+    }
+    input "question" {
+      label "What do you need from the applicant?"
+      kind textarea
+      visible_if "review.needs_info == true"
+      required_if "review.needs_info == true"
+    }
+  }
+  form "more" {
+    input "answer" {
+      label "Your answer"
+      kind textarea
+      required true
+    }
+    input "reference" {
+      label "Supporting reference (document number, link)"
+      kind text
+    }
+  }
+
+  # 1. The applicant (public) enters their request: one entry, editable, may be kept as a draft.
+  stage "request" {
+    title "Your request"
+    public true
+    page {
+      group "request" {
+        title "About you"
+        forms ["request"]
+      }
+    }
+    entries {
+      per_user 1
+      allow_edit true
+      allow_draft true
+    }
+    summary {
+      title "Check your request"
+      description "Your verifier will be contacted next."
+      button "Send request"
+    }
+    sla {
+      duration "7d"
+      warn_before "1d"
+      # nobody finished it: the request is closed
+      on_breach "expire"
+    }
+    action "submit" {
+      label "Send request"
+      outcome advance
+    }
+  }
+
+  # 2. Someone outside the workflow (not a workflow user) verifies identity through a private link.
+  stage "kyc" {
+    title "Identity verification"
+    view_roles ["officer", "manager"]
+    page {
+      group "kyc" {
+        title "Verification"
+        forms ["kyc"]
+      }
+    }
+    external {
+      party "KYC verifier"
+      assignee_from "request.kyc_agent"
+      ttl "5d"
+    }
+    sla {
+      duration "3d"
+      warn_before "1d"
+      on_breach "notify"
+      notify ["role:admin"]
+    }
+  }
+
+  # 3. An officer reviews and may ask the applicant for more.
+  stage "review" {
+    title "Officer review"
+    roles ["officer"]
+    claimable true
+    require_start true
+    page {
+      group "request" {
+        title "Request"
+        mode readonly
+        forms ["request"]
+      }
+      group "kyc" {
+        title "Verification result"
+        mode readonly
+        forms ["kyc"]
+      }
+      group "review" {
+        title "Decision"
+        forms ["review"]
+      }
+    }
+    route "needs_info" {
+      when "review.needs_info == true"
+      to "more_info"
+    }
+    route "clear" {
+      to "approval"
+    }
+    sla {
+      duration "4h"
+      warn_before "1h"
+      on_breach "notify"
+      notify ["role:admin"]
+    }
+    action "submit" {
+      label "Submit review"
+      outcome advance
+    }
+    action "reject" {
+      label "Reject"
+      outcome reject
+      comment_required true
+    }
+  }
+
+  # 4. Only when the officer asked: the applicant answers, then the case moves on to approval.
+  stage "more_info" {
+    title "More information needed"
+    public true
+    page {
+      group "ask" {
+        title "What we need"
+        mode readonly
+        forms ["review"]
+      }
+      group "more" {
+        title "Your answer"
+        forms ["more"]
+      }
+    }
+    entries {
+      per_user 3
+      min 1
+      allow_edit true
+      allow_draft true
+    }
+    sla {
+      duration "3d"
+      warn_before "1d"
+      on_breach "expire"
+    }
+    action "submit" {
+      label "Send my answer"
+      outcome advance
+    }
+  }
+
+  stage "approval" {
+    title "Manager approval"
+    roles ["manager"]
+    claimable true
+    require_start true
+    page {
+      group "request" {
+        title "Request"
+        mode readonly
+        forms ["request"]
+      }
+      group "kyc" {
+        title "Verification result"
+        mode readonly
+        forms ["kyc"]
+      }
+    }
+    sla {
+      duration "8h"
+      warn_before "2h"
+      on_breach "reassign"
+      reassign_roles ["manager"]
+      notify ["role:admin"]
+    }
+    action "approve" {
+      label "Approve"
+      outcome approve
+    }
+    action "reject" {
+      label "Reject"
+      outcome reject
+      comment_required true
+    }
+  }
+
+  stage "issue" {
+    title "Certificate issued"
+    roles ["manager"]
+    auto_advance true
+    node "issue" {
+      title "Issue the certificate"
+      kind certificate
+      certificate "residence"
+      auto true
+    }
+  }
+
+  certificate "residence" {
+    title "Residence certificate"
+    number_format "RC-{year}-{seq:4}"
+    fields ["request.full_name", "request.address", "request.purpose"]
+    validity "8760h"
+  }
+}
+
 pipeline "expense" {
   title "Expense approval"
   description "Small claims are approved automatically; larger ones need a manager or a director."
   number_format "EXP-{year}-{seq:5}"
+
+  suspend_roles ["manager", "director"]
+  resume_roles  ["director"]
+  info_roles    ["manager", "director"]
+  admin_roles   ["admin"]
+
+  worker "demo-manager"  { roles ["manager"] }
+  worker "demo-manager2" { roles ["manager"] }
+  worker "demo-director" { roles ["director"] }
+  worker "demo-admin"    { roles ["admin"] }
+
+  on "sla.breached"  { hook "casekit.record_why" }
+  on "sla.resolved"  { hook "casekit.record_why" }
+  on "sla.warning"   { hook "casekit.record" }
+  on "sla.escalated" { hook "casekit.record" }
+  on "stage.*"       { hook "casekit.record" }
+  on "case.*"        { hook "casekit.record" }
+
+  intro {
+    title "Submit an expense claim"
+    image "/static/img/expense.svg"
+    image_alt "A receipt"
+    content "<p>Claims under 100 are approved automatically. Larger claims go to a manager, and claims of 5000 or more go to a director.</p><p>Keep your receipt number ready for anything of 100 or more.</p>"
+    button "Start a claim"
+  }
 
   form "claim" {
     input "title" {
@@ -197,6 +577,11 @@ pipeline "expense" {
       to "director"
     }
     next "manager"
+    summary {
+      title "Review your claim"
+      description "Check the amount and category. This is what the approver will see."
+      button "Send claim"
+    }
     action "submit" {
       label "Submit"
       outcome advance
@@ -206,6 +591,16 @@ pipeline "expense" {
   stage "manager" {
     title "Manager approval"
     roles ["manager"]
+    claimable true
+    require_start true
+    sla {
+      duration "8h"
+      warn_before "2h"
+      # reassign: hand it to another manager automatically.
+      on_breach "reassign"
+      reassign_roles ["manager"]
+      notify ["role:admin"]
+    }
     page {
       group "claim" {
         title "Claim"
@@ -235,6 +630,14 @@ pipeline "expense" {
   stage "director" {
     title "Director approval"
     roles ["director"]
+    claimable true
+    require_start true
+    sla {
+      duration "24h"
+      warn_before "4h"
+      on_breach "notify"
+      notify ["role:admin"]
+    }
     page {
       group "claim" {
         title "Claim"
@@ -348,10 +751,137 @@ intent "cases.node" {
   }
 }
 
+intent "cases.entry" {
+  response "r"
+  node "r" {
+    uses "pipeline.entry"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [r]
+  }
+}
+
+intent "cases.link_view" {
+  response "view"
+  node "view" {
+    uses "pipeline.link_view"
+    resource "cases"
+    provides [view]
+  }
+}
+
+intent "cases.link_submit" {
+  response "result"
+  node "result" {
+    uses "pipeline.link_submit"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [result]
+  }
+}
+
+intent "cases.overview" {
+  response "r"
+  node "r" {
+    uses "pipeline.overview"
+    resource "cases"
+    requires [input]
+    provides [r]
+  }
+}
+
+intent "cases.sweep" {
+  response "result"
+  node "result" {
+    uses "pipeline.sweep"
+    resource "cases"
+    kind effect
+    provides [result]
+  }
+}
+
+# Event hook: keep a durable record of what happened and why.
+intent "casekit.record" {
+  response "recorded"
+  node "recorded" {
+    uses "database.exec"
+    resource "db"
+    kind effect
+    requires [input]
+    provides [recorded]
+    config {
+      statement "INSERT INTO notifications (event, case_number, stage, actor, at) VALUES ($1, $2, $3, $4, $5)"
+      args ["input.event.name", "input.case.number", "input.event.stage", "input.event.actor", "input.event.at"]
+    }
+  }
+}
+
+# The breach and its resolution carry a reason (why the deadline was missed, how it was settled).
+intent "casekit.record_why" {
+  response "recorded"
+  node "recorded" {
+    uses "database.exec"
+    resource "db"
+    kind effect
+    requires [input]
+    provides [recorded]
+    config {
+      statement "INSERT INTO notifications (event, case_number, stage, actor, reason, at) VALUES ($1, $2, $3, $4, $5, $6)"
+      args ["input.event.name", "input.case.number", "input.event.stage", "input.event.actor", "input.event.detail.reason", "input.event.at"]
+    }
+  }
+}
+
+intent "casekit.notifications" {
+  response "rows"
+  node "rows" {
+    uses "database.query"
+    resource "db"
+    provides [rows]
+    config {
+      roles ["admin"]
+      statement "SELECT event, case_number, stage, actor, reason, at FROM notifications ORDER BY id DESC LIMIT 100"
+    }
+  }
+}
+
+schedule "casekit_sweep" {
+  every 1m
+  queue "jobs"
+  intent "cases.sweep"
+  payload {
+    reason "schedule"
+  }
+}
+
 intent "cases.work" {
   response "r"
   node "r" {
     uses "pipeline.work"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [r]
+  }
+}
+
+intent "cases.rfi" {
+  response "r"
+  node "r" {
+    uses "pipeline.request_information"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [r]
+  }
+}
+
+intent "cases.answer" {
+  response "r"
+  node "r" {
+    uses "pipeline.submit_information"
     resource "cases"
     kind effect
     requires [input]
@@ -461,6 +991,20 @@ route "work" {
   auth "jwt"
   allow_anonymous true
 }
+route "rfi" {
+  method POST
+  path "/api/cases/:id/information-request"
+  intent "cases.rfi"
+  auth "jwt"
+  allow_anonymous true
+}
+route "answer" {
+  method POST
+  path "/api/cases/:id/information-response"
+  intent "cases.answer"
+  auth "jwt"
+  allow_anonymous true
+}
 route "note" {
   method POST
   path "/api/cases/:id/notes"
@@ -476,7 +1020,133 @@ route "verify" {
   allow_anonymous true
 }
 
-static "ui" {
-  prefix "/"
+static "assets" {
+  prefix "/static"
   root "static"
+}
+
+# ---- server-rendered pages (SPL templates) ---------------------------------
+route "api.entry_new" {
+  method POST
+  path "/api/cases/:id/stages/:stage/entries"
+  intent "cases.entry"
+  auth "jwt"
+  allow_anonymous true
+}
+route "api.entry_op" {
+  method POST
+  path "/api/cases/:id/stages/:stage/entries/:entry/:op"
+  intent "cases.entry"
+  auth "jwt"
+  allow_anonymous true
+}
+route "api.link_view" {
+  method GET
+  path "/api/links/:token"
+  intent "cases.link_view"
+  allow_anonymous true
+}
+route "api.link_submit" {
+  method POST
+  path "/api/links/:token"
+  intent "cases.link_submit"
+  allow_anonymous true
+}
+route "page.link" {
+  method GET
+  path "/links/:token"
+  title "Verification"
+  template "pages/case"
+  layout "layouts/base"
+  allow_anonymous true
+  cache_control "no-store"
+}
+
+route "api.overview" {
+  method GET
+  path "/api/cases/:id/overview"
+  intent "cases.overview"
+  auth "jwt"
+  allow_anonymous true
+}
+route "api.notifications" {
+  method GET
+  path "/api/notifications"
+  intent "casekit.notifications"
+  auth "jwt"
+}
+
+route "page.home" {
+  method GET
+  path "/"
+  intent "cases.catalog"
+  title "Home"
+  template "pages/home"
+  layout "layouts/base"
+  allow_anonymous true
+  cache_control "no-store"
+}
+route "page.intro" {
+  method GET
+  path "/start/:pipeline"
+  intent "cases.describe"
+  title "Start"
+  template "pages/intro"
+  layout "layouts/base"
+  allow_anonymous true
+  cache_control "no-store"
+}
+route "page.guide" {
+  method GET
+  path "/guide"
+  intent "cases.catalog"
+  title "Guide"
+  template "pages/guide"
+  layout "layouts/base"
+  allow_anonymous true
+}
+route "page.guide_detail" {
+  method GET
+  path "/guide/:pipeline"
+  intent "cases.describe"
+  title "Guide"
+  template "pages/guide_detail"
+  layout "layouts/base"
+  allow_anonymous true
+}
+route "page.work" {
+  method GET
+  path "/work"
+  title "My work"
+  template "pages/work"
+  layout "layouts/base"
+  allow_anonymous true
+  cache_control "no-store"
+}
+route "page.case" {
+  method GET
+  path "/cases/:id"
+  title "Case"
+  template "pages/case"
+  layout "layouts/base"
+  allow_anonymous true
+  cache_control "no-store"
+}
+route "page.task" {
+  method GET
+  path "/tasks/:id"
+  title "Task"
+  template "pages/case"
+  layout "layouts/base"
+  allow_anonymous true
+  cache_control "no-store"
+}
+route "page.task_stage" {
+  method GET
+  path "/tasks/:id/:stage"
+  title "Task"
+  template "pages/case"
+  layout "layouts/base"
+  allow_anonymous true
+  cache_control "no-store"
 }

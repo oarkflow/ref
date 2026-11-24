@@ -17,10 +17,14 @@ func (e *Engine) RequestInformation(_ context.Context, in *Case, actor Actor, re
 	if err != nil {
 		return nil, nil, err
 	}
-	if !e.CanAct(in, st, actor) {
+	if len(st.InfoRoles) > 0 {
+		if !actor.HasAnyRole(st.InfoRoles) {
+			return nil, nil, forbidden("you may not request information at this stage")
+		}
+	} else if !e.CanAct(in, st, actor) {
 		return nil, nil, forbidden("you may not request information at this stage")
 	}
-	if err := e.guardClaim(in, st, ss, actor); err != nil {
+	if err := e.guardAssignee(in, st, ss, actor); err != nil {
 		return nil, nil, err
 	}
 	if in.Status == CaseRequiresInformation {
@@ -42,6 +46,18 @@ func (e *Engine) RequestInformation(_ context.Context, in *Case, actor Actor, re
 }
 
 // SubmitInformation records the applicant's answer and resumes the same stage.
+// mayRequestInfo reports whether the actor may ask the applicant for more
+// information at this open stage right now.
+func (e *Engine) mayRequestInfo(c *Case, st *Stage, actor Actor) bool {
+	if !e.C.Def.AllowRFI || actor.ID == "" || actor.ID == c.CreatedBy || actor.Link != nil || c.Status == CaseRequiresInformation {
+		return false
+	}
+	if len(st.InfoRoles) > 0 {
+		return actor.HasAnyRole(st.InfoRoles)
+	}
+	return e.CanAct(c, st, actor)
+}
+
 func (e *Engine) SubmitInformation(_ context.Context, in *Case, actor Actor, response map[string]any) (*Case, *InformationRequest, error) {
 	if actor.ID == "" || actor.ID != in.CreatedBy || actor.Link != nil {
 		return nil, nil, forbidden("only the applicant may answer an information request")

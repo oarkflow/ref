@@ -323,5 +323,12 @@ func (e *Engine) LinkSubmit(ctx context.Context, in *Case, actor Actor, data map
 	c.History = append(c.History, Entry{At: now, Actor: actor.ID, Stage: st.Name, Action: "link_submitted", Changes: changed})
 	c.emit("link.submitted", st.Name, actor.ID, now, map[string]any{"party": link.Party, "changes": changed})
 	c.UpdatedAt = now
+	if st.External != nil && link.Nonce == ss.ExternalLink {
+		// The outside party is the stage's only worker: their submission completes it.
+		if err := e.completeStage(ctx, c, st.Name, Actor{ID: actor.ID}, "", 0); err != nil {
+			return nil, err
+		}
+		e.finish(c, now)
+	}
 	return c, nil
 }

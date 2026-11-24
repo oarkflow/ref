@@ -92,10 +92,15 @@ type Case struct {
 	Acknowledgements    []AckRecord          `json:"acknowledgements,omitempty"`
 	Payment             *PaymentRecord       `json:"payment,omitempty"`
 	InformationRequests []InformationRequest `json:"information_requests,omitempty"`
+	// Breaches records every missed stage deadline and how it was settled.
+	Breaches []BreachRecord `json:"breaches,omitempty"`
 
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 	ClosedAt  *time.Time `json:"closed_at,omitempty"`
+
+	// entryShadow marks a scratch copy used to validate one data entry.
+	entryShadow bool
 
 	// events are emitted by the last operation, for the host to dispatch
 	// after the case is saved. They are not persisted.
@@ -133,6 +138,11 @@ type Visit struct {
 	Outcome  string `json:"outcome,omitempty"`
 	Assignee string `json:"assignee,omitempty"`
 	Breached bool   `json:"breached,omitempty"`
+	// StartedAt and StartedBy are when and by whom the stage was started in
+	// this visit; DueAt is its SLA deadline.
+	StartedAt *time.Time `json:"started_at,omitempty"`
+	StartedBy string     `json:"started_by,omitempty"`
+	DueAt     *time.Time `json:"due_at,omitempty"`
 	// Suspended is the total time the case was on hold during the visit.
 	SuspendedSeconds int64 `json:"suspended_seconds,omitempty"`
 }
@@ -187,6 +197,17 @@ type StageState struct {
 	// goes straight back to it.
 	ReturnedFrom string `json:"returned_from,omitempty"`
 	Visits       int    `json:"visits,omitempty"`
+	// StartedBy and StartedAt record who began the stage and when. Resets
+	// counts how often an admin reset it. EntryData is the case data as it was
+	// when the stage opened, kept so a reset can restore it.
+	StartedBy string         `json:"started_by,omitempty"`
+	StartedAt *time.Time     `json:"started_at,omitempty"`
+	Resets    int            `json:"resets,omitempty"`
+	EntryData map[string]any `json:"entry_data,omitempty"`
+	// Entries are the data entries made on a stage that collects them.
+	Entries []DataEntry `json:"entries,omitempty"`
+	// ExternalLink is the nonce of the link issued to the stage's outside party.
+	ExternalLink string `json:"external_link,omitempty"`
 
 	// Assignee is who works the stage now (claimed, routed or assigned).
 	Assignee   string     `json:"assignee,omitempty"`
@@ -260,6 +281,38 @@ type SLAState struct {
 	PickupBreached bool       `json:"pickup_breached,omitempty"`
 	// Level is the escalation level reached (0 = none).
 	Level int `json:"level,omitempty"`
+	// Breach says why and how the deadline was missed.
+	Breach *BreachInfo `json:"breach,omitempty"`
+}
+
+// BreachInfo explains a missed SLA: what was going on when the deadline
+// passed, in words, and what the system did about it.
+type BreachInfo struct {
+	// Cause: not_picked_up, not_started or not_completed.
+	Cause          string     `json:"cause"`
+	Reason         string     `json:"reason"`
+	DueAt          time.Time  `json:"due_at"`
+	BreachedAt     time.Time  `json:"breached_at"`
+	OverdueSeconds int64      `json:"overdue_seconds"`
+	Assignee       string     `json:"assignee,omitempty"`
+	StartedBy      string     `json:"started_by,omitempty"`
+	StartedAt      *time.Time `json:"started_at,omitempty"`
+	// Action is what OnBreach did automatically (notify when nothing).
+	Action string `json:"action"`
+}
+
+// BreachRecord is the permanent record of a missed SLA. The stage's live
+// state is cleared by a reset; this record is not.
+type BreachRecord struct {
+	ID    string `json:"id"`
+	Stage string `json:"stage"`
+	BreachInfo
+	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
+	ResolvedBy string     `json:"resolved_by,omitempty"`
+	// Resolution: reset, reassign, extend, waive, release, return, an action
+	// name, or empty while nobody has taken a stand.
+	Resolution string `json:"resolution,omitempty"`
+	Comment    string `json:"resolution_comment,omitempty"`
 }
 
 // Suspension puts a stage on hold; its SLA clock stops.

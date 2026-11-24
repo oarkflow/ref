@@ -38,6 +38,7 @@ func Compile(def *Definition) (*Compiled, error) {
 	if def == nil || strings.TrimSpace(def.Name) == "" {
 		return nil, fmt.Errorf("pipeline: a pipeline needs a name")
 	}
+	def = withWorkDefaults(def)
 	def = withGateNodes(def)
 	def, err := withWhenAliases(def)
 	if err != nil {
@@ -300,6 +301,51 @@ func (c *Compiled) checkStage(st Stage) error {
 			return fmt.Errorf("route %q names unknown stage %q", r.Name, r.To)
 		}
 	}
+	if en := st.Entries; en != nil {
+		if en.PerUser < 0 || en.Min < 0 || en.Max < 0 || (en.Max > 0 && en.Max < en.need()) {
+			return fmt.Errorf("entries: per_user, min and max must not be negative, and max must be at least min")
+		}
+		if !oneOf(en.Merge, "", "last", "first", "none") {
+			return fmt.Errorf("entries merge %q is not last, first or none", en.Merge)
+		}
+		if st.Page == nil || len(c.entryFormsOf(&st)) == 0 {
+			return fmt.Errorf("entries need an editable page group to enter data in")
+		}
+		if st.MultiDate {
+			return fmt.Errorf("entries and multi_date cannot be combined on one stage")
+		}
+	}
+	if x := st.External; x != nil {
+		if st.Entries != nil {
+			return fmt.Errorf("a stage cannot collect entries and be handled by an outside party")
+		}
+		if len(x.Scope) == 0 && (st.Page == nil || len(st.Page.Groups) == 0) {
+			return fmt.Errorf("external stage needs a page with forms or an explicit scope")
+		}
+		if x.TTL != "" {
+			if sp, err := ParseSpan(x.TTL); err != nil || sp.Zero() {
+				return fmt.Errorf("external ttl %q must be a duration like \"7d\"", x.TTL)
+			}
+		}
+	}
+	if sm := st.Summary; sm != nil {
+		groups := map[string]bool{}
+		if st.Page != nil {
+			for _, g := range st.Page.Groups {
+				groups[g.Name] = true
+			}
+		}
+		for _, g := range sm.Groups {
+			if !groups[g] {
+				return fmt.Errorf("summary names unknown group %q", g)
+			}
+		}
+		for _, f := range sm.Fields {
+			if form, _, ok := strings.Cut(f, "."); !ok || form == "" {
+				return fmt.Errorf("summary field %q must be form.input", f)
+			}
+		}
+	}
 	if st.Certificate != "" && c.certificates[st.Certificate] == nil {
 		return fmt.Errorf("issues unknown certificate %q", st.Certificate)
 	}
@@ -331,14 +377,18 @@ func (c *Compiled) checkStage(st Stage) error {
 			return fmt.Errorf("sla on_pickup_timeout %q is not notify or reassign", sla.OnPickupTimeout)
 		}
 		switch sla.OnBreach {
-		case "", "notify", "reassign", "release":
+		case "", "notify", "reassign", "release", "reset", "expire":
+		case "extend":
+			if sp, err := ParseSpan(sla.ExtendBy); err != nil || sp.Zero() {
+				return fmt.Errorf("sla on_breach extend needs a valid extend_by such as \"24h\"")
+			}
 		case "return":
 			if sla.ReturnTo != "" && !stageExists(sla.ReturnTo) {
 				return fmt.Errorf("sla return_to names unknown stage %q", sla.ReturnTo)
 			}
 		default:
 			if !slices.ContainsFunc(st.Actions, func(a ActionSpec) bool { return a.Name == sla.OnBreach }) {
-				return fmt.Errorf("sla on_breach %q is not notify, reassign, return or an action of the stage", sla.OnBreach)
+				return fmt.Errorf("sla on_breach %q is not notify, reassign, release, reset, extend, return or an action of the stage", sla.OnBreach)
 			}
 		}
 		for _, lvl := range sla.Escalate {
