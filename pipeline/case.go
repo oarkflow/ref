@@ -287,6 +287,9 @@ type NodeState struct {
 	Result    map[string]any     `json:"result,omitempty"`
 	Comment   string             `json:"comment,omitempty"`
 	UpdatedAt *time.Time         `json:"updated_at,omitempty"`
+	// Attempts and Challenge belong to liveness nodes.
+	Attempts  int                `json:"attempts,omitempty"`
+	Challenge *LivenessChallenge `json:"challenge,omitempty"`
 }
 
 // Approval is one approver's decision. Votes and gate reviews carry a

@@ -61,6 +61,9 @@ func registerCacheResources(r *Registry) {
 		if err != nil {
 			return nil, nil, err
 		}
+		if err := ensurePrivateDir(dir); err != nil {
+			return nil, nil, err
+		}
 		store, err := kv.NewFileStore(dir, kv.WithFileGCInterval(gc))
 		return store, store, err
 	}), ResourceKindInfo{

@@ -4,17 +4,17 @@ go 1.27.4
 
 require (
 	github.com/alicebob/miniredis/v2 v2.40.0
-	github.com/go-sql-driver/mysql v1.10.1
+	github.com/go-sql-driver/mysql v1.10.2
 	github.com/jackc/pgx/v5 v5.13.0
-	github.com/oarkflow/authz v0.0.7
+	github.com/oarkflow/authz v0.0.8
 	github.com/oarkflow/bcl v0.0.37
 	github.com/oarkflow/config v0.0.1
-	github.com/oarkflow/fh v0.0.32
+	github.com/oarkflow/fh v0.0.38
 	github.com/oarkflow/interpreter v0.0.15
 	github.com/oarkflow/migrate v0.0.30
-	github.com/oarkflow/rules v0.0.5
+	github.com/oarkflow/rules v0.0.6
 	github.com/oarkflow/spl v0.0.10
-	github.com/oarkflow/tcpguard v0.0.16
+	github.com/oarkflow/tcpguard v0.0.17
 	github.com/oarkflow/template v0.0.4
 	github.com/oarkflow/zlog v0.0.4
 	github.com/prometheus/client_golang v1.25.0
@@ -23,10 +23,10 @@ require (
 	go.opentelemetry.io/otel/sdk v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
 	golang.org/x/crypto v0.59.0
-	golang.org/x/net v0.62.0
+	golang.org/x/net v0.63.0
 	golang.org/x/sys v0.50.0
 	golang.org/x/text v0.44.0
-	modernc.org/sqlite v1.62.0
+	modernc.org/sqlite v1.63.0
 )
 
 require (
@@ -42,7 +42,7 @@ require (
 	github.com/gookit/color v1.6.3 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/puddle/v2 v2.2.3 // indirect
+	github.com/jackc/puddle/v2 v2.2.4 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
@@ -54,7 +54,7 @@ require (
 	github.com/oarkflow/ip v0.0.11 // indirect
 	github.com/oarkflow/jet v0.0.4 // indirect
 	github.com/oarkflow/json v0.0.28 // indirect
-	github.com/oarkflow/squealx v0.0.82 // indirect
+	github.com/oarkflow/squealx v0.0.83 // indirect
 	github.com/oarkflow/squealx/drivers/mysql v0.0.82 // indirect
 	github.com/oarkflow/squealx/drivers/postgres v0.0.82 // indirect
 	github.com/oarkflow/squealx/drivers/sqlite v0.0.82 // indirect
@@ -68,13 +68,14 @@ require (
 	github.com/urfave/cli/v3 v3.14.0 // indirect
 	github.com/xo/terminfo v1.3.1 // indirect
 	github.com/yuin/gopher-lua v1.1.2 // indirect
-	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
+	go.opentelemetry.io/auto/sdk v1.2.2 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
 	go.opentelemetry.io/otel/metric v1.47.0 // indirect
 	go.uber.org/atomic v1.12.0 // indirect
 	golang.org/x/sync v0.25.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
-	modernc.org/libc v1.81.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
+	modernc.org/libc v1.82.13 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
-	modernc.org/memory v1.12.1 // indirect
+	modernc.org/memory v1.13.0 // indirect
 )

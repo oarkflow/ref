@@ -20,6 +20,8 @@ type Engine struct {
 	C          *Compiled
 	Eval       Evaluator
 	Automation Automation
+	// Liveness scores KYC liveness evidence (see NodeLiveness).
+	Liveness LivenessVerifier
 	// StageHook runs a stage's on_enter / on_complete hook, if set.
 	StageHook func(ctx context.Context, hook string, c *Case, stage string) error
 	// SigningKey signs issued certificates (HMAC-SHA256). Without it
@@ -361,7 +363,10 @@ func (e *Engine) enterStage(ctx context.Context, c *Case, name string, actor Act
 		c.Timeline = append(c.Timeline, Visit{Stage: name, EnteredAt: at, LeftAt: &at, Outcome: "skipped"})
 		c.History = append(c.History, Entry{At: at, Actor: actor.ID, Stage: name, Action: "skip"})
 		c.emit("stage.skipped", name, actor.ID, at, nil)
-		next := e.nextStage(st)
+		next, err := e.nextStageFor(c, st, actor)
+		if err != nil {
+			return err
+		}
 		if next == "" {
 			c.Status = CaseCompleted
 			return nil
@@ -584,6 +589,27 @@ func (e *Engine) nextStage(st *Stage) string {
 	return ""
 }
 
+// nextStageFor picks the stage after st for this case: the first matching
+// route, else the static default. "" means the case ends.
+func (e *Engine) nextStageFor(c *Case, st *Stage, actor Actor) (string, error) {
+	if len(st.Routes) > 0 {
+		env := e.Env(c, actor)
+		for _, r := range st.Routes {
+			ok, err := e.cond(r.When, env)
+			if err != nil {
+				return "", fmt.Errorf("pipeline: stage %q route %q: %w", st.Name, r.Name, err)
+			}
+			if ok {
+				if r.To == RouteEnd {
+					return "", nil
+				}
+				return r.To, nil
+			}
+		}
+	}
+	return e.nextStage(st), nil
+}
+
 // completeStage closes a stage and opens the next one.
 func (e *Engine) completeStage(ctx context.Context, c *Case, name string, actor Actor, next string, depth int) error {
 	st, _ := e.C.Stage(name)
@@ -629,7 +655,10 @@ func (e *Engine) completeStage(ctx context.Context, c *Case, name string, actor 
 	ss.ReturnedFrom = ""
 	ss.Flags = nil
 	if next == "" {
-		next = e.nextStage(st)
+		var err error
+		if next, err = e.nextStageFor(c, st, actor); err != nil {
+			return err
+		}
 	}
 	if next == "" {
 		c.Status = CaseCompleted
@@ -1215,7 +1244,7 @@ func (e *Engine) checkAdvance(c *Case, st *Stage, ss *StageState, spec ActionSpe
 	if c.Status == CaseRequiresInformation {
 		return badState("an information request is pending")
 	}
-	if pay := e.C.Def.Payment; pay != nil && (spec.Outcome == OutcomeApprove || (spec.Next == "" && e.nextStage(st) == "")) && c.Payment == nil {
+	if pay := e.C.Def.Payment; pay != nil && (spec.Outcome == OutcomeApprove || (spec.Next == "" && e.terminalAfter(c, st, actor))) && c.Payment == nil {
 		return badState("payment must be verified before completion")
 	}
 	missing := e.missingRequired(c, st, ss, actor)
@@ -1563,6 +1592,11 @@ func (e *Engine) NodeAct(ctx context.Context, in *Case, actor Actor, stage, node
 			return nil, err
 		}
 		markActor()
+	case n.Kind == NodeLiveness && (verb == "challenge" || verb == "verify"):
+		if err := e.livenessOp(ctx, c, stage, n, ns, actor, verb, input, now, &entry); err != nil {
+			return nil, err
+		}
+		markActor()
 	case n.Kind == NodeCheck && verb == "recheck":
 		e.refreshChecks(c, stage)
 		markActor()
@@ -1720,4 +1754,10 @@ func FormatNumber(format string, seq int64, now time.Time) string {
 		}
 		out = out[:i] + fmt.Sprintf("%0*d", width, seq) + out[i+j+1:]
 	}
+}
+
+// terminalAfter reports whether completing st would end the case.
+func (e *Engine) terminalAfter(c *Case, st *Stage, actor Actor) bool {
+	next, err := e.nextStageFor(c, st, actor)
+	return err == nil && next == ""
 }

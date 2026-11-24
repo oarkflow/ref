@@ -565,6 +565,13 @@ func (e *Engine) nodeOperations(c *Case, st *Stage, n *Node, ns *NodeState, acto
 		if ns.Status != NodePassed && e.Automation != nil {
 			ops = append(ops, "run")
 		}
+	case NodeLiveness:
+		if ns.Status != NodePassed && e.Liveness != nil && !(ns.Status == NodeFailed && ns.Attempts >= livenessAttempts(n)) {
+			ops = append(ops, "challenge")
+			if ns.Challenge != nil {
+				ops = append(ops, "verify")
+			}
+		}
 	case NodeCheck:
 		ops = append(ops, "recheck")
 	case NodeCertificate:

@@ -452,6 +452,10 @@ type Stage struct {
 	Actions []ActionSpec `bcl:"action,block" json:"actions,omitempty"`
 	// Next is the stage entered on completion (default: the following one).
 	Next string `bcl:"next" json:"next,omitempty"`
+	// Routes branch the case after this stage: the first route whose When
+	// holds names the next stage (a switch). Next, or the following stage,
+	// is the default when none matches.
+	Routes []Route `bcl:"route,block" json:"routes,omitempty"`
 	// Assign sets case data when the stage completes.
 	Assign []Assignment `bcl:"assign,block" json:"assign,omitempty"`
 	// Certificate issues the named certificate when the stage completes.
@@ -587,7 +591,8 @@ const (
 	NodeAutomated   = "automated"
 	NodeCertificate = "certificate"
 	NodeTask        = "task"
-	NodeVote        = "vote"
+	// NodeLiveness is KYC liveness verification; see liveness.go.
+	NodeVote = "vote"
 	// NodeGate is a review gate: the stage cannot advance until enough
 	// distinct reviewers approve. A review "gate" block declares one.
 	NodeGate = "gate"
@@ -633,6 +638,17 @@ type Node struct {
 	// unanimous (default), majority, or a number of approving votes.
 	Voters    int    `bcl:"voters" json:"voters,omitempty"`
 	Consensus string `bcl:"consensus" json:"consensus,omitempty"`
+	// Liveness (KYC) nodes: Challenges is how many random gestures to ask
+	// for, MinScore the liveness threshold, MaxAttempts the tries allowed,
+	// ChallengeTTL how long a challenge lives ("2m"). MatchWith is a data
+	// path holding the reference portrait (e.g. the ID document photo) the
+	// live face must match at MinMatch.
+	Challenges   int     `bcl:"challenges" json:"challenges,omitempty"`
+	MinScore     float64 `bcl:"min_score" json:"min_score,omitempty"`
+	MaxAttempts  int     `bcl:"max_attempts" json:"max_attempts,omitempty"`
+	ChallengeTTL string  `bcl:"challenge_ttl" json:"challenge_ttl,omitempty"`
+	MatchWith    string  `bcl:"match_with" json:"match_with,omitempty"`
+	MinMatch     float64 `bcl:"min_match" json:"min_match,omitempty"`
 }
 
 // Action outcomes.
@@ -683,4 +699,15 @@ type CertificateSpec struct {
 	Fields []string `bcl:"fields" json:"fields"`
 	// Validity is how long the certificate is valid, e.g. "87600h" (10y).
 	Validity string `bcl:"validity" json:"validity,omitempty"`
+}
+
+// RouteEnd as a route target completes the case.
+const RouteEnd = "end"
+
+// Route is one branch of a stage's switch. An empty When always matches.
+type Route struct {
+	Name string `bcl:",id" json:"name"`
+	When string `bcl:"when" json:"when,omitempty"`
+	// To is the next stage, or "end" to complete the case.
+	To string `bcl:"to" json:"to"`
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -40,6 +41,11 @@ func registerQueueResources(r *Registry) {
 		}
 		cfg, err := queueConfig(spec)
 		if err != nil {
+			return nil, nil, err
+		}
+		// fh refuses a queue directory that others can read. Create it
+		// private, and tighten one we own rather than failing the boot.
+		if err := ensurePrivateDir(dir); err != nil {
 			return nil, nil, err
 		}
 		cfg.Dir = dir
@@ -374,4 +380,22 @@ func errorText(err error) any {
 		text = text[:2000]
 	}
 	return text
+}
+
+// ensurePrivateDir creates dir (mode 0700) and removes group/other access from
+// an existing directory, since durable job payloads may hold personal data.
+func ensurePrivateDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create queue directory %q: %w", dir, err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return fmt.Errorf("restrict queue directory %q to 0700: %w", dir, err)
+		}
+	}
+	return nil
 }

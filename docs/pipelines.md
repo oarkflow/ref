@@ -218,6 +218,7 @@ Stage statuses are `pending`, `active`, `returned`, `completed`, `rejected` and 
 | `form` | `complete` | Its forms validate. |
 | `certificate` | `issue` | The certificate was issued. With `auto true` this happens on stage entry. |
 | `gate` | `approve`, `reject` | `approvals` distinct reviewers approved. A `review "gate"` block declares it. See [Review modes](#review-modes). |
+| `liveness` | `challenge`, `verify` | A fresh challenge was answered and the host's `Engine.Liveness` verifier scored it at or above `min_score` (and, with `match_with`, the face matched that data path at `min_match`). Challenges are random gestures (`challenges`, default 2), single use, bound to the actor who asked, and expire after `challenge_ttl` (default `2m`). `max_attempts` (default 3) bounds retries; a verifier outage does not use an attempt. The engine ships no biometric model: supply a `LivenessVerifier`, and capture frames in the client as file uploads referenced in `result`. |
 | any | `waive` (for `waive_roles`) | — |
 
 Node statuses are `pending`, `passed`, `failed`, `waived` and `skipped` (`applies_if` false). `optional` nodes never block their stage.

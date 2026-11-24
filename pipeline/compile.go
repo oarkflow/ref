@@ -292,6 +292,14 @@ func (c *Compiled) checkStage(st Stage) error {
 	if st.Next != "" && !stageExists(st.Next) {
 		return fmt.Errorf("next names unknown stage %q", st.Next)
 	}
+	for i, r := range st.Routes {
+		if !validName(r.Name) {
+			return fmt.Errorf("route %d: missing or invalid name", i+1)
+		}
+		if r.To != RouteEnd && !stageExists(r.To) {
+			return fmt.Errorf("route %q names unknown stage %q", r.Name, r.To)
+		}
+	}
 	if st.Certificate != "" && c.certificates[st.Certificate] == nil {
 		return fmt.Errorf("issues unknown certificate %q", st.Certificate)
 	}
@@ -439,6 +447,18 @@ func (c *Compiled) checkStage(st Stage) error {
 			if n.Check == "" {
 				return fmt.Errorf("check node %q needs a check expression", n.Name)
 			}
+		case NodeLiveness:
+			if n.MinScore < 0 || n.MinScore > 1 || n.MinMatch < 0 || n.MinMatch > 1 {
+				return fmt.Errorf("liveness node %q: min_score and min_match are between 0 and 1", n.Name)
+			}
+			if n.Challenges < 0 || n.MaxAttempts < 0 {
+				return fmt.Errorf("liveness node %q: challenges and max_attempts cannot be negative", n.Name)
+			}
+			if n.ChallengeTTL != "" {
+				if d, err := time.ParseDuration(n.ChallengeTTL); err != nil || d <= 0 {
+					return fmt.Errorf("liveness node %q: challenge_ttl %q is not a positive duration", n.Name, n.ChallengeTTL)
+				}
+			}
 		case NodeAutomated:
 			if n.Hook == "" {
 				return fmt.Errorf("automated node %q needs a hook", n.Name)
@@ -448,7 +468,7 @@ func (c *Compiled) checkStage(st Stage) error {
 				return fmt.Errorf("certificate node %q names unknown certificate %q", n.Name, n.Certificate)
 			}
 		default:
-			return fmt.Errorf("node %q: kind %q is not form, review, approval, vote, gate, check, automated, certificate or task", n.Name, n.Kind)
+			return fmt.Errorf("node %q: kind %q is not form, review, approval, vote, gate, check, automated, certificate, liveness or task", n.Name, n.Kind)
 		}
 		for _, f := range n.Forms {
 			if c.forms[f] == nil {

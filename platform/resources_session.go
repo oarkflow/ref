@@ -120,6 +120,9 @@ func sessionFactory(backend sessionBackend) ResourceFactory {
 			if err != nil {
 				return nil, nil, fmt.Errorf("resource %q: %w", spec.Name, err)
 			}
+			if err := ensurePrivateDir(dir); err != nil {
+				return nil, nil, err
+			}
 			fileStore, err := kv.NewFileStore(dir, kv.WithFileGCInterval(gc))
 			if err != nil {
 				return nil, nil, err

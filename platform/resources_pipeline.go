@@ -100,6 +100,8 @@ func registerPipelineResources(r *Registry) {
 			{Name: "storage_prefix", Type: "string", Default: "pipeline/", Summary: "Prefix of every upload's object key"},
 			{Name: "max_upload_bytes", Type: "int", Default: "10485760", Summary: "Largest upload for a file input without its own max_bytes"},
 			{Name: "workspace_roles_claim", Type: "string", Default: "workspace_roles", Summary: "Principal claim listing roles held at a workspace as \"unit:role\" entries (string, comma list or array); a role applies to every case at or below its unit, on top of the principal's own roles"},
+			{Name: "liveness_url", Type: "string", Summary: "Base URL of an IDSetu faceworker that scores liveness nodes (/v1/pad, /v1/challenge, /v1/embed); without it liveness nodes cannot run"},
+			{Name: "liveness_token", Type: "string", Summary: "Bearer token of the faceworker (use env.required(...)); required with liveness_url"},
 			{Name: "confirm_ttl", Type: "duration", Default: "30m", Summary: "How long a confirm_submit review token stays valid"},
 		},
 	})
@@ -108,7 +110,7 @@ func registerPipelineResources(r *Registry) {
 func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Closer, error) {
 	if err := rejectUnknownConfig("pipeline.cases", spec.Config,
 		"pipelines", "database", "table_prefix", "migrate", "signing_secret", "signer", "seal_secret", "org_resource", "lookup_resource", "allow_anonymous",
-		"event_max_attempts", "event_retry_base", "notify_channels", "storage", "storage_prefix", "max_upload_bytes", "confirm_ttl", "workspace_roles_claim",
+		"event_max_attempts", "event_retry_base", "notify_channels", "storage", "storage_prefix", "max_upload_bytes", "confirm_ttl", "workspace_roles_claim", "liveness_url", "liveness_token",
 		pipelineDefinitionsKey, scriptIDsKey); err != nil {
 		return nil, nil, err
 	}
@@ -171,6 +173,14 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 	if err != nil {
 		return nil, nil, err
 	}
+	var liveness pipeline.LivenessVerifier
+	if u := configString(spec.Config, "liveness_url", ""); u != "" {
+		tok := configString(spec.Config, "liveness_token", "")
+		if tok == "" {
+			return nil, nil, fmt.Errorf("pipeline.cases %q: liveness_url needs liveness_token", spec.Name)
+		}
+		liveness = &pipeline.FaceworkerVerifier{BaseURL: u, Token: tok}
+	}
 	key := []byte(configString(spec.Config, "signing_secret", ""))
 	signer, err := requireSigner(spec, "signer")
 	if err != nil {
@@ -198,6 +208,9 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 				return nil, nil, fmt.Errorf("pipeline.cases %q: pipeline %q: %s: %w", spec.Name, name, w, err)
 			}
 		}
+		if liveness == nil && hasLivenessNode(&def) {
+			return nil, nil, fmt.Errorf("pipeline.cases %q: pipeline %q has a liveness node, so the resource needs liveness_url and liveness_token", spec.Name, name)
+		}
 		scriptIDs, _ := spec.Config[scriptIDsKey].(map[string]bool)
 		for _, hook := range scriptHooks(&def) {
 			if err := checkScriptHook(scriptIDs, hook); err != nil {
@@ -207,6 +220,7 @@ func openPipelineCases(ctx context.Context, spec ResourceSpec) (Resource, io.Clo
 		engine := pipeline.NewEngine(compiled)
 		engine.Eval = &pipelineEvaluator{}
 		engine.Automation = pipelineAutomation{}
+		engine.Liveness = liveness
 		engine.StageHook = pipelineStageHook
 		engine.SigningKey = key
 		if signer != nil {
@@ -838,4 +852,16 @@ func pipelineStageHook(ctx context.Context, hook string, c *pipeline.Case, stage
 	}
 	_, err := caller.Platform.CallIntent(ctx, hook, hookInput(c, stage, ""), caller)
 	return err
+}
+
+// hasLivenessNode reports whether any stage of def has a liveness node.
+func hasLivenessNode(def *pipeline.Definition) bool {
+	for _, st := range def.Stages {
+		for _, n := range st.Nodes {
+			if n.Kind == pipeline.NodeLiveness {
+				return true
+			}
+		}
+	}
+	return false
 }
