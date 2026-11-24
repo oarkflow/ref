@@ -1,0 +1,482 @@
+####################################################################
+# Casekit: a solution-agnostic case runner.
+#
+# One pipeline.cases resource serves every pipeline in this document. The
+# routes and the browser UI know nothing about any particular solution: they
+# read the catalog and render each pipeline's forms, stages, nodes and
+# actions from the server's view model. Add a `pipeline` block and it
+# appears in the UI; remove one and it is gone.
+#
+# Included pipelines:
+#   onboarding  identity (KYC) onboarding: details, webcam liveness, officer
+#               review. Returning customers are routed past liveness.
+#   expense     expense approval: tiny claims auto-approve, mid-size claims
+#               go to a manager, big ones to a director (stage routes).
+####################################################################
+
+name "casekit"
+version "1"
+
+resource "db" {
+  kind "database.sql"
+  config {
+    driver env("CASEKIT_DB_DRIVER", "sqlite")
+    dsn env("CASEKIT_DSN", "file:.data/casekit.db?_pragma=busy_timeout(5000)")
+  }
+}
+
+resource "limits" {
+  kind "ratelimit.memory"
+}
+
+resource "jwt" {
+  kind "auth.jwt"
+  config {
+    secret env.required("CASEKIT_JWT_SECRET")
+  }
+}
+
+resource "cases" {
+  kind "pipeline.cases"
+  config {
+    database "db"
+    allow_anonymous true
+    signing_secret env.required("CASEKIT_SIGNING_SECRET")
+    liveness_url env("CASEKIT_LIVENESS_URL", "")
+    liveness_token env("CASEKIT_LIVENESS_TOKEN", "")
+  }
+}
+
+pipeline "onboarding" {
+  title "Identity onboarding"
+  description "Verify who a customer is: details, a webcam liveness check, then officer review."
+  number_format "KYC-{year}-{seq:5}"
+  subject ["identity.email"]
+
+  form "identity" {
+    input "full_name" {
+      label "Full name"
+      kind text
+      required true
+      min_length 3
+    }
+    input "email" {
+      label "Email"
+      kind email
+      required true
+      pii true
+    }
+    input "country" {
+      label "Country"
+      kind select
+      options ["Nepal", "India", "Other"]
+      required true
+    }
+    input "returning" {
+      label "I have been verified here before"
+      kind boolean
+    }
+  }
+  form "officer" {
+    input "notes" {
+      label "Officer notes"
+      kind textarea
+    }
+  }
+
+  stage "details" {
+    title "Your details"
+    public true
+    page {
+      group "who" {
+        title "About you"
+        forms ["identity"]
+      }
+    }
+    route "returning" {
+      when "identity.returning == true"
+      to "review"
+    }
+    action "submit" {
+      label "Continue"
+      outcome advance
+    }
+  }
+
+  stage "liveness" {
+    title "Liveness check"
+    public true
+    auto_advance true
+    node "live" {
+      title "Prove you are live"
+      description "Follow the prompts in front of your camera."
+      kind liveness
+      challenges 2
+      max_attempts 3
+      challenge_ttl "2m"
+    }
+  }
+
+  stage "review" {
+    title "Officer review"
+    roles ["officer"]
+    page {
+      group "submitted" {
+        title "Submitted"
+        mode readonly
+        forms ["identity"]
+      }
+      group "notes" {
+        title "Notes"
+        forms ["officer"]
+      }
+    }
+    node "identity_ok" {
+      title "Identity details look right"
+      kind review
+      forms ["identity"]
+    }
+    action "approve" {
+      label "Approve"
+      outcome approve
+    }
+    action "reject" {
+      label "Reject"
+      outcome reject
+      comment_required true
+    }
+  }
+}
+
+pipeline "expense" {
+  title "Expense approval"
+  description "Small claims are approved automatically; larger ones need a manager or a director."
+  number_format "EXP-{year}-{seq:5}"
+
+  form "claim" {
+    input "title" {
+      label "What is it for?"
+      kind text
+      required true
+    }
+    input "amount" {
+      label "Amount"
+      kind integer
+      required true
+      min "1"
+    }
+    input "category" {
+      label "Category"
+      kind select
+      options ["Travel", "Equipment", "Training", "Other"]
+      required true
+    }
+    input "receipt_no" {
+      label "Receipt number"
+      kind text
+      required_if "claim.amount >= 100"
+      visible_if "claim.amount >= 100"
+    }
+  }
+
+  stage "submit" {
+    title "Submit claim"
+    public true
+    page {
+      group "claim" {
+        title "Claim"
+        forms ["claim"]
+      }
+    }
+    route "tiny" {
+      when "claim.amount < 100"
+      to "end"
+    }
+    route "big" {
+      when "claim.amount >= 5000"
+      to "director"
+    }
+    next "manager"
+    action "submit" {
+      label "Submit"
+      outcome advance
+    }
+  }
+
+  stage "manager" {
+    title "Manager approval"
+    roles ["manager"]
+    page {
+      group "claim" {
+        title "Claim"
+        mode readonly
+        forms ["claim"]
+      }
+    }
+    route "done" {
+      to "end"
+    }
+    node "sign_off" {
+      title "Manager sign-off"
+      kind approval
+      approvals 1
+    }
+    action "approve" {
+      label "Approve"
+      outcome approve
+    }
+    action "reject" {
+      label "Reject"
+      outcome reject
+      comment_required true
+    }
+  }
+
+  stage "director" {
+    title "Director approval"
+    roles ["director"]
+    page {
+      group "claim" {
+        title "Claim"
+        mode readonly
+        forms ["claim"]
+      }
+    }
+    node "sign_off" {
+      title "Director sign-off"
+      kind approval
+      approvals 1
+    }
+    action "approve" {
+      label "Approve"
+      outcome approve
+    }
+    action "reject" {
+      label "Reject"
+      outcome reject
+      comment_required true
+    }
+  }
+}
+
+intent "cases.catalog" {
+  response "r"
+  node "r" {
+    uses "pipeline.catalog"
+    resource "cases"
+    provides [r]
+  }
+}
+
+intent "cases.describe" {
+  response "r"
+  node "r" {
+    uses "pipeline.describe"
+    resource "cases"
+    provides [r]
+  }
+}
+
+intent "cases.start" {
+  response "r"
+  node "r" {
+    uses "pipeline.start"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [r]
+  }
+}
+
+intent "cases.list" {
+  response "r"
+  node "r" {
+    uses "pipeline.list"
+    resource "cases"
+    provides [r]
+  }
+}
+
+intent "cases.view" {
+  response "r"
+  node "r" {
+    uses "pipeline.view"
+    resource "cases"
+    provides [r]
+  }
+}
+
+intent "cases.get" {
+  response "r"
+  node "r" {
+    uses "pipeline.get"
+    resource "cases"
+    provides [r]
+  }
+}
+
+intent "cases.save" {
+  response "r"
+  node "r" {
+    uses "pipeline.save"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [r]
+  }
+}
+
+intent "cases.act" {
+  response "r"
+  node "r" {
+    uses "pipeline.act"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [r]
+  }
+}
+
+intent "cases.node" {
+  response "r"
+  node "r" {
+    uses "pipeline.node"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [r]
+  }
+}
+
+intent "cases.work" {
+  response "r"
+  node "r" {
+    uses "pipeline.work"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [r]
+  }
+}
+
+intent "cases.note" {
+  response "r"
+  node "r" {
+    uses "pipeline.note"
+    resource "cases"
+    kind effect
+    requires [input]
+    provides [r]
+  }
+}
+
+intent "cases.verify" {
+  response "r"
+  node "r" {
+    uses "pipeline.verify"
+    resource "cases"
+    provides [r]
+  }
+}
+
+route "catalog" {
+  method GET
+  path "/api/pipelines"
+  intent "cases.catalog"
+  auth "jwt"
+  allow_anonymous true
+}
+route "describe" {
+  method GET
+  path "/api/pipelines/:pipeline"
+  intent "cases.describe"
+  auth "jwt"
+  allow_anonymous true
+}
+route "start" {
+  method POST
+  path "/api/pipelines/:pipeline/cases"
+  intent "cases.start"
+  auth "jwt"
+  allow_anonymous true
+  status 201
+  rate_limit {
+    limiter "limits"
+    limit 60
+    window "1m"
+  }
+}
+route "list" {
+  method GET
+  path "/api/cases"
+  intent "cases.list"
+  auth "jwt"
+}
+route "view" {
+  method GET
+  path "/api/cases/:id"
+  intent "cases.view"
+  auth "jwt"
+  allow_anonymous true
+}
+route "view_stage" {
+  method GET
+  path "/api/cases/:id/stages/:stage"
+  intent "cases.view"
+  auth "jwt"
+  allow_anonymous true
+}
+route "history" {
+  method GET
+  path "/api/cases/:id/history"
+  intent "cases.get"
+  auth "jwt"
+  allow_anonymous true
+}
+route "save" {
+  method PUT
+  path "/api/cases/:id/stages/:stage"
+  intent "cases.save"
+  auth "jwt"
+  allow_anonymous true
+}
+route "act" {
+  method POST
+  path "/api/cases/:id/stages/:stage/actions/:action"
+  intent "cases.act"
+  auth "jwt"
+  allow_anonymous true
+}
+route "node" {
+  method POST
+  path "/api/cases/:id/stages/:stage/nodes/:node/:verb"
+  intent "cases.node"
+  auth "jwt"
+  allow_anonymous true
+}
+route "work" {
+  method POST
+  path "/api/cases/:id/stages/:stage/work/:op"
+  intent "cases.work"
+  auth "jwt"
+  allow_anonymous true
+}
+route "note" {
+  method POST
+  path "/api/cases/:id/notes"
+  intent "cases.note"
+  auth "jwt"
+  allow_anonymous true
+}
+route "verify" {
+  method GET
+  path "/api/certificates/:key"
+  intent "cases.verify"
+  auth "jwt"
+  allow_anonymous true
+}
+
+static "ui" {
+  prefix "/"
+  root "static"
+}
