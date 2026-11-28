@@ -21,6 +21,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -29,6 +30,8 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/oarkflow/fh"
 	"github.com/oarkflow/ref/config"
 	"github.com/oarkflow/ref/platform"
@@ -55,10 +58,22 @@ func main() {
 		}
 	}
 	if *demo {
-		for _, k := range []string{"CASEKIT_JWT_SECRET", "CASEKIT_SIGNING_SECRET"} {
+		if os.Getenv("CASEKIT_DB_DRIVER") == "" {
+			os.Setenv("CASEKIT_DB_DRIVER", "sqlite")
+		}
+		if os.Getenv("CASEKIT_SESSION_COOKIE") == "" {
+			os.Setenv("CASEKIT_SESSION_COOKIE", "casekit_demo")
+		}
+		for _, k := range []string{"CASEKIT_JWT_SECRET", "CASEKIT_SIGNING_SECRET", "CASEKIT_SESSION_SECRET"} {
 			if os.Getenv(k) == "" {
 				os.Setenv(k, randomSecret())
 			}
+		}
+		if os.Getenv("CASEKIT_ADMIN_EMAIL") == "" {
+			os.Setenv("CASEKIT_ADMIN_EMAIL", "admin@casekit.local")
+		}
+		if os.Getenv("CASEKIT_COOKIE_SECURE") == "" {
+			os.Setenv("CASEKIT_COOKIE_SECURE", "false")
 		}
 		if os.Getenv("CASEKIT_LIVENESS_URL") == "" {
 			url, stop := startStubFaceworker()
@@ -68,16 +83,37 @@ func main() {
 			log.Printf("casekit: DEMO stub faceworker at %s (not a real liveness model)", url)
 		}
 	}
-	// The first administrator is created on an empty user directory. Without a
-	// password in the environment, make one and say so once.
-	if os.Getenv("CASEKIT_ADMIN_PASSWORD") == "" {
-		pw := randomSecret()[:20]
-		os.Setenv("CASEKIT_ADMIN_PASSWORD", pw)
-		email := os.Getenv("CASEKIT_ADMIN_EMAIL")
-		if email == "" {
-			email = "admin@casekit.local"
+	if *demo && !isLoopbackAddr(*addr) {
+		log.Fatal("casekit: -demo may only bind to a loopback address")
+	}
+	if !*demo {
+		for _, key := range []string{"CASEKIT_ADMIN_EMAIL", "CASEKIT_ADMIN_PASSWORD", "CASEKIT_SESSION_SECRET", "CASEKIT_DB_DRIVER", "CASEKIT_DSN", "CASEKIT_LIVENESS_URL", "CASEKIT_LIVENESS_TOKEN"} {
+			if strings.TrimSpace(os.Getenv(key)) == "" {
+				log.Fatalf("casekit: %s must be set outside -demo mode", key)
+			}
 		}
-		log.Printf("casekit: first administrator %s / %s (only used while no one has an account yet; set CASEKIT_ADMIN_PASSWORD to choose it)", email, pw)
+		driver := strings.ToLower(os.Getenv("CASEKIT_DB_DRIVER"))
+		if driver != "pgx" && driver != "mysql" {
+			log.Fatal("casekit: production requires CASEKIT_DB_DRIVER=pgx or mysql; SQLite is for local demo use")
+		}
+		if !databaseDSNVerifiesTLS(driver, os.Getenv("CASEKIT_DSN")) {
+			log.Fatal("casekit: CASEKIT_DSN must enable and verify database TLS (pgx sslmode=verify-full; mysql tls=true)")
+		}
+		if os.Getenv("CASEKIT_COOKIE_SECURE") != "true" {
+			log.Fatal("casekit: CASEKIT_COOKIE_SECURE=true is required outside -demo mode")
+		}
+		livenessURL, err := url.Parse(os.Getenv("CASEKIT_LIVENESS_URL"))
+		if err != nil || livenessURL.Host == "" || livenessURL.Scheme != "https" {
+			log.Fatal("casekit: CASEKIT_LIVENESS_URL must be an HTTPS URL outside -demo mode")
+		}
+	}
+	// The first administrator is created on an empty directory. Never put a
+	// generated bootstrap credential in application logs.
+	if os.Getenv("CASEKIT_ADMIN_PASSWORD") == "" {
+		if !*demo {
+			log.Fatal("casekit: CASEKIT_ADMIN_PASSWORD must be set outside -demo mode")
+		}
+		os.Setenv("CASEKIT_ADMIN_PASSWORD", randomSecret()[:20])
 	}
 	_ = os.MkdirAll(".data", 0o700)
 	// Pages are SPL templates under templates/, rendered by the platform's routes.
@@ -103,6 +139,9 @@ func main() {
 	defer app.Close()
 
 	if *token != "" {
+		if !*demo {
+			log.Fatal("casekit: -token is available only in -demo mode")
+		}
 		fmt.Println(issueToken(app, *token))
 		return
 	}
@@ -204,6 +243,53 @@ func randomSecret() string {
 	return hex.EncodeToString(b)
 }
 
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+func databaseDSNVerifiesTLS(driver, dsn string) bool {
+	query := ""
+	keywordDSN := true
+	if _, suffix, ok := strings.Cut(dsn, "?"); ok {
+		query = suffix
+		keywordDSN = false
+	}
+	values, err := url.ParseQuery(query)
+	if err != nil {
+		return false
+	}
+	parameter := func(name string) string {
+		if value := values.Get(name); value != "" {
+			return value
+		}
+		if keywordDSN {
+			for _, field := range strings.Fields(dsn) {
+				key, value, ok := strings.Cut(field, "=")
+				if ok && strings.EqualFold(key, name) {
+					return strings.Trim(value, "'\"")
+				}
+			}
+		}
+		return ""
+	}
+	switch strings.ToLower(driver) {
+	case "pgx":
+		return strings.EqualFold(parameter("sslmode"), "verify-full")
+	case "mysql":
+		return strings.EqualFold(parameter("tls"), "true")
+	default:
+		return false
+	}
+}
+
 func issueToken(app *platform.Platform, claimsJSON string) string {
 	var claims map[string]any
 	if err := json.Unmarshal([]byte(claimsJSON), &claims); err != nil {
@@ -227,7 +313,7 @@ func issueToken(app *platform.Platform, claimsJSON string) string {
 			principal.Roles = append(principal.Roles, fmt.Sprint(r))
 		}
 	}
-	signed, _, err := issuer.Issue(principal, 12*time.Hour, claims)
+	signed, _, err := issuer.Issue(principal, time.Hour, claims)
 	if err != nil {
 		log.Fatalf("-token: %v", err)
 	}

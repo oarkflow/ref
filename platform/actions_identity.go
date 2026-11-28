@@ -1,10 +1,14 @@
 package platform
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/oarkflow/fh"
+	"github.com/oarkflow/ref/intent"
 )
 
 // Identity actions over an identity.users resource: sign-in, invitations,
@@ -19,17 +23,19 @@ func registerIdentityActions(r *Registry) {
 	registerIdentityRegistrationActions(r)
 	mustAction(r, "identity.login", ActionFactoryFunc(buildIdentityLogin), ActionInfo{
 		Family:       "identity",
-		Summary:      "Verify an email and password against identity.users and issue a JWT carrying the chosen tenant's roles",
+		Summary:      "Verify an email and password against identity.users; issue a JWT or establish a server-side session",
 		ResourceKind: "identity",
-		Provides:     "{ token, token_type, expires_at, user, tenant_id, roles, org_unit }",
+		Provides:     "JWT mode: { token, token_type, expires_at, user, tenant_id, roles, org_unit }; session mode returns user and principal details without a bearer token",
 		Kind:         "effect",
 		Config: []ConfigField{
-			{Name: "email_fact", Type: "fact", Default: "input.email"},
-			{Name: "password_fact", Type: "fact", Default: "input.password"},
-			{Name: "tenant_fact", Type: "fact", Default: "input.tenant_id", Summary: "Optional when the user belongs to one tenant"},
-			{Name: "code_fact", Type: "fact", Default: "input.code", Summary: "TOTP code, for accounts with MFA enabled"},
-			{Name: "token_issuer", Type: "resource", Summary: "auth.jwt resource; defaults to the directory's token_issuer"},
+			{Name: "email_fact", Type: "fact", Required: true},
+			{Name: "password_fact", Type: "fact", Required: true},
+			{Name: "tenant_fact", Type: "fact", Required: true, Summary: "Optional when the user belongs to one tenant; use an optional input path"},
+			{Name: "code_fact", Type: "fact", Required: true, Summary: "TOTP code; use an optional input path when MFA is not required"},
+			{Name: "token_issuer", Type: "resource", Summary: "Required for JWT mode; the auth.jwt resource to sign the login token"},
+			{Name: "session", Type: "resource", Summary: "Optional session resource; when set, establish an HttpOnly browser session instead of returning a bearer token"},
 			{Name: "ttl", Type: "duration", Summary: "Token lifetime; defaults to the auth.jwt resource's ttl"},
+			{Name: "session_fields", Type: "[]object", Summary: "Required in session mode; each object maps key to a principal JSON path using source; set optional true only for claims that may be absent"},
 		},
 	})
 	mustAction(r, "identity.accept_invite", ActionFactoryFunc(buildIdentityAcceptInvite), ActionInfo{
@@ -38,9 +44,9 @@ func registerIdentityActions(r *Registry) {
 		ResourceKind: "identity",
 		Kind:         "effect",
 		Config: []ConfigField{
-			{Name: "token_fact", Type: "fact", Default: "input.token"},
-			{Name: "password_fact", Type: "fact", Default: "input.password"},
-			{Name: "name_fact", Type: "fact", Default: "input.name"},
+			{Name: "token_fact", Type: "fact", Required: true},
+			{Name: "password_fact", Type: "fact", Required: true},
+			{Name: "name_fact", Type: "fact", Required: true},
 		},
 	})
 	mustAction(r, "identity.change_password", ActionFactoryFunc(buildIdentityChangePassword), ActionInfo{
@@ -49,8 +55,8 @@ func registerIdentityActions(r *Registry) {
 		ResourceKind: "identity",
 		Kind:         "effect",
 		Config: []ConfigField{
-			{Name: "current_fact", Type: "fact", Default: "input.current_password"},
-			{Name: "new_fact", Type: "fact", Default: "input.new_password"},
+			{Name: "current_fact", Type: "fact", Required: true},
+			{Name: "new_fact", Type: "fact", Required: true},
 		},
 	})
 	mustAction(r, "identity.admin", ActionFactoryFunc(buildIdentityAdmin), ActionInfo{
@@ -60,9 +66,11 @@ func registerIdentityActions(r *Registry) {
 		Kind:         "effect",
 		Config: []ConfigField{
 			{Name: "operation", Type: "string", Required: true},
-			{Name: "tenant_fact", Type: "fact", Summary: "Target tenant (default: input.tenant_id, then the request's tenant)"},
-			{Name: "user_fact", Type: "fact", Summary: "Target user id (default: path :id or :user_id, then input.user_id)"},
-			{Name: "input_fact", Type: "fact", Default: "input", Summary: "Object carrying email, name, roles, org_unit"},
+			{Name: "tenant_sources", Type: "[]string", Summary: "Fact or request paths checked in order to select the target tenant"},
+			{Name: "user_sources", Type: "[]string", Summary: "Fact or request paths checked in order to select the target user"},
+			{Name: "tenant_fact", Type: "fact", Summary: "Deprecated single-source alias for tenant_sources"},
+			{Name: "user_fact", Type: "fact", Summary: "Deprecated single-source alias for user_sources"},
+			{Name: "input_fact", Type: "fact", Required: true, Summary: "Object carrying email, name, roles, org_unit"},
 			{Name: "org_resource", Type: "resource", Summary: "org.hierarchy resource: with it, an administrator may place people (invite, add or change a membership) only in units inside their own org scope"},
 		},
 	})
@@ -103,10 +111,11 @@ func buildIdentityLogin(build BuildContext, spec NodeSpec) (Action, error) {
 		return nil, err
 	}
 	if err := rejectUnknownConfig("identity.login", spec.Config,
-		"email_fact", "password_fact", "tenant_fact", "code_fact", "token_issuer", "ttl"); err != nil {
+		"email_fact", "password_fact", "tenant_fact", "code_fact", "token_issuer", "session", "ttl", "session_fields"); err != nil {
 		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
 	}
-	issuer := d.issuer
+	sessionName := configString(spec.Config, "session", "")
+	var issuer *jwtAuth
 	if name := configString(spec.Config, "token_issuer", ""); name != "" {
 		resolved, ok := build.Resource(name)
 		if !ok {
@@ -116,8 +125,11 @@ func buildIdentityLogin(build BuildContext, spec NodeSpec) (Action, error) {
 			return nil, fmt.Errorf("node %q: token_issuer %q is not an auth.jwt resource", spec.Name, name)
 		}
 	}
-	if issuer == nil || issuer.signing == nil || !issuer.signing.CanSign() {
-		return nil, fmt.Errorf("node %q: identity.login needs a token_issuer (an auth.jwt resource with a signing key), on the node or on %q", spec.Name, spec.Resource)
+	if sessionName == "" && issuer == nil {
+		return nil, fmt.Errorf("node %q: identity.login requires token_issuer in JWT mode", spec.Name)
+	}
+	if sessionName == "" && (issuer.signing == nil || !issuer.signing.CanSign()) {
+		return nil, fmt.Errorf("node %q: token_issuer must be an auth.jwt resource with a signing key", spec.Name)
 	}
 	ttl, err := configDuration(spec.Config, "ttl", 0)
 	if err != nil {
@@ -126,16 +138,100 @@ func buildIdentityLogin(build BuildContext, spec NodeSpec) (Action, error) {
 	if err := exactlyOneOutput(spec); err != nil {
 		return nil, err
 	}
-	emailFact := configString(spec.Config, "email_fact", "input.email")
-	passwordFact := configString(spec.Config, "password_fact", "input.password")
-	tenantFact := configString(spec.Config, "tenant_fact", "input.tenant_id")
-	codeFact := configString(spec.Config, "code_fact", "input.code")
+	emailFact, err := requiredString(spec.Config, "email_fact")
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+	}
+	passwordFact, err := requiredString(spec.Config, "password_fact")
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+	}
+	tenantFact, err := requiredString(spec.Config, "tenant_fact")
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+	}
+	codeFact, err := requiredString(spec.Config, "code_fact")
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+	}
+	var sessionFields []identitySessionField
+	if sessionName != "" {
+		for i, field := range configBlocks(spec.Config, "session_fields", "session_field") {
+			key, keyErr := requiredString(field, "key")
+			source, sourceErr := requiredString(field, "source")
+			if keyErr != nil || sourceErr != nil {
+				return nil, fmt.Errorf("node %q: session_fields[%d] requires key and source", spec.Name, i)
+			}
+			key, source = strings.TrimSpace(key), strings.TrimSpace(source)
+			for _, previous := range sessionFields {
+				if previous.Key == key {
+					return nil, fmt.Errorf("node %q: duplicate session field key %q", spec.Name, key)
+				}
+			}
+			optional, _ := field["optional"].(bool)
+			sessionFields = append(sessionFields, identitySessionField{Key: key, Source: source, Optional: optional})
+		}
+		if len(sessionFields) == 0 {
+			return nil, fmt.Errorf("node %q: session mode requires session_fields", spec.Name)
+		}
+	}
+	var sessions *SessionManager
+	if sessionName != "" {
+		resource, ok := build.Resource(sessionName)
+		if !ok {
+			return nil, fmt.Errorf("node %q: session resource %q is not declared", spec.Name, sessionName)
+		}
+		sessions, ok = resource.(*SessionManager)
+		if !ok {
+			return nil, fmt.Errorf("node %q: resource %q is not a session manager", spec.Name, sessionName)
+		}
+	}
 
 	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
 		result, err := d.Login(ctx.Context, optionalFact(ctx, emailFact), rawFact(ctx, passwordFact),
 			optionalFact(ctx, tenantFact), optionalFact(ctx, codeFact))
 		if err != nil {
 			return ActionResult{}, err
+		}
+		if sessions != nil {
+			sess, found := sessionFromContext(ctx.Context)
+			httpCtx, httpFound := ctx.Context.Value(httpContextKey{}).(fh.Ctx)
+			if !found || !httpFound {
+				return ActionResult{}, intent.Failure{Code: "SESSION_UNAVAILABLE", Category: intent.CategoryUnavailable, Message: "this route has no session; add the configured session resource to the route"}
+			}
+			encoded, err := json.Marshal(result.Principal)
+			if err != nil {
+				return ActionResult{}, fmt.Errorf("encode authenticated principal: %w", err)
+			}
+			var principal map[string]any
+			if err := json.Unmarshal(encoded, &principal); err != nil {
+				return ActionResult{}, fmt.Errorf("decode authenticated principal: %w", err)
+			}
+			values := make(map[string]any, len(sessionFields))
+			for _, field := range sessionFields {
+				value, ok := resolvePath(principal, field.Source)
+				if !ok || value == nil {
+					if field.Optional {
+						continue
+					}
+					return ActionResult{}, fmt.Errorf("node %q: session_fields source %q did not resolve on the authenticated principal", spec.Name, field.Source)
+				}
+				values[field.Key] = value
+			}
+			if err := sessions.Regenerate(httpCtx, sess); err != nil {
+				return ActionResult{}, err
+			}
+			// Regenerate preserves prior session values; clear them before
+			// attaching the authenticated principal to avoid role/scope carryover.
+			sess.Clear()
+			for key, value := range values {
+				sess.Set(key, value)
+			}
+			return singleOutput(spec, map[string]any{
+				"user": result.User.View(), "tenant_id": result.Membership.TenantID,
+				"roles": result.Membership.Roles, "org_unit": result.Membership.OrgUnit,
+				"principal": result.Principal,
+			}), nil
 		}
 		extra := map[string]any{}
 		for k, v := range result.Principal.Claims {
@@ -153,6 +249,11 @@ func buildIdentityLogin(build BuildContext, spec NodeSpec) (Action, error) {
 	}), nil
 }
 
+type identitySessionField struct {
+	Key, Source string
+	Optional    bool
+}
+
 func buildIdentityAcceptInvite(build BuildContext, spec NodeSpec) (Action, error) {
 	d, err := identityDirectory(build, spec)
 	if err != nil {
@@ -161,9 +262,18 @@ func buildIdentityAcceptInvite(build BuildContext, spec NodeSpec) (Action, error
 	if err := rejectUnknownConfig("identity.accept_invite", spec.Config, "token_fact", "password_fact", "name_fact"); err != nil {
 		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
 	}
-	tokenFact := configString(spec.Config, "token_fact", "input.token")
-	passwordFact := configString(spec.Config, "password_fact", "input.password")
-	nameFact := configString(spec.Config, "name_fact", "input.name")
+	tokenFact, err := requiredString(spec.Config, "token_fact")
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+	}
+	passwordFact, err := requiredString(spec.Config, "password_fact")
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+	}
+	nameFact, err := requiredString(spec.Config, "name_fact")
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+	}
 	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
 		user, m, err := d.AcceptInvite(ctx.Context, optionalFact(ctx, tokenFact), rawFact(ctx, passwordFact), optionalFact(ctx, nameFact))
 		if err != nil {
@@ -181,8 +291,14 @@ func buildIdentityChangePassword(build BuildContext, spec NodeSpec) (Action, err
 	if err := rejectUnknownConfig("identity.change_password", spec.Config, "current_fact", "new_fact"); err != nil {
 		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
 	}
-	currentFact := configString(spec.Config, "current_fact", "input.current_password")
-	newFact := configString(spec.Config, "new_fact", "input.new_password")
+	currentFact, err := requiredString(spec.Config, "current_fact")
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+	}
+	newFact, err := requiredString(spec.Config, "new_fact")
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+	}
 	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
 		if ctx.Principal.ID == "" {
 			return ActionResult{}, errUnauthenticated
@@ -199,7 +315,7 @@ func buildIdentityAdmin(build BuildContext, spec NodeSpec) (Action, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := rejectUnknownConfig("identity.admin", spec.Config, "operation", "tenant_fact", "user_fact", "input_fact", "org_resource"); err != nil {
+	if err := rejectUnknownConfig("identity.admin", spec.Config, "operation", "tenant_sources", "user_sources", "tenant_fact", "user_fact", "input_fact", "org_resource"); err != nil {
 		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
 	}
 	var org *OrgHierarchy
@@ -218,23 +334,45 @@ func buildIdentityAdmin(build BuildContext, spec NodeSpec) (Action, error) {
 	if !known {
 		return nil, fmt.Errorf("node %q: identity.admin operation must be one of %s", spec.Name, strings.Join(identityOperations, ", "))
 	}
-	tenantFact := configString(spec.Config, "tenant_fact", "")
-	userFact := configString(spec.Config, "user_fact", "")
-	inputFact := configString(spec.Config, "input_fact", "input")
+	tenantSources := configStrings(spec.Config, "tenant_sources")
+	userSources := configStrings(spec.Config, "user_sources")
+	if legacy := configString(spec.Config, "tenant_fact", ""); legacy != "" {
+		if len(tenantSources) != 0 {
+			return nil, fmt.Errorf("node %q: use tenant_sources or tenant_fact, not both", spec.Name)
+		}
+		tenantSources = []string{legacy}
+	}
+	if legacy := configString(spec.Config, "user_fact", ""); legacy != "" {
+		if len(userSources) != 0 {
+			return nil, fmt.Errorf("node %q: use user_sources or user_fact, not both", spec.Name)
+		}
+		userSources = []string{legacy}
+	}
+	tenantSources, err = normalizeIdentitySources("tenant_sources", tenantSources)
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+	}
+	userSources, err = normalizeIdentitySources("user_sources", userSources)
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+	}
+	if len(tenantSources) == 0 {
+		return nil, fmt.Errorf("node %q: identity.admin requires tenant_sources", spec.Name)
+	}
+	needsUser := operation != "invite" && operation != "list_users" && operation != "list_invitations" &&
+		operation != "audit" && operation != "add_membership"
+	if needsUser && len(userSources) == 0 {
+		return nil, fmt.Errorf("node %q: identity.admin operation %q requires user_sources", spec.Name, operation)
+	}
+	inputFact, err := requiredString(spec.Config, "input_fact")
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", spec.Name, err)
+	}
 
 	return ActionFunc(func(ctx *ActionContext) (ActionResult, error) {
 		body, _ := resolvePath(ctx.Inputs, inputFact)
 		input, _ := body.(map[string]any)
-		tenant := optionalFact(ctx, tenantFact)
-		if tenant == "" && tenantFact == "" {
-			tenant = strings.TrimSpace(Stringify(input["tenant_id"]))
-		}
-		if tenant == "" {
-			tenant = ctx.TenantID
-		}
-		if tenant == "" {
-			tenant = ctx.Principal.TenantID
-		}
+		tenant := identityFirstSource(ctx, tenantSources)
 		if err := d.Authorize(ctx.Context, ctx.Principal, tenant); err != nil {
 			return ActionResult{}, err
 		}
@@ -244,20 +382,7 @@ func buildIdentityAdmin(build BuildContext, spec NodeSpec) (Action, error) {
 		if err != nil {
 			return ActionResult{}, err
 		}
-		userID := optionalFact(ctx, userFact)
-		if userID == "" && userFact == "" {
-			for _, name := range []string{"user_id", "id"} {
-				if v, ok := requestValue(ctx, "path", name); ok && v != "" {
-					userID = v
-					break
-				}
-			}
-			if userID == "" {
-				userID = strings.TrimSpace(Stringify(input["user_id"]))
-			}
-		}
-		needsUser := operation != "invite" && operation != "list_users" && operation != "list_invitations" &&
-			operation != "audit" && operation != "add_membership"
+		userID := identityFirstSource(ctx, userSources)
 		if needsUser && userID == "" {
 			return ActionResult{}, invalidInput("a user id is required")
 		}
@@ -351,4 +476,47 @@ func buildIdentityAdmin(build BuildContext, spec NodeSpec) (Action, error) {
 		}
 		return acknowledgement(spec, out), nil
 	}), nil
+}
+
+// identityFirstSource resolves configured fact paths and request values in order.
+// Request sources use request.<kind>.<name>, such as request.path.id or
+// request.query.tenant_id. request.tenant exposes the middleware tenant context.
+func identityFirstSource(ctx *ActionContext, sources []string) string {
+	for _, source := range sources {
+		source = strings.TrimSpace(source)
+		if source == "request.tenant" && ctx.TenantID != "" {
+			return strings.TrimSpace(ctx.TenantID)
+		}
+		if strings.HasPrefix(source, "request.") {
+			parts := strings.SplitN(strings.TrimPrefix(source, "request."), ".", 2)
+			if len(parts) == 2 {
+				if value, ok := requestValue(ctx, parts[0], parts[1]); ok && strings.TrimSpace(value) != "" {
+					return strings.TrimSpace(value)
+				}
+			}
+			continue
+		}
+		if value := optionalFact(ctx, source); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func normalizeIdentitySources(name string, sources []string) ([]string, error) {
+	clean := make([]string, 0, len(sources))
+	for _, source := range sources {
+		source = strings.TrimSpace(source)
+		if source == "" {
+			return nil, fmt.Errorf("config.%s contains an empty source", name)
+		}
+		if strings.HasPrefix(source, "request.") && source != "request.tenant" {
+			parts := strings.SplitN(strings.TrimPrefix(source, "request."), ".", 2)
+			if len(parts) != 2 || parts[1] == "" || (parts[0] != "path" && parts[0] != "query" && parts[0] != "header") {
+				return nil, fmt.Errorf("config.%s source %q must use request.path.<name>, request.query.<name>, request.header.<name>, or request.tenant", name, source)
+			}
+		}
+		clean = append(clean, source)
+	}
+	return clean, nil
 }

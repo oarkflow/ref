@@ -5,9 +5,13 @@ const app = document.getElementById('app');
 // ---------- storage (always guarded) ----------
 function load(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } }
 function store(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } }
-let token = load('casekit.token', '') || '';
-let keys = load('casekit.keys', {}) || {};
-function saveKey(id, key) { keys[id] = key; store('casekit.keys', keys); }
+// Browser passwords establish an HttpOnly server session. A bearer token is
+// kept in memory only for explicit service-token/demo sign-in.
+let token = '';
+let sessionPrincipal = null;
+let keys = {};
+try { keys = JSON.parse(sessionStorage.getItem('casekit.keys') || '{}') || {}; } catch (e) { keys = {}; }
+function saveKey(id, key) { keys[id] = key; try { sessionStorage.setItem('casekit.keys', JSON.stringify(keys)); } catch (e) { /* storage unavailable */ } }
 
 // ---------- DOM helper: text only, never innerHTML ----------
 function h(tag, props, ...kids) {
@@ -96,7 +100,7 @@ async function api(method, path, body, caseId, anon) {
     // Failures render as {"error": {"code", "message", "details": [{path, rule, message}]}}.
     const e = json && json.error && typeof json.error === 'object' ? json.error : (json || {});
     const msg = e.message || (json && typeof json.error === 'string' ? json.error : '') || (res.status + ' ' + res.statusText);
-    if (res.status === 401 && token && !anon) { token = ''; store('casekit.token', null); renderIdent(); const x = new Error('Your sign-in is no longer valid (the server restarted or it expired). Sign in again at the top.'); x.status = 401; x.details = []; throw x; }
+    if (res.status === 401 && (token || sessionPrincipal) && !anon) { token = ''; sessionPrincipal = null; renderIdent(); const x = new Error('Your sign-in is no longer valid (the server restarted or it expired). Sign in again at the top.'); x.status = 401; x.details = []; throw x; }
     const err = new Error(msg); err.status = res.status; err.details = Array.isArray(e.details) ? e.details : [];
     throw err;
   }
@@ -106,21 +110,29 @@ async function api(method, path, body, caseId, anon) {
 
 // ---------- identity ----------
 function claims() {
-  try { const p = token.split('.')[1], bin = atob(p.replace(/-/g, '+').replace(/_/g, '/')); return JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, ch => ch.charCodeAt(0)))); } catch (e) { return null; }
+  if (token) { try { const p = token.split('.')[1], bin = atob(p.replace(/-/g, '+').replace(/_/g, '/')); return JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, ch => ch.charCodeAt(0)))); } catch (e) { return null; } }
+  if (!sessionPrincipal) return null;
+  const c = sessionPrincipal.claims || {};
+  return { ...c, sub: sessionPrincipal.id, name: c.name || sessionPrincipal.username, email: sessionPrincipal.email, roles: sessionPrincipal.roles || [], tenant_id: sessionPrincipal.tenant_id };
 }
+const signedIn = () => !!token || !!sessionPrincipal;
 function renderIdent() {
   const c = claims(), who = document.getElementById('who');
-  const name = !token ? 'Not signed in' : c ? String(c.name || c.email || c.preferred_username || c.sub || '?').replace(/^demo-/, '') : 'Signed in', rl = c && [].concat(c.roles || []).join(', ');
-  who.replaceChildren(h('i', null, name.charAt(0)), h('span', null, name, h('small', null, token ? (rl || 'no role') : 'sign in to work on cases')));
-  document.getElementById('signIn').textContent = token ? 'Switch account' : 'Sign in';
-  document.getElementById('signIn').className = token ? '' : 'primary';
-  document.getElementById('tokClear').hidden = !token;
+  const name = !signedIn() ? 'Not signed in' : c ? String(c.name || c.email || c.preferred_username || c.sub || '?').replace(/^demo-/, '') : 'Signed in', rl = c && [].concat(c.roles || []).join(', ');
+  who.replaceChildren(h('i', null, name.charAt(0)), h('span', null, name, h('small', null, signedIn() ? (rl || 'no role') : 'sign in to work on cases')));
+  document.getElementById('signIn').textContent = signedIn() ? 'Switch account' : 'Sign in';
+  document.getElementById('signIn').className = signedIn() ? '' : 'primary';
+  document.getElementById('tokClear').hidden = !signedIn();
   document.querySelectorAll('.side nav a').forEach(a => { const p = a.getAttribute('href'); if (p === location.pathname || (p !== '/' && location.pathname.startsWith(p + '/')) || (p === '/work' && location.pathname.startsWith('/tasks'))) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
 }
 // The roles the signed-in person holds (their own, and those given for a workspace as "unit:role").
 const myRoles = () => { const c = claims() || {}; return [...[].concat(c.roles || []), ...[].concat(c.workspace_roles || []).map(x => String(x).split(':').pop())]; };
-function setToken(t) { token = t || ''; store('casekit.token', token || null); renderIdent(); reloadRoute(); }
-document.getElementById('tokClear').addEventListener('click', async () => { if (await ui.confirm({ title: 'Sign out?', message: 'You will be signed out on this device.', confirmLabel: 'Sign out' })) setToken(''); });
+function setToken(t) { token = t || ''; sessionPrincipal = null; renderIdent(); reloadRoute(); }
+document.getElementById('tokClear').addEventListener('click', async () => {
+  if (!(await ui.confirm({ title: 'Sign out?', message: 'You will be signed out on this device.', confirmLabel: 'Sign out' }))) return;
+  if (sessionPrincipal) { try { await api('POST', '/logout', {}); } catch (e) { /* clear local state even if the session expired */ } }
+  setToken('');
+});
 document.getElementById('signIn').addEventListener('click', () => signIn());
 
 // The sign-in dialog: email and password for people with an account, one-click accounts on a demo
@@ -135,7 +147,13 @@ function signIn(opts = {}) {
     const demo = await loadDemo();
     let tab = 'password', error = '', busy = false;
     const dlg = h('dialog', { class: 'dlg info signin', 'aria-labelledby': 'si_t' });
-    const finish = tk => { token = tk; store('casekit.token', token); dlg.close(); renderIdent(); resolve(true); if (pageKind() === 'accept') nav('/work'); else reloadRoute(); };
+    const finish = async value => {
+      if (typeof value === 'string') {
+        if (sessionPrincipal) { try { await api('POST', '/logout', {}); } catch (e) { /* clear local identity even if the cookie expired */ } }
+        token = value; sessionPrincipal = null;
+      } else { token = ''; sessionPrincipal = value || null; }
+      dlg.close(); renderIdent(); resolve(true); if (pageKind() === 'accept') nav('/work'); else reloadRoute();
+    };
     const fail = m => { error = m; busy = false; draw(); };
     const body = () => {
       if (tab === 'demo') {
@@ -151,7 +169,7 @@ function signIn(opts = {}) {
       const pw = h('input', { type: 'password', id: 'si_pw', autocomplete: 'current-password', required: '' });
       return h('form', { class: 'stack', onsubmit: async e => {
         e.preventDefault(); if (busy) return; busy = true; error = '';
-        try { const r = await api('POST', '/login', { email: email.value.trim(), password: pw.value }, undefined, true); finish(r.token); }
+        try { const r = await api('POST', '/login', { email: email.value.trim(), password: pw.value }, undefined, true); finish(r.principal); }
         catch (er) { fail(er.status === 401 || er.status === 403 || /invalid|credential|password/i.test(er.message) ? 'That email and password do not match. Check them and try again, or ask an administrator for an invitation.' : er.message); }
       } }, h('label', { for: 'si_email' }, 'Email', email), h('label', { for: 'si_pw' }, 'Password', pw),
         h('div', { class: 'dlg-actions' }, h('button', { type: 'submit', class: 'primary' }, 'Sign in')),
@@ -175,7 +193,7 @@ function signIn(opts = {}) {
 let inboxRows = [];
 async function loadInbox() {
   const bell = document.getElementById('bell'); if (!bell) return;
-  if (!token) { bell.hidden = true; return; }
+  if (!signedIn()) { bell.hidden = true; return; }
   try { inboxRows = await api('GET', '/inbox') || []; bell.hidden = false; }
   catch (e) { bell.hidden = true; return; }
   const n = inboxRows.filter(r => !r.read).length, b = document.getElementById('bellN');
@@ -230,7 +248,7 @@ setInterval(tickClock, 1000);
 const typing = () => { const a = document.activeElement; return a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && !a.closest('.side') || document.querySelector('dialog[open]'); };
 const sigOf = v => v ? [v.case && v.case.revision, v.case && v.case.status, (v.stage && v.stage.name) || (v.case && v.case.stage), v.work && v.work.sla && v.work.sla.status, v.work && v.work.sla && v.work.sla.due_at, v.work && v.work.assignee, !!(v.work && v.work.suspended)].join('|') : '';
 async function livePoll() {
-  if (liveBusy || document.hidden || !token && pageKind() !== 'overview' && pageKind() !== 'task') return;
+  if (liveBusy || document.hidden || !signedIn() && pageKind() !== 'overview' && pageKind() !== 'task') return;
   const kind = pageKind(), parts = location.pathname.split('/').filter(Boolean).map(decodeURIComponent);
   liveBusy = true;
   try {
@@ -268,7 +286,7 @@ const pageKind = () => { const p = location.pathname; return p === '/' ? 'home' 
 const bounce = (kind, text, to) => { S.flash = { kind, text }; try { sessionStorage.setItem('casekit.flash', JSON.stringify(S.flash)); } catch (e) { /* ignore */ } nav(to); };
 async function route() {
   const kind = pageKind();
-  if (token && !Object.keys(roster).length) await loadRoster();
+  if (signedIn() && !Object.keys(roster).length) await loadRoster();
   try { const f = sessionStorage.getItem('casekit.flash'); if (f) { S.notice = JSON.parse(f); sessionStorage.removeItem('casekit.flash'); } } catch (e) { /* ignore */ }
   try {
     const parts = location.pathname.split('/').filter(Boolean).map(decodeURIComponent);
@@ -325,16 +343,16 @@ function introInit() {
     const stages = d.stages || [], first = stages[0] || {}, startRoles = first.public ? [] : (first.roles || []), mine = myRoles();
     const title = d.title || d.name;
     canStart = first.public || !startRoles.length || startRoles.some(r => mine.includes(r));
-    const you = !token ? null : (claims() && (claims().name || claims().sub)) || 'you';
+    const you = !signedIn() ? null : (claims() && (claims().name || claims().sub)) || 'you';
     let status;
     if (first.public || !startRoles.length) status = null;
-    else if (!token) status = h('div', { class: 'banner warn' }, h('b', null, 'Sign in to start. '), title + ' is started by the ' + startRoles.join(' or ') + ' role.', ' ', h('button', { type: 'button', class: 'primary', onclick: () => signIn({ reason: 'To start ' + title + ' you need an account with the ' + startRoles.join(' or ') + ' role.' }) }, 'Sign in'));
+    else if (!signedIn()) status = h('div', { class: 'banner warn' }, h('b', null, 'Sign in to start. '), title + ' is started by the ' + startRoles.join(' or ') + ' role.', ' ', h('button', { type: 'button', class: 'primary', onclick: () => signIn({ reason: 'To start ' + title + ' you need an account with the ' + startRoles.join(' or ') + ' role.' }) }, 'Sign in'));
     else if (!canStart) status = h('div', { class: 'banner error', role: 'alert' }, h('b', null, 'You cannot start this. '), 'You are signed in as ' + you + (mine.length ? ' with the ' + mine.join(', ') + ' role' : ' with no role') + '. ' + title + ' is started by the ' + startRoles.join(' or ') + ' role. ',
       h('button', { type: 'button', onclick: () => signIn({ reason: 'Sign in as someone with the ' + startRoles.join(' or ') + ' role.' }) }, 'Switch account'));
     else status = h('div', { class: 'banner ok' }, 'You are signed in with the ' + mine.filter(r => startRoles.includes(r)).join(', ') + ' role, so you can start this.');
-    btn.disabled = !canStart && !!token;
+    btn.disabled = !canStart && signedIn();
     // A workflow can cap how much data one person creates; say where they stand, and stop at the cap.
-    if (d.limits && d.limits.per_user && token && canStart) api('GET', '/cases?scope=mine&pipeline=' + encodeURIComponent(d.name)).then(mineRows => {
+    if (d.limits && d.limits.per_user && signedIn() && canStart) api('GET', '/cases?scope=mine&pipeline=' + encodeURIComponent(d.name)).then(mineRows => {
       const openOnly = d.limits.count === 'open', done = ['approved', 'rejected', 'completed', 'withdrawn'];
       const used = (mineRows || []).filter(r => !openOnly || !done.includes(r.status)).length, left = d.limits.per_user - used, what = (openOnly ? 'unfinished ' : '') + title.toLowerCase();
       if (left <= 0) { btn.disabled = true; gate.querySelector('.banner.ok') && gate.querySelector('.banner.ok').remove(); gate.prepend(h('div', { class: 'banner error', role: 'alert' }, h('b', null, 'Limit reached. '), d.limits.message || 'You have ' + used + ' of ' + d.limits.per_user + ' ' + what + ' you can create. ' + (openOnly ? 'Finish or withdraw one to start another.' : 'Ask an administrator if you need more.'))); }
@@ -347,7 +365,7 @@ function introInit() {
   // A workflow that runs inside a workspace asks where first: the facility decides which providers,
   // nurses, locations and codes every form offers.
   let unit = '';
-  if (conf && conf.dataset.wsLevel && token) {
+  if (conf && conf.dataset.wsLevel && signedIn()) {
     const level = conf.dataset.wsLevel, label = conf.dataset.wsLabel || level;
     loadWorkspaces(level).then(list => {
       const sel = h('select', { id: 'ws-select', 'aria-label': label }, h('option', { value: '' }, 'Choose a ' + label.toLowerCase() + '…'), list.map(n => h('option', { value: n.id }, n.name)));
@@ -358,7 +376,7 @@ function introInit() {
     }).catch(e => slot.append(h('div', { class: 'banner error' }, e.message)));
   }
   btn.addEventListener('click', async () => {
-    if (!token && !canStart) { signIn({ reason: 'Sign in to start.' }); return; }
+    if (!signedIn() && !canStart) { signIn({ reason: 'Sign in to start.' }); return; }
     if (conf && conf.dataset.wsLevel && conf.dataset.wsRequired === 'true' && !unit) { ui.alert('Choose a ' + (conf.dataset.wsLabel || 'workspace').toLowerCase() + ' first, then start.', 'Choose where to start'); return; }
     btn.disabled = true;
     try {
@@ -835,7 +853,7 @@ const FINISHED = ['approved', 'rejected', 'completed', 'withdrawn'];
 const roster = {};
 const person = id => !id ? '—' : roster[id] ? roster[id] : String(id).replace(/^demo-/, '').replace(/^anon_.*/, 'applicant');
 async function loadRoster() {
-  if (!token) return;
+  if (!signedIn()) return;
   try {
     const cat = await api('GET', '/pipelines') || [];
     if (!cat.length) return;
@@ -988,7 +1006,7 @@ function renderOverview() {
     missed: () => log[1],
   };
   const layout = ui.layout || {};
-  screen({ crumb: [token ? '/work' : '/', token ? '← My work' : '← Home'], title: wf, num: c.number, sub: 'Opened ' + short(c.created_at) + ' · ' + (st.title || st.name), actions: [slaBadge(w, st), badge(c.status), primary] },
+  screen({ crumb: [signedIn() ? '/work' : '/', signedIn() ? '← My work' : '← Home'], title: wf, num: c.number, sub: 'Opened ' + short(c.created_at) + ' · ' + (st.title || st.name), actions: [slaBadge(w, st), badge(c.status), primary] },
     layout.flow === 'hide' ? null : flowBar(ov, cid, done, st), layoutEl(layout, OV_BASIC, makers));
 }
 async function startStage() {
@@ -1335,7 +1353,7 @@ async function showQueue(scope, quiet) {
   const c = claims(), isAdmin = !!(c && (c.roles || []).includes('admin'));
   const tabs = { queue: 'Waiting for my role', assigned: 'Assigned to me', answer: 'Questions for me', mine: 'My own cases' }; if (isAdmin) tabs.attention = 'Needs attention';
   const tabBar = n => h('nav', { class: 'tabs-bar' }, Object.keys(tabs).map(s => h('a', { class: s === scope ? 'on' : '', href: '/work?scope=' + s }, tabs[s], s === 'attention' && n ? h('span', { class: 'count' }, String(n)) : null)));
-  if (!token) { screen({ title: 'My work' }, panel('', h('div', { class: 'empty' }, h('b', null, 'Sign in to see your work'), 'Use the demo accounts or the token box in the sidebar.'))); return; }
+  if (!signedIn()) { screen({ title: 'My work' }, panel('', h('div', { class: 'empty' }, h('b', null, 'Sign in to see your work'), 'Use the demo accounts or the token box in the sidebar.'))); return; }
   if (!quiet) loading();
   // The lists are per workflow; the work list brings them all together.
   try { await workspaceTree(); } catch (e) { /* no workspaces for this account */ }
@@ -1403,7 +1421,7 @@ const pluralSet = k => /y$/.test(k) ? k.slice(0, -1) + 'ies' : k + 's';
 const attrText = a => Object.entries(a || {}).filter(([k]) => k !== 'disabled').map(([k, v]) => k + '=' + [].concat(v).join('|')).join('  ') || '—';
 const parseAttrs = t => { const out = {}; String(t || '').split(/[\n,;]+/).map(x => x.trim()).filter(Boolean).forEach(p => { const [k, ...r] = p.split('='); if (k && r.length) out[k.trim()] = r.join('=').split('|').map(x => x.trim()).filter(Boolean); }); return out; };
 async function showWorkspace() {
-  if (!token) { screen({ title: 'Workspace' }, panel('', h('div', { class: 'empty' }, h('b', null, 'Sign in to manage a workspace'), 'Use a Workspace admin account in the sidebar.'))); return; }
+  if (!signedIn()) { screen({ title: 'Workspace' }, panel('', h('div', { class: 'empty' }, h('b', null, 'Sign in to manage a workspace'), 'Use a Workspace admin account in the sidebar.'))); return; }
   loading();
   const tree = await workspaceTree().catch(() => []);
   if (!tree.length) { screen({ title: 'Workspace' }, panel('', h('div', { class: 'empty' }, h('b', null, 'No workspace in your scope'), 'Your account is not assigned to a workspace.'))); return; }
@@ -1630,5 +1648,18 @@ async function settingsPanel(unitNode) {
     h('div', { class: 'row' }, h('button', { type: 'button', class: 'primary big', onclick: save }, 'Save settings for ' + unitNode.name)));
 }
 
-renderIdent();
-route();
+// Discard the legacy persistent JWT left by earlier versions. Restore browser
+// identity from the server-side session, never from JS-readable storage.
+store('casekit.token', null);
+(async () => {
+  try {
+    const me = await api('GET', '/me');
+    if (me && me.user_id) sessionPrincipal = {
+      id: me.user_id, username: me.username, email: me.email,
+      tenant_id: me.tenant_id, roles: me.roles || [],
+      claims: { name: me.name, org_units: me.org_units, workspace_roles: me.workspace_roles }
+    };
+  } catch (e) { /* anonymous visitor or expired session */ }
+  renderIdent();
+  route();
+})();

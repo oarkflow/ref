@@ -158,6 +158,13 @@ intent "auth.login" {
     kind effect
     requires [input]
     provides [session]
+    config {
+      email_fact "input.email"
+      password_fact "input.password"
+      tenant_fact "input.tenant_id"
+      code_fact "input.code"
+      token_issuer "jwt"
+    }
   }
 }
 
@@ -169,6 +176,11 @@ intent "auth.accept_invite" {
     kind effect
     requires [input]
     provides [member]
+    config {
+      token_fact "input.token"
+      password_fact "input.password"
+      name_fact "input.name"
+    }
   }
 }
 
@@ -180,6 +192,10 @@ intent "auth.change_password" {
     kind effect
     requires [input]
     provides [result]
+    config {
+      current_fact "input.current_password"
+      new_fact "input.new_password"
+    }
   }
 }
 
@@ -203,7 +219,12 @@ intent "admin.users" {
     uses "identity.admin"
     resource "users"
     provides [users]
-    config { operation "list_users" }
+    config {
+      operation "list_users"
+      input_fact "input"
+      tenant_sources ["input.tenant_id", "request.tenant", "principal.tenant_id"]
+      user_sources ["request.path.id", "request.path.user_id", "input.user_id"]
+    }
   }
 }
 
@@ -213,7 +234,12 @@ intent "admin.user" {
     uses "identity.admin"
     resource "users"
     provides [user]
-    config { operation "get_user" }
+    config {
+      operation "get_user"
+      input_fact "input"
+      tenant_sources ["input.tenant_id", "request.tenant", "principal.tenant_id"]
+      user_sources ["request.path.id", "request.path.user_id", "input.user_id"]
+    }
   }
 }
 
@@ -225,7 +251,12 @@ intent "admin.invite" {
     kind effect
     requires [input]
     provides [invitation]
-    config { operation "invite" }
+    config {
+      operation "invite"
+      input_fact "input"
+      tenant_sources ["input.tenant_id", "request.tenant", "principal.tenant_id"]
+      user_sources ["request.path.id", "request.path.user_id", "input.user_id"]
+    }
   }
 }
 
@@ -235,7 +266,12 @@ intent "admin.invitations" {
     uses "identity.admin"
     resource "users"
     provides [invitations]
-    config { operation "list_invitations" }
+    config {
+      operation "list_invitations"
+      input_fact "input"
+      tenant_sources ["input.tenant_id", "request.tenant", "principal.tenant_id"]
+      user_sources ["request.path.id", "request.path.user_id", "input.user_id"]
+    }
   }
 }
 
@@ -246,7 +282,12 @@ intent "admin.suspend" {
     resource "users"
     kind effect
     provides [user]
-    config { operation "suspend" }
+    config {
+      operation "suspend"
+      input_fact "input"
+      tenant_sources ["input.tenant_id", "request.tenant", "principal.tenant_id"]
+      user_sources ["request.path.id", "request.path.user_id", "input.user_id"]
+    }
   }
 }
 
@@ -257,7 +298,12 @@ intent "admin.reactivate" {
     resource "users"
     kind effect
     provides [user]
-    config { operation "reactivate" }
+    config {
+      operation "reactivate"
+      input_fact "input"
+      tenant_sources ["input.tenant_id", "request.tenant", "principal.tenant_id"]
+      user_sources ["request.path.id", "request.path.user_id", "input.user_id"]
+    }
   }
 }
 
@@ -269,7 +315,12 @@ intent "admin.add_membership" {
     kind effect
     requires [input]
     provides [member]
-    config { operation "add_membership" }
+    config {
+      operation "add_membership"
+      input_fact "input"
+      tenant_sources ["input.tenant_id", "request.tenant", "principal.tenant_id"]
+      user_sources ["request.path.id", "request.path.user_id", "input.user_id"]
+    }
   }
 }
 
@@ -281,7 +332,12 @@ intent "admin.change_membership" {
     kind effect
     requires [input]
     provides [member]
-    config { operation "change_membership" }
+    config {
+      operation "change_membership"
+      input_fact "input"
+      tenant_sources ["input.tenant_id", "request.tenant", "principal.tenant_id"]
+      user_sources ["request.path.id", "request.path.user_id", "input.user_id"]
+    }
   }
 }
 
@@ -292,7 +348,12 @@ intent "admin.remove_membership" {
     resource "users"
     kind effect
     provides [result]
-    config { operation "remove_membership" }
+    config {
+      operation "remove_membership"
+      input_fact "input"
+      tenant_sources ["input.tenant_id", "request.tenant", "principal.tenant_id"]
+      user_sources ["request.path.id", "request.path.user_id", "input.user_id"]
+    }
   }
 }
 
@@ -302,7 +363,12 @@ intent "admin.audit" {
     uses "identity.admin"
     resource "users"
     provides [entries]
-    config { operation "audit" }
+    config {
+      operation "audit"
+      input_fact "input"
+      tenant_sources ["input.tenant_id", "request.tenant", "principal.tenant_id"]
+      user_sources ["request.path.id", "request.path.user_id", "input.user_id"]
+    }
   }
 }
 

@@ -73,6 +73,13 @@ intent "auth.login" {
     kind effect
     requires [input]
     provides [session]
+    config {
+      email_fact "input.email"
+      password_fact "input.password"
+      tenant_fact "input.tenant_id"
+      code_fact "input.code"
+      token_issuer "jwt"
+    }
   }
 }
 
@@ -86,6 +93,9 @@ intent "auth.invite" {
     provides [invitation]
     config {
       operation "invite"
+      input_fact "input"
+      tenant_sources ["input.tenant_id", "request.tenant", "principal.tenant_id"]
+      user_sources ["request.path.id", "request.path.user_id", "input.user_id"]
     }
   }
 }
@@ -98,6 +108,11 @@ intent "auth.accept_invite" {
     kind effect
     requires [input]
     provides [member]
+    config {
+      token_fact "input.token"
+      password_fact "input.password"
+      name_fact "input.name"
+    }
   }
 }
 

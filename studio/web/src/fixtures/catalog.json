@@ -4826,17 +4826,17 @@
         {
           "name": "token_fact",
           "type": "fact",
-          "default": "input.token"
+          "required": true
         },
         {
           "name": "password_fact",
           "type": "fact",
-          "default": "input.password"
+          "required": true
         },
         {
           "name": "name_fact",
           "type": "fact",
-          "default": "input.name"
+          "required": true
         }
       ],
       "kind": "effect"
@@ -4853,20 +4853,30 @@
           "required": true
         },
         {
+          "name": "tenant_sources",
+          "type": "[]string",
+          "summary": "Fact or request paths checked in order to select the target tenant"
+        },
+        {
+          "name": "user_sources",
+          "type": "[]string",
+          "summary": "Fact or request paths checked in order to select the target user"
+        },
+        {
           "name": "tenant_fact",
           "type": "fact",
-          "summary": "Target tenant (default: input.tenant_id, then the request's tenant)"
+          "summary": "Deprecated single-source alias for tenant_sources"
         },
         {
           "name": "user_fact",
           "type": "fact",
-          "summary": "Target user id (default: path :id or :user_id, then input.user_id)"
+          "summary": "Deprecated single-source alias for user_sources"
         },
         {
           "name": "input_fact",
           "type": "fact",
           "summary": "Object carrying email, name, roles, org_unit",
-          "default": "input"
+          "required": true
         }
       ],
       "kind": "effect"
@@ -4880,12 +4890,12 @@
         {
           "name": "current_fact",
           "type": "fact",
-          "default": "input.current_password"
+          "required": true
         },
         {
           "name": "new_fact",
           "type": "fact",
-          "default": "input.new_password"
+          "required": true
         }
       ],
       "kind": "effect"
@@ -4893,43 +4903,53 @@
     {
       "name": "identity.login",
       "family": "identity",
-      "summary": "Verify an email and password against identity.users and issue a JWT carrying the chosen tenant's roles",
+      "summary": "Verify an email and password against identity.users; issue a JWT or establish a server-side session",
       "resource_kind": "identity",
       "config": [
         {
           "name": "email_fact",
           "type": "fact",
-          "default": "input.email"
+          "required": true
         },
         {
           "name": "password_fact",
           "type": "fact",
-          "default": "input.password"
+          "required": true
         },
         {
           "name": "tenant_fact",
           "type": "fact",
-          "summary": "Optional when the user belongs to one tenant",
-          "default": "input.tenant_id"
+          "required": true,
+          "summary": "Optional when the user belongs to one tenant; use an optional input path"
         },
         {
           "name": "code_fact",
           "type": "fact",
-          "summary": "TOTP code, for accounts with MFA enabled",
-          "default": "input.code"
+          "required": true,
+          "summary": "TOTP code; use an optional input path when MFA is not required"
         },
         {
           "name": "token_issuer",
           "type": "resource",
-          "summary": "auth.jwt resource; defaults to the directory's token_issuer"
+          "summary": "Required for JWT mode; the auth.jwt resource to sign the login token"
+        },
+        {
+          "name": "session",
+          "type": "resource",
+          "summary": "Optional session resource; when set, establish an HttpOnly browser session instead of returning a bearer token"
         },
         {
           "name": "ttl",
           "type": "duration",
           "summary": "Token lifetime; defaults to the auth.jwt resource's ttl"
+        },
+        {
+          "name": "session_fields",
+          "type": "[]object",
+          "summary": "Required in session mode; each object maps key to a principal JSON path using source; set optional true only for claims that may be absent"
         }
       ],
-      "provides": "{ token, token_type, expires_at, user, tenant_id, roles, org_unit }",
+      "provides": "JWT mode: { token, token_type, expires_at, user, tenant_id, roles, org_unit }; session mode returns user and principal details without a bearer token",
       "kind": "effect"
     },
     {

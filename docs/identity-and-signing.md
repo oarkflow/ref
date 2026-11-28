@@ -129,8 +129,13 @@ intent "auth.login" {
     kind effect
     requires [input]
     provides [session]
-    # email_fact "input.email"  password_fact "input.password"
-    # tenant_fact "input.tenant_id"  code_fact "input.code"  ttl "15m"
+    config {
+      email_fact "input.email"
+      password_fact "input.password"
+      tenant_fact "input.tenant_id"
+      code_fact "input.code"
+      token_issuer "jwt"
+    }
   }
 }
 route "auth.login" {
@@ -143,6 +148,7 @@ route "auth.login" {
 ```
 
 - **Response.** It returns `{token, token_type, expires_at, user, tenant_id, roles, org_unit}`.
+- **Configuration.** The four fact paths are explicit. Point `tenant_fact` and `code_fact` at optional input values when the selected account does not need a tenant selector or MFA code. For cookie sessions, also set `session` and provide `session_fields` as `{key, source}` objects; `source` is a JSON path on the authenticated principal.
 - **Token claims.** The token carries:
   - `sub`, `email` and `preferred_username`;
   - `tenant_id` and `roles` from the membership in the chosen tenant;
@@ -176,7 +182,7 @@ One action with an `operation`. Every operation first checks that the caller adm
 
 The roles in the token are not trusted for this. Demoting or suspending an admin takes effect on their next request, not when their token expires. Guard the routes with `authz { roles [...] }` as well, as a first filter.
 
-The target tenant is `tenant_fact`, else `input.tenant_id`, else the request's tenant (the token's `tenant_id`). The target user is `user_fact`, else a `:id` or `:user_id` path parameter, else `input.user_id`.
+Each `identity.admin` node declares `input_fact` and ordered `tenant_sources` and `user_sources`. Sources are fact paths such as `input.tenant_id` or `principal.tenant_id`, request paths such as `request.path.id` and `request.query.limit`, or `request.tenant` for the middleware tenant context. The action uses the first non-empty source. This keeps route and payload field names in BCL; `tenant_fact` and `user_fact` remain supported as single-source compatibility aliases.
 
 | Operation | Input | Result |
 |---|---|---|

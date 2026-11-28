@@ -44,14 +44,56 @@ resource "jobs" {
 }
 
 resource "limits" {
-  kind "ratelimit.memory"
+  kind "ratelimit.store"
+  config { cache "shared_cache" }
+}
+
+resource "shared_cache" {
+  kind "cache.sql"
+  config { database "db" table "casekit_cache" }
 }
 
 resource "jwt" {
   kind "auth.jwt"
   config {
     secret env.required("CASEKIT_JWT_SECRET")
+    issuer "casekit"
+    audience "casekit"
+    ttl "15m"
   }
+}
+
+# Browser sign-in uses an opaque HttpOnly session cookie. Bearer JWTs remain
+# available for service clients, but the browser never stores them in JS.
+resource "sessions" {
+  kind "session.sql"
+  config {
+    database "db"
+    table "casekit_sessions"
+    secret env.required("CASEKIT_SESSION_SECRET")
+    cookie env("CASEKIT_SESSION_COOKIE", "__Host-casekit")
+    max_age 1h
+    secure env("CASEKIT_COOKIE_SECURE", "true")
+  }
+}
+
+resource "session_auth" {
+  kind "auth.session"
+  config {
+    session "sessions"
+    subject_claim "user_id"
+    roles_claim "roles"
+    tenant_claim "tenant_id"
+    scopes_claim "scopes"
+    username_claim "username"
+    email_claim "email"
+    claims ["name", "org_units", "workspace_roles"]
+  }
+}
+
+resource "web_auth" {
+  kind "auth.chain"
+  config { authenticators ["session_auth", "jwt"] }
 }
 
 # Workspaces: a health group, its facilities, and their departments. Their
@@ -172,7 +214,9 @@ resource "people" {
     token_issuer "jwt"
     admin_roles ["admin"]
     global_roles ["super_admin"]
-    password_min_length 10
+    password_min_length 12
+    max_failed_logins 5
+    lockout "30m"
     bootstrap {
       email env("CASEKIT_ADMIN_EMAIL", "admin@casekit.local")
       password env("CASEKIT_ADMIN_PASSWORD", "")
@@ -247,12 +291,15 @@ pipeline "onboarding" {
       kind text
       required true
       min_length 3
+      max_length 200
+      pii true
     }
     input "email" {
       label "Email"
       kind email
       required true
       pii true
+      max_length 254
     }
     input "country" {
       label "Country"
@@ -260,15 +307,13 @@ pipeline "onboarding" {
       options ["Nepal", "India", "Other"]
       required true
     }
-    input "returning" {
-      label "I have been verified here before"
-      kind boolean
-    }
   }
   form "officer" {
     input "notes" {
       label "Officer notes"
       kind textarea
+      max_length 2000
+      pii true
     }
   }
 
@@ -280,10 +325,6 @@ pipeline "onboarding" {
         title "About you"
         forms ["identity"]
       }
-    }
-    route "returning" {
-      when "identity.returning == true"
-      to "review"
     }
     summary {
       title "Check your details"
@@ -420,16 +461,22 @@ pipeline "certificate" {
       label "Full name"
       kind text
       required true
+      max_length 200
+      pii true
     }
     input "email" {
       label "Email"
       kind email
       required true
+      max_length 254
+      pii true
     }
     input "address" {
       label "Address to certify"
       kind textarea
       required true
+      max_length 1000
+      pii true
     }
     input "purpose" {
       label "What is it for?"
@@ -442,6 +489,8 @@ pipeline "certificate" {
       kind text
       required true
       help "Name or email of the person (a ward officer, a notary) who knows you."
+      max_length 200
+      pii true
     }
   }
   form "kyc" {
@@ -460,6 +509,8 @@ pipeline "certificate" {
     input "agent_notes" {
       label "Notes"
       kind textarea
+      max_length 4000
+      pii true
     }
   }
   form "review" {
@@ -472,6 +523,7 @@ pipeline "certificate" {
       kind textarea
       visible_if "review.needs_info == true"
       required_if "review.needs_info == true"
+      max_length 2000
     }
   }
   form "more" {
@@ -479,10 +531,12 @@ pipeline "certificate" {
       label "Your answer"
       kind textarea
       required true
+      max_length 4000
     }
     input "reference" {
       label "Supporting reference (document number, link)"
       kind text
+      max_length 200
     }
   }
 
@@ -793,16 +847,21 @@ pipeline "encounter" {
       label "Patient name"
       kind text
       required true
+      max_length 200
+      pii true
     }
     input "mrn" {
       label "Medical record number"
       kind text
       required true
+      max_length 64
+      pii true
     }
     input "service_date" {
       label "Date of service"
       kind date
       required true
+      pii true
     }
     input "facility_type" {
       label "Claim type"
@@ -873,6 +932,8 @@ pipeline "encounter" {
       label "Diagnosis"
       kind textarea
       required true
+      max_length 4000
+      pii true
     }
     input "tags" {
       label "Tags"
@@ -884,6 +945,8 @@ pipeline "encounter" {
     input "coder_notes" {
       label "Notes"
       kind textarea
+      max_length 4000
+      pii true
     }
   }
 
@@ -1022,12 +1085,14 @@ pipeline "expense" {
       label "What is it for?"
       kind text
       required true
+      max_length 200
     }
     input "amount" {
       label "Amount"
       kind integer
       required true
       min "1"
+      max "1000000000"
     }
     input "category" {
       label "Category"
@@ -1040,6 +1105,7 @@ pipeline "expense" {
       kind text
       required_if "claim.amount >= 100"
       visible_if "claim.amount >= 100"
+      max_length 128
     }
   }
 
@@ -1421,7 +1487,49 @@ intent "casekit.login" {
     kind effect
     requires [input]
     provides [r]
+    config {
+      session "sessions"
+      email_fact "input.email"
+      password_fact "input.password"
+      tenant_fact "input.tenant_id"
+      code_fact "input.code"
+      session_fields [
+        { key "user_id" source "id" }
+        { key "username" source "username" }
+        { key "email" source "email" }
+        { key "tenant_id" source "tenant_id" }
+        { key "roles" source "roles" }
+        { key "name" source "claims.name" optional true }
+        { key "org_units" source "claims.org_units" optional true }
+        { key "workspace_roles" source "claims.workspace_roles" optional true }
+      ]
+    }
   }
+}
+
+intent "casekit.me" {
+  response "r"
+  node "user_id" { uses "session.get" resource "sessions" provides [user_id] config { key "user_id" required true } }
+  node "username" { uses "session.get" resource "sessions" provides [username] config { key "username" } }
+  node "email" { uses "session.get" resource "sessions" provides [email] config { key "email" } }
+  node "tenant_id" { uses "session.get" resource "sessions" provides [tenant_id] config { key "tenant_id" } }
+  node "roles" { uses "session.get" resource "sessions" provides [roles] config { key "roles" } }
+  node "name" { uses "session.get" resource "sessions" provides [name] config { key "name" } }
+  node "org_units" { uses "session.get" resource "sessions" provides [org_units] config { key "org_units" } }
+  node "workspace_roles" { uses "session.get" resource "sessions" provides [workspace_roles] config { key "workspace_roles" } }
+  node "r" {
+    uses "collect"
+    requires [user_id, username, email, tenant_id, roles, name, org_units, workspace_roles]
+    provides [r]
+    config { unwrap true }
+  }
+}
+
+intent "casekit.logout" {
+  response "r"
+  node "user" { uses "auth.require_session" resource "sessions" kind decision provides [user_id] }
+  node "done" { uses "auth.logout" resource "sessions" kind effect requires [user_id] provides [done] }
+  node "r" { uses "collect" requires [done] provides [r] config { unwrap true } }
 }
 
 intent "casekit.people" {
@@ -1433,6 +1541,9 @@ intent "casekit.people" {
     provides [r]
     config {
       operation "list_users"
+      input_fact "input"
+      tenant_sources ["input.tenant_id", "request.tenant", "principal.tenant_id"]
+      user_sources ["request.path.id", "request.path.user_id", "input.user_id"]
     }
   }
 }
@@ -1447,6 +1558,9 @@ intent "casekit.invite" {
     provides [r]
     config {
       operation "invite"
+      input_fact "input"
+      tenant_sources ["input.tenant_id", "request.tenant", "principal.tenant_id"]
+      user_sources ["request.path.id", "request.path.user_id", "input.user_id"]
       org_resource "org"
     }
   }
@@ -1460,6 +1574,11 @@ intent "casekit.accept" {
     kind effect
     requires [input]
     provides [r]
+    config {
+      token_fact "input.token"
+      password_fact "input.password"
+      name_fact "input.name"
+    }
   }
 }
 
@@ -1698,110 +1817,155 @@ route "catalog" {
   method GET
   path "/api/pipelines"
   intent "cases.catalog"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
 }
 route "describe" {
   method GET
   path "/api/pipelines/:pipeline"
   intent "cases.describe"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
 }
 route "start" {
   method POST
+  max_body_bytes 1048576
   path "/api/pipelines/:pipeline/cases"
   intent "cases.start"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
   status 201
   rate_limit {
     limiter "limits"
-    limit 60
+    limit 10
     window "1m"
   }
 }
 route "list" {
   method GET
+  cache_control "no-store"
   path "/api/cases"
   intent "cases.list"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
 }
 route "view" {
   method GET
+  rate_limit { limiter "limits" limit 60 window "1m" }
+  cache_control "no-store"
   path "/api/cases/:id"
   intent "cases.view"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
 }
 route "view_stage" {
   method GET
+  rate_limit { limiter "limits" limit 60 window "1m" }
+  cache_control "no-store"
   path "/api/cases/:id/stages/:stage"
   intent "cases.view"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
 }
 route "history" {
   method GET
+  rate_limit { limiter "limits" limit 60 window "1m" }
+  cache_control "no-store"
   path "/api/cases/:id/history"
   intent "cases.get"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
 }
 route "save" {
   method PUT
+  rate_limit { limiter "limits" limit 30 window "1m" }
+  max_body_bytes 1048576
+  cache_control "no-store"
   path "/api/cases/:id/stages/:stage"
   intent "cases.save"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
 }
 route "act" {
   method POST
+  cache_control "no-store"
+  max_body_bytes 1048576
+  rate_limit { limiter "limits" limit 30 window "1m" }
   path "/api/cases/:id/stages/:stage/actions/:action"
   intent "cases.act"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
 }
 route "node" {
   method POST
+  cache_control "no-store"
+  max_body_bytes 33554432
+  rate_limit { limiter "limits" limit 30 window "1m" }
   path "/api/cases/:id/stages/:stage/nodes/:node/:verb"
   intent "cases.node"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
 }
 route "work" {
   method POST
+  cache_control "no-store"
+  max_body_bytes 1048576
+  rate_limit { limiter "limits" limit 30 window "1m" }
   path "/api/cases/:id/stages/:stage/work/:op"
   intent "cases.work"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
 }
 route "rfi" {
   method POST
+  cache_control "no-store"
+  max_body_bytes 1048576
+  rate_limit { limiter "limits" limit 30 window "1m" }
   path "/api/cases/:id/information-request"
   intent "cases.rfi"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
 }
 route "answer" {
   method POST
+  cache_control "no-store"
+  max_body_bytes 1048576
+  rate_limit { limiter "limits" limit 30 window "1m" }
   path "/api/cases/:id/information-response"
   intent "cases.answer"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
 }
 route "note" {
   method POST
+  cache_control "no-store"
+  max_body_bytes 1048576
+  rate_limit { limiter "limits" limit 30 window "1m" }
   path "/api/cases/:id/notes"
   intent "cases.note"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
 }
 route "verify" {
   method GET
+  rate_limit { limiter "limits" limit 60 window "1m" }
   path "/api/certificates/:key"
   intent "cases.verify"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
 }
 
@@ -1813,26 +1977,39 @@ static "assets" {
 # ---- server-rendered pages (SPL templates) ---------------------------------
 route "api.entry_new" {
   method POST
+  cache_control "no-store"
+  max_body_bytes 1048576
+  rate_limit { limiter "limits" limit 30 window "1m" }
   path "/api/cases/:id/stages/:stage/entries"
   intent "cases.entry"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
 }
 route "api.entry_op" {
   method POST
+  cache_control "no-store"
+  max_body_bytes 1048576
+  rate_limit { limiter "limits" limit 30 window "1m" }
   path "/api/cases/:id/stages/:stage/entries/:entry/:op"
   intent "cases.entry"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
 }
 route "api.link_view" {
   method GET
+  rate_limit { limiter "limits" limit 60 window "1m" }
+  cache_control "no-store"
   path "/api/links/:token"
   intent "cases.link_view"
   allow_anonymous true
 }
 route "api.link_submit" {
   method POST
+  cache_control "no-store"
+  max_body_bytes 1048576
+  rate_limit { limiter "limits" limit 30 window "1m" }
   path "/api/links/:token"
   intent "cases.link_submit"
   allow_anonymous true
@@ -1851,100 +2028,121 @@ route "api.workspaces" {
   method GET
   path "/api/workspaces"
   intent "casekit.workspaces"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
 }
 route "api.org_save" {
   method POST
   path "/api/workspaces/save"
   intent "casekit.org_save"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
 }
 route "api.org_delete" {
   method POST
   path "/api/workspaces/delete"
   intent "casekit.org_delete"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
 }
 route "api.workspace_tree" {
   method GET
   path "/api/workspaces/tree"
   intent "casekit.workspace_tree"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
 }
 route "api.lookup" {
   method POST
   path "/api/workspace/lookup"
   intent "casekit.lookup"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
 }
 route "api.lookup_write" {
   method POST
   path "/api/workspace/lookup/save"
   intent "casekit.lookup_write"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
 }
 route "api.lookup_delete" {
   method POST
   path "/api/workspace/lookup/delete"
   intent "casekit.lookup_delete"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
 }
 route "api.lookup_sources" {
   method POST
   path "/api/workspace/sources"
   intent "casekit.lookup_sources"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
 }
 route "api.source_save" {
   method POST
   path "/api/workspace/source/save"
   intent "casekit.source_save"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
 }
 route "api.source_delete" {
   method POST
   path "/api/workspace/source/delete"
   intent "casekit.source_delete"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
 }
 route "api.ws_get" {
   method POST
   path "/api/workspace/settings"
   intent "casekit.ws_get"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
 }
 route "api.ws_set" {
   method POST
   path "/api/workspace/settings/save"
   intent "casekit.ws_set"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
 }
 route "api.choices" {
   method POST
+  max_body_bytes 1048576
+  rate_limit { limiter "limits" limit 30 window "1m" }
   path "/api/cases/:id/choices/:form/:input_name"
   intent "cases.choices"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
 }
 route "api.matrix" {
   method GET
   path "/api/pipelines/:pipeline/matrix"
   intent "cases.matrix"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
 }
 route "api.overview" {
   method GET
+  rate_limit { limiter "limits" limit 60 window "1m" }
+  cache_control "no-store"
   path "/api/cases/:id/overview"
   intent "cases.overview"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
   allow_anonymous true
 }
 route "api.notifications" {
   method GET
+  cache_control "no-store"
   path "/api/notifications"
   intent "casekit.notifications"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
 }
 
 route "page.home" {
@@ -2005,39 +2203,70 @@ route "page.workspace" {
 }
 route "api.inbox" {
   method GET
+  cache_control "no-store"
   path "/api/inbox"
   intent "casekit.inbox"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
 }
 route "api.inbox_read" {
   method POST
+  cache_control "no-store"
   path "/api/inbox/:id/read"
   intent "casekit.inbox_read"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
 }
 route "api.login" {
   method POST
   path "/api/login"
   intent "casekit.login"
+  session "sessions"
   allow_anonymous true
+  cache_control "no-store"
+  max_body_bytes 4096
+  rate_limit { limiter "limits" limit 10 window "1m" }
+}
+route "api.me" {
+  method GET
+  path "/api/me"
+  intent "casekit.me"
+  auth "web_auth"
+  session "sessions"
+  cache_control "no-store"
+}
+route "api.logout" {
+  method POST
+  path "/api/logout"
+  intent "casekit.logout"
+  auth "web_auth"
+  session "sessions"
+  cache_control "no-store"
 }
 route "api.people" {
   method GET
+  cache_control "no-store"
   path "/api/people"
   intent "casekit.people"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
 }
 route "api.invite" {
   method POST
+  cache_control "no-store"
   path "/api/people/invite"
   intent "casekit.invite"
-  auth "jwt"
+  auth "web_auth"
+  session "sessions"
 }
 route "api.accept" {
   method POST
   path "/api/people/accept"
   intent "casekit.accept"
   allow_anonymous true
+  cache_control "no-store"
+  max_body_bytes 8192
+  rate_limit { limiter "limits" limit 10 window "1m" }
 }
 route "page.accept" {
   method GET
